@@ -1406,17 +1406,25 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "futures-util",
  "oma-config",
  "oma-contract",
+ "oma-mcp",
  "oma-runtime",
  "oma-storage",
+ "oma-tool",
+ "parking_lot",
+ "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
