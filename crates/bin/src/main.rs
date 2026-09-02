@@ -131,32 +131,50 @@ async fn run_web(
         });
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+    let daemon_url = format!("http://{}?token={}", addr, token);
+    let web_url = format!("http://localhost:{}?token={}", port, token);
 
-    let web_url = if dev {
-        format!("http://localhost:{}?token={}", port, token)
-    } else {
-        format!("http://localhost:{}?token={}", port, token)
-    };
+    println!("✨ Oma Web Client Ready:");
+    println!("   ➜ 内置直出访问 (Daemon):  {}", daemon_url);
+    println!("   ➜ 本地独立前端 (Vite):    {}", web_url);
+    println!("👉 请在浏览器中访问上述任一链接以进入 Oma 协同工作台。");
 
-    println!("✨ Oma Web Client Ready: {}", web_url);
-    println!("👉 请在浏览器中访问该链接以进入 Oma 协同工作台。");
-
+    let web_dir = Path::new("web");
     if dev {
-        let web_dir = Path::new("web");
         if web_dir.exists() {
             println!("📦 正在启动 Vite 前端开发服务器 (npm run dev)...");
             let mut child = tokio::process::Command::new("npm")
                 .arg("run")
                 .arg("dev")
-                .current_dir(web_dir)
+                .arg("--")
+                .arg("--host")
+                .arg("0.0.0.0")
+                .arg("--port")
+                .arg(port.to_string())
                 .spawn()?;
             let _ = child.wait().await;
         }
     } else {
-        // 尝试自动拉起默认浏览器
-        let _ = tokio::process::Command::new("xdg-open").arg(&web_url).spawn();
-        // 保持挂起运行
-        tokio::signal::ctrl_c().await?;
+        if web_dir.exists() {
+            let dist_dir = web_dir.join("dist");
+            let mut cmd = if dist_dir.exists() {
+                let mut c = tokio::process::Command::new("npx");
+                c.arg("vite").arg("preview").arg("--host").arg("0.0.0.0").arg("--port").arg(port.to_string());
+                c
+            } else {
+                let mut c = tokio::process::Command::new("npm");
+                c.arg("run").arg("dev").arg("--").arg("--host").arg("0.0.0.0").arg("--port").arg(port.to_string());
+                c
+            };
+            cmd.current_dir(web_dir);
+            println!("🌐 正在启动本地前端端口 {} 服务...", port);
+            let _ = tokio::process::Command::new("xdg-open").arg(&daemon_url).spawn();
+            let mut child = cmd.spawn()?;
+            let _ = child.wait().await;
+        } else {
+            let _ = tokio::process::Command::new("xdg-open").arg(&daemon_url).spawn();
+            tokio::signal::ctrl_c().await?;
+        }
     }
 
     Ok(())

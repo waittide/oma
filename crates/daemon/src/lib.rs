@@ -537,16 +537,23 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
 
 /// 组装 Axum 路由
 pub fn create_router(state: DaemonState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/api/server/status", get(handle_server_status))
         .route("/api/sessions", get(handle_list_sessions).post(handle_create_session))
         .route("/api/sessions/{id}", delete(handle_delete_session))
         .route("/api/sessions/{id}/messages", get(handle_get_messages))
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
-        .route("/ws", get(handle_ws_upgrade))
-        .layer(CorsLayer::permissive())
-        .with_state(state)
+        .route("/ws", get(handle_ws_upgrade));
+
+    let dist_path = Path::new("web/dist");
+    if dist_path.exists() {
+        let serve_dir = tower_http::services::ServeDir::new(dist_path)
+            .fallback(tower_http::services::ServeFile::new(dist_path.join("index.html")));
+        router = router.fallback_service(serve_dir);
+    }
+
+    router.layer(CorsLayer::permissive()).with_state(state)
 }
 
 #[cfg(test)]
