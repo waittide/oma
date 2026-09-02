@@ -36,8 +36,8 @@ pub trait SubagentRunner: Send + Sync {
 /// 统一 Tool Trait
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
     fn parameters_schema(&self) -> serde_json::Value;
     async fn execute(&self, workspace: &Path, input: serde_json::Value) -> ToolOutput;
 }
