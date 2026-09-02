@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/bin"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.lints.clippy]
+collapsible_else_if = "allow"
+collapsible_if = "allow"
+
+[workspace.lints.rust]
+# 唯一 unsafe（shell 工具 killpg）在 crates/tool/src/shell.rs 有显式 allow。
+unsafe_code = "deny"
+
+[workspace.dependencies]
+# --- 外部依赖 ---
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+libc = "0.2"
+parking_lot = "0.12"
+reqwest = { version = "0.13", features = ["json", "stream"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tempfile = "3"
+tiktoken-rs = "0.12"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "time", "io-util", "io-std", "net", "process"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+# --- 内部 crate ---
+oma-client = { version = "0.1.0", path = "crates/client" }
+oma-config = { version = "0.1.0", path = "crates/config" }
+oma-contract = { version = "0.1.0", path = "crates/contract" }
+oma-daemon = { version = "0.1.0", path = "crates/daemon" }
+oma-mcp = { version = "0.1.0", path = "crates/mcp" }
+oma-provider = { version = "0.1.0", path = "crates/provider" }
+oma-runtime = { version = "0.1.0", path = "crates/runtime" }
+oma-storage = { version = "0.1.0", path = "crates/storage" }
+oma-tool = { version = "0.1.0", path = "crates/tool" }
+oma-tui = { version = "0.1.0", path = "crates/tui" }
+
+[profile.release]
+opt-level = 3
+strip = true
+lto = "thin"
+codegen-units = 1
