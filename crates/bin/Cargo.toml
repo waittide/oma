@@ -16,6 +16,11 @@ oma-config = { workspace = true }
 oma-contract = { workspace = true }
 oma-daemon = { workspace = true }
 oma-runtime = { workspace = true }
+oma-storage = { workspace = true }
+oma-mcp = { workspace = true }
+axum = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

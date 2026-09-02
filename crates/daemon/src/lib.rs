@@ -7,13 +7,12 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get};
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use oma_config::{AgentLoader, OmaConfig};
 use oma_contract::{
-    AgentCommand, AgentEvent, ApprovalDecision, ApprovalMode, ChatMessage, ClientMessage,
-    ClientType, ModelInfo, Ready, ServerMessage,
+    AgentEvent, ApprovalMode, ChatMessage, ClientMessage, ModelInfo, Ready, ServerMessage,
 };
 use oma_mcp::McpManager;
 use oma_runtime::{RoomSubagentRunner, SessionRoom};

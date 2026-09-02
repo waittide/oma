@@ -1349,12 +1349,17 @@ name = "oma-bin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "oma-client",
  "oma-config",
  "oma-contract",
  "oma-daemon",
+ "oma-mcp",
  "oma-runtime",
+ "oma-storage",
+ "reqwest",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
