@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use oma_contract::ToolOutput;
 use oma_tool::Tool;
 use parking_lot::RwLock;

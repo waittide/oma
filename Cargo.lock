@@ -1380,12 +1380,14 @@ name = "oma-config"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "oma-contract",
  "oma-mcp",
  "oma-provider",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "toml",
  "url",
 ]
