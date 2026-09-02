@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::Result;
-use oma_contract::ToolOutput;
+pub use oma_contract::ToolOutput;
 use serde::Deserialize;
 
 /// 最大工具输出字符数限制
