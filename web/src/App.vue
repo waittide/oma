@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Fa6Bolt, Fa6Brain, Fa6ScrewdriverWrench } from 'vue-icons-plus/fa6';
 import { ref, onMounted, nextTick, watch } from 'vue';
 import type { ChatMessage, FileNode, SessionRecord, ApprovalDecision, ApprovalMode } from './types';
 import {
@@ -232,13 +233,13 @@ function updateWorkspace(newWs: string) {
           <div class="message-card assistant" style="border-color: var(--accent);">
             <div class="message-header">
               <span class="role-tag assistant">ASSISTANT</span>
-              <span class="badge badge-connecting">⚡ 正在推理与执行中...</span>
+              <span class="badge badge-connecting"><Fa6Bolt style="vertical-align: -2px;" /> 正在推理与执行中...</span>
             </div>
 
             <!-- 实时思考流 -->
             <div v-if="liveThinking" class="thinking-box">
               <div class="thinking-header">
-                <span>🧠 实时思维链推导中...</span>
+                <span><Fa6Brain style="vertical-align: -2px;" /> 实时思维链推导中...</span>
               </div>
               <div class="thinking-content">
                 {{ liveThinking }}
@@ -253,7 +254,7 @@ function updateWorkspace(newWs: string) {
             <!-- 正在调用的工具 -->
             <div v-for="tc in activeToolCalls" :key="tc.call_id" class="tool-call-card">
               <div class="tool-call-header">
-                <span class="tool-name-badge">🔧 {{ tc.name }}</span>
+                <span class="tool-name-badge"><Fa6ScrewdriverWrench style="vertical-align: -2px;" /> {{ tc.name }}</span>
                 <span :class="['tool-status-badge', tc.output !== undefined ? (tc.is_error ? 'error' : 'success') : 'running']">
                   {{ tc.output !== undefined ? (tc.is_error ? '执行报错' : '执行完成') : '正在执行...' }}
                 </span>
@@ -271,7 +272,7 @@ function updateWorkspace(newWs: string) {
         </div>
 
         <div v-if="messages.length === 0 && !isBusy" style="padding: 40px 0; text-align: center; color: var(--text-muted);">
-          <div style="font-size: 32px; margin-bottom: 12px;">⚡</div>
+          <div style="font-size: 32px; margin-bottom: 12px;"><Fa6Bolt /></div>
           <div style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">
             准备就绪，欢迎使用 Oma 协同工作台
           </div>

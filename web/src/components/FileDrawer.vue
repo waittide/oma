@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Fa6FolderTree, Fa6Xmark, Fa6Folder, Fa6RegFileLines } from 'vue-icons-plus/fa6';
 import { ref } from 'vue';
 import type { FileNode } from '../types';
 import { fetchWorkspaceFile } from '../api';
@@ -30,8 +31,8 @@ async function handleFileClick(node: FileNode) {
 <template>
   <div class="drawer-overlay">
     <div style="padding: 14px 16px; border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: space-between;">
-      <span style="font-weight: 600;">🗂️ 工作区文件</span>
-      <button class="btn-icon" @click="$emit('close')">✕</button>
+      <span style="font-weight: 600;"><Fa6FolderTree style="vertical-align: -2px;" /> 工作区文件</span>
+      <button class="btn-icon" @click="$emit('close')"><Fa6Xmark /></button>
     </div>
 
     <div style="flex: 1; overflow-y: auto; padding: 8px;">
@@ -43,7 +44,7 @@ async function handleFileClick(node: FileNode) {
           class="tree-node"
           @click="handleFileClick(child)"
         >
-          <span>{{ child.is_dir ? '📁' : '📄' }}</span>
+          <span><Fa6Folder v-if="child.is_dir" style="vertical-align: -2px;" /><Fa6RegFileLines v-else style="vertical-align: -2px;" /></span>
           <span>{{ child.name }}</span>
         </div>
       </template>
@@ -59,7 +60,7 @@ async function handleFileClick(node: FileNode) {
     >
       <div style="padding: 8px 12px; background: #161c24; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 11px;">
         <span style="color: var(--accent);">{{ selectedFile }}</span>
-        <button style="background: none; border: none; color: var(--text-muted); cursor: pointer;" @click="selectedFile = null">✕</button>
+        <button style="background: none; border: none; color: var(--text-muted); cursor: pointer;" @click="selectedFile = null"><Fa6Xmark /></button>
       </div>
       <pre style="flex: 1; overflow: auto; padding: 10px; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); line-height: 1.4;">{{ fileContent }}</pre>
     </div>

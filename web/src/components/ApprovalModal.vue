@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Fa6TriangleExclamation, Fa6HourglassHalf, Fa6Ban, Fa6Check, Fa6ShieldHalved } from 'vue-icons-plus/fa6';
 import type { ApprovalDecision, PermissionRequestedData } from '../types';
 
 defineProps<{
@@ -15,8 +16,8 @@ defineEmits<{
   <div class="modal-overlay">
     <div class="modal-dialog" style="border-color: var(--warning);">
       <div class="modal-header" style="background: rgba(210, 153, 34, 0.1); color: var(--warning);">
-        <span>⚠️ 高危操作审批请求 (Human-in-the-Loop)</span>
-        <span class="badge badge-connecting">⏳ 倒计时: {{ remainingSeconds }}s</span>
+        <span><Fa6TriangleExclamation style="vertical-align: -2px;" /> 高危操作审批请求 (Human-in-the-Loop)</span>
+        <span class="badge badge-connecting"><Fa6HourglassHalf style="vertical-align: -2px;" /> 倒计时: {{ remainingSeconds }}s</span>
       </div>
 
       <div class="modal-body">
@@ -40,13 +41,13 @@ defineEmits<{
 
       <div class="modal-footer">
         <button class="btn-danger" @click="$emit('decision', 'deny')">
-          🚫 拒绝 (Deny)
+          <Fa6Ban style="vertical-align: -2px;" /> 拒绝 (Deny)
         </button>
         <button class="btn-default" @click="$emit('decision', 'allow_once')">
-          ✔️ 仅本次允许
+          <Fa6Check style="vertical-align: -2px;" /> 仅本次允许
         </button>
         <button class="btn-primary" @click="$emit('decision', 'allow_session')">
-          🛡️ 本会话永久允许
+          <Fa6ShieldHalved style="vertical-align: -2px;" /> 本会话永久允许
         </button>
       </div>
     </div>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Fa6Gear, Fa6Xmark } from 'vue-icons-plus/fa6';
 import { ref } from 'vue';
 import { getToken, setToken } from '../api';
 
@@ -25,8 +26,8 @@ function handleSave() {
   <div class="modal-overlay" @click.self="$emit('close')">
     <div class="modal-dialog">
       <div class="modal-header">
-        <span>⚙️ 系统设置与接入配置</span>
-        <button class="btn-icon" @click="$emit('close')">✕</button>
+        <span><Fa6Gear style="vertical-align: -2px;" /> 系统设置与接入配置</span>
+        <button class="btn-icon" @click="$emit('close')"><Fa6Xmark /></button>
       </div>
 
       <div class="modal-body">

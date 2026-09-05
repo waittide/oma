@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Fa6MasksTheater, Fa6ShieldHalved, Fa6Lock, Fa6Bolt, Fa6CircleStop } from 'vue-icons-plus/fa6';
 import { ref, computed } from 'vue';
 import type { ApprovalMode, Ready } from '../types';
 
@@ -70,10 +71,10 @@ function handleSend() {
           @change="(e) => $emit('change-agent', (e.target as HTMLSelectElement).value)"
         >
           <option v-for="a in ready?.agents" :key="a.id" :value="a.id">
-            🎭 {{ a.name }}
+            <Fa6MasksTheater style="vertical-align: -2px;" /> {{ a.name }}
           </option>
           <option v-if="!ready?.agents?.length" :value="ready?.active_agent">
-            🎭 {{ ready?.active_agent || 'task' }}
+            <Fa6MasksTheater style="vertical-align: -2px;" /> {{ ready?.active_agent || 'task' }}
           </option>
         </select>
 
@@ -84,16 +85,16 @@ function handleSend() {
           title="切换审批防护模式"
           @change="(e) => $emit('change-approval-mode', (e.target as HTMLSelectElement).value as ApprovalMode)"
         >
-          <option value="normal">🛡️ Normal 模式 (危险弹窗)</option>
-          <option value="strict">🔒 Strict 模式 (全部弹窗)</option>
-          <option value="auto">⚡ Auto 模式 (全免审批)</option>
+          <option value="normal"><Fa6ShieldHalved style="vertical-align: -2px;" /> Normal 模式 (危险弹窗)</option>
+          <option value="strict"><Fa6Lock style="vertical-align: -2px;" /> Strict 模式 (全部弹窗)</option>
+          <option value="auto"><Fa6Bolt style="vertical-align: -2px;" /> Auto 模式 (全免审批)</option>
         </select>
       </div>
 
       <div class="controls-group">
         <!-- 正在执行时展示级联 Cancel 中断按钮 -->
         <button v-if="isBusy" class="btn-cancel" @click="$emit('cancel')">
-          ⏹️ 停止生成 (Cancel)
+          <Fa6CircleStop style="vertical-align: -2px;" /> 停止生成 (Cancel)
         </button>
       </div>
     </div>
