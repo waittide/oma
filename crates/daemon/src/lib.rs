@@ -11,9 +11,7 @@ use axum::routing::{delete, get};
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use oma_config::{AgentLoader, OmaConfig};
-use oma_contract::{
-    AgentEvent, ApprovalMode, ChatMessage, ClientMessage, ModelInfo, Ready, ServerMessage,
-};
+use oma_contract::{AgentEvent, ApprovalMode, ChatMessage, ClientMessage, Ready, ServerMessage};
 use oma_mcp::McpManager;
 use oma_runtime::{RoomSubagentRunner, SessionRoom};
 use oma_storage::{SessionRecord, StorageManager};
@@ -439,18 +437,8 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         }
     };
 
-    // 3. 发送 Ready 握手确认
-    let mut providers_map = std::collections::BTreeMap::new();
-    for (p_id, _p_cfg) in &state.config.providers {
-        let models: Vec<ModelInfo> = vec![ModelInfo {
-            id: p_id.clone(),
-            name: p_id.clone(),
-            context_len: 128_000,
-            supports_vision: true,
-            supports_thinking: true,
-        }];
-        providers_map.insert(p_id.clone(), models);
-    }
+    // 3. 发送 Ready 握手确认（providers 携带配置的真实模型清单）
+    let providers_map = state.config.model_catalog();
 
     let agents = AgentLoader::list_agents(&room.workspace);
 

@@ -39,6 +39,30 @@ pub enum ProviderStreamEvent {
     Error(String),
 }
 
+/// 配置文件中的模型条目（ProviderConfig.models）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelEntry {
+    pub id: String,
+    #[serde(default = "model_entry_default_name")]
+    pub name: String,
+    #[serde(default = "model_entry_default_context")]
+    pub context_len: usize,
+    #[serde(default = "model_entry_default_true")]
+    pub supports_vision: bool,
+    #[serde(default = "model_entry_default_true")]
+    pub supports_thinking: bool,
+}
+
+fn model_entry_default_name() -> String {
+    String::new()
+}
+fn model_entry_default_context() -> usize {
+    128_000
+}
+fn model_entry_default_true() -> bool {
+    true
+}
+
 /// Provider 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -49,6 +73,9 @@ pub struct ProviderConfig {
     pub headers: BTreeMap<String, String>,
     #[serde(default)]
     pub body: serde_json::Value,
+    /// 可选模型清单；为空时按请求的 model id 动态合成 ModelConfig
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelEntry>,
 }
 
 /// Model 配置
@@ -118,6 +145,9 @@ impl UniversalProvider {
             }
             "completion" => {
                 self.stream_openai_completion(messages, system_prompt, tools, model, tx).await?;
+            }
+            "response" => {
+                self.stream_responses(messages, system_prompt, tools, model, tx).await?;
             }
             "google" => {
                 self.stream_google(messages, system_prompt, tools, model, tx).await?;
@@ -474,10 +504,168 @@ impl UniversalProvider {
         tokio::spawn(async move {
             parse_gemini_sse(resp.bytes_stream(), tx).await;
         });
+        Ok(())
+    }
+    async fn stream_responses(
+        &self,
+        messages: &[ChatMessage],
+        system_prompt: Option<&str>,
+        tools: &[serde_json::Value],
+        model: &ModelConfig,
+        tx: mpsc::Sender<ProviderStreamEvent>,
+    ) -> Result<()> {
+        let url = format!("{}/responses", self.config.base_url.trim_end_matches('/'));
+        let api_key = self.config.resolved_api_key();
+
+        // 组装 Responses input 条目（ToolResult 解构为 function_call_output）
+        let mut input = Vec::new();
+        if let Some(sys) = system_prompt {
+            input.push(serde_json::json!({
+                "role": "system",
+                "content": [{ "type": "input_text", "text": sys }]
+            }));
+        }
+
+        for msg in messages {
+            match msg.role {
+                Role::System => {
+                    let text = msg.content.iter().filter_map(|b| match b {
+                        Block::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    }).collect::<Vec<_>>().join("\n");
+                    input.push(serde_json::json!({
+                        "role": "system",
+                        "content": [{ "type": "input_text", "text": text }]
+                    }));
+                }
+                Role::Assistant => {
+                    let mut text_parts = Vec::new();
+                    for b in &msg.content {
+                        match b {
+                            Block::Text { text } => text_parts.push(text.clone()),
+                            Block::Thinking { .. } => {}
+                            Block::ToolUse { id, name, input: args } => {
+                                input.push(serde_json::json!({
+                                    "type": "function_call",
+                                    "call_id": id,
+                                    "name": name,
+                                    "arguments": args.to_string()
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !text_parts.is_empty() {
+                        input.push(serde_json::json!({
+                            "role": "assistant",
+                            "content": [{ "type": "output_text", "text": text_parts.join("\n") }]
+                        }));
+                    }
+                }
+                Role::User => {
+                    let tool_results: Vec<&Block> = msg.content.iter().filter(|b| matches!(b, Block::ToolResult { .. })).collect();
+                    if !tool_results.is_empty() && tool_results.len() == msg.content.len() {
+                        for b in tool_results {
+                            if let Block::ToolResult { tool_use_id, content, is_error } = b {
+                                let output = if *is_error {
+                                    serde_json::json!({ "error": content }).to_string()
+                                } else {
+                                    content.clone()
+                                };
+                                input.push(serde_json::json!({
+                                    "type": "function_call_output",
+                                    "call_id": tool_use_id,
+                                    "output": output
+                                }));
+                            }
+                        }
+                    } else {
+                        let mut content_parts = Vec::new();
+                        for b in &msg.content {
+                            match b {
+                                Block::Text { text } => content_parts.push(serde_json::json!({
+                                    "type": "input_text",
+                                    "text": text
+                                })),
+                                Block::Image { mime_type, data } => {
+                                    let data_url = if data.starts_with("http://") || data.starts_with("https://") || data.starts_with("data:") {
+                                        data.clone()
+                                    } else {
+                                        format!("data:{};base64,{}", mime_type, data)
+                                    };
+                                    content_parts.push(serde_json::json!({
+                                        "type": "input_image",
+                                        "image_url": data_url
+                                    }));
+                                }
+                                _ => {}
+                            }
+                        }
+                        if content_parts.is_empty() {
+                            content_parts.push(serde_json::json!({ "type": "input_text", "text": "" }));
+                        }
+                        input.push(serde_json::json!({
+                            "role": "user",
+                            "content": content_parts
+                        }));
+                    }
+                }
+            }
+        }
+
+        let mut body = serde_json::json!({
+            "model": model.id,
+            "stream": true,
+            "input": input
+        });
+
+        if !tools.is_empty() {
+            let responses_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "type": "function",
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t["parameters"]
+                    })
+                })
+                .collect();
+            body["tools"] = serde_json::Value::Array(responses_tools);
+        }
+
+        deep_merge_json(&mut body, &self.config.body);
+        deep_merge_json(&mut body, &model.body);
+
+        let mut req = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("content-type", "application/json");
+
+        for (k, v) in &self.config.headers {
+            req = req.header(k, v);
+        }
+        for (k, v) in &model.headers {
+            req = req.header(k, v);
+        }
+
+        let resp = req.json(&body).send().await.context("Failed to send request to Responses API")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_text = resp.text().await.unwrap_or_default();
+            let _ = tx.send(ProviderStreamEvent::Error(format!("Responses API error {}: {}", status, err_text))).await;
+            return Ok(());
+        }
+
+        tokio::spawn(async move {
+            parse_responses_sse(resp.bytes_stream(), tx).await;
+        });
 
         Ok(())
     }
 }
+
 
 // =========================================================================
 // SSE 解析器集合 (手写状态机)
@@ -743,6 +931,130 @@ where
     }
 }
 
+/// OpenAI Responses API SSE 解析（api_type = "response"）
+pub async fn parse_responses_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>)
+where
+    S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    let mut buffer = String::new();
+
+    // 累积中的 function_call 输出项：output_index -> (call_id, name, arguments)
+    let mut current_call: Option<(String, String, String)> = None;
+    let mut saw_done = false;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(ProviderStreamEvent::Error(e.to_string())).await;
+                return;
+            }
+        };
+
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+        while let Some(pos) = buffer.find("\n\n") {
+            let message = buffer[..pos].to_string();
+            buffer = buffer[pos + 2..].to_string();
+
+            for line in message.lines() {
+                let line = line.trim();
+                let Some(data) = line.strip_prefix("data:") else { continue };
+                let data = data.trim();
+
+                let val: serde_json::Value = match serde_json::from_str(data) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                let event_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                match event_type {
+                    // 文本增量
+                    "response.output_text.delta" => {
+                        if let Some(text) = val.get("delta").and_then(|v| v.as_str()) {
+                            let _ = tx.send(ProviderStreamEvent::TextDelta(text.to_string())).await;
+                        }
+                    }
+                    // 思维链摘要增量
+                    "response.reasoning_summary_text.delta" => {
+                        if let Some(th) = val.get("delta").and_then(|v| v.as_str()) {
+                            let _ = tx.send(ProviderStreamEvent::ThinkingDelta(th.to_string())).await;
+                        }
+                    }
+                    // function_call 输出项开始（携带完整 call_id 与 name）
+                    "response.output_item.added" => {
+                        if val.get("item").and_then(|i| i.get("type")).and_then(|v| v.as_str()) == Some("function_call") {
+                            let call_id = val.pointer("/item/call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let name = val.pointer("/item/name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            current_call = Some((call_id, name, String::new()));
+                        }
+                    }
+                    // function_call 参数流式切片
+                    "response.function_call_arguments.delta" => {
+                        if let Some((_, _, args)) = current_call.as_mut() {
+                            if let Some(partial) = val.get("delta").and_then(|v| v.as_str()) {
+                                args.push_str(partial);
+                            }
+                        }
+                    }
+                    // function_call 参数流结束，产出完整 ToolCall
+                    "response.function_call_arguments.done" => {
+                        if let Some((call_id, name, args)) = current_call.take() {
+                            // done 事件若携带完整 arguments 则以服务端值为准
+                            let final_args = val.get("arguments").and_then(|v| v.as_str()).unwrap_or(&args).to_string();
+                            let parsed = match serde_json::from_str(&final_args) {
+                                Ok(v) => v,
+                                Err(e) => serde_json::json!({
+                                    "_parse_error": e.to_string(),
+                                    "_raw": final_args
+                                }),
+                            };
+                            let _ = tx.send(ProviderStreamEvent::ToolCall {
+                                id: call_id,
+                                name,
+                                input: parsed,
+                            }).await;
+                        }
+                    }
+                    // 整个响应完成（含 usage 与 output 数组）
+                    "response.completed" => {
+                        saw_done = true;
+                        if let Some(usage) = val.pointer("/response/usage") {
+                            let input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let _ = tx.send(ProviderStreamEvent::Usage { input_tokens, output_tokens }).await;
+                        }
+                        let stop_reason = val.pointer("/response/incomplete_details/reason")
+                            .and_then(|v| v.as_str())
+                            .map(|r| match r {
+                                "max_output_tokens" => StopReason::MaxTokens,
+                                _ => StopReason::EndTurn,
+                            })
+                            .unwrap_or(StopReason::EndTurn);
+                        let _ = tx.send(ProviderStreamEvent::Done { stop_reason }).await;
+                    }
+                    // 服务端错误事件
+                    "response.failed" | "error" => {
+                        let msg = val.pointer("/response/error/message")
+                            .or_else(|| val.get("message"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown Responses API error")
+                            .to_string();
+                        let _ = tx.send(ProviderStreamEvent::Error(msg)).await;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // 流中断且未收到 completed：强制收尾，避免调用方悬挂等待
+    if !saw_done {
+        let _ = tx.send(ProviderStreamEvent::Done { stop_reason: StopReason::EndTurn }).await;
+    }
+}
+
 /// Google Gemini SSE 解析
 pub async fn parse_gemini_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>)
 where
@@ -856,5 +1168,71 @@ data: [DONE]\n\n";
             input: serde_json::json!({ "path": "src/lib.rs" }),
         });
         assert_eq!(events[4], ProviderStreamEvent::Done { stop_reason: StopReason::EndTurn });
+    }
+
+    #[tokio::test]
+    async fn test_parse_responses_sse_stream() {
+        let sse_data = concat!(
+            r#"data: {"type":"response.reasoning_summary_text.delta","delta":"thinking hard"}"#, "\n\n",
+            r#"data: {"type":"response.output_text.delta","delta":"Hello "}"#, "\n\n",
+            r#"data: {"type":"response.output_text.delta","delta":"world"}"#, "\n\n",
+            r#"data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_9","name":"shell"}}"#, "\n\n",
+            r#"data: {"type":"response.function_call_arguments.delta","delta":"{\"cmd\":"}"#, "\n\n",
+            r#"data: {"type":"response.function_call_arguments.delta","delta":"\"ls\"}"}"#, "\n\n",
+            r#"data: {"type":"response.function_call_arguments.done","arguments":"{\"cmd\":\"ls -la\"}"}"#, "\n\n",
+            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":42},"incomplete_details":null}}"#, "\n\n",
+        );
+
+        let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
+        let (tx, mut rx) = mpsc::channel(10);
+
+        tokio::spawn(async move {
+            parse_responses_sse(stream, tx).await;
+        });
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            events.push(ev);
+        }
+
+        assert_eq!(events[0], ProviderStreamEvent::ThinkingDelta("thinking hard".into()));
+        assert_eq!(events[1], ProviderStreamEvent::TextDelta("Hello ".into()));
+        assert_eq!(events[2], ProviderStreamEvent::TextDelta("world".into()));
+        assert_eq!(events[3], ProviderStreamEvent::ToolCall {
+            id: "call_9".into(),
+            name: "shell".into(),
+            input: serde_json::json!({ "cmd": "ls -la" }),
+        });
+        assert_eq!(events[4], ProviderStreamEvent::Usage { input_tokens: 100, output_tokens: 42 });
+        assert_eq!(events[5], ProviderStreamEvent::Done { stop_reason: StopReason::EndTurn });
+    }
+
+    #[tokio::test]
+    async fn test_parse_responses_sse_incomplete_and_error() {
+        // max_output_tokens 不完整结束 → MaxTokens
+        let sse_max = concat!(
+            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":5},"incomplete_details":{"reason":"max_output_tokens"}}}"#, "\n\n",
+        );
+        let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_max))]);
+        let (tx, mut rx) = mpsc::channel(4);
+        parse_responses_sse(stream, tx).await;
+        let mut ev = rx.recv().await.unwrap();
+        assert_eq!(ev, ProviderStreamEvent::Usage { input_tokens: 1, output_tokens: 5 });
+        ev = rx.recv().await.unwrap();
+        assert_eq!(ev, ProviderStreamEvent::Done { stop_reason: StopReason::MaxTokens });
+        assert!(rx.recv().await.is_none());
+
+        // response.failed → Error 事件
+        let sse_fail = concat!(
+            r#"data: {"type":"response.failed","response":{"error":{"message":"boom"}}}"#, "\n\n",
+            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":0,"output_tokens":0},"incomplete_details":null}}"#, "\n\n",
+        );
+        let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_fail))]);
+        let (tx, mut rx) = mpsc::channel(4);
+        parse_responses_sse(stream, tx).await;
+        assert_eq!(rx.recv().await.unwrap(), ProviderStreamEvent::Error("boom".into()));
+        // response.failed → Error 事件，随后的 completed 事件先带 Usage 再收尾
+        assert_eq!(rx.recv().await.unwrap(), ProviderStreamEvent::Usage { input_tokens: 0, output_tokens: 0 });
+        assert_eq!(rx.recv().await.unwrap(), ProviderStreamEvent::Done { stop_reason: StopReason::EndTurn });
     }
 }

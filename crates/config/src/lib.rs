@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
-use oma_contract::{AgentSummary, ApprovalMode};
+use oma_contract::{AgentSummary, ApprovalMode, ModelInfo};
 use oma_mcp::McpServerConfig;
 use oma_provider::{ModelConfig, ProviderConfig};
 use serde::{Deserialize, Serialize};
@@ -94,10 +94,21 @@ impl OmaConfig {
 
         let provider = self.providers.get(provider_name)?;
 
-        // 尝试从 provider.body 或通用字段寻找模型，若未配置具体 model 列表，则构造默认 ModelConfig
-        Some((
-            provider,
-            ModelConfig {
+        // 优先使用配置的 models 清单；未配置该 id 或清单为空时，动态构造默认 ModelConfig
+        let model_cfg = provider
+            .models
+            .iter()
+            .find(|m| m.id == model_id)
+            .map(|m| ModelConfig {
+                id: m.id.clone(),
+                name: if m.name.is_empty() { m.id.clone() } else { m.name.clone() },
+                context_len: m.context_len,
+                supports_vision: m.supports_vision,
+                supports_thinking: m.supports_thinking,
+                headers: BTreeMap::new(),
+                body: serde_json::json!({}),
+            })
+            .unwrap_or_else(|| ModelConfig {
                 id: model_id.to_string(),
                 name: model_id.to_string(),
                 context_len: 128_000,
@@ -105,8 +116,29 @@ impl OmaConfig {
                 supports_thinking: true,
                 headers: BTreeMap::new(),
                 body: serde_json::json!({}),
-            },
-        ))
+            });
+        Some((provider, model_cfg))
+    }
+
+    /// 各 provider 配置的模型元数据（供握手协议枚举真实模型）
+    pub fn model_catalog(&self) -> BTreeMap<String, Vec<ModelInfo>> {
+        self.providers
+            .iter()
+            .map(|(p_id, p_cfg)| {
+                let models = p_cfg
+                    .models
+                    .iter()
+                    .map(|m| ModelInfo {
+                        id: m.id.clone(),
+                        name: if m.name.is_empty() { m.id.clone() } else { m.name.clone() },
+                        context_len: m.context_len,
+                        supports_vision: m.supports_vision,
+                        supports_thinking: m.supports_thinking,
+                    })
+                    .collect::<Vec<_>>();
+                (p_id.clone(), models)
+            })
+            .collect()
     }
 }
 
@@ -297,5 +329,52 @@ api_key = "env:DEEPSEEK_KEY"
         assert_eq!(config.default_model, "deepseek/deepseek-chat");
         assert_eq!(config.server.listen_addr, "0.0.0.0:17431");
         assert!(config.providers.contains_key("deepseek"));
+    }
+
+    #[test]
+    fn test_configured_models_override_synthesis() {
+        let toml_str = r#"
+[providers.p1]
+api_type = "completion"
+base_url = "http://localhost/v1"
+api_key = "k"
+[[providers.p1.models]]
+id = "m1"
+name = "Model One"
+context_len = 1_048_576
+supports_vision = false
+[[providers.p1.models]]
+id = "m2"
+
+[providers.p2]
+api_type = "anthropic"
+base_url = "http://localhost/v1"
+api_key = "k"
+"#;
+        let config: OmaConfig = toml::from_str(toml_str).unwrap();
+
+        // 配置清单内的模型: 精确元数据
+        let (_, m1) = config.find_model("p1/m1").unwrap();
+        assert_eq!(m1.name, "Model One");
+        assert_eq!(m1.context_len, 1_048_576);
+        assert!(!m1.supports_vision);
+        // name 缺省时回退为 id
+        let (_, m2) = config.find_model("p1/m2").unwrap();
+        assert_eq!(m2.name, "m2");
+        assert_eq!(m2.context_len, 128_000);
+        // 清单外的 id: 动态合成 (向后兼容)
+        let (_, mx) = config.find_model("p1/not-listed").unwrap();
+        assert_eq!(mx.context_len, 128_000);
+        assert!(mx.supports_thinking);
+        // 无清单 provider: 全部合成
+        let (_, p2m) = config.find_model("p2/anything").unwrap();
+        assert_eq!(p2m.id, "anything");
+
+        // 握手目录: 配置清单原样枚举, 无清单 provider 为空列表
+        let catalog = config.model_catalog();
+        assert_eq!(catalog["p1"].len(), 2);
+        assert_eq!(catalog["p1"][0].id, "m1");
+        assert_eq!(catalog["p1"][0].context_len, 1_048_576);
+        assert!(catalog["p2"].is_empty());
     }
 }
