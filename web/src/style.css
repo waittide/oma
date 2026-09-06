@@ -897,3 +897,21 @@ textarea.chat-input {
   font-size: 12px;
   padding: 4px 10px;
 }
+
+.radio-row {
+  display: flex;
+  gap: 18px;
+  font-size: 13px;
+}
+
+.radio-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.radio-row input[type='radio'] {
+  accent-color: var(--accent);
+}

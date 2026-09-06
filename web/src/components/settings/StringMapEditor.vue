@@ -3,7 +3,7 @@ import { Fa6Plus, Fa6Trash } from 'vue-icons-plus/fa6';
 import { ref, watch } from 'vue';
 
 const props = defineProps<{
-  modelValue: Record<string, string>;
+  modelValue?: Record<string, string>;
   keyPlaceholder?: string;
   valuePlaceholder?: string;
 }>();
@@ -17,7 +17,7 @@ interface Row {
   v: string;
 }
 
-function toRows(map: Record<string, string>): Row[] {
+function toRows(map: Record<string, string> | undefined): Row[] {
   return Object.entries(map ?? {}).map(([k, v]) => ({ k, v }));
 }
 

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { Fa6Gear, Fa6Plug, Fa6Server, Fa6Sliders, Fa6Xmark } from 'vue-icons-plus/fa6';
+import { Fa6Cubes, Fa6Gear, Fa6Plug, Fa6Server, Fa6Sliders, Fa6Xmark } from 'vue-icons-plus/fa6';
 import { onMounted, ref } from 'vue';
 import type { OmaConfigView } from '../types';
 import { fetchConfig, getToken, setToken, updateConfig } from '../api';
 import GeneralTab from './settings/GeneralTab.vue';
+import McpTab from './settings/McpTab.vue';
 import ProvidersTab from './settings/ProvidersTab.vue';
 
 const props = defineProps<{
@@ -15,7 +16,7 @@ const emit = defineEmits<{
   (e: 'update-workspace', ws: string): void;
 }>();
 
-type TabId = 'connection' | 'general' | 'providers';
+type TabId = 'connection' | 'general' | 'providers' | 'mcp';
 
 const activeTab = ref<TabId>('general');
 const inputToken = ref(getToken());
@@ -83,6 +84,13 @@ async function handleSaveConfig() {
           </button>
           <button
             class="settings-nav-item"
+            :class="{ active: activeTab === 'mcp' }"
+            @click="activeTab = 'mcp'"
+          >
+            <Fa6Cubes /> MCP Servers
+          </button>
+          <button
+            class="settings-nav-item"
             :class="{ active: activeTab === 'connection' }"
             @click="activeTab = 'connection'"
           >
@@ -120,7 +128,8 @@ async function handleSaveConfig() {
             <div v-if="loadError" class="settings-error">{{ loadError }}</div>
             <template v-else-if="config">
               <GeneralTab v-if="activeTab === 'general'" :config="config" />
-              <ProvidersTab v-else :config="config" />
+              <ProvidersTab v-else-if="activeTab === 'providers'" :config="config" />
+              <McpTab v-else :config="config" />
             </template>
             <div v-else class="field-hint">正在加载服务端配置…</div>
           </template>
