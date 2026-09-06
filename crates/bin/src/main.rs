@@ -1,9 +1,12 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use oma_config::OmaConfig;
-use oma_daemon::{create_router, resolve_or_create_token, DaemonState};
+use oma_daemon::{DaemonState, create_router, resolve_or_create_token};
 use oma_mcp::McpManager;
 use oma_storage::StorageManager;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -20,34 +23,34 @@ enum Commands {
     /// 独立启动后台 Daemon 服务
     Daemon {
         #[arg(long, default_value = "127.0.0.1:17431")]
-        addr: String,
+        addr:   String,
         #[arg(long)]
-        token: Option<String>,
+        token:  Option<String>,
         #[arg(long)]
         config: Option<PathBuf>,
     },
     /// 启动 Daemon 并打开 Web 交互界面
     Web {
         #[arg(long, default_value = "127.0.0.1:17431")]
-        addr: String,
+        addr:  String,
         #[arg(long)]
         token: Option<String>,
         #[arg(long)]
-        dev: bool,
+        dev:   bool,
         #[arg(long, default_value = "5173")]
-        port: u16,
+        port:  u16,
     },
     /// 连接 Daemon 启动 TUI 终端客户端
     Tui {
         #[arg(long, default_value = "127.0.0.1:17431")]
-        addr: String,
+        addr:  String,
         #[arg(long)]
         token: Option<String>,
     },
     /// 查看 Daemon 服务端运行状态
     Status {
         #[arg(long, default_value = "127.0.0.1:17431")]
-        addr: String,
+        addr:  String,
         #[arg(long)]
         token: Option<String>,
     },
@@ -61,29 +64,28 @@ fn get_data_dir() -> PathBuf {
         .join("oma")
 }
 
-async fn start_daemon(
-    addr: &str,
-    token_opt: Option<&str>,
-    config_opt: Option<&Path>,
-) -> Result<()> {
+async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&Path>) -> Result<()> {
     let data_dir = get_data_dir();
     std::fs::create_dir_all(&data_dir)?;
 
     let token = resolve_or_create_token(token_opt, &data_dir)?;
 
-    let config = if let Some(cp) = config_opt {
-        OmaConfig::load_from_file(cp).unwrap_or_else(|_| OmaConfig::load_or_default())
+    let config_path = config_opt
+        .map(PathBuf::from)
+        .or_else(OmaConfig::config_path)
+        .unwrap_or_else(|| data_dir.join("config.toml"));
+
+    let config = if config_path.exists() {
+        OmaConfig::load_from_file(&config_path).unwrap_or_else(|_| OmaConfig::default())
     } else {
-        OmaConfig::load_or_default()
+        OmaConfig::default()
     };
 
     let storage = StorageManager::new(&data_dir).await?;
     let mcp = Arc::new(McpManager::new());
-    for (name, cfg) in &config.mcp_servers {
-        mcp.register_server(name, cfg.clone());
-    }
+    mcp.sync_servers(&config.mcp_servers);
 
-    let state = DaemonState::new(token.clone(), storage, config, mcp);
+    let state = DaemonState::new(token.clone(), storage, config, config_path, mcp);
     let app = create_router(state);
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -100,12 +102,7 @@ async fn start_daemon(
     Ok(())
 }
 
-async fn run_web(
-    addr: &str,
-    token_opt: Option<&str>,
-    dev: bool,
-    port: u16,
-) -> Result<()> {
+async fn run_web(addr: &str, token_opt: Option<&str>, dev: bool, port: u16) -> Result<()> {
     let data_dir = get_data_dir();
     let token = resolve_or_create_token(token_opt, &data_dir)?;
 
@@ -159,20 +156,35 @@ async fn run_web(
             let dist_dir = web_dir.join("dist");
             let mut cmd = if dist_dir.exists() {
                 let mut c = tokio::process::Command::new("npx");
-                c.arg("vite").arg("preview").arg("--host").arg("0.0.0.0").arg("--port").arg(port.to_string());
+                c.arg("vite")
+                    .arg("preview")
+                    .arg("--host")
+                    .arg("0.0.0.0")
+                    .arg("--port")
+                    .arg(port.to_string());
                 c
             } else {
                 let mut c = tokio::process::Command::new("npm");
-                c.arg("run").arg("dev").arg("--").arg("--host").arg("0.0.0.0").arg("--port").arg(port.to_string());
+                c.arg("run")
+                    .arg("dev")
+                    .arg("--")
+                    .arg("--host")
+                    .arg("0.0.0.0")
+                    .arg("--port")
+                    .arg(port.to_string());
                 c
             };
             cmd.current_dir(web_dir);
             println!("🌐 正在启动本地前端端口 {} 服务...", port);
-            let _ = tokio::process::Command::new("xdg-open").arg(&daemon_url).spawn();
+            let _ = tokio::process::Command::new("xdg-open")
+                .arg(&daemon_url)
+                .spawn();
             let mut child = cmd.spawn()?;
             let _ = child.wait().await;
         } else {
-            let _ = tokio::process::Command::new("xdg-open").arg(&daemon_url).spawn();
+            let _ = tokio::process::Command::new("xdg-open")
+                .arg(&daemon_url)
+                .spawn();
             tokio::signal::ctrl_c().await?;
         }
     }

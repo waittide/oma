@@ -1,5 +1,8 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
 use anyhow::Result;
 pub use oma_contract::ToolOutput;
 use serde::Deserialize;
@@ -49,11 +52,11 @@ pub struct ReadTool;
 
 #[derive(Debug, Deserialize)]
 struct ReadInput {
-    path: String,
+    path:   String,
     #[serde(default = "default_offset")]
     offset: usize,
     #[serde(default = "default_limit")]
-    limit: usize,
+    limit:  usize,
 }
 
 fn default_offset() -> usize {
@@ -140,7 +143,7 @@ pub struct WriteTool;
 
 #[derive(Debug, Deserialize)]
 struct WriteInput {
-    path: String,
+    path:    String,
     content: String,
 }
 
@@ -188,7 +191,7 @@ impl Tool for WriteTool {
             return ToolOutput::error(format!("Failed to write file: {}", e));
         }
 
-        let bytes_len = input.content.as_bytes().len();
+        let bytes_len = input.content.len();
         let lines_count = input.content.lines().count();
         ToolOutput::success(format!(
             "Successfully wrote {} bytes ({} lines) to {:?}",
@@ -210,9 +213,9 @@ pub struct EditHunk {
 
 #[derive(Debug, Deserialize)]
 struct EditInput {
-    path: String,
+    path:     String,
     #[serde(default)]
-    edits: Vec<EditHunk>,
+    edits:    Vec<EditHunk>,
     // 兼容单对象参数传参
     #[serde(default)]
     old_text: Option<String>,
@@ -287,8 +290,8 @@ impl Tool for EditTool {
 
         // 1. 原始基准定位与唯一性约束
         struct MatchSpan {
-            start: usize,
-            end: usize,
+            start:    usize,
+            end:      usize,
             new_text: String,
         }
 
@@ -324,7 +327,8 @@ impl Tool for EditTool {
             if spans[i].end > spans[i + 1].start {
                 return ToolOutput::error(format!(
                     "Edit ranges overlap between hunk starting at byte {} and hunk starting at byte {}. Please merge into a single edit.",
-                    spans[i].start, spans[i + 1].start
+                    spans[i].start,
+                    spans[i + 1].start
                 ));
             }
         }
@@ -448,11 +452,7 @@ impl Tool for ShellTool {
                 let truncated = truncate_output(&combined);
                 if is_error {
                     ToolOutput {
-                        output: format!(
-                            "Command exited with code {:?}:\n{}",
-                            output.status.code(),
-                            truncated
-                        ),
+                        output:   format!("Command exited with code {:?}:\n{}", output.status.code(), truncated),
                         is_error: true,
                     }
                 } else {
@@ -493,7 +493,7 @@ impl TaskTool {
 
 #[derive(Debug, Deserialize)]
 struct TaskInput {
-    agent: String,
+    agent:  String,
     prompt: String,
 }
 
@@ -544,7 +544,7 @@ impl Tool for TaskTool {
 // ==========================================
 // 6. Tool Registry
 // ==========================================
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: Vec<Arc<dyn Tool>>,
 }

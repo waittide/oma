@@ -23,7 +23,6 @@ axum = { version = "0.8", features = ["ws"] }
 bytes = "1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
-dunce = "1.0"
 futures-util = "0.3"
 libc = "0.2"
 parking_lot = "0.12"
@@ -34,7 +33,6 @@ serde_yaml = "0.9"
 similar = "2"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 tempfile = "3"
-tiktoken-rs = "0.12"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "macros", "time", "io-util", "io-std", "net", "process", "fs", "signal"] }
 tokio-tungstenite = "0.26"
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -47,7 +45,6 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 # --- 内部 crate ---
-oma-client = { version = "0.1.0", path = "crates/client" }
 oma-config = { version = "0.1.0", path = "crates/config" }
 oma-contract = { version = "0.1.0", path = "crates/contract" }
 oma-daemon = { version = "0.1.0", path = "crates/daemon" }
@@ -56,7 +53,6 @@ oma-provider = { version = "0.1.0", path = "crates/provider" }
 oma-runtime = { version = "0.1.0", path = "crates/runtime" }
 oma-storage = { version = "0.1.0", path = "crates/storage" }
 oma-tool = { version = "0.1.0", path = "crates/tool" }
-oma-tui = { version = "0.1.0", path = "crates/tui" }
 
 [profile.release]
 opt-level = 3

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use oma_contract::{Block, ChatMessage, Role, StopReason};
@@ -25,12 +26,12 @@ pub enum ProviderStreamEvent {
     ThinkingDelta(String),
     TextDelta(String),
     ToolCall {
-        id: String,
-        name: String,
+        id:    String,
+        name:  String,
         input: serde_json::Value,
     },
     Usage {
-        input_tokens: usize,
+        input_tokens:  usize,
         output_tokens: usize,
     },
     Done {
@@ -42,13 +43,13 @@ pub enum ProviderStreamEvent {
 /// 配置文件中的模型条目（ProviderConfig.models）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEntry {
-    pub id: String,
+    pub id:                String,
     #[serde(default = "model_entry_default_name")]
-    pub name: String,
+    pub name:              String,
     #[serde(default = "model_entry_default_context")]
-    pub context_len: usize,
+    pub context_len:       usize,
     #[serde(default = "model_entry_default_true")]
-    pub supports_vision: bool,
+    pub supports_vision:   bool,
     #[serde(default = "model_entry_default_true")]
     pub supports_thinking: bool,
 }
@@ -68,28 +69,28 @@ fn model_entry_default_true() -> bool {
 pub struct ProviderConfig {
     pub api_type: String, // "anthropic" | "completion" | "response" | "google"
     pub base_url: String,
-    pub api_key: String,
+    pub api_key:  String,
     #[serde(default)]
-    pub headers: BTreeMap<String, String>,
+    pub headers:  BTreeMap<String, String>,
     #[serde(default)]
-    pub body: serde_json::Value,
+    pub body:     serde_json::Value,
     /// 可选模型清单；为空时按请求的 model id 动态合成 ModelConfig
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub models: Vec<ModelEntry>,
+    pub models:   Vec<ModelEntry>,
 }
 
 /// Model 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
-    pub id: String,
-    pub name: String,
-    pub context_len: usize,
-    pub supports_vision: bool,
+    pub id:                String,
+    pub name:              String,
+    pub context_len:       usize,
+    pub supports_vision:   bool,
     pub supports_thinking: bool,
     #[serde(default)]
-    pub headers: BTreeMap<String, String>,
+    pub headers:           BTreeMap<String, String>,
     #[serde(default)]
-    pub body: serde_json::Value,
+    pub body:              serde_json::Value,
 }
 
 impl ProviderConfig {
@@ -141,19 +142,25 @@ impl UniversalProvider {
 
         match self.config.api_type.as_str() {
             "anthropic" => {
-                self.stream_anthropic(messages, system_prompt, tools, model, tx).await?;
+                self.stream_anthropic(messages, system_prompt, tools, model, tx)
+                    .await?;
             }
             "completion" => {
-                self.stream_openai_completion(messages, system_prompt, tools, model, tx).await?;
+                self.stream_openai_completion(messages, system_prompt, tools, model, tx)
+                    .await?;
             }
             "response" => {
-                self.stream_responses(messages, system_prompt, tools, model, tx).await?;
+                self.stream_responses(messages, system_prompt, tools, model, tx)
+                    .await?;
             }
             "google" => {
-                self.stream_google(messages, system_prompt, tools, model, tx).await?;
+                self.stream_google(messages, system_prompt, tools, model, tx)
+                    .await?;
             }
             other => {
-                let _ = tx.send(ProviderStreamEvent::Error(format!("Unsupported api_type: {}", other))).await;
+                let _ = tx
+                    .send(ProviderStreamEvent::Error(format!("Unsupported api_type: {}", other)))
+                    .await;
             }
         }
 
@@ -216,7 +223,11 @@ impl UniversalProvider {
                             "input": input
                         }));
                     }
-                    Block::ToolResult { tool_use_id, content, is_error } => {
+                    Block::ToolResult {
+                        tool_use_id,
+                        content,
+                        is_error,
+                    } => {
                         content_blocks.push(serde_json::json!({
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
@@ -279,11 +290,20 @@ impl UniversalProvider {
             req = req.header(k, v);
         }
 
-        let resp = req.json(&body).send().await.context("Failed to send request to Anthropic")?;
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send request to Anthropic")?;
         if !resp.status().is_success() {
             let status = resp.status();
             let err_text = resp.text().await.unwrap_or_default();
-            let _ = tx.send(ProviderStreamEvent::Error(format!("Anthropic API error {}: {}", status, err_text))).await;
+            let _ = tx
+                .send(ProviderStreamEvent::Error(format!(
+                    "Anthropic API error {}: {}",
+                    status, err_text
+                )))
+                .await;
             return Ok(());
         }
 
@@ -321,10 +341,15 @@ impl UniversalProvider {
         for msg in messages {
             match msg.role {
                 Role::System => {
-                    let text = msg.content.iter().filter_map(|b| match b {
-                        Block::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    }).collect::<Vec<_>>().join("\n");
+                    let text = msg
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            Block::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     openai_messages.push(serde_json::json!({
                         "role": "system",
                         "content": text
@@ -364,10 +389,17 @@ impl UniversalProvider {
                 }
                 Role::User => {
                     // 若 User 消息全为 ToolResult，则解构为独立的 role: "tool" 消息
-                    let tool_results: Vec<&Block> = msg.content.iter().filter(|b| matches!(b, Block::ToolResult { .. })).collect();
+                    let tool_results: Vec<&Block> = msg
+                        .content
+                        .iter()
+                        .filter(|b| matches!(b, Block::ToolResult { .. }))
+                        .collect();
                     if !tool_results.is_empty() && tool_results.len() == msg.content.len() {
                         for b in tool_results {
-                            if let Block::ToolResult { tool_use_id, content, .. } = b {
+                            if let Block::ToolResult {
+                                tool_use_id, content, ..
+                            } = b
+                            {
                                 openai_messages.push(serde_json::json!({
                                     "role": "tool",
                                     "tool_call_id": tool_use_id,
@@ -376,10 +408,15 @@ impl UniversalProvider {
                             }
                         }
                     } else {
-                        let text = msg.content.iter().filter_map(|b| match b {
-                            Block::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        }).collect::<Vec<_>>().join("\n");
+                        let text = msg
+                            .content
+                            .iter()
+                            .filter_map(|b| match b {
+                                Block::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
                         openai_messages.push(serde_json::json!({
                             "role": "user",
                             "content": text
@@ -428,11 +465,20 @@ impl UniversalProvider {
             req = req.header(k, v);
         }
 
-        let resp = req.json(&body).send().await.context("Failed to send request to OpenAI/DeepSeek")?;
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send request to OpenAI/DeepSeek")?;
         if !resp.status().is_success() {
             let status = resp.status();
             let err_text = resp.text().await.unwrap_or_default();
-            let _ = tx.send(ProviderStreamEvent::Error(format!("API error {}: {}", status, err_text))).await;
+            let _ = tx
+                .send(ProviderStreamEvent::Error(format!(
+                    "API error {}: {}",
+                    status, err_text
+                )))
+                .await;
             return Ok(());
         }
 
@@ -469,10 +515,15 @@ impl UniversalProvider {
                 Role::Assistant => "model",
                 Role::System => continue,
             };
-            let text = msg.content.iter().filter_map(|b| match b {
-                Block::Text { text } => Some(text.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join("\n");
+            let text = msg
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
 
             contents.push(serde_json::json!({
                 "role": role,
@@ -497,7 +548,12 @@ impl UniversalProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let err_text = resp.text().await.unwrap_or_default();
-            let _ = tx.send(ProviderStreamEvent::Error(format!("Gemini API error {}: {}", status, err_text))).await;
+            let _ = tx
+                .send(ProviderStreamEvent::Error(format!(
+                    "Gemini API error {}: {}",
+                    status, err_text
+                )))
+                .await;
             return Ok(());
         }
 
@@ -529,10 +585,15 @@ impl UniversalProvider {
         for msg in messages {
             match msg.role {
                 Role::System => {
-                    let text = msg.content.iter().filter_map(|b| match b {
-                        Block::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    }).collect::<Vec<_>>().join("\n");
+                    let text = msg
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            Block::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     input.push(serde_json::json!({
                         "role": "system",
                         "content": [{ "type": "input_text", "text": text }]
@@ -563,10 +624,19 @@ impl UniversalProvider {
                     }
                 }
                 Role::User => {
-                    let tool_results: Vec<&Block> = msg.content.iter().filter(|b| matches!(b, Block::ToolResult { .. })).collect();
+                    let tool_results: Vec<&Block> = msg
+                        .content
+                        .iter()
+                        .filter(|b| matches!(b, Block::ToolResult { .. }))
+                        .collect();
                     if !tool_results.is_empty() && tool_results.len() == msg.content.len() {
                         for b in tool_results {
-                            if let Block::ToolResult { tool_use_id, content, is_error } = b {
+                            if let Block::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } = b
+                            {
                                 let output = if *is_error {
                                     serde_json::json!({ "error": content }).to_string()
                                 } else {
@@ -588,7 +658,10 @@ impl UniversalProvider {
                                     "text": text
                                 })),
                                 Block::Image { mime_type, data } => {
-                                    let data_url = if data.starts_with("http://") || data.starts_with("https://") || data.starts_with("data:") {
+                                    let data_url = if data.starts_with("http://")
+                                        || data.starts_with("https://")
+                                        || data.starts_with("data:")
+                                    {
                                         data.clone()
                                     } else {
                                         format!("data:{};base64,{}", mime_type, data)
@@ -650,11 +723,20 @@ impl UniversalProvider {
             req = req.header(k, v);
         }
 
-        let resp = req.json(&body).send().await.context("Failed to send request to Responses API")?;
+        let resp = req
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send request to Responses API")?;
         if !resp.status().is_success() {
             let status = resp.status();
             let err_text = resp.text().await.unwrap_or_default();
-            let _ = tx.send(ProviderStreamEvent::Error(format!("Responses API error {}: {}", status, err_text))).await;
+            let _ = tx
+                .send(ProviderStreamEvent::Error(format!(
+                    "Responses API error {}: {}",
+                    status, err_text
+                )))
+                .await;
             return Ok(());
         }
 
@@ -665,7 +747,6 @@ impl UniversalProvider {
         Ok(())
     }
 }
-
 
 // =========================================================================
 // SSE 解析器集合 (手写状态机)
@@ -720,19 +801,32 @@ where
             match event_type {
                 "message_start" => {
                     if let Some(usage) = val.get("message").and_then(|m| m.get("usage")) {
-                        let input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                        let _ = tx.send(ProviderStreamEvent::Usage {
-                            input_tokens,
-                            output_tokens: 0,
-                        }).await;
+                        let input_tokens = usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        let _ = tx
+                            .send(ProviderStreamEvent::Usage {
+                                input_tokens,
+                                output_tokens: 0,
+                            })
+                            .await;
                     }
                 }
                 "content_block_start" => {
                     if let Some(cb) = val.get("content_block") {
                         let block_type = cb.get("type").and_then(|v| v.as_str()).unwrap_or("");
                         if block_type == "tool_use" {
-                            current_tool_id = cb.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            current_tool_name = cb.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            current_tool_id = cb
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            current_tool_name = cb
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             current_tool_args.clear();
                         }
                     }
@@ -742,11 +836,15 @@ where
                         let delta_type = delta.get("type").and_then(|v| v.as_str()).unwrap_or("");
                         if delta_type == "text_delta" {
                             if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                                let _ = tx.send(ProviderStreamEvent::TextDelta(text.to_string())).await;
+                                let _ = tx
+                                    .send(ProviderStreamEvent::TextDelta(text.to_string()))
+                                    .await;
                             }
                         } else if delta_type == "thinking_delta" {
                             if let Some(th) = delta.get("thinking").and_then(|v| v.as_str()) {
-                                let _ = tx.send(ProviderStreamEvent::ThinkingDelta(th.to_string())).await;
+                                let _ = tx
+                                    .send(ProviderStreamEvent::ThinkingDelta(th.to_string()))
+                                    .await;
                             }
                         } else if delta_type == "input_json_delta" {
                             if let Some(partial) = delta.get("partial_json").and_then(|v| v.as_str()) {
@@ -764,27 +862,36 @@ where
                                 "_raw": current_tool_args
                             }),
                         };
-                        let _ = tx.send(ProviderStreamEvent::ToolCall {
-                            id: std::mem::take(&mut current_tool_id),
-                            name: std::mem::take(&mut current_tool_name),
-                            input: parsed_args,
-                        }).await;
+                        let _ = tx
+                            .send(ProviderStreamEvent::ToolCall {
+                                id:    std::mem::take(&mut current_tool_id),
+                                name:  std::mem::take(&mut current_tool_name),
+                                input: parsed_args,
+                            })
+                            .await;
                         current_tool_args.clear();
                     }
                 }
                 "message_delta" => {
                     if let Some(usage) = val.get("usage") {
-                        let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                        let _ = tx.send(ProviderStreamEvent::Usage {
-                            input_tokens: 0,
-                            output_tokens,
-                        }).await;
+                        let output_tokens = usage
+                            .get("output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        let _ = tx
+                            .send(ProviderStreamEvent::Usage {
+                                input_tokens: 0,
+                                output_tokens,
+                            })
+                            .await;
                     }
                 }
                 "message_stop" => {
-                    let _ = tx.send(ProviderStreamEvent::Done {
-                        stop_reason: StopReason::EndTurn,
-                    }).await;
+                    let _ = tx
+                        .send(ProviderStreamEvent::Done {
+                            stop_reason: StopReason::EndTurn,
+                        })
+                        .await;
                 }
                 _ => {}
             }
@@ -801,8 +908,8 @@ where
     let mut buffer = String::new();
 
     struct ToolCallAcc {
-        id: String,
-        name: String,
+        id:        String,
+        name:      String,
         arguments: String,
     }
     let mut tool_calls: BTreeMap<usize, ToolCallAcc> = BTreeMap::new();
@@ -824,7 +931,9 @@ where
 
             for line in message.lines() {
                 let line = line.trim();
-                let Some(data) = line.strip_prefix("data:") else { continue };
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
                 let data = data.trim();
 
                 if data == "[DONE]" {
@@ -837,13 +946,19 @@ where
                                 "_raw": tc.arguments
                             }),
                         };
-                        let _ = tx.send(ProviderStreamEvent::ToolCall {
-                            id: tc.id,
-                            name: tc.name,
-                            input: parsed,
-                        }).await;
+                        let _ = tx
+                            .send(ProviderStreamEvent::ToolCall {
+                                id:    tc.id,
+                                name:  tc.name,
+                                input: parsed,
+                            })
+                            .await;
                     }
-                    let _ = tx.send(ProviderStreamEvent::Done { stop_reason: StopReason::EndTurn }).await;
+                    let _ = tx
+                        .send(ProviderStreamEvent::Done {
+                            stop_reason: StopReason::EndTurn,
+                        })
+                        .await;
                     return;
                 }
 
@@ -854,9 +969,20 @@ where
 
                 // 统计 Usage
                 if let Some(usage) = val.get("usage") {
-                    let input_tokens = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    let output_tokens = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    let _ = tx.send(ProviderStreamEvent::Usage { input_tokens, output_tokens }).await;
+                    let input_tokens = usage
+                        .get("prompt_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    let output_tokens = usage
+                        .get("completion_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    let _ = tx
+                        .send(ProviderStreamEvent::Usage {
+                            input_tokens,
+                            output_tokens,
+                        })
+                        .await;
                 }
 
                 if let Some(choice) = val.get("choices").and_then(|c| c.get(0)) {
@@ -864,14 +990,18 @@ where
                         // 1. 深度求索思维链 reasoning_content
                         if let Some(thinking) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
                             if !thinking.is_empty() {
-                                let _ = tx.send(ProviderStreamEvent::ThinkingDelta(thinking.to_string())).await;
+                                let _ = tx
+                                    .send(ProviderStreamEvent::ThinkingDelta(thinking.to_string()))
+                                    .await;
                             }
                         }
 
                         // 2. 普通文本内容 content
                         if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
                             if !text.is_empty() {
-                                let _ = tx.send(ProviderStreamEvent::TextDelta(text.to_string())).await;
+                                let _ = tx
+                                    .send(ProviderStreamEvent::TextDelta(text.to_string()))
+                                    .await;
                             }
                         }
 
@@ -880,8 +1010,8 @@ where
                             for tc_item in tc_array {
                                 let idx = tc_item.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                                 let entry = tool_calls.entry(idx).or_insert_with(|| ToolCallAcc {
-                                    id: String::new(),
-                                    name: String::new(),
+                                    id:        String::new(),
+                                    name:      String::new(),
                                     arguments: String::new(),
                                 });
 
@@ -916,11 +1046,13 @@ where
                                     "_raw": tc.arguments
                                 }),
                             };
-                            let _ = tx.send(ProviderStreamEvent::ToolCall {
-                                id: tc.id,
-                                name: tc.name,
-                                input: parsed,
-                            }).await;
+                            let _ = tx
+                                .send(ProviderStreamEvent::ToolCall {
+                                    id:    tc.id,
+                                    name:  tc.name,
+                                    input: parsed,
+                                })
+                                .await;
                         }
 
                         let _ = tx.send(ProviderStreamEvent::Done { stop_reason }).await;
@@ -960,7 +1092,9 @@ where
 
             for line in message.lines() {
                 let line = line.trim();
-                let Some(data) = line.strip_prefix("data:") else { continue };
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
                 let data = data.trim();
 
                 let val: serde_json::Value = match serde_json::from_str(data) {
@@ -973,20 +1107,37 @@ where
                     // 文本增量
                     "response.output_text.delta" => {
                         if let Some(text) = val.get("delta").and_then(|v| v.as_str()) {
-                            let _ = tx.send(ProviderStreamEvent::TextDelta(text.to_string())).await;
+                            let _ = tx
+                                .send(ProviderStreamEvent::TextDelta(text.to_string()))
+                                .await;
                         }
                     }
                     // 思维链摘要增量
                     "response.reasoning_summary_text.delta" => {
                         if let Some(th) = val.get("delta").and_then(|v| v.as_str()) {
-                            let _ = tx.send(ProviderStreamEvent::ThinkingDelta(th.to_string())).await;
+                            let _ = tx
+                                .send(ProviderStreamEvent::ThinkingDelta(th.to_string()))
+                                .await;
                         }
                     }
                     // function_call 输出项开始（携带完整 call_id 与 name）
                     "response.output_item.added" => {
-                        if val.get("item").and_then(|i| i.get("type")).and_then(|v| v.as_str()) == Some("function_call") {
-                            let call_id = val.pointer("/item/call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let name = val.pointer("/item/name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        if val
+                            .get("item")
+                            .and_then(|i| i.get("type"))
+                            .and_then(|v| v.as_str())
+                            == Some("function_call")
+                        {
+                            let call_id = val
+                                .pointer("/item/call_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let name = val
+                                .pointer("/item/name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             current_call = Some((call_id, name, String::new()));
                         }
                     }
@@ -1002,7 +1153,11 @@ where
                     "response.function_call_arguments.done" => {
                         if let Some((call_id, name, args)) = current_call.take() {
                             // done 事件若携带完整 arguments 则以服务端值为准
-                            let final_args = val.get("arguments").and_then(|v| v.as_str()).unwrap_or(&args).to_string();
+                            let final_args = val
+                                .get("arguments")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(&args)
+                                .to_string();
                             let parsed = match serde_json::from_str(&final_args) {
                                 Ok(v) => v,
                                 Err(e) => serde_json::json!({
@@ -1010,22 +1165,36 @@ where
                                     "_raw": final_args
                                 }),
                             };
-                            let _ = tx.send(ProviderStreamEvent::ToolCall {
-                                id: call_id,
-                                name,
-                                input: parsed,
-                            }).await;
+                            let _ = tx
+                                .send(ProviderStreamEvent::ToolCall {
+                                    id: call_id,
+                                    name,
+                                    input: parsed,
+                                })
+                                .await;
                         }
                     }
                     // 整个响应完成（含 usage 与 output 数组）
                     "response.completed" => {
                         saw_done = true;
                         if let Some(usage) = val.pointer("/response/usage") {
-                            let input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                            let output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                            let _ = tx.send(ProviderStreamEvent::Usage { input_tokens, output_tokens }).await;
+                            let input_tokens = usage
+                                .get("input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize;
+                            let output_tokens = usage
+                                .get("output_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize;
+                            let _ = tx
+                                .send(ProviderStreamEvent::Usage {
+                                    input_tokens,
+                                    output_tokens,
+                                })
+                                .await;
                         }
-                        let stop_reason = val.pointer("/response/incomplete_details/reason")
+                        let stop_reason = val
+                            .pointer("/response/incomplete_details/reason")
                             .and_then(|v| v.as_str())
                             .map(|r| match r {
                                 "max_output_tokens" => StopReason::MaxTokens,
@@ -1036,7 +1205,8 @@ where
                     }
                     // 服务端错误事件
                     "response.failed" | "error" => {
-                        let msg = val.pointer("/response/error/message")
+                        let msg = val
+                            .pointer("/response/error/message")
                             .or_else(|| val.get("message"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown Responses API error")
@@ -1051,7 +1221,11 @@ where
 
     // 流中断且未收到 completed：强制收尾，避免调用方悬挂等待
     if !saw_done {
-        let _ = tx.send(ProviderStreamEvent::Done { stop_reason: StopReason::EndTurn }).await;
+        let _ = tx
+            .send(ProviderStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+            })
+            .await;
     }
 }
 
@@ -1079,7 +1253,9 @@ where
             buffer = buffer[pos + 2..].to_string();
 
             for line in message.lines() {
-                let Some(data) = line.strip_prefix("data:") else { continue };
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
                 let val: serde_json::Value = match serde_json::from_str(data.trim()) {
                     Ok(v) => v,
                     Err(_) => continue,
@@ -1087,10 +1263,16 @@ where
 
                 if let Some(candidates) = val.get("candidates").and_then(|v| v.as_array()) {
                     for cand in candidates {
-                        if let Some(parts) = cand.get("content").and_then(|c| c.get("parts")).and_then(|p| p.as_array()) {
+                        if let Some(parts) = cand
+                            .get("content")
+                            .and_then(|c| c.get("parts"))
+                            .and_then(|p| p.as_array())
+                        {
                             for part in parts {
                                 if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                                    let _ = tx.send(ProviderStreamEvent::TextDelta(text.to_string())).await;
+                                    let _ = tx
+                                        .send(ProviderStreamEvent::TextDelta(text.to_string()))
+                                        .await;
                                 }
                             }
                         }
@@ -1098,15 +1280,30 @@ where
                 }
 
                 if let Some(usage) = val.get("usageMetadata") {
-                    let input_tokens = usage.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    let output_tokens = usage.get("candidatesTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    let _ = tx.send(ProviderStreamEvent::Usage { input_tokens, output_tokens }).await;
+                    let input_tokens = usage
+                        .get("promptTokenCount")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    let output_tokens = usage
+                        .get("candidatesTokenCount")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    let _ = tx
+                        .send(ProviderStreamEvent::Usage {
+                            input_tokens,
+                            output_tokens,
+                        })
+                        .await;
                 }
             }
         }
     }
 
-    let _ = tx.send(ProviderStreamEvent::Done { stop_reason: StopReason::EndTurn }).await;
+    let _ = tx
+        .send(ProviderStreamEvent::Done {
+            stop_reason: StopReason::EndTurn,
+        })
+        .await;
 }
 
 #[cfg(test)]
@@ -1162,25 +1359,41 @@ data: [DONE]\n\n";
         assert_eq!(events[0], ProviderStreamEvent::ThinkingDelta("I think...".into()));
         assert_eq!(events[1], ProviderStreamEvent::TextDelta("Hello ".into()));
         assert_eq!(events[2], ProviderStreamEvent::TextDelta("world!".into()));
-        assert_eq!(events[3], ProviderStreamEvent::ToolCall {
-            id: "call_1".into(),
-            name: "read".into(),
-            input: serde_json::json!({ "path": "src/lib.rs" }),
-        });
-        assert_eq!(events[4], ProviderStreamEvent::Done { stop_reason: StopReason::EndTurn });
+        assert_eq!(
+            events[3],
+            ProviderStreamEvent::ToolCall {
+                id:    "call_1".into(),
+                name:  "read".into(),
+                input: serde_json::json!({ "path": "src/lib.rs" }),
+            }
+        );
+        assert_eq!(
+            events[4],
+            ProviderStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+            }
+        );
     }
 
     #[tokio::test]
     async fn test_parse_responses_sse_stream() {
         let sse_data = concat!(
-            r#"data: {"type":"response.reasoning_summary_text.delta","delta":"thinking hard"}"#, "\n\n",
-            r#"data: {"type":"response.output_text.delta","delta":"Hello "}"#, "\n\n",
-            r#"data: {"type":"response.output_text.delta","delta":"world"}"#, "\n\n",
-            r#"data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_9","name":"shell"}}"#, "\n\n",
-            r#"data: {"type":"response.function_call_arguments.delta","delta":"{\"cmd\":"}"#, "\n\n",
-            r#"data: {"type":"response.function_call_arguments.delta","delta":"\"ls\"}"}"#, "\n\n",
-            r#"data: {"type":"response.function_call_arguments.done","arguments":"{\"cmd\":\"ls -la\"}"}"#, "\n\n",
-            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":42},"incomplete_details":null}}"#, "\n\n",
+            r#"data: {"type":"response.reasoning_summary_text.delta","delta":"thinking hard"}"#,
+            "\n\n",
+            r#"data: {"type":"response.output_text.delta","delta":"Hello "}"#,
+            "\n\n",
+            r#"data: {"type":"response.output_text.delta","delta":"world"}"#,
+            "\n\n",
+            r#"data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_9","name":"shell"}}"#,
+            "\n\n",
+            r#"data: {"type":"response.function_call_arguments.delta","delta":"{\"cmd\":"}"#,
+            "\n\n",
+            r#"data: {"type":"response.function_call_arguments.delta","delta":"\"ls\"}"}"#,
+            "\n\n",
+            r#"data: {"type":"response.function_call_arguments.done","arguments":"{\"cmd\":\"ls -la\"}"}"#,
+            "\n\n",
+            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":100,"output_tokens":42},"incomplete_details":null}}"#,
+            "\n\n",
         );
 
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
@@ -1198,41 +1411,80 @@ data: [DONE]\n\n";
         assert_eq!(events[0], ProviderStreamEvent::ThinkingDelta("thinking hard".into()));
         assert_eq!(events[1], ProviderStreamEvent::TextDelta("Hello ".into()));
         assert_eq!(events[2], ProviderStreamEvent::TextDelta("world".into()));
-        assert_eq!(events[3], ProviderStreamEvent::ToolCall {
-            id: "call_9".into(),
-            name: "shell".into(),
-            input: serde_json::json!({ "cmd": "ls -la" }),
-        });
-        assert_eq!(events[4], ProviderStreamEvent::Usage { input_tokens: 100, output_tokens: 42 });
-        assert_eq!(events[5], ProviderStreamEvent::Done { stop_reason: StopReason::EndTurn });
+        assert_eq!(
+            events[3],
+            ProviderStreamEvent::ToolCall {
+                id:    "call_9".into(),
+                name:  "shell".into(),
+                input: serde_json::json!({ "cmd": "ls -la" }),
+            }
+        );
+        assert_eq!(
+            events[4],
+            ProviderStreamEvent::Usage {
+                input_tokens:  100,
+                output_tokens: 42,
+            }
+        );
+        assert_eq!(
+            events[5],
+            ProviderStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+            }
+        );
     }
 
     #[tokio::test]
     async fn test_parse_responses_sse_incomplete_and_error() {
         // max_output_tokens 不完整结束 → MaxTokens
         let sse_max = concat!(
-            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":5},"incomplete_details":{"reason":"max_output_tokens"}}}"#, "\n\n",
+            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":5},"incomplete_details":{"reason":"max_output_tokens"}}}"#,
+            "\n\n",
         );
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_max))]);
         let (tx, mut rx) = mpsc::channel(4);
         parse_responses_sse(stream, tx).await;
         let mut ev = rx.recv().await.unwrap();
-        assert_eq!(ev, ProviderStreamEvent::Usage { input_tokens: 1, output_tokens: 5 });
+        assert_eq!(
+            ev,
+            ProviderStreamEvent::Usage {
+                input_tokens:  1,
+                output_tokens: 5,
+            }
+        );
         ev = rx.recv().await.unwrap();
-        assert_eq!(ev, ProviderStreamEvent::Done { stop_reason: StopReason::MaxTokens });
+        assert_eq!(
+            ev,
+            ProviderStreamEvent::Done {
+                stop_reason: StopReason::MaxTokens,
+            }
+        );
         assert!(rx.recv().await.is_none());
 
         // response.failed → Error 事件
         let sse_fail = concat!(
-            r#"data: {"type":"response.failed","response":{"error":{"message":"boom"}}}"#, "\n\n",
-            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":0,"output_tokens":0},"incomplete_details":null}}"#, "\n\n",
+            r#"data: {"type":"response.failed","response":{"error":{"message":"boom"}}}"#,
+            "\n\n",
+            r#"data: {"type":"response.completed","response":{"usage":{"input_tokens":0,"output_tokens":0},"incomplete_details":null}}"#,
+            "\n\n",
         );
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_fail))]);
         let (tx, mut rx) = mpsc::channel(4);
         parse_responses_sse(stream, tx).await;
         assert_eq!(rx.recv().await.unwrap(), ProviderStreamEvent::Error("boom".into()));
         // response.failed → Error 事件，随后的 completed 事件先带 Usage 再收尾
-        assert_eq!(rx.recv().await.unwrap(), ProviderStreamEvent::Usage { input_tokens: 0, output_tokens: 0 });
-        assert_eq!(rx.recv().await.unwrap(), ProviderStreamEvent::Done { stop_reason: StopReason::EndTurn });
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ProviderStreamEvent::Usage {
+                input_tokens:  0,
+                output_tokens: 0,
+            }
+        );
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            ProviderStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+            }
+        );
     }
 }

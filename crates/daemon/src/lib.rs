@@ -1,21 +1,28 @@
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
+
 use anyhow::Result;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{delete, get};
-use axum::Router;
+use axum::{
+    Router,
+    extract::{
+        Path as AxumPath, Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Json, Response},
+    routing::{delete, get},
+};
 use futures_util::{SinkExt, StreamExt};
 use oma_config::{AgentLoader, OmaConfig};
 use oma_contract::{AgentEvent, ApprovalMode, ChatMessage, ClientMessage, Ready, ServerMessage};
 use oma_mcp::McpManager;
 use oma_runtime::{RoomSubagentRunner, SessionRoom};
 use oma_storage::{SessionRecord, StorageManager};
-use oma_tool::{resolve_path, ToolRegistry};
+use oma_tool::{ToolRegistry, resolve_path};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
@@ -52,12 +59,13 @@ pub fn resolve_or_create_token(custom_token: Option<&str>, base_dir: &Path) -> R
 /// 服务端全局共享状态
 #[derive(Clone)]
 pub struct DaemonState {
-    pub token: String,
-    pub storage: StorageManager,
-    pub config: Arc<OmaConfig>,
-    pub mcp: Arc<McpManager>,
-    pub rooms: Arc<RwLock<HashMap<String, Arc<SessionRoom>>>>,
-    pub start_time: Instant,
+    pub token:       String,
+    pub storage:     StorageManager,
+    pub config:      Arc<RwLock<OmaConfig>>,
+    pub config_path: PathBuf,
+    pub mcp:         Arc<McpManager>,
+    pub rooms:       Arc<RwLock<HashMap<String, Arc<SessionRoom>>>>,
+    pub start_time:  Instant,
 }
 
 impl DaemonState {
@@ -65,12 +73,14 @@ impl DaemonState {
         token: String,
         storage: StorageManager,
         config: OmaConfig,
+        config_path: PathBuf,
         mcp: Arc<McpManager>,
     ) -> Self {
         Self {
             token,
             storage,
-            config: Arc::new(config),
+            config: Arc::new(RwLock::new(config)),
+            config_path,
             mcp,
             rooms: Arc::new(RwLock::new(HashMap::new())),
             start_time: Instant::now(),
@@ -78,26 +88,30 @@ impl DaemonState {
     }
 
     /// 获取或惰性加载指定 SessionRoom
-    pub async fn get_or_create_room(
-        &self,
-        session_id: &str,
-        workspace: &str,
-    ) -> Result<Arc<SessionRoom>> {
+    pub async fn get_or_create_room(&self, session_id: &str, workspace: &str) -> Result<Arc<SessionRoom>> {
         if let Some(r) = self.rooms.read().get(session_id) {
             return Ok(r.clone());
         }
 
         let mut record = self.storage.get_session(session_id).await?;
         if record.is_none() {
+            let (default_model, default_agent, default_approval) = {
+                let cfg = self.config.read();
+                (
+                    cfg.default_model.clone(),
+                    cfg.default_agent.clone(),
+                    cfg.default_approval_mode,
+                )
+            };
             let new_rec = self
                 .storage
                 .create_session(
                     session_id,
                     workspace,
                     "New Session",
-                    &self.config.default_model,
-                    &self.config.default_agent,
-                    self.config.default_approval_mode,
+                    &default_model,
+                    &default_agent,
+                    default_approval,
                 )
                 .await?;
             record = Some(new_rec);
@@ -115,7 +129,7 @@ impl DaemonState {
             session_id,
             workspace,
             self.storage.clone(),
-            (*self.config).clone(),
+            self.config.clone(),
             reg.clone(),
             self.mcp.clone(),
             &record.active_model,
@@ -132,7 +146,9 @@ impl DaemonState {
             reg.register(mcp_tool);
         }
 
-        self.rooms.write().insert(session_id.to_string(), room.clone());
+        self.rooms
+            .write()
+            .insert(session_id.to_string(), room.clone());
         Ok(room)
     }
 }
@@ -162,9 +178,9 @@ fn check_auth(headers: &HeaderMap, query_token: Option<&str>, expected_token: &s
 
 #[derive(Serialize)]
 struct ServerStatus {
-    version: &'static str,
+    version:         &'static str,
     active_sessions: usize,
-    uptime_secs: u64,
+    uptime_secs:     u64,
 }
 
 #[derive(Deserialize)]
@@ -182,16 +198,16 @@ async fn handle_server_status(
     }
 
     Ok(Json(ServerStatus {
-        version: "0.1.0",
+        version:         "0.1.0",
         active_sessions: state.rooms.read().len(),
-        uptime_secs: state.start_time.elapsed().as_secs(),
+        uptime_secs:     state.start_time.elapsed().as_secs(),
     }))
 }
 
 #[derive(Deserialize)]
 struct ListSessionsQuery {
     workspace: Option<String>,
-    token: Option<String>,
+    token:     Option<String>,
 }
 
 async fn handle_list_sessions(
@@ -203,7 +219,11 @@ async fn handle_list_sessions(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    match state.storage.list_sessions(query.workspace.as_deref()).await {
+    match state
+        .storage
+        .list_sessions(query.workspace.as_deref())
+        .await
+    {
         Ok(list) => Ok(Json(list)),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
@@ -211,17 +231,17 @@ async fn handle_list_sessions(
 
 #[derive(Deserialize)]
 struct CreateSessionReq {
-    workspace: String,
-    title: Option<String>,
-    model: Option<String>,
-    agent: Option<String>,
+    workspace:     String,
+    title:         Option<String>,
+    model:         Option<String>,
+    agent:         Option<String>,
     approval_mode: Option<ApprovalMode>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct CreateSessionResp {
     session_id: String,
-    session: SessionRecord,
+    session:    SessionRecord,
 }
 
 async fn handle_create_session(
@@ -236,9 +256,15 @@ async fn handle_create_session(
 
     let session_id = format!("sess_{}", uuid::Uuid::new_v4().simple());
     let title = payload.title.unwrap_or_else(|| "New Session".into());
-    let model = payload.model.unwrap_or_else(|| state.config.default_model.clone());
-    let agent = payload.agent.unwrap_or_else(|| state.config.default_agent.clone());
-    let approval_mode = payload.approval_mode.unwrap_or(state.config.default_approval_mode);
+    let model = payload
+        .model
+        .unwrap_or_else(|| state.config.read().default_model.clone());
+    let agent = payload
+        .agent
+        .unwrap_or_else(|| state.config.read().default_agent.clone());
+    let approval_mode = payload
+        .approval_mode
+        .unwrap_or(state.config.read().default_approval_mode);
 
     match state
         .storage
@@ -273,7 +299,7 @@ async fn handle_delete_session(
 #[derive(Deserialize)]
 struct GetMessagesQuery {
     leaf_id: Option<String>,
-    token: Option<String>,
+    token:   Option<String>,
 }
 
 async fn handle_get_messages(
@@ -286,7 +312,11 @@ async fn handle_get_messages(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    match state.storage.get_linear_messages(&session_id, query.leaf_id.as_deref()).await {
+    match state
+        .storage
+        .get_linear_messages(&session_id, query.leaf_id.as_deref())
+        .await
+    {
         Ok(msgs) => Ok(Json(msgs)),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
@@ -295,14 +325,14 @@ async fn handle_get_messages(
 #[derive(Deserialize)]
 struct WorkspaceTreeQuery {
     workspace: String,
-    token: Option<String>,
+    token:     Option<String>,
 }
 
 #[derive(Serialize)]
 struct FileNode {
-    name: String,
-    path: String,
-    is_dir: bool,
+    name:     String,
+    path:     String,
+    is_dir:   bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     children: Vec<FileNode>,
 }
@@ -322,8 +352,15 @@ async fn handle_workspace_tree(
     }
 
     fn build_tree(path: &Path, rel_root: &Path, max_depth: usize) -> FileNode {
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let rel_path = path.strip_prefix(rel_root).unwrap_or(path).to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let rel_path = path
+            .strip_prefix(rel_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
         let is_dir = path.is_dir();
 
         let mut children = Vec::new();
@@ -331,7 +368,10 @@ async fn handle_workspace_tree(
             if let Ok(entries) = std::fs::read_dir(path) {
                 for entry in entries.flatten() {
                     let p = entry.path();
-                    let f_name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let f_name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
                     if f_name.starts_with('.') || f_name == "target" || f_name == "node_modules" {
                         continue;
                     }
@@ -356,8 +396,8 @@ async fn handle_workspace_tree(
 #[derive(Deserialize)]
 struct WorkspaceFileQuery {
     workspace: String,
-    path: String,
-    token: Option<String>,
+    path:      String,
+    token:     Option<String>,
 }
 
 async fn handle_workspace_file(
@@ -378,6 +418,80 @@ async fn handle_workspace_file(
         Ok(c) => Ok(Json(serde_json::json!({ "content": c }))),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+// =========================================================================
+// 系统配置 REST API (/api/config)
+// =========================================================================
+/// 脱敏占位符：GET 下发时替换真实密钥；PUT 回传同值时保留服务端旧密钥
+const API_KEY_MASK: &str = "***";
+
+fn mask_config(config: &OmaConfig) -> serde_json::Value {
+    let mut v = serde_json::to_value(config).unwrap_or(serde_json::Value::Null);
+    if let Some(providers) = v.get_mut("providers").and_then(|p| p.as_object_mut()) {
+        for (_, pv) in providers.iter_mut() {
+            let masked = pv
+                .get("api_key")
+                .and_then(|k| k.as_str())
+                .map(|s| !s.is_empty() && !s.starts_with("env:"))
+                .unwrap_or(false);
+            if masked {
+                pv["api_key"] = serde_json::Value::String(API_KEY_MASK.to_string());
+            }
+        }
+    }
+    v
+}
+
+async fn handle_get_config(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !check_auth(&headers, query.token.as_deref(), &state.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    Ok(Json(mask_config(&state.config.read())))
+}
+
+async fn handle_put_config(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !check_auth(&headers, query.token.as_deref(), &state.token) {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid token".into()));
+    }
+
+    let mut cfg: OmaConfig = serde_json::from_value(payload)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid config payload: {e}")))?;
+
+    // 掩码回传的 api_key 沿用服务端既有值，避免前端未编辑密钥时被清空
+    {
+        let current = state.config.read();
+        for (name, provider) in cfg.providers.iter_mut() {
+            if provider.api_key == API_KEY_MASK {
+                provider.api_key = current
+                    .providers
+                    .get(name)
+                    .map(|old| old.api_key.clone())
+                    .unwrap_or_default();
+            }
+        }
+    }
+
+    cfg.save_to_file(&state.config_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to persist config: {e}"),
+        )
+    })?;
+    *state.config.write() = cfg.clone();
+    state.mcp.sync_servers(&cfg.mcp_servers);
+
+    Ok(Json(serde_json::json!({ "success": true })))
 }
 
 // =========================================================================
@@ -415,7 +529,9 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
             let err = ServerMessage::Error {
                 message: "Expected ClientMessage::Connect as first packet".into(),
             };
-            let _ = socket.send(Message::text(serde_json::to_string(&err).unwrap())).await;
+            let _ = socket
+                .send(Message::text(serde_json::to_string(&err).unwrap()))
+                .await;
             return;
         }
     };
@@ -426,19 +542,24 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     };
 
     // 2. 挂载或创建 Room
-    let room = match state.get_or_create_room(&params.session_id, &params.workspace).await {
+    let room = match state
+        .get_or_create_room(&params.session_id, &params.workspace)
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             let err = ServerMessage::Error {
                 message: format!("Failed to access session room: {}", e),
             };
-            let _ = socket.send(Message::text(serde_json::to_string(&err).unwrap())).await;
+            let _ = socket
+                .send(Message::text(serde_json::to_string(&err).unwrap()))
+                .await;
             return;
         }
     };
 
     // 3. 发送 Ready 握手确认（providers 携带配置的真实模型清单）
-    let providers_map = state.config.model_catalog();
+    let providers_map = state.config.read().model_catalog();
 
     let agents = AgentLoader::list_agents(&room.workspace);
 
@@ -454,17 +575,22 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         agents,
     };
 
-    let _ = socket.send(Message::text(serde_json::to_string(&ServerMessage::Ready { ready }).unwrap())).await;
+    let _ = socket
+        .send(Message::text(
+            serde_json::to_string(&ServerMessage::Ready { ready }).unwrap(),
+        ))
+        .await;
 
     // 4. 若后台正处于活跃 Turn，发送追赶快照 ActiveTurnCatchUp
     if let Some(catch_up) = room.get_catch_up() {
-        let _ = socket.send(Message::text(
-            serde_json::to_string(&ServerMessage::Event {
-                event: AgentEvent::ActiveTurnCatchUp(catch_up),
-            })
-            .unwrap(),
-        ))
-        .await;
+        let _ = socket
+            .send(Message::text(
+                serde_json::to_string(&ServerMessage::Event {
+                    event: AgentEvent::ActiveTurnCatchUp(catch_up),
+                })
+                .unwrap(),
+            ))
+            .await;
     }
 
     // 5. 双向管道拆分
@@ -496,13 +622,18 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
                 if let Ok(c_msg) = parsed {
                     match c_msg {
                         ClientMessage::Command { command } => {
-                            room_clone.submit_command(&client_id, &client_name, client_type, command).await;
+                            room_clone
+                                .submit_command(&client_id, &client_name, client_type, command)
+                                .await;
                         }
                         ClientMessage::Approval { response } => {
-                            room_clone.arbiter.resolve(&response.request_id, response.decision).await;
+                            room_clone
+                                .arbiter
+                                .resolve(&response.request_id, response.decision)
+                                .await;
                             room_clone.broadcast(AgentEvent::PermissionResolved {
-                                request_id: response.request_id,
-                                decision: response.decision,
+                                request_id:  response.request_id,
+                                decision:    response.decision,
                                 resolved_by: client_name.clone(),
                             });
                         }
@@ -532,6 +663,7 @@ pub fn create_router(state: DaemonState) -> Router {
         .route("/api/sessions/{id}/messages", get(handle_get_messages))
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
+        .route("/api/config", get(handle_get_config).put(handle_put_config))
         .route("/ws", get(handle_ws_upgrade));
 
     let dist_path = Path::new("web/dist");
@@ -556,7 +688,7 @@ mod tests {
         let mcp = Arc::new(McpManager::new());
         let token = "test_secret_token".to_string();
 
-        let state = DaemonState::new(token.clone(), storage, config, mcp);
+        let state = DaemonState::new(token.clone(), storage, config, tmp.path().join("config.toml"), mcp);
         let app = create_router(state);
 
         // 使用 tokio 监听随机端口测试服务
@@ -607,6 +739,67 @@ mod tests {
         assert_eq!(resp_list.status(), StatusCode::OK);
         let list_data: Vec<SessionRecord> = resp_list.json().await?;
         assert_eq!(list_data.len(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_config_api_mask_and_preserve_key() -> Result<()> {
+        use oma_config::ProviderConfig;
+
+        let tmp = tempfile::tempdir()?;
+        let storage = StorageManager::new(tmp.path()).await?;
+        let mut config = OmaConfig::default();
+        config.providers.insert(
+            "p1".into(),
+            ProviderConfig {
+                api_type: "completion".into(),
+                base_url: "https://api.example.com/v1".into(),
+                api_key:  "sk-secret-123".into(),
+                headers:  Default::default(),
+                body:     serde_json::json!({}),
+                models:   vec![],
+            },
+        );
+        let config_file = tmp.path().join("config.toml");
+        let mcp = Arc::new(McpManager::new());
+        let token = "test_secret_token".to_string();
+
+        let state = DaemonState::new(token.clone(), storage, config, config_file.clone(), mcp);
+        let app = create_router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let auth = format!("Bearer {}", token);
+
+        // 1. GET 下发时密钥被脱敏
+        let got: serde_json::Value = client
+            .get(format!("http://{}/api/config", addr))
+            .header("Authorization", &auth)
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(got["providers"]["p1"]["api_key"], "***");
+
+        // 2. PUT 回传掩码：沿用旧密钥并落库
+        let mut payload = got.clone();
+        payload["default_model"] = serde_json::json!("p1/gpt-x");
+        let put_resp = client
+            .put(format!("http://{}/api/config", addr))
+            .header("Authorization", &auth)
+            .json(&payload)
+            .send()
+            .await?;
+        assert_eq!(put_resp.status(), StatusCode::OK);
+
+        let reloaded = OmaConfig::load_from_file(&config_file)?;
+        assert_eq!(reloaded.default_model, "p1/gpt-x");
+        assert_eq!(reloaded.providers["p1"].api_key, "sk-secret-123");
 
         Ok(())
     }

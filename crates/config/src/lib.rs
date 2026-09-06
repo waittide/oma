@@ -1,9 +1,13 @@
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+
 use anyhow::{Context, Result};
 use oma_contract::{AgentSummary, ApprovalMode, ModelInfo};
 use oma_mcp::McpServerConfig;
-use oma_provider::{ModelConfig, ProviderConfig};
+use oma_provider::ModelConfig;
+pub use oma_provider::{ModelEntry, ProviderConfig};
 use serde::{Deserialize, Serialize};
 
 /// 默认监听地址
@@ -32,17 +36,17 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OmaConfig {
     #[serde(default = "default_model_str")]
-    pub default_model: String,
+    pub default_model:         String,
     #[serde(default = "default_agent_str")]
-    pub default_agent: String,
+    pub default_agent:         String,
     #[serde(default)]
     pub default_approval_mode: ApprovalMode,
     #[serde(default)]
-    pub server: ServerConfig,
+    pub server:                ServerConfig,
     #[serde(default)]
-    pub providers: BTreeMap<String, ProviderConfig>,
+    pub providers:             BTreeMap<String, ProviderConfig>,
     #[serde(default)]
-    pub mcp_servers: BTreeMap<String, McpServerConfig>,
+    pub mcp_servers:           BTreeMap<String, McpServerConfig>,
 }
 
 fn default_model_str() -> String {
@@ -55,12 +59,12 @@ fn default_agent_str() -> String {
 impl Default for OmaConfig {
     fn default() -> Self {
         Self {
-            default_model: default_model_str(),
-            default_agent: default_agent_str(),
+            default_model:         default_model_str(),
+            default_agent:         default_agent_str(),
             default_approval_mode: ApprovalMode::Normal,
-            server: ServerConfig::default(),
-            providers: BTreeMap::new(),
-            mcp_servers: BTreeMap::new(),
+            server:                ServerConfig::default(),
+            providers:             BTreeMap::new(),
+            mcp_servers:           BTreeMap::new(),
         }
     }
 }
@@ -73,10 +77,14 @@ impl OmaConfig {
         Ok(config)
     }
 
+    /// 配置文件标准路径 (~/.config/oma/config.toml)
+    pub fn config_path() -> Option<PathBuf> {
+        dirs_config_dir().map(|d| d.join("oma").join("config.toml"))
+    }
+
     /// 自动从标准路径加载配置（若不存在则返回默认配置）
     pub fn load_or_default() -> Self {
-        if let Some(config_dir) = dirs_config_dir() {
-            let path = config_dir.join("oma").join("config.toml");
+        if let Some(path) = Self::config_path() {
             if path.exists() {
                 if let Ok(cfg) = Self::load_from_file(&path) {
                     return cfg;
@@ -84,6 +92,18 @@ impl OmaConfig {
             }
         }
         Self::default()
+    }
+
+    /// 序列化并回写配置文件（前端配置修改后的持久化入口）
+    pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config dir {}", parent.display()))?;
+        }
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
+        std::fs::write(path, content).with_context(|| format!("Failed to write config {}", path.display()))?;
+        Ok(())
     }
 
     /// 根据 "provider/model" 字符串定位 Provider 与 Model 配置
@@ -100,22 +120,26 @@ impl OmaConfig {
             .iter()
             .find(|m| m.id == model_id)
             .map(|m| ModelConfig {
-                id: m.id.clone(),
-                name: if m.name.is_empty() { m.id.clone() } else { m.name.clone() },
-                context_len: m.context_len,
-                supports_vision: m.supports_vision,
+                id:                m.id.clone(),
+                name:              if m.name.is_empty() {
+                    m.id.clone()
+                } else {
+                    m.name.clone()
+                },
+                context_len:       m.context_len,
+                supports_vision:   m.supports_vision,
                 supports_thinking: m.supports_thinking,
-                headers: BTreeMap::new(),
-                body: serde_json::json!({}),
+                headers:           BTreeMap::new(),
+                body:              serde_json::json!({}),
             })
             .unwrap_or_else(|| ModelConfig {
-                id: model_id.to_string(),
-                name: model_id.to_string(),
-                context_len: 128_000,
-                supports_vision: true,
+                id:                model_id.to_string(),
+                name:              model_id.to_string(),
+                context_len:       128_000,
+                supports_vision:   true,
                 supports_thinking: true,
-                headers: BTreeMap::new(),
-                body: serde_json::json!({}),
+                headers:           BTreeMap::new(),
+                body:              serde_json::json!({}),
             });
         Some((provider, model_cfg))
     }
@@ -129,10 +153,14 @@ impl OmaConfig {
                     .models
                     .iter()
                     .map(|m| ModelInfo {
-                        id: m.id.clone(),
-                        name: if m.name.is_empty() { m.id.clone() } else { m.name.clone() },
-                        context_len: m.context_len,
-                        supports_vision: m.supports_vision,
+                        id:                m.id.clone(),
+                        name:              if m.name.is_empty() {
+                            m.id.clone()
+                        } else {
+                            m.name.clone()
+                        },
+                        context_len:       m.context_len,
+                        supports_vision:   m.supports_vision,
                         supports_thinking: m.supports_thinking,
                     })
                     .collect::<Vec<_>>();
@@ -162,22 +190,22 @@ pub const TEMPLATE_BUILD: &str = include_str!("templates/build.md");
 /// 解析后的 Agent 模板定义
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTemplate {
-    pub id: String,
-    pub name: String,
-    pub description: String,
+    pub id:                 String,
+    pub name:               String,
+    pub description:        String,
     #[serde(default)]
-    pub tools: Vec<String>,
+    pub tools:              Vec<String>,
     pub system_prompt_body: String,
 }
 
 /// Agent Frontmatter 头部结构
 #[derive(Debug, Deserialize)]
 struct Frontmatter {
-    name: String,
+    name:        String,
     #[serde(default)]
     description: String,
     #[serde(default)]
-    tools: Vec<String>,
+    tools:       Vec<String>,
 }
 
 /// 解析 Markdown 的 Frontmatter 与正文
@@ -192,20 +220,20 @@ pub fn parse_markdown_template(id: &str, raw: &str) -> Result<AgentTemplate> {
                 .with_context(|| format!("Failed to parse YAML frontmatter for agent {}", id))?;
 
             return Ok(AgentTemplate {
-                id: id.to_string(),
-                name: fm.name,
-                description: fm.description,
-                tools: fm.tools,
+                id:                 id.to_string(),
+                name:               fm.name,
+                description:        fm.description,
+                tools:              fm.tools,
                 system_prompt_body: body.to_string(),
             });
         }
     }
 
     Ok(AgentTemplate {
-        id: id.to_string(),
-        name: id.to_string(),
-        description: format!("Agent {}", id),
-        tools: Vec::new(),
+        id:                 id.to_string(),
+        name:               id.to_string(),
+        description:        format!("Agent {}", id),
+        tools:              Vec::new(),
         system_prompt_body: raw.to_string(),
     })
 }
@@ -217,7 +245,10 @@ impl AgentLoader {
     /// 加载指定 Agent 模板（项目目录 > 全局用户目录 > 二进制内嵌）
     pub fn load_agent(agent_id: &str, workspace: &Path) -> Result<AgentTemplate> {
         // 1. 项目级覆盖: <workspace>/.oma/agents/<agent_id>.md
-        let project_path = workspace.join(".oma").join("agents").join(format!("{}.md", agent_id));
+        let project_path = workspace
+            .join(".oma")
+            .join("agents")
+            .join(format!("{}.md", agent_id));
         if project_path.exists() {
             if let Ok(raw) = std::fs::read_to_string(&project_path) {
                 return parse_markdown_template(agent_id, &raw);
@@ -226,7 +257,10 @@ impl AgentLoader {
 
         // 2. 用户全局配置: ~/.config/oma/agents/<agent_id>.md
         if let Some(config_dir) = dirs_config_dir() {
-            let user_path = config_dir.join("oma").join("agents").join(format!("{}.md", agent_id));
+            let user_path = config_dir
+                .join("oma")
+                .join("agents")
+                .join(format!("{}.md", agent_id));
             if user_path.exists() {
                 if let Ok(raw) = std::fs::read_to_string(&user_path) {
                     return parse_markdown_template(agent_id, &raw);
@@ -255,8 +289,8 @@ impl AgentLoader {
         for id in default_ids {
             if let Ok(tmpl) = Self::load_agent(id, workspace) {
                 list.push(AgentSummary {
-                    id: tmpl.id,
-                    name: tmpl.name,
+                    id:          tmpl.id,
+                    name:        tmpl.name,
                     description: tmpl.description,
                 });
             }
@@ -266,11 +300,7 @@ impl AgentLoader {
     }
 
     /// 动态拼装注入实时环境块的最终 System Prompt
-    pub fn build_system_prompt(
-        template: &AgentTemplate,
-        workspace: &Path,
-        active_model: &str,
-    ) -> String {
+    pub fn build_system_prompt(template: &AgentTemplate, workspace: &Path, active_model: &str) -> String {
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
@@ -376,5 +406,34 @@ api_key = "k"
         assert_eq!(catalog["p1"][0].id, "m1");
         assert_eq!(catalog["p1"][0].context_len, 1_048_576);
         assert!(catalog["p2"].is_empty());
+    }
+
+    #[test]
+    fn test_save_and_reload_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("oma").join("config.toml");
+
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            "deepseek".into(),
+            ProviderConfig {
+                api_type: "completion".into(),
+                base_url: "https://api.deepseek.com/v1".into(),
+                api_key:  "env:DEEPSEEK_KEY".into(),
+                headers:  BTreeMap::new(),
+                body:     serde_json::json!({}),
+                models:   Vec::new(),
+            },
+        );
+        let cfg = OmaConfig {
+            default_model: "deepseek/deepseek-chat".into(),
+            providers,
+            ..OmaConfig::default()
+        };
+        cfg.save_to_file(&path).unwrap();
+
+        let reloaded = OmaConfig::load_from_file(&path).unwrap();
+        assert_eq!(reloaded.default_model, "deepseek/deepseek-chat");
+        assert!(reloaded.providers.contains_key("deepseek"));
     }
 }

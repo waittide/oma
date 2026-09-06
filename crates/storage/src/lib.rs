@@ -1,28 +1,31 @@
 use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 use oma_contract::{ApprovalMode, Block, ChatMessage, Role};
 use serde::{Deserialize, Serialize};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{Row, SqlitePool};
+use sqlx::{
+    Row, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+};
 
 /// 全局索引会话记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
-    pub session_id: String,
-    pub workspace: String,
-    pub title: String,
-    pub active_model: String,
-    pub active_agent: String,
-    pub approval_mode: ApprovalMode,
+    pub session_id:      String,
+    pub workspace:       String,
+    pub title:           String,
+    pub active_model:    String,
+    pub active_agent:    String,
+    pub approval_mode:   ApprovalMode,
     pub current_leaf_id: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
+    pub created_at:      i64,
+    pub updated_at:      i64,
 }
 
 /// 双层 SQLite 存储引擎管理器
 #[derive(Clone)]
 pub struct StorageManager {
-    base_dir: PathBuf,
+    base_dir:   PathBuf,
     index_pool: SqlitePool,
 }
 
@@ -69,10 +72,7 @@ impl StorageManager {
         .await
         .context("Failed to initialize sessions_index table")?;
 
-        Ok(Self {
-            base_dir,
-            index_pool,
-        })
+        Ok(Self { base_dir, index_pool })
     }
 
     pub fn base_dir(&self) -> &Path {
@@ -339,8 +339,8 @@ impl StorageManager {
         output_tokens: usize,
     ) -> Result<()> {
         let pool = self.get_session_pool(session_id).await?;
-        let blocks_json = serde_json::to_string(&message.content)
-            .context("Failed to serialize message content blocks")?;
+        let blocks_json =
+            serde_json::to_string(&message.content).context("Failed to serialize message content blocks")?;
 
         sqlx::query(
             r#"
@@ -397,11 +397,7 @@ impl StorageManager {
     }
 
     /// 获取激活分支的线性消息链（从 root 到指定/当前 leaf_id）
-    pub async fn get_linear_messages(
-        &self,
-        session_id: &str,
-        leaf_id: Option<&str>,
-    ) -> Result<Vec<ChatMessage>> {
+    pub async fn get_linear_messages(&self, session_id: &str, leaf_id: Option<&str>) -> Result<Vec<ChatMessage>> {
         let pool = self.get_session_pool(session_id).await?;
         let target_leaf = if let Some(lid) = leaf_id {
             Some(lid.to_string())
@@ -427,7 +423,7 @@ impl StorageManager {
             let id: String = r.get("id");
             let parent_id: Option<String> = r.get("parent_id");
             let role_str: String = r.get("role");
-            let role = Role::from_str(&role_str).unwrap_or(Role::User);
+            let role = Role::parse(&role_str).unwrap_or(Role::User);
             let blocks_json: String = r.get("blocks_json");
             let blocks: Vec<Block> = serde_json::from_str(&blocks_json).unwrap_or_default();
             let created_at: i64 = r.get("created_at");
@@ -460,16 +456,17 @@ impl StorageManager {
     /// 获取全部消息（用于构建完整树状视图）
     pub async fn get_all_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>> {
         let pool = self.get_session_pool(session_id).await?;
-        let rows = sqlx::query("SELECT id, parent_id, role, blocks_json, created_at FROM messages ORDER BY created_at ASC")
-            .fetch_all(&pool)
-            .await?;
+        let rows =
+            sqlx::query("SELECT id, parent_id, role, blocks_json, created_at FROM messages ORDER BY created_at ASC")
+                .fetch_all(&pool)
+                .await?;
 
         let mut msgs = Vec::with_capacity(rows.len());
         for r in rows {
             let id: String = r.get("id");
             let parent_id: Option<String> = r.get("parent_id");
             let role_str: String = r.get("role");
-            let role = Role::from_str(&role_str).unwrap_or(Role::User);
+            let role = Role::parse(&role_str).unwrap_or(Role::User);
             let blocks_json: String = r.get("blocks_json");
             let blocks: Vec<Block> = serde_json::from_str(&blocks_json).unwrap_or_default();
             let created_at: i64 = r.get("created_at");
@@ -496,7 +493,14 @@ mod tests {
 
         // 1. 创建会话
         let s1 = storage
-            .create_session("s_1", "/workspace/test", "Test Session", "claude-3-7", "task", ApprovalMode::Normal)
+            .create_session(
+                "s_1",
+                "/workspace/test",
+                "Test Session",
+                "claude-3-7",
+                "task",
+                ApprovalMode::Normal,
+            )
             .await?;
         assert_eq!(s1.session_id, "s_1");
 
@@ -507,20 +511,22 @@ mod tests {
 
         // 3. 追加消息 m1 (User)
         let m1 = ChatMessage {
-            id: "m_1".into(),
-            parent_id: None,
-            role: Role::User,
-            content: vec![Block::Text { text: "Hello".into() }],
+            id:         "m_1".into(),
+            parent_id:  None,
+            role:       Role::User,
+            content:    vec![Block::Text { text: "Hello".into() }],
             created_at: 1000,
         };
         storage.append_message("s_1", &m1, 10, 0).await?;
 
         // 4. 追加消息 m2 (Assistant)
         let m2 = ChatMessage {
-            id: "m_2".into(),
-            parent_id: Some("m_1".into()),
-            role: Role::Assistant,
-            content: vec![Block::Text { text: "Hi there".into() }],
+            id:         "m_2".into(),
+            parent_id:  Some("m_1".into()),
+            role:       Role::Assistant,
+            content:    vec![Block::Text {
+                text: "Hi there".into(),
+            }],
             created_at: 2000,
         };
         storage.append_message("s_1", &m2, 0, 15).await?;
@@ -533,10 +539,12 @@ mod tests {
 
         // 6. 分叉：从 m_1 分叉产生 m_3
         let m3 = ChatMessage {
-            id: "m_3".into(),
-            parent_id: Some("m_1".into()),
-            role: Role::Assistant,
-            content: vec![Block::Text { text: "Alternative branch".into() }],
+            id:         "m_3".into(),
+            parent_id:  Some("m_1".into()),
+            role:       Role::Assistant,
+            content:    vec![Block::Text {
+                text: "Alternative branch".into(),
+            }],
             created_at: 3000,
         };
         storage.append_message("s_1", &m3, 0, 20).await?;

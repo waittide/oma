@@ -1351,7 +1351,6 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
- "oma-client",
  "oma-config",
  "oma-contract",
  "oma-daemon",
@@ -1369,16 +1368,6 @@ dependencies = [
 [[package]]
 name = "oma-client"
 version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures-util",
- "oma-contract",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.26.2",
-]
 
 [[package]]
 name = "oma-config"
@@ -1428,7 +1417,6 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
@@ -1501,7 +1489,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -1510,7 +1497,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "dunce",
  "libc",
  "oma-contract",
  "serde",
@@ -1518,21 +1504,11 @@ dependencies = [
  "similar",
  "tempfile",
  "tokio",
- "tokio-util",
- "uuid",
 ]
 
 [[package]]
 name = "oma-tui"
 version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "libc",
- "oma-client",
- "oma-contract",
- "tokio",
-]
 
 [[package]]
 name = "once_cell"

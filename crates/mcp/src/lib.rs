@@ -1,29 +1,36 @@
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
 use anyhow::{Context, Result};
 use oma_contract::ToolOutput;
 use oma_tool::Tool;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::{Child, ChildStdin, ChildStdout, Command},
+    sync::Mutex,
+};
 
 /// MCP 服务器配置定义
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpServerConfig {
     Local {
         command: String,
         #[serde(default)]
-        args: Vec<String>,
+        args:    Vec<String>,
         #[serde(default)]
-        env: BTreeMap<String, String>,
+        env:     BTreeMap<String, String>,
     },
     Remote {
-        url: String,
+        url:     String,
         #[serde(default)]
         headers: BTreeMap<String, String>,
     },
@@ -33,19 +40,19 @@ pub enum McpServerConfig {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
-    pub id: u64,
-    pub method: String,
+    pub id:      u64,
+    pub method:  String,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
-    pub params: serde_json::Value,
+    pub params:  serde_json::Value,
 }
 
 /// JSON-RPC 通知
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonRpcNotification {
     pub jsonrpc: String,
-    pub method: String,
+    pub method:  String,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
-    pub params: serde_json::Value,
+    pub params:  serde_json::Value,
 }
 
 /// JSON-RPC 响应
@@ -53,36 +60,36 @@ pub struct JsonRpcNotification {
 pub struct JsonRpcResponse {
     pub jsonrpc: String,
     #[serde(default)]
-    pub id: Option<serde_json::Value>,
+    pub id:      Option<serde_json::Value>,
     #[serde(default)]
-    pub result: Option<serde_json::Value>,
+    pub result:  Option<serde_json::Value>,
     #[serde(default)]
-    pub error: Option<serde_json::Value>,
+    pub error:   Option<serde_json::Value>,
 }
 
 /// MCP 导出的工具元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolInfo {
-    pub name: String,
+    pub name:         String,
     #[serde(default)]
-    pub description: Option<String>,
+    pub description:  Option<String>,
     #[serde(rename = "inputSchema", default)]
     pub input_schema: serde_json::Value,
 }
 
 /// 本地 Stdio 客户端连接
 struct LocalMcpProcess {
-    stdin: ChildStdin,
+    stdin:  ChildStdin,
     reader: BufReader<ChildStdout>,
     _child: Child,
 }
 
 /// 单个 MCP 客户端连接抽象
 pub struct McpClient {
-    name: String,
-    config: McpServerConfig,
+    name:        String,
+    config:      McpServerConfig,
     req_counter: AtomicU64,
-    local_proc: Mutex<Option<LocalMcpProcess>>,
+    local_proc:  Mutex<Option<LocalMcpProcess>>,
     tools_cache: RwLock<Vec<McpToolInfo>>,
     http_client: reqwest::Client,
 }
@@ -113,8 +120,11 @@ impl McpClient {
                     cmd.stdin(std::process::Stdio::piped());
                     cmd.stdout(std::process::Stdio::piped());
                     cmd.stderr(std::process::Stdio::null());
+                    cmd.kill_on_drop(true);
 
-                    let mut child = cmd.spawn().with_context(|| format!("Failed to spawn local MCP server '{}'", self.name))?;
+                    let mut child = cmd
+                        .spawn()
+                        .with_context(|| format!("Failed to spawn local MCP server '{}'", self.name))?;
                     let stdin = child.stdin.take().context("Failed to take stdin")?;
                     let stdout = child.stdout.take().context("Failed to take stdout")?;
                     let reader = BufReader::new(stdout);
@@ -132,9 +142,9 @@ impl McpClient {
                 let init_id = self.req_counter.fetch_add(1, Ordering::SeqCst);
                 let init_req = JsonRpcRequest {
                     jsonrpc: "2.0".into(),
-                    id: init_id,
-                    method: "initialize".into(),
-                    params: serde_json::json!({
+                    id:      init_id,
+                    method:  "initialize".into(),
+                    params:  serde_json::json!({
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
                         "clientInfo": { "name": "oma", "version": "0.1.0" }
@@ -151,8 +161,8 @@ impl McpClient {
                 // 2. 发送 initialized 通知
                 let notif = JsonRpcNotification {
                     jsonrpc: "2.0".into(),
-                    method: "notifications/initialized".into(),
-                    params: serde_json::json!({}),
+                    method:  "notifications/initialized".into(),
+                    params:  serde_json::json!({}),
                 };
                 let mut notif_line = serde_json::to_string(&notif)?;
                 notif_line.push('\n');
@@ -163,9 +173,9 @@ impl McpClient {
                 let list_id = self.req_counter.fetch_add(1, Ordering::SeqCst);
                 let list_req = JsonRpcRequest {
                     jsonrpc: "2.0".into(),
-                    id: list_id,
-                    method: "tools/list".into(),
-                    params: serde_json::json!({}),
+                    id:      list_id,
+                    method:  "tools/list".into(),
+                    params:  serde_json::json!({}),
                 };
                 let mut list_line = serde_json::to_string(&list_req)?;
                 list_line.push('\n');
@@ -192,19 +202,26 @@ impl McpClient {
             }
             McpServerConfig::Remote { url, headers } => {
                 // Remote HTTP/SSE 工具发现（请求 GET /tools 或 POST rpc）
-                let mut req = self.http_client.post(url).header("content-type", "application/json");
+                let mut req = self
+                    .http_client
+                    .post(url)
+                    .header("content-type", "application/json");
                 for (k, v) in headers {
                     req = req.header(k, v);
                 }
 
                 let list_req = JsonRpcRequest {
                     jsonrpc: "2.0".into(),
-                    id: 1,
-                    method: "tools/list".into(),
-                    params: serde_json::json!({}),
+                    id:      1,
+                    method:  "tools/list".into(),
+                    params:  serde_json::json!({}),
                 };
 
-                let resp = req.json(&list_req).send().await.context("Failed to connect to remote MCP server")?;
+                let resp = req
+                    .json(&list_req)
+                    .send()
+                    .await
+                    .context("Failed to connect to remote MCP server")?;
                 let list_resp: JsonRpcResponse = resp.json().await?;
 
                 let tools = if let Some(res) = list_resp.result {
@@ -235,9 +252,9 @@ impl McpClient {
                 let call_id = self.req_counter.fetch_add(1, Ordering::SeqCst);
                 let call_req = JsonRpcRequest {
                     jsonrpc: "2.0".into(),
-                    id: call_id,
-                    method: "tools/call".into(),
-                    params: serde_json::json!({
+                    id:      call_id,
+                    method:  "tools/call".into(),
+                    params:  serde_json::json!({
                         "name": tool_name,
                         "arguments": arguments
                     }),
@@ -271,7 +288,10 @@ impl McpClient {
                 }
 
                 if let Some(res) = resp.result {
-                    let is_error = res.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let is_error = res
+                        .get("isError")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     let text = if let Some(contents) = res.get("content").and_then(|v| v.as_array()) {
                         contents
                             .iter()
@@ -291,16 +311,19 @@ impl McpClient {
                 }
             }
             McpServerConfig::Remote { url, headers } => {
-                let mut req = self.http_client.post(url).header("content-type", "application/json");
+                let mut req = self
+                    .http_client
+                    .post(url)
+                    .header("content-type", "application/json");
                 for (k, v) in headers {
                     req = req.header(k, v);
                 }
 
                 let call_req = JsonRpcRequest {
                     jsonrpc: "2.0".into(),
-                    id: 1,
-                    method: "tools/call".into(),
-                    params: serde_json::json!({
+                    id:      1,
+                    method:  "tools/call".into(),
+                    params:  serde_json::json!({
                         "name": tool_name,
                         "arguments": arguments
                     }),
@@ -321,7 +344,10 @@ impl McpClient {
                 }
 
                 if let Some(res) = rpc_resp.result {
-                    let is_error = res.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let is_error = res
+                        .get("isError")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     let text = if let Some(contents) = res.get("content").and_then(|v| v.as_array()) {
                         contents
                             .iter()
@@ -346,11 +372,11 @@ impl McpClient {
 
 /// 将 MCP 工具包装为 `oma_tool::Tool` 的适配器
 pub struct McpToolWrapper {
-    namespaced_name: String,
+    namespaced_name:    String,
     original_tool_name: String,
-    description: String,
-    input_schema: serde_json::Value,
-    client: Arc<McpClient>,
+    description:        String,
+    input_schema:       serde_json::Value,
+    client:             Arc<McpClient>,
 }
 
 #[async_trait::async_trait]
@@ -390,6 +416,29 @@ impl McpManager {
         self.clients.write().insert(name, client);
     }
 
+    /// 以期望配置全集为准同步客户端集合：新增/变更的替换，删除的移除（本地子进程随 Arc 释放被 kill）
+    pub fn sync_servers(&self, desired: &BTreeMap<String, McpServerConfig>) {
+        let mut clients = self.clients.write();
+        clients.retain(|name, client| match desired.get(name) {
+            Some(cfg) => &client.config != cfg,
+            None => false,
+        });
+        for (name, cfg) in desired {
+            if !clients.contains_key(name) {
+                clients.insert(name.clone(), Arc::new(McpClient::new(name.clone(), cfg.clone())));
+            }
+        }
+    }
+
+    /// 当前注册的服务器配置清单
+    pub fn server_configs(&self) -> BTreeMap<String, McpServerConfig> {
+        self.clients
+            .read()
+            .iter()
+            .map(|(n, c)| (n.clone(), c.config.clone()))
+            .collect()
+    }
+
     /// 发现并获取所有 MCP 服务器的包装工具集
     pub async fn create_all_tools(&self) -> Vec<Arc<dyn Tool>> {
         let clients: Vec<Arc<McpClient>> = self.clients.read().values().cloned().collect();
@@ -424,8 +473,8 @@ mod tests {
     fn test_mcp_config_serde() {
         let local = McpServerConfig::Local {
             command: "uvx".into(),
-            args: vec!["mcp-server".into()],
-            env: BTreeMap::new(),
+            args:    vec!["mcp-server".into()],
+            env:     BTreeMap::new(),
         };
         let json = serde_json::to_string(&local).unwrap();
         assert!(json.contains("\"type\":\"local\""));
@@ -438,24 +487,24 @@ mod tests {
     fn test_json_rpc_messages() {
         let req = JsonRpcRequest {
             jsonrpc: "2.0".into(),
-            id: 1,
-            method: "tools/list".into(),
-            params: serde_json::json!({}),
+            id:      1,
+            method:  "tools/list".into(),
+            params:  serde_json::json!({}),
         };
         let s = serde_json::to_string(&req).unwrap();
         assert!(s.contains("\"method\":\"tools/list\""));
 
         let resp = JsonRpcResponse {
             jsonrpc: "2.0".into(),
-            id: Some(serde_json::json!(1)),
-            result: Some(serde_json::json!({
+            id:      Some(serde_json::json!(1)),
+            result:  Some(serde_json::json!({
                 "tools": [{
                     "name": "calc",
                     "description": "Calculate expression",
                     "inputSchema": { "type": "object" }
                 }]
             })),
-            error: None,
+            error:   None,
         };
         let resp_s = serde_json::to_string(&resp).unwrap();
         let de: JsonRpcResponse = serde_json::from_str(&resp_s).unwrap();

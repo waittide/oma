@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// 角色模型
@@ -19,7 +20,7 @@ impl Role {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "system" => Some(Role::System),
             "user" => Some(Role::User),
@@ -41,27 +42,27 @@ pub enum Block {
     },
     Image {
         mime_type: String,
-        data: String, // Base64 或 session_attachment:// 资源 URI
+        data:      String, // Base64 或 session_attachment:// 资源 URI
     },
     ToolUse {
-        id: String,
-        name: String,
+        id:    String,
+        name:  String,
         input: serde_json::Value,
     },
     ToolResult {
         tool_use_id: String,
-        content: String,
-        is_error: bool,
+        content:     String,
+        is_error:    bool,
     },
 }
 
 /// 树状聊天消息
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub role: Role,
-    pub content: Vec<Block>,
+    pub id:         String,
+    pub parent_id:  Option<String>,
+    pub role:       Role,
+    pub content:    Vec<Block>,
     pub created_at: i64,
 }
 
@@ -78,12 +79,12 @@ pub enum ClientType {
 /// WebSocket 握手参数
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectParams {
-    pub client_id: String,
-    pub workspace: String,
-    pub session_id: String,
+    pub client_id:   String,
+    pub workspace:   String,
+    pub session_id:  String,
     pub client_type: ClientType,
     pub client_name: String,
-    pub version: String,
+    pub version:     String,
 }
 
 /// 审批决策
@@ -109,7 +110,7 @@ pub enum ApprovalMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalResponse {
     pub request_id: String,
-    pub decision: ApprovalDecision,
+    pub decision:   ApprovalDecision,
 }
 
 /// 客户端发向 Agent 的指令
@@ -117,7 +118,7 @@ pub struct ApprovalResponse {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum AgentCommand {
     UserInput {
-        content: String,
+        content:     String,
         #[serde(default)]
         attachments: Vec<String>,
     },
@@ -132,7 +133,7 @@ pub enum AgentCommand {
     },
     ForkAndRun {
         parent_message_id: String,
-        new_content: Option<String>,
+        new_content:       Option<String>,
     },
     SwitchBranch {
         leaf_message_id: String,
@@ -159,33 +160,33 @@ pub enum ClientMessage {
 /// 模型元数据
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
-    pub id: String,
-    pub name: String,
-    pub context_len: usize,
-    pub supports_vision: bool,
+    pub id:                String,
+    pub name:              String,
+    pub context_len:       usize,
+    pub supports_vision:   bool,
     pub supports_thinking: bool,
 }
 
 /// Agent 模板元数据
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSummary {
-    pub id: String,
-    pub name: String,
+    pub id:          String,
+    pub name:        String,
     pub description: String,
 }
 
 /// 握手成功就绪载荷
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ready {
-    pub version: String,
-    pub session_id: String,
-    pub workspace: String,
-    pub active_model: String,
-    pub active_agent: String,
-    pub approval_mode: ApprovalMode,
+    pub version:         String,
+    pub session_id:      String,
+    pub workspace:       String,
+    pub active_model:    String,
+    pub active_agent:    String,
+    pub approval_mode:   ApprovalMode,
     pub current_leaf_id: Option<String>,
-    pub providers: BTreeMap<String, Vec<ModelInfo>>,
-    pub agents: Vec<AgentSummary>,
+    pub providers:       BTreeMap<String, Vec<ModelInfo>>,
+    pub agents:          Vec<AgentSummary>,
 }
 
 /// 结束原因
@@ -202,16 +203,16 @@ pub enum StopReason {
 /// Token 消耗统计
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
-    pub input_tokens: usize,
+    pub input_tokens:  usize,
     pub output_tokens: usize,
 }
 
 /// 工具调用发起数据
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallStartedData {
-    pub call_id: String,
-    pub name: String,
-    pub input: serde_json::Value,
+    pub call_id:     String,
+    pub name:        String,
+    pub input:       serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_id: Option<String>,
 }
@@ -220,20 +221,20 @@ pub struct ToolCallStartedData {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRequestedData {
     pub request_id: String,
-    pub name: String,
-    pub summary: String,
+    pub name:       String,
+    pub summary:    String,
 }
 
 /// 活跃轮次重连追赶快照
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActiveTurnCatchUp {
-    pub turn_id: String,
+    pub turn_id:              String,
     pub accumulated_thinking: String,
-    pub accumulated_text: String,
+    pub accumulated_text:     String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_tool_call: Option<ToolCallStartedData>,
+    pub active_tool_call:     Option<ToolCallStartedData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_approval: Option<PermissionRequestedData>,
+    pub pending_approval:     Option<PermissionRequestedData>,
 }
 
 /// Agent 运行事件集
@@ -241,48 +242,48 @@ pub struct ActiveTurnCatchUp {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum AgentEvent {
     TurnStarted {
-        turn_id: String,
+        turn_id:     String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_id: Option<String>,
     },
     TurnFinished {
-        turn_id: String,
+        turn_id:     String,
         stop_reason: StopReason,
-        usage: TokenUsage,
+        usage:       TokenUsage,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_id: Option<String>,
     },
     UserMessage {
-        client_id: String,
+        client_id:   String,
         client_name: String,
         client_type: ClientType,
-        content: String,
-        queued: bool,
+        content:     String,
+        queued:      bool,
     },
     QueueCleared {},
     ThinkingDelta {
-        delta: String,
+        delta:       String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_id: Option<String>,
     },
     TextDelta {
-        delta: String,
+        delta:       String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_id: Option<String>,
     },
     ToolCallStarted(ToolCallStartedData),
     ToolCallFinished {
-        call_id: String,
-        name: String,
-        output: String,
-        is_error: bool,
+        call_id:     String,
+        name:        String,
+        output:      String,
+        is_error:    bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent_id: Option<String>,
     },
     PermissionRequested(PermissionRequestedData),
     PermissionResolved {
-        request_id: String,
-        decision: ApprovalDecision,
+        request_id:  String,
+        decision:    ApprovalDecision,
         resolved_by: String,
     },
     ActiveBranchChanged {
@@ -315,21 +316,21 @@ pub enum ServerMessage {
 /// 工具输出结果统一结构
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolOutput {
-    pub output: String,
+    pub output:   String,
     pub is_error: bool,
 }
 
 impl ToolOutput {
     pub fn success(output: impl Into<String>) -> Self {
         Self {
-            output: output.into(),
+            output:   output.into(),
             is_error: false,
         }
     }
 
     pub fn error(output: impl Into<String>) -> Self {
         Self {
-            output: output.into(),
+            output:   output.into(),
             is_error: true,
         }
     }
@@ -343,12 +344,12 @@ mod tests {
     fn test_client_message_serde() {
         let msg = ClientMessage::Connect {
             params: ConnectParams {
-                client_id: "c1".into(),
-                workspace: "/tmp".into(),
-                session_id: "s1".into(),
+                client_id:   "c1".into(),
+                workspace:   "/tmp".into(),
+                session_id:  "s1".into(),
                 client_type: ClientType::Web,
                 client_name: "Chrome".into(),
-                version: "1.0".into(),
+                version:     "1.0".into(),
             },
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -359,9 +360,9 @@ mod tests {
     #[test]
     fn test_agent_event_serde() {
         let event = AgentEvent::ToolCallStarted(ToolCallStartedData {
-            call_id: "call_1".into(),
-            name: "read".into(),
-            input: serde_json::json!({ "path": "src/lib.rs" }),
+            call_id:     "call_1".into(),
+            name:        "read".into(),
+            input:       serde_json::json!({ "path": "src/lib.rs" }),
             subagent_id: Some("sub_1".into()),
         });
         let json = serde_json::to_string(&event).unwrap();
@@ -372,14 +373,14 @@ mod tests {
     #[test]
     fn test_server_message_catch_up() {
         let catch_up = ActiveTurnCatchUp {
-            turn_id: "t1".into(),
+            turn_id:              "t1".into(),
             accumulated_thinking: "thinking...".into(),
-            accumulated_text: "hello".into(),
-            active_tool_call: None,
-            pending_approval: Some(PermissionRequestedData {
+            accumulated_text:     "hello".into(),
+            active_tool_call:     None,
+            pending_approval:     Some(PermissionRequestedData {
                 request_id: "req_1".into(),
-                name: "shell".into(),
-                summary: "cargo test".into(),
+                name:       "shell".into(),
+                summary:    "cargo test".into(),
             }),
         };
         let server_msg = ServerMessage::Event {
