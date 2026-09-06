@@ -777,6 +777,7 @@ where
     let mut current_tool_id = String::new();
     let mut current_tool_name = String::new();
     let mut current_tool_args = String::new();
+    let mut end_stop_reason = StopReason::EndTurn;
 
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
@@ -888,6 +889,13 @@ where
                     }
                 }
                 "message_delta" => {
+                    if let Some(sr) = val.pointer("/delta/stop_reason").and_then(|v| v.as_str()) {
+                        end_stop_reason = match sr {
+                            "tool_use" => StopReason::ToolUse,
+                            "max_tokens" => StopReason::MaxTokens,
+                            _ => StopReason::EndTurn,
+                        };
+                    }
                     if let Some(usage) = val.get("usage") {
                         let output_tokens = usage
                             .get("output_tokens")
@@ -904,7 +912,7 @@ where
                 "message_stop" => {
                     let _ = tx
                         .send(ProviderStreamEvent::Done {
-                            stop_reason: StopReason::EndTurn,
+                            stop_reason: end_stop_reason,
                         })
                         .await;
                 }
@@ -928,6 +936,7 @@ where
         arguments: String,
     }
     let mut tool_calls: BTreeMap<usize, ToolCallAcc> = BTreeMap::new();
+    let mut done_sent = false;
 
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
@@ -950,30 +959,36 @@ where
                     continue;
                 };
                 let data = data.trim();
-
                 if data == "[DONE]" {
-                    // 推送所有累积的工具调用
-                    for (_, tc) in std::mem::take(&mut tool_calls) {
-                        let parsed = match serde_json::from_str(&tc.arguments) {
-                            Ok(v) => v,
-                            Err(e) => serde_json::json!({
-                                "_parse_error": e.to_string(),
-                                "_raw": tc.arguments
-                            }),
-                        };
+                    // finish_reason 分片已发出 Done 时不得再次覆盖 stop_reason
+                    if !done_sent {
+                        let has_tools = !tool_calls.is_empty();
+                        for (_, tc) in std::mem::take(&mut tool_calls) {
+                            let parsed = match serde_json::from_str(&tc.arguments) {
+                                Ok(v) => v,
+                                Err(e) => serde_json::json!({
+                                    "_parse_error": e.to_string(),
+                                    "_raw": tc.arguments
+                                }),
+                            };
+                            let _ = tx
+                                .send(ProviderStreamEvent::ToolCall {
+                                    id:    tc.id,
+                                    name:  tc.name,
+                                    input: parsed,
+                                })
+                                .await;
+                        }
                         let _ = tx
-                            .send(ProviderStreamEvent::ToolCall {
-                                id:    tc.id,
-                                name:  tc.name,
-                                input: parsed,
+                            .send(ProviderStreamEvent::Done {
+                                stop_reason: if has_tools {
+                                    StopReason::ToolUse
+                                } else {
+                                    StopReason::EndTurn
+                                },
                             })
                             .await;
                     }
-                    let _ = tx
-                        .send(ProviderStreamEvent::Done {
-                            stop_reason: StopReason::EndTurn,
-                        })
-                        .await;
                     return;
                 }
 
@@ -1070,6 +1085,7 @@ where
                                 .await;
                         }
 
+                        done_sent = true;
                         let _ = tx.send(ProviderStreamEvent::Done { stop_reason }).await;
                     }
                 }
@@ -1408,12 +1424,42 @@ data: [DONE]\n\n";
                 input: serde_json::json!({ "path": "src/lib.rs" }),
             }
         );
+        // 累积的工具调用随收尾下发；存在未消费的 tool_calls 时 stop_reason 必须为 ToolUse，
+        // 否则 Agent Loop 会跳过工具执行
         assert_eq!(
             events[4],
             ProviderStreamEvent::Done {
-                stop_reason: StopReason::EndTurn,
+                stop_reason: StopReason::ToolUse,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_parse_openai_sse_done_does_not_override_finish_reason() {
+        // 服务端先推 finish_reason: tool_calls，再推 [DONE]：只允许一次 Done，且不得被覆盖为 EndTurn
+        let sse_data = concat!(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{}"}}]}}]}"#,
+            "\n\n",
+            r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
+        let (tx, mut rx) = mpsc::channel(10);
+        tokio::spawn(async move { parse_openai_sse(stream, tx).await });
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            events.push(ev);
+        }
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[1],
+            ProviderStreamEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            }
+        ));
     }
 
     #[tokio::test]
