@@ -56,7 +56,7 @@ async function handleFileClick(node: FileNode) {
     <div v-if="selectedFile" class="file-preview">
       <div class="file-preview-header">
         <span class="path">{{ selectedFile }}</span>
-        <button title="关闭预览" @click="selectedFile = null"><Fa6Xmark /></button>
+        <button v-tip="'关闭预览'" @click="selectedFile = null"><Fa6Xmark /></button>
       </div>
       <pre>{{ fileContent }}</pre>
     </div>

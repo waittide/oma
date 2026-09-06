@@ -75,7 +75,7 @@ function parseDiffLines(diffText: string): Array<{ type: 'add' | 'del' | 'info' 
           <button
             v-if="message.role === 'user'"
             class="btn-fork"
-            title="以此节点为基准分叉重新生成"
+            v-tip="'以此节点为基准分叉重新生成'"
             @click="$emit('fork-message', message.id)"
           >
             <Fa6Seedling /> 分叉
@@ -85,7 +85,7 @@ function parseDiffLines(diffText: string): Array<{ type: 'add' | 'del' | 'info' 
         <!-- 思维链 Thinking 折叠展示 -->
         <div v-if="thinkingBlocks.length > 0" class="thinking-box">
           <div class="thinking-header" :class="{ open: isThinkingOpen }" @click="isThinkingOpen = !isThinkingOpen">
-            <span><Fa6Brain style="vertical-align: -2px;" /> 深度思考过程 ({{ thinkingBlocks.reduce((acc, b) => acc + b.thinking.length, 0) }} 字符)</span>
+            <span><Fa6Brain  /> 深度思考过程 ({{ thinkingBlocks.reduce((acc, b) => acc + b.thinking.length, 0) }} 字符)</span>
             <Fa6ChevronDown class="chevron" />
           </div>
           <div v-if="isThinkingOpen" class="thinking-content">
@@ -103,7 +103,7 @@ function parseDiffLines(diffText: string): Array<{ type: 'add' | 'del' | 'info' 
         <!-- 工具调用展示 ToolUse -->
         <div v-for="tu in toolUseBlocks" :key="tu.id" class="tool-call-card">
           <div class="tool-call-header">
-            <span class="tool-name-badge"><Fa6ScrewdriverWrench style="vertical-align: -2px;" /> {{ tu.name }}</span>
+            <span class="tool-name-badge"><Fa6ScrewdriverWrench  /> {{ tu.name }}</span>
             <span class="tool-status-badge success">已执行</span>
           </div>
           <div class="tool-body">
@@ -115,7 +115,7 @@ function parseDiffLines(diffText: string): Array<{ type: 'add' | 'del' | 'info' 
         <!-- 工具结果 ToolResult -->
         <div v-for="tr in toolResultBlocks" :key="tr.tool_use_id" class="tool-call-card">
           <div class="tool-call-header">
-            <span class="tool-name-badge"><Fa6Download style="vertical-align: -2px;" /> 工具结果回传</span>
+            <span class="tool-name-badge"><Fa6Download  /> 工具结果回传</span>
             <span :class="['tool-status-badge', tr.is_error ? 'error' : 'success']">
               {{ tr.is_error ? '执行报错' : '成功返回' }}
             </span>

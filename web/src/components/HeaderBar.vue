@@ -25,7 +25,7 @@ defineEmits<{
         {{ status === 'connected' ? '已连接 Daemon' : status === 'connecting' ? '正在连接…' : '未连接' }}
       </span>
 
-      <span v-if="workspace" class="badge-pill" :title="workspace">
+      <span v-if="workspace" class="badge-pill" v-tip="workspace">
         <Fa6FolderOpen /> {{ workspace }}
       </span>
 
@@ -39,18 +39,12 @@ defineEmits<{
     </div>
 
     <div class="header-right">
-      <button class="btn-icon" title="查看工作区文件" @click="$emit('open-files')">
+      <button class="btn-icon" v-tip="'查看工作区文件'" @click="$emit('open-files')">
         <Fa6FolderTree />
       </button>
-      <button class="btn-icon" title="系统设置" @click="$emit('open-settings')">
+      <button class="btn-icon" v-tip="'系统设置'" @click="$emit('open-settings')">
         <Fa6Gear />
       </button>
     </div>
   </header>
 </template>
-
-<style scoped>
-.badge-pill svg {
-  flex-shrink: 0;
-}
-</style>

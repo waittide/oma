@@ -36,7 +36,7 @@ function relativeTime(ts: number): string {
         <span>Oma Agent</span>
       </div>
       <div class="sidebar-actions">
-        <button class="btn-icon" title="新建会话" @click="$emit('create-session')">
+        <button class="btn-icon" v-tip="'新建会话'" @click="$emit('create-session')">
           <Fa6Plus />
         </button>
       </div>
@@ -52,14 +52,14 @@ function relativeTime(ts: number): string {
         @click="$emit('select-session', s.session_id)"
       >
         <div class="session-item-main">
-          <div class="session-title" :title="s.title">
+          <div class="session-title" v-tip="s.title">
             {{ s.title }}
           </div>
           <div class="session-meta">{{ relativeTime(s.updated_at) }} · {{ s.active_model }}</div>
         </div>
         <button
           class="btn-delete-session"
-          title="删除会话"
+          v-tip="'删除会话'"
           @click.stop="$emit('delete-session', s.session_id)"
         >
           <Fa6Trash />
@@ -67,17 +67,17 @@ function relativeTime(ts: number): string {
       </div>
 
       <div v-if="sessions.length === 0" class="sidebar-empty">
-        <Fa6RegCommentDots style="font-size: 20px; margin-bottom: 6px;" />
+        <Fa6RegCommentDots class="empty-hint-icon" />
         <div>暂无会话</div>
         <div>点击右上角 + 创建</div>
       </div>
     </div>
 
     <div class="sidebar-footer">
-      <div class="workspace-badge" :title="workspace">
+      <div class="workspace-badge" v-tip="workspace">
         {{ workspace || '默认工作区' }}
       </div>
-      <button class="btn-icon" :title="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'" @click="toggleTheme">
+      <button class="btn-icon" v-tip="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'" @click="toggleTheme">
         <Fa6Sun v-if="theme === 'dark'" />
         <Fa6Moon v-else />
       </button>

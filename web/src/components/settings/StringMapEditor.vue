@@ -51,12 +51,12 @@ function sync() {
     <div v-for="(row, i) in rows" :key="i" class="map-editor-row">
       <input v-model="row.k" class="field-input" :placeholder="keyPlaceholder || 'Key'" @input="sync" @blur="sync" />
       <input v-model="row.v" class="field-input" :placeholder="valuePlaceholder || 'Value'" @input="sync" @blur="sync" />
-      <button class="btn-icon map-editor-del" title="删除该项" @click="rows.splice(i, 1); sync()">
+      <button class="btn-icon map-editor-del" v-tip="'删除该项'" @click="rows.splice(i, 1); sync()">
         <Fa6Trash />
       </button>
     </div>
     <button class="btn-default map-editor-add" @click="rows.push({ k: '', v: '' }); sync()">
-      <Fa6Plus style="vertical-align: -2px;" /> 添加条目
+      <Fa6Plus  /> 添加条目
     </button>
   </div>
 </template>

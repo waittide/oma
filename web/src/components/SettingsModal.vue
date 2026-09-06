@@ -62,7 +62,7 @@ async function handleSaveConfig() {
   <div class="modal-overlay" @click.self="$emit('close')">
     <div class="modal-dialog settings-dialog">
       <div class="modal-header">
-        <span><Fa6Gear style="vertical-align: -2px;" /> 系统设置</span>
+        <span><Fa6Gear  /> 系统设置</span>
         <button class="btn-icon" @click="$emit('close')"><Fa6Xmark /></button>
       </div>
 

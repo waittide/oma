@@ -99,6 +99,114 @@ html {
   overflow: hidden;
   transition: background-color 0.25s ease, color 0.25s ease;
 }
+/* 图标统一跟随字号缩放 (覆盖 vue-icons 默认的 24px 属性) */
+svg {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
+  flex-shrink: 0;
+}
+
+/* ===== 自绘表单控件 (隐藏浏览器原生外观) ===== */
+input[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+input[type='checkbox'] {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid var(--border-default);
+  background: var(--bg-input);
+  border-radius: 5px;
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+  transition: all 0.15s ease;
+  vertical-align: -3px;
+}
+input[type='checkbox']::before {
+  content: '';
+  width: 9px;
+  height: 9px;
+  background: var(--accent-contrast);
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  transform: scale(0);
+  transition: transform 0.12s ease-in-out;
+}
+input[type='checkbox']:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input[type='checkbox']:checked::before {
+  transform: scale(1);
+}
+input[type='checkbox']:hover {
+  border-color: var(--accent);
+}
+
+input[type='radio'] {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid var(--border-default);
+  background: var(--bg-input);
+  border-radius: 50%;
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+  transition: all 0.15s ease;
+  vertical-align: -3px;
+}
+input[type='radio']::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: scale(0);
+  transition: transform 0.12s ease-in-out;
+}
+input[type='radio']:checked {
+  border-color: var(--accent);
+}
+input[type='radio']:checked::before {
+  transform: scale(1);
+}
+input[type='radio']:hover {
+  border-color: var(--accent);
+}
+
+/* ===== 自绘 Tooltip (替代浏览器原生 title) ===== */
+.oui-tooltip {
+  position: fixed;
+  z-index: 3000;
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 5px 9px;
+  border-radius: 7px;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+  max-width: 320px;
+  white-space: pre-wrap;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.oui-tooltip.show {
+  opacity: 1;
+  transform: translateY(0);
+}
 
 /* Scrollbar */
 ::-webkit-scrollbar {
@@ -1370,10 +1478,6 @@ select.field-input {
   width: 30px;
 }
 
-.model-table input[type='checkbox'] {
-  accent-color: var(--accent);
-}
-
 .body-json {
   font-family: var(--font-mono);
   resize: vertical;
@@ -1419,8 +1523,4 @@ select.field-input {
   gap: 6px;
   cursor: pointer;
   color: var(--text-primary);
-}
-
-.radio-row input[type='radio'] {
-  accent-color: var(--accent);
 }

@@ -6,6 +6,7 @@ import '@fontsource/jetbrains-mono/400.css';
 import '@fontsource/jetbrains-mono/500.css';
 import { createApp } from 'vue';
 import App from './App.vue';
+import { vTip } from './useTip';
 import './style.css';
 
-createApp(App).mount('#app');
+createApp(App).directive('tip', vTip).mount('#app');
