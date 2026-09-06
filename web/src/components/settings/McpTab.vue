@@ -3,6 +3,7 @@ import { Fa6NetworkWired, Fa6Plus, Fa6Terminal, Fa6Trash } from 'vue-icons-plus/
 import { computed, ref, watch } from 'vue';
 import type { McpServerConfig, OmaConfigView } from '../../types';
 import StringMapEditor from './StringMapEditor.vue';
+import { uiConfirm } from '../../useDialogs';
 
 const props = defineProps<{
   config: OmaConfigView;
@@ -57,8 +58,14 @@ function addServer() {
   selected.value = n;
 }
 
-function deleteServer(n: string) {
-  if (!confirm(`确定删除 MCP Server "${n}" 吗？保存后其本地子进程将被终止`)) return;
+async function deleteServer(n: string) {
+  const ok = await uiConfirm({
+    title: '删除 MCP Server',
+    message: `确定删除 MCP Server "${n}" 吗？保存后其本地子进程将被终止。`,
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
   delete props.config.mcp_servers[n];
   selected.value = names.value[0] ?? '';
 }
@@ -78,7 +85,7 @@ function switchType(t: 'local' | 'remote') {
     <aside class="providers-list">
       <div class="providers-add">
         <input v-model="newName" class="field-input" placeholder="新 Server 名称" @keyup.enter="addServer" />
-        <button class="btn-icon" title="添加 MCP Server" @click="addServer"><Fa6Plus /></button>
+        <button class="btn-icon" v-tip="'添加 MCP Server'" @click="addServer"><Fa6Plus /></button>
       </div>
       <div v-if="nameError" class="providers-name-error">{{ nameError }}</div>
       <button

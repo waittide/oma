@@ -43,13 +43,13 @@ defineEmits<{
 
       <div class="modal-footer">
         <button class="btn-danger" @click="$emit('decision', 'deny')">
-          <Fa6Ban style="vertical-align: -2px;" /> 拒绝
+          <Fa6Ban  /> 拒绝
         </button>
         <button class="btn-default" @click="$emit('decision', 'allow_once')">
-          <Fa6Check style="vertical-align: -2px;" /> 仅本次允许
+          <Fa6Check  /> 仅本次允许
         </button>
         <button class="btn-primary" @click="$emit('decision', 'allow_session')">
-          <Fa6ShieldHalved style="vertical-align: -2px;" /> 本会话永久允许
+          <Fa6ShieldHalved  /> 本会话永久允许
         </button>
       </div>
     </div>

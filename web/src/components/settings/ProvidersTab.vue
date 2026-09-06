@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { Fa6Plus, Fa6Server, Fa6Trash } from 'vue-icons-plus/fa6';
 import { computed, ref, watch } from 'vue';
-import type { OmaConfigView } from '../../types';
-import StringMapEditor from './StringMapEditor.vue';
+import type { OmaConfigView, ProviderConfig } from '../../types';
+import OuiSelect from '../oui/OuiSelect.vue';
+import { uiConfirm } from '../../useDialogs';
 
 const props = defineProps<{
   config: OmaConfigView;
 }>();
 
 const API_TYPES = ['anthropic', 'completion', 'response', 'google'] as const;
+const apiTypeOptions = API_TYPES.map((t) => ({ value: t, label: t }));
 
 const names = computed(() => Object.keys(props.config.providers));
 const selected = ref('');
@@ -69,8 +71,14 @@ function addProvider() {
   selected.value = n;
 }
 
-function deleteProvider(n: string) {
-  if (!confirm(`确定删除 Provider "${n}" 及其所有模型配置吗？`)) return;
+async function deleteProvider(n: string) {
+  const ok = await uiConfirm({
+    title: '删除 Provider',
+    message: `确定删除 Provider "${n}" 及其所有模型配置吗？`,
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
   delete props.config.providers[n];
   selected.value = names.value[0] ?? '';
 }
@@ -82,7 +90,7 @@ function deleteProvider(n: string) {
     <aside class="providers-list">
       <div class="providers-add">
         <input v-model="newName" class="field-input" placeholder="新 Provider 名称" @keyup.enter="addProvider" />
-        <button class="btn-icon" title="添加 Provider" @click="addProvider"><Fa6Plus /></button>
+        <button class="btn-icon" v-tip="'添加 Provider'" @click="addProvider"><Fa6Plus /></button>
       </div>
       <div v-if="nameError" class="providers-name-error">{{ nameError }}</div>
       <button
@@ -106,9 +114,12 @@ function deleteProvider(n: string) {
         <div class="provider-grid">
           <div class="form-field">
             <label class="field-label">API 协议类型</label>
-            <select v-model="provider.api_type" class="field-input">
-              <option v-for="t in API_TYPES" :key="t" :value="t">{{ t }}</option>
-            </select>
+            <OuiSelect
+              :model-value="provider.api_type"
+              :options="apiTypeOptions"
+              variant="field"
+              @update:model-value="(v) => (provider!.api_type = v as ProviderConfig['api_type'])"
+            />
           </div>
           <div class="form-field">
             <label class="field-label">Base URL</label>
@@ -142,7 +153,7 @@ function deleteProvider(n: string) {
                 <td class="col-flag"><input v-model="m.supports_vision" type="checkbox" /></td>
                 <td class="col-flag"><input v-model="m.supports_thinking" type="checkbox" /></td>
                 <td class="col-del">
-                  <button class="btn-icon" title="删除模型" @click="provider.models!.splice(i, 1)"><Fa6Trash /></button>
+                  <button class="btn-icon" v-tip="'删除模型'" @click="provider.models!.splice(i, 1)"><Fa6Trash /></button>
                 </td>
               </tr>
             </tbody>
@@ -151,7 +162,7 @@ function deleteProvider(n: string) {
             class="btn-default map-editor-add"
             @click="provider.models = provider.models || []; provider.models.push({ id: '', name: '', context_len: 128000, supports_vision: true, supports_thinking: true })"
           >
-            <Fa6Plus style="vertical-align: -2px;" /> 添加模型
+            <Fa6Plus  /> 添加模型
           </button>
         </div>
 

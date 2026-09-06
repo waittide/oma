@@ -10,6 +10,7 @@ import {
   fetchWorkspaceTree,
 } from './api';
 import { useWebSocket } from './useWebSocket';
+import { toast, uiConfirm, uiPrompt } from './useDialogs';
 import HeaderBar from './components/HeaderBar.vue';
 import Sidebar from './components/Sidebar.vue';
 import MessageItem from './components/MessageItem.vue';
@@ -17,6 +18,7 @@ import InputBar from './components/InputBar.vue';
 import ApprovalModal from './components/ApprovalModal.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import FileDrawer from './components/FileDrawer.vue';
+import OuiDialogs from './components/oui/OuiDialogs.vue';
 
 const sessions = ref<SessionRecord[]>([]);
 const currentSessionId = ref<string>('');
@@ -95,12 +97,18 @@ async function handleCreateSession() {
     sessions.value.unshift(res.session);
     selectSession(res.session_id);
   } catch (e) {
-    alert(`创建会话失败: ${e}`);
+    toast(`创建会话失败: ${e instanceof Error ? e.message : e}`, 'error');
   }
 }
 
 async function handleDeleteSession(id: string) {
-  if (!confirm('确定要彻底删除该会话及其所有消息历史吗？')) return;
+  const ok = await uiConfirm({
+    title: '删除会话',
+    message: '确定要彻底删除该会话及其所有消息历史吗？此操作不可恢复。',
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await deleteSession(id);
     sessions.value = sessions.value.filter((s) => s.session_id !== id);
@@ -113,7 +121,7 @@ async function handleDeleteSession(id: string) {
       }
     }
   } catch (e) {
-    alert(`删除失败: ${e}`);
+    toast(`删除失败: ${e instanceof Error ? e.message : e}`, 'error');
   }
 }
 
@@ -161,8 +169,12 @@ function handleChangeApprovalMode(mode: ApprovalMode) {
   });
 }
 
-function handleForkMessage(messageId: string) {
-  const newPrompt = prompt('请输入在此分叉节点下执行的新提示词：');
+async function handleForkMessage(messageId: string) {
+  const newPrompt = await uiPrompt({
+    title: '分叉重新生成',
+    message: '输入在此分叉节点下执行的新提示词：',
+    confirmText: '从此处分叉执行',
+  });
   if (newPrompt) {
     sendCommand({
       type: 'fork_and_run',
@@ -317,5 +329,9 @@ function updateWorkspace(newWs: string) {
       :workspace="workspace"
       @close="showFilesDrawer = false"
     />
+
+    <!-- 自绘对话框与通知宿主 -->
+    <OuiDialogs />
   </div>
 </template>
+
