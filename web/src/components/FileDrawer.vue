@@ -30,39 +30,35 @@ async function handleFileClick(node: FileNode) {
 
 <template>
   <div class="drawer-overlay">
-    <div style="padding: 14px 16px; border-bottom: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: space-between;">
-      <span style="font-weight: 600;"><Fa6FolderTree style="vertical-align: -2px;" /> 工作区文件</span>
+    <div class="drawer-header">
+      <span style="display: inline-flex; align-items: center; gap: 8px;"><Fa6FolderTree /> 工作区文件</span>
       <button class="btn-icon" @click="$emit('close')"><Fa6Xmark /></button>
     </div>
 
-    <div style="flex: 1; overflow-y: auto; padding: 8px;">
+    <div class="drawer-body">
       <template v-if="tree">
-        <!-- 递归节点渲染组件 -->
         <div
           v-for="child in tree.children || []"
           :key="child.path"
           class="tree-node"
+          :class="{ selected: selectedFile === child.path }"
           @click="handleFileClick(child)"
         >
-          <span><Fa6Folder v-if="child.is_dir" style="vertical-align: -2px;" /><Fa6RegFileLines v-else style="vertical-align: -2px;" /></span>
+          <Fa6Folder v-if="child.is_dir" />
+          <Fa6RegFileLines v-else />
           <span>{{ child.name }}</span>
         </div>
       </template>
-      <div v-else style="padding: 16px; color: var(--text-muted); font-size: 12px;">
-        加载文件树中...
-      </div>
+      <div v-else class="sidebar-empty">加载文件树中…</div>
     </div>
 
     <!-- 文件预览抽屉 -->
-    <div
-      v-if="selectedFile"
-      style="height: 45%; border-top: 1px solid var(--border-default); display: flex; flex-direction: column; background: var(--bg-card);"
-    >
-      <div style="padding: 8px 12px; background: #161c24; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 11px;">
-        <span style="color: var(--accent);">{{ selectedFile }}</span>
-        <button style="background: none; border: none; color: var(--text-muted); cursor: pointer;" @click="selectedFile = null"><Fa6Xmark /></button>
+    <div v-if="selectedFile" class="file-preview">
+      <div class="file-preview-header">
+        <span class="path">{{ selectedFile }}</span>
+        <button title="关闭预览" @click="selectedFile = null"><Fa6Xmark /></button>
       </div>
-      <pre style="flex: 1; overflow: auto; padding: 10px; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); line-height: 1.4;">{{ fileContent }}</pre>
+      <pre>{{ fileContent }}</pre>
     </div>
   </div>
 </template>

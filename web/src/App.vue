@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Fa6Bolt, Fa6Brain, Fa6ScrewdriverWrench } from 'vue-icons-plus/fa6';
+import { Fa6Bolt, Fa6Brain, Fa6Robot, Fa6ScrewdriverWrench } from 'vue-icons-plus/fa6';
 import { ref, onMounted, nextTick, watch } from 'vue';
 import type { ChatMessage, FileNode, SessionRecord, ApprovalDecision, ApprovalMode } from './types';
 import {
@@ -220,64 +220,64 @@ function updateWorkspace(newWs: string) {
 
       <!-- 消息流动滚动视口 -->
       <div ref="chatViewportRef" class="chat-viewport">
-        <!-- 静态持久化历史消息 -->
-        <MessageItem
-          v-for="msg in messages"
-          :key="msg.id"
-          :message="msg"
-          @fork-message="handleForkMessage"
-        />
+        <div class="chat-inner">
+          <!-- 静态持久化历史消息 -->
+          <MessageItem
+            v-for="msg in messages"
+            :key="msg.id"
+            :message="msg"
+            @fork-message="handleForkMessage"
+          />
+          <!-- 当前轮次正在流式生成的临时呈现卡片 -->
+          <div v-if="isBusy" class="message-row assistant">
+            <div class="avatar assistant"><Fa6Robot /></div>
+            <div class="message-column">
+              <div class="message-card assistant live">
+                <div class="message-header">
+                  <span class="role-tag assistant">ASSISTANT</span>
+                  <span class="badge badge-live"><span class="dot"></span>正在推理与执行中...</span>
+                </div>
 
-        <!-- 当前轮次正在流式生成的临时呈现卡片 -->
-        <div v-if="isBusy" class="message-row">
-          <div class="message-card assistant" style="border-color: var(--accent);">
-            <div class="message-header">
-              <span class="role-tag assistant">ASSISTANT</span>
-              <span class="badge badge-connecting"><Fa6Bolt style="vertical-align: -2px;" /> 正在推理与执行中...</span>
-            </div>
+                <!-- 实时思考流 -->
+                <div v-if="liveThinking" class="thinking-box">
+                  <div class="thinking-header open">
+                    <span><Fa6Brain style="vertical-align: -2px;" /> 实时思维链推导中...</span>
+                  </div>
+                  <div class="thinking-content">
+                    {{ liveThinking }}
+                  </div>
+                </div>
 
-            <!-- 实时思考流 -->
-            <div v-if="liveThinking" class="thinking-box">
-              <div class="thinking-header">
-                <span><Fa6Brain style="vertical-align: -2px;" /> 实时思维链推导中...</span>
-              </div>
-              <div class="thinking-content">
-                {{ liveThinking }}
-              </div>
-            </div>
+                <!-- 实时文本流 -->
+                <div v-if="liveText" class="message-body">
+                  {{ liveText }}
+                </div>
 
-            <!-- 实时文本流 -->
-            <div v-if="liveText" class="message-body">
-              {{ liveText }}
-            </div>
-
-            <!-- 正在调用的工具 -->
-            <div v-for="tc in activeToolCalls" :key="tc.call_id" class="tool-call-card">
-              <div class="tool-call-header">
-                <span class="tool-name-badge"><Fa6ScrewdriverWrench style="vertical-align: -2px;" /> {{ tc.name }}</span>
-                <span :class="['tool-status-badge', tc.output !== undefined ? (tc.is_error ? 'error' : 'success') : 'running']">
-                  {{ tc.output !== undefined ? (tc.is_error ? '执行报错' : '执行完成') : '正在执行...' }}
-                </span>
-              </div>
-              <div class="tool-body">
-                <div style="color: var(--text-muted); margin-bottom: 4px;">// 输入参数:</div>
-                <pre>{{ JSON.stringify(tc.input, null, 2) }}</pre>
-                <div v-if="tc.output !== undefined" style="margin-top: 8px;">
-                  <div style="color: var(--text-muted); margin-bottom: 4px;">// 返回结果:</div>
-                  <pre>{{ tc.output }}</pre>
+                <!-- 正在调用的工具 -->
+                <div v-for="tc in activeToolCalls" :key="tc.call_id" class="tool-call-card">
+                  <div class="tool-call-header">
+                    <span class="tool-name-badge"><Fa6ScrewdriverWrench style="vertical-align: -2px;" /> {{ tc.name }}</span>
+                    <span :class="['tool-status-badge', tc.output !== undefined ? (tc.is_error ? 'error' : 'success') : 'running']">
+                      {{ tc.output !== undefined ? (tc.is_error ? '执行报错' : '执行完成') : '正在执行...' }}
+                    </span>
+                  </div>
+                  <div class="tool-body">
+                    <div class="label">// 输入参数:</div>
+                    <pre>{{ JSON.stringify(tc.input, null, 2) }}</pre>
+                    <div v-if="tc.output !== undefined" class="section">
+                      <div class="label">// 返回结果:</div>
+                      <pre>{{ tc.output }}</pre>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <div v-if="messages.length === 0 && !isBusy" style="padding: 40px 0; text-align: center; color: var(--text-muted);">
-          <div style="font-size: 32px; margin-bottom: 12px;"><Fa6Bolt /></div>
-          <div style="font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px;">
-            准备就绪，欢迎使用 Oma 协同工作台
-          </div>
-          <div style="font-size: 13px;">
-            输入任务需求，Oma 将自动阅读文件、执行编辑并运行测试验证代码。
+          <div v-if="messages.length === 0 && !isBusy" class="empty-state">
+            <div class="empty-icon"><Fa6Bolt /></div>
+            <div class="empty-title">准备就绪，欢迎使用 Oma 协同工作台</div>
+            <div class="empty-desc">输入任务需求，Oma 将自动阅读文件、执行编辑并运行测试验证代码。</div>
           </div>
         </div>
       </div>

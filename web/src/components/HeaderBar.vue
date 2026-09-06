@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Fa6FolderOpen, Fa6Robot, Fa6MasksTheater, Fa6FolderTree, Fa6Gear } from 'vue-icons-plus/fa6';
+import { Fa6FolderOpen, Fa6FolderTree, Fa6Gear, Fa6MasksTheater, Fa6Robot } from 'vue-icons-plus/fa6';
 import type { ConnectionStatus } from '../useWebSocket';
 import type { Ready } from '../types';
 
@@ -21,20 +21,20 @@ defineEmits<{
       <span
         :class="['badge', status === 'connected' ? 'badge-connected' : 'badge-connecting']"
       >
-        <span class="dot">●</span>
-        {{ status === 'connected' ? '已连接 Daemon' : status === 'connecting' ? '正在连接...' : '未连接' }}
+        <span class="dot"></span>
+        {{ status === 'connected' ? '已连接 Daemon' : status === 'connecting' ? '正在连接…' : '未连接' }}
       </span>
 
-      <span v-if="workspace" class="badge-pill">
-        <Fa6FolderOpen style="vertical-align: -2px;" /> {{ workspace }}
+      <span v-if="workspace" class="badge-pill" :title="workspace">
+        <Fa6FolderOpen /> {{ workspace }}
       </span>
 
       <span v-if="ready?.active_model" class="badge-pill">
-        <Fa6Robot style="vertical-align: -2px;" /> {{ ready.active_model }}
+        <Fa6Robot /> {{ ready.active_model }}
       </span>
 
       <span v-if="ready?.active_agent" class="badge-pill">
-        <Fa6MasksTheater style="vertical-align: -2px;" /> {{ ready.active_agent }}
+        <Fa6MasksTheater /> {{ ready.active_agent }}
       </span>
     </div>
 
@@ -48,3 +48,9 @@ defineEmits<{
     </div>
   </header>
 </template>
+
+<style scoped>
+.badge-pill svg {
+  flex-shrink: 0;
+}
+</style>

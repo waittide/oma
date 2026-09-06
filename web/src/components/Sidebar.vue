@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { Fa6Bolt, Fa6Plus, Fa6RegCommentDots, Fa6Trash } from 'vue-icons-plus/fa6';
+import { Fa6Bolt, Fa6Moon, Fa6Plus, Fa6RegCommentDots, Fa6Sun, Fa6Trash } from 'vue-icons-plus/fa6';
 import type { SessionRecord } from '../types';
+import { theme, toggleTheme } from '../useTheme';
 
 defineProps<{
   sessions: SessionRecord[];
@@ -13,6 +14,18 @@ defineEmits<{
   (e: 'create-session'): void;
   (e: 'delete-session', id: string): void;
 }>();
+
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return '刚刚';
+  if (mins < 60) return `${mins} 分钟前`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} 天前`;
+  return new Date(ts).toLocaleDateString();
+}
 </script>
 
 <template>
@@ -29,6 +42,8 @@ defineEmits<{
       </div>
     </div>
 
+    <div class="sidebar-section-label">会话</div>
+
     <div class="session-list">
       <div
         v-for="s in sessions"
@@ -36,8 +51,11 @@ defineEmits<{
         :class="['session-item', s.session_id === currentSessionId ? 'active' : '']"
         @click="$emit('select-session', s.session_id)"
       >
-        <div class="session-title" :title="s.title">
-          <Fa6RegCommentDots style="vertical-align: -2px; margin-right: 4px;" /> {{ s.title }}
+        <div class="session-item-main">
+          <div class="session-title" :title="s.title">
+            {{ s.title }}
+          </div>
+          <div class="session-meta">{{ relativeTime(s.updated_at) }} · {{ s.active_model }}</div>
         </div>
         <button
           class="btn-delete-session"
@@ -48,8 +66,10 @@ defineEmits<{
         </button>
       </div>
 
-      <div v-if="sessions.length === 0" style="padding: 16px; color: var(--text-muted); font-size: 12px; text-align: center;">
-        暂无会话，请点击右上角 <Fa6Plus style="vertical-align: -2px;" /> 创建
+      <div v-if="sessions.length === 0" class="sidebar-empty">
+        <Fa6RegCommentDots style="font-size: 20px; margin-bottom: 6px;" />
+        <div>暂无会话</div>
+        <div>点击右上角 + 创建</div>
       </div>
     </div>
 
@@ -57,6 +77,10 @@ defineEmits<{
       <div class="workspace-badge" :title="workspace">
         {{ workspace || '默认工作区' }}
       </div>
+      <button class="btn-icon" :title="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'" @click="toggleTheme">
+        <Fa6Sun v-if="theme === 'dark'" />
+        <Fa6Moon v-else />
+      </button>
     </div>
   </aside>
 </template>
