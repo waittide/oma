@@ -2,6 +2,7 @@
 import { Fa6Bolt, Fa6CircleStop, Fa6Lock, Fa6MasksTheater, Fa6PaperPlane, Fa6Robot, Fa6ShieldHalved } from 'vue-icons-plus/fa6';
 import { ref, computed } from 'vue';
 import type { ApprovalMode, Ready } from '../types';
+import OuiSelect, { type OuiSelectOption } from './oui/OuiSelect.vue';
 
 const props = defineProps<{
   ready: Ready | null;
@@ -18,25 +19,43 @@ const emit = defineEmits<{
 
 const inputContent = ref('');
 
-const availableModels = computed(() => {
-  if (!props.ready?.providers) return [];
-  const list: string[] = [];
-  for (const [providerId, models] of Object.entries(props.ready.providers)) {
+const modelOptions = computed<OuiSelectOption[]>(() => {
+  const list: OuiSelectOption[] = [];
+  for (const [providerId, models] of Object.entries(props.ready?.providers ?? {})) {
     for (const m of models) {
-      list.push(`${providerId}/${m.id}`);
+      const sel = `${providerId}/${m.id}`;
+      list.push({ value: sel, label: sel, description: m.name !== m.id ? m.name : undefined });
     }
+  }
+  // 当前激活模型不在目录中 (如 provider 未配 models 清单) 时仍可选中展示
+  if (props.ready?.active_model && !list.some((o) => o.value === props.ready?.active_model)) {
+    list.unshift({ value: props.ready.active_model, label: props.ready.active_model });
   }
   return list;
 });
 
-const approvalLabel = computed(() => {
+const agentOptions = computed<OuiSelectOption[]>(() =>
+  (props.ready?.agents ?? []).map((a) => ({ value: a.id, label: a.name, description: a.description })),
+);
+
+const APPROVAL_DESC: Record<ApprovalMode, string> = {
+  normal: '常规工具免批，危险操作请求审批',
+  strict: '所有工具调用均需审批',
+  auto: '全部自动放行',
+};
+
+const approvalOptions: OuiSelectOption[] = (['normal', 'strict', 'auto'] as ApprovalMode[]).map(
+  (m) => ({ value: m, label: m, description: APPROVAL_DESC[m] }),
+);
+
+const approvalIcon = computed(() => {
   switch (props.ready?.approval_mode) {
     case 'strict':
-      return 'Strict 全部弹窗';
+      return Fa6Lock;
     case 'auto':
-      return 'Auto 全免审批';
+      return Fa6Bolt;
     default:
-      return 'Normal 危险弹窗';
+      return Fa6ShieldHalved;
   }
 });
 
@@ -61,59 +80,46 @@ function handleSend() {
       <div class="input-controls">
         <div class="controls-group">
           <!-- 模型选择 -->
-          <span class="control-icon"><Fa6Robot /></span>
-          <select
-            class="select-control"
-            :value="ready?.active_model"
-            title="切换激活模型"
-            @change="(e) => $emit('change-model', (e.target as HTMLSelectElement).value)"
+          <OuiSelect
+            :model-value="ready?.active_model"
+            :options="modelOptions"
+            placeholder="默认模型"
+            v-tip="'切换激活模型'"
+            @update:model-value="(v) => $emit('change-model', v)"
           >
-            <option v-for="m in availableModels" :key="m" :value="m">
-              {{ m }}
-            </option>
-            <option v-if="availableModels.length === 0" :value="ready?.active_model">
-              {{ ready?.active_model || '默认模型' }}
-            </option>
-          </select>
+            <template #icon><span class="control-icon"><Fa6Robot /></span></template>
+          </OuiSelect>
 
           <!-- Agent 模板选择 -->
-          <span class="control-icon"><Fa6MasksTheater /></span>
-          <select
-            class="select-control"
-            :value="ready?.active_agent"
-            title="切换预设 Agent"
-            @change="(e) => $emit('change-agent', (e.target as HTMLSelectElement).value)"
+          <OuiSelect
+            :model-value="ready?.active_agent"
+            :options="agentOptions"
+            placeholder="task"
+            v-tip="'切换预设 Agent'"
+            @update:model-value="(v) => $emit('change-agent', v)"
           >
-            <option v-for="a in ready?.agents" :key="a.id" :value="a.id" :title="a.description">
-              {{ a.name }}
-            </option>
-            <option v-if="!ready?.agents?.length" :value="ready?.active_agent">
-              {{ ready?.active_agent || 'task' }}
-            </option>
-          </select>
+            <template #icon><span class="control-icon"><Fa6MasksTheater /></span></template>
+          </OuiSelect>
 
           <!-- 权限审批模式 -->
-          <span class="control-icon">
-            <Fa6ShieldHalved v-if="ready?.approval_mode === 'normal'" />
-            <Fa6Lock v-else-if="ready?.approval_mode === 'strict'" />
-            <Fa6Bolt v-else />
-          </span>
-          <select
-            class="select-control"
-            :value="ready?.approval_mode"
-            title="切换审批防护模式"
-            @change="(e) => $emit('change-approval-mode', (e.target as HTMLSelectElement).value as ApprovalMode)"
+          <OuiSelect
+            :model-value="ready?.approval_mode"
+            :options="approvalOptions"
+            v-tip="'切换审批防护模式'"
+            @update:model-value="(v) => $emit('change-approval-mode', v as ApprovalMode)"
           >
-            <option value="normal">Normal 危险弹窗</option>
-            <option value="strict">Strict 全部弹窗</option>
-            <option value="auto">Auto 全免审批</option>
-          </select>
+            <template #icon>
+              <span class="control-icon">
+                <component :is="approvalIcon" />
+              </span>
+            </template>
+          </OuiSelect>
         </div>
 
         <div class="controls-group">
           <!-- 正在执行时展示 Cancel 中断按钮 -->
           <button v-if="isBusy" class="btn-cancel" @click="$emit('cancel')">
-            <Fa6CircleStop style="vertical-align: -2px;" /> 停止生成
+            <Fa6CircleStop /> 停止生成
           </button>
         </div>
       </div>
@@ -129,7 +135,7 @@ function handleSend() {
 
         <button
           class="btn-send"
-          :title="isBusy ? '加入指令队列' : '发送 (Enter)'"
+          v-tip="isBusy ? '加入指令队列' : '发送 (Enter)'"
           :disabled="!inputContent.trim()"
           @click="handleSend"
         >
@@ -137,7 +143,7 @@ function handleSend() {
         </button>
       </div>
 
-      <div class="input-hint">Enter 发送 · Shift+Enter 换行{{ isBusy ? ' · 执行中的新指令将进入队列' : '' }} · {{ approvalLabel }}</div>
+      <div class="input-hint">Enter 发送 · Shift+Enter 换行{{ isBusy ? ' · 执行中的新指令将进入队列' : '' }}</div>
     </div>
   </div>
 </template>
@@ -148,10 +154,5 @@ function handleSend() {
   align-items: center;
   color: var(--text-muted);
   font-size: 12px;
-  margin-left: 2px;
-}
-
-.controls-group > .control-icon:not(:first-child) {
-  margin-left: 4px;
 }
 </style>
