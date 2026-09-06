@@ -63,6 +63,21 @@ fn model_entry_default_context() -> usize {
 fn model_entry_default_true() -> bool {
     true
 }
+fn empty_json_object() -> serde_json::Value {
+    serde_json::json!({})
+}
+
+/// 请求体预设：TOML 无法表达 null，反序列化时将缺失/null 规范为空对象
+fn deserialize_json_body<'de, D>(deserializer: D) -> Result<serde_json::Value, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => serde_json::Value::Object(Default::default()),
+        Some(v) => v,
+    })
+}
 
 /// Provider 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,9 +87,9 @@ pub struct ProviderConfig {
     pub api_key:  String,
     #[serde(default)]
     pub headers:  BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(default = "empty_json_object", deserialize_with = "deserialize_json_body")]
     pub body:     serde_json::Value,
-    /// 可选模型清单；为空时按请求的 model id 动态合成 ModelConfig
+    /// 可选模型清单：为空时按请求的 model id 动态合成 ModelConfig
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models:   Vec<ModelEntry>,
 }
@@ -89,7 +104,7 @@ pub struct ModelConfig {
     pub supports_thinking: bool,
     #[serde(default)]
     pub headers:           BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(default = "empty_json_object", deserialize_with = "deserialize_json_body")]
     pub body:              serde_json::Value,
 }
 
@@ -1333,6 +1348,32 @@ mod tests {
         assert_eq!(target["nested"]["x"], "foo");
         assert_eq!(target["nested"]["y"], 20);
         assert_eq!(target["nested"]["z"], "bar");
+    }
+
+    #[test]
+    fn test_null_body_normalizes_to_object_and_toml_roundtrip() {
+        // 前端 PUT 可能带回 body: null；TOML 不支持 null，必须规范为空对象后再序列化
+        let missing: ProviderConfig =
+            serde_json::from_str(r#"{"api_type":"completion","base_url":"https://api.example.com/v1","api_key":"k"}"#)
+                .unwrap();
+        assert_eq!(missing.body, serde_json::json!({}));
+
+        let null_cfg: ProviderConfig = serde_json::from_str(
+            r#"{"api_type":"completion","base_url":"https://api.example.com/v1","api_key":"k","body":null}"#,
+        )
+        .unwrap();
+        assert_eq!(null_cfg.body, serde_json::json!({}));
+
+        let toml_str = toml::to_string_pretty(&null_cfg).unwrap();
+        let back: ProviderConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(back.body, serde_json::json!({}));
+
+        // 非空预设原样保留
+        let rich: ProviderConfig = serde_json::from_str(
+            r#"{"api_type":"completion","base_url":"https://api.example.com/v1","api_key":"k","body":{"temperature":0.7}}"#,
+        )
+        .unwrap();
+        assert_eq!(rich.body["temperature"], 0.7);
     }
 
     #[tokio::test]
