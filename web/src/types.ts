@@ -142,3 +142,35 @@ export interface FileNode {
   is_dir: boolean;
   children?: FileNode[];
 }
+
+// ===== Daemon 系统配置 (GET/PUT /api/config) =====
+
+export interface ModelEntry {
+  id: string;
+  name: string;
+  context_len: number;
+  supports_vision: boolean;
+  supports_thinking: boolean;
+}
+
+export interface ProviderConfig {
+  api_type: 'anthropic' | 'completion' | 'response' | 'google';
+  base_url: string;
+  api_key: string;
+  headers: Record<string, string>;
+  body: unknown;
+  models?: ModelEntry[];
+}
+
+export type McpServerConfig =
+  | { type: 'local'; command: string; args?: string[]; env?: Record<string, string> }
+  | { type: 'remote'; url: string; headers?: Record<string, string> };
+
+export interface OmaConfigView {
+  default_model: string;
+  default_agent: string;
+  default_approval_mode: ApprovalMode;
+  server: { listen_addr: string };
+  providers: Record<string, ProviderConfig>;
+  mcp_servers: Record<string, McpServerConfig>;
+}

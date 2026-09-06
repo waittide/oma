@@ -1,4 +1,4 @@
-import type { ChatMessage, FileNode, SessionRecord } from './types';
+import type { ChatMessage, FileNode, OmaConfigView, SessionRecord } from './types';
 
 const TOKEN_KEY = 'oma_token';
 
@@ -73,4 +73,15 @@ export async function fetchWorkspaceTree(workspace: string): Promise<FileNode> {
 
 export async function fetchWorkspaceFile(workspace: string, path: string): Promise<{ content: string }> {
   return request(`/api/workspace/file?workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}`);
+}
+
+export async function fetchConfig(): Promise<OmaConfigView> {
+  return request('/api/config');
+}
+
+export async function updateConfig(config: OmaConfigView): Promise<{ success: boolean }> {
+  return request('/api/config', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
 }
