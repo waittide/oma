@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { Fa6CircleInfo, Fa6Sliders } from 'vue-icons-plus/fa6';
+import { Fa6CircleInfo } from 'vue-icons-plus/fa6';
+import { computed } from 'vue';
 import type { OmaConfigView } from '../../types';
 
 const props = defineProps<{
   config: OmaConfigView;
-  error: string;
 }>();
 
 // 从已配置 providers 汇总 "provider/model" 候选项，默认模型仍可自由输入
-const modelOptions = () =>
+const modelOptions = computed(() =>
   Object.entries(props.config.providers).flatMap(([pid, p]) =>
     (p.models ?? []).map((m) => `${pid}/${m.id}`),
-  );
+  ),
+);
 
 const agentOptions = ['task', 'plan', 'explore', 'review', 'build'];
 </script>
@@ -28,7 +29,7 @@ const agentOptions = ['task', 'plan', 'explore', 'review', 'build'];
         placeholder="例如 deepseek/deepseek-chat"
       />
       <datalist id="default-model-options">
-        <option v-for="m in modelOptions()" :key="m" :value="m" />
+        <option v-for="m in modelOptions" :key="m" :value="m" />
       </datalist>
       <div class="field-hint">新建会话缺省采用的模型；需与 Providers 配置中的 "名称/模型 ID" 对应</div>
     </div>
@@ -60,6 +61,5 @@ const agentOptions = ['task', 'plan', 'explore', 'review', 'build'];
       </div>
     </div>
 
-    <div v-if="error" class="settings-error">{{ error }}</div>
   </div>
 </template>

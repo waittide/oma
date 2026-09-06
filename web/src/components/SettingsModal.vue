@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { Fa6Gear, Fa6Plug, Fa6Sliders, Fa6Xmark } from 'vue-icons-plus/fa6';
+import { Fa6Gear, Fa6Plug, Fa6Server, Fa6Sliders, Fa6Xmark } from 'vue-icons-plus/fa6';
 import { onMounted, ref } from 'vue';
 import type { OmaConfigView } from '../types';
 import { fetchConfig, getToken, setToken, updateConfig } from '../api';
 import GeneralTab from './settings/GeneralTab.vue';
+import ProvidersTab from './settings/ProvidersTab.vue';
 
 const props = defineProps<{
   workspace: string;
@@ -14,7 +15,7 @@ const emit = defineEmits<{
   (e: 'update-workspace', ws: string): void;
 }>();
 
-type TabId = 'connection' | 'general';
+type TabId = 'connection' | 'general' | 'providers';
 
 const activeTab = ref<TabId>('general');
 const inputToken = ref(getToken());
@@ -75,6 +76,13 @@ async function handleSaveConfig() {
           </button>
           <button
             class="settings-nav-item"
+            :class="{ active: activeTab === 'providers' }"
+            @click="activeTab = 'providers'"
+          >
+            <Fa6Server /> Providers
+          </button>
+          <button
+            class="settings-nav-item"
             :class="{ active: activeTab === 'connection' }"
             @click="activeTab = 'connection'"
           >
@@ -107,27 +115,26 @@ async function handleSaveConfig() {
             </div>
           </div>
 
-          <!-- 默认偏好 (服务端持久化) -->
+          <!-- 服务端持久化配置 -->
           <template v-else>
             <div v-if="loadError" class="settings-error">{{ loadError }}</div>
-            <GeneralTab v-else-if="config" :config="config" :error="saveError || ''" />
+            <template v-else-if="config">
+              <GeneralTab v-if="activeTab === 'general'" :config="config" />
+              <ProvidersTab v-else :config="config" />
+            </template>
             <div v-else class="field-hint">正在加载服务端配置…</div>
           </template>
         </div>
       </div>
 
       <div class="modal-footer">
-        <span v-if="activeTab === 'general' && saveSuccess" class="settings-success">{{ saveSuccess }}</span>
+        <span v-if="activeTab !== 'connection' && saveSuccess" class="settings-success">{{ saveSuccess }}</span>
+        <span v-if="activeTab !== 'connection' && saveError" class="settings-error">{{ saveError }}</span>
         <button class="btn-default" @click="$emit('close')">关闭</button>
         <button v-if="activeTab === 'connection'" class="btn-primary" @click="handleSaveConnection">
           保存并应用
         </button>
-        <button
-          v-else
-          class="btn-primary"
-          :disabled="!config || saving"
-          @click="handleSaveConfig"
-        >
+        <button v-else class="btn-primary" :disabled="!config || saving" @click="handleSaveConfig">
           {{ saving ? '保存中…' : '保存到 Daemon' }}
         </button>
       </div>

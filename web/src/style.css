@@ -775,3 +775,125 @@ textarea.chat-input {
   padding: 8px 12px;
   font-size: 12px;
 }
+
+/* Providers / MCP CRUD */
+.providers-layout {
+  display: flex;
+  gap: 16px;
+  min-height: 320px;
+}
+
+.providers-list {
+  width: 170px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border-subtle);
+  padding-right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.providers-add {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.providers-name-error {
+  color: var(--danger);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.providers-list .settings-nav-item {
+  position: relative;
+}
+
+.providers-del {
+  margin-left: auto;
+  color: var(--text-muted);
+  opacity: 0;
+  font-size: 11px;
+}
+
+.providers-list .settings-nav-item:hover .providers-del {
+  opacity: 1;
+}
+
+.providers-del:hover {
+  color: var(--danger);
+}
+
+.providers-editor {
+  flex: 1;
+  min-width: 0;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 12px 16px;
+}
+
+.provider-grid .form-field:first-child {
+  grid-row: span 2;
+}
+
+.model-table th {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 500;
+  padding: 2px 6px 6px 0;
+  white-space: nowrap;
+}
+
+.model-table td {
+  padding: 2px 6px 2px 0;
+  vertical-align: middle;
+}
+
+.model-table .field-input {
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.model-table .col-ctx {
+  width: 110px;
+}
+
+.model-table .col-flag {
+  width: 44px;
+  text-align: center;
+}
+
+.model-table .col-del {
+  width: 30px;
+}
+
+.body-json {
+  font-family: var(--font-mono);
+  resize: vertical;
+  min-height: 90px;
+}
+
+.map-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.map-editor-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.map-editor-del {
+  flex-shrink: 0;
+}
+
+.map-editor-add {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 4px 10px;
+}
