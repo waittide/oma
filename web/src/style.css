@@ -27,12 +27,16 @@ textarea {
 }
 
 button:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
 a:focus-visible,
 summary:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--accent) 34%, transparent);
   outline-offset: 2px;
+}
+
+/* 输入控件的焦点态由外层容器（.o-input / .box）的边框变化表达，不再叠加 outline */
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
 }
 
 code {

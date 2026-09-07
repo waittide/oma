@@ -30,6 +30,15 @@ const popup = ref<HTMLElement | null>(null);
 
 const current = computed(() => props.options.find((o) => o.value === props.modelValue) ?? null);
 
+const popupStyle = computed(() => {
+  const rect = root.value?.getBoundingClientRect();
+  return {
+    top: `${(rect?.bottom ?? 0) + 6}px`,
+    left: props.align === 'end' ? `${rect?.right ?? 0}px` : `${rect?.left ?? 0}px`,
+    width: `${rect?.width ?? 0}px`,
+  };
+});
+
 function toggle() {
   open.value = !open.value;
 }
@@ -76,13 +85,7 @@ watch(open, async (v) => {
         ref="popup"
         class="menu"
         :class="`align-${align}`"
-        :style="{
-          top: `${(root?.getBoundingClientRect().bottom ?? 0) + 6}px`,
-          left:
-            align === 'end'
-              ? `${root?.getBoundingClientRect().right ?? 0}px`
-              : `${root?.getBoundingClientRect().left ?? 0}px`,
-        }"
+        :style="popupStyle"
       >
         <button
           v-for="opt in options"
@@ -145,7 +148,6 @@ watch(open, async (v) => {
 .menu {
   position: fixed;
   z-index: 80;
-  min-width: 180px;
   max-height: 320px;
   overflow-y: auto;
   padding: 4px;
@@ -182,6 +184,7 @@ watch(open, async (v) => {
 }
 .item-label {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -189,6 +192,7 @@ watch(open, async (v) => {
 .item-hint {
   font-size: 11px;
   color: var(--overlay0);
+  flex-shrink: 0;
 }
 .check {
   flex-shrink: 0;

@@ -306,11 +306,16 @@ const deleteTarget = computed(
   white-space: nowrap;
 }
 .s-actions {
-  display: none;
-  gap: 2px;
-}
-.session:hover .s-actions {
   display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.session:hover .s-actions,
+.session:focus-within .s-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 .rename-input {
   flex: 1;
