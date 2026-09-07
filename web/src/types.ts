@@ -166,10 +166,23 @@ export type McpServerConfig =
   | { type: 'local'; command: string; args?: string[]; env?: Record<string, string> }
   | { type: 'remote'; url: string; headers?: Record<string, string> };
 
+export type ThemeMode = 'light' | 'dark' | 'system';
+export type DarkFlavor = 'frappe' | 'macchiato' | 'mocha';
+export type ThemeAccent =
+  | 'rosewater' | 'flamingo' | 'pink' | 'mauve' | 'red' | 'maroon' | 'peach'
+  | 'yellow' | 'green' | 'teal' | 'sky' | 'sapphire' | 'blue' | 'lavender';
+
+export interface OmaThemeConfig {
+  mode: ThemeMode;
+  dark_flavor: DarkFlavor;
+  accent: ThemeAccent;
+}
+
 export interface OmaConfigView {
   default_model: string;
   default_agent: string;
   default_approval_mode: ApprovalMode;
+  theme: OmaThemeConfig;
   server: { listen_addr: string };
   providers: Record<string, ProviderConfig>;
   mcp_servers: Record<string, McpServerConfig>;

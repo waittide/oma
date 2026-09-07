@@ -2,13 +2,8 @@
 import { Fa6Bolt, Fa6Brain, Fa6Robot, Fa6ScrewdriverWrench } from 'vue-icons-plus/fa6';
 import { ref, onMounted, nextTick, watch } from 'vue';
 import type { ChatMessage, FileNode, SessionRecord, ApprovalDecision, ApprovalMode } from './types';
-import {
-  fetchSessions,
-  createSession,
-  deleteSession,
-  fetchMessages,
-  fetchWorkspaceTree,
-} from './api';
+import { fetchConfig, fetchSessions, createSession, deleteSession, fetchMessages, fetchWorkspaceTree } from './api';
+import { applyThemeFromDaemon } from './theme';
 import { useWebSocket } from './useWebSocket';
 import { toast, uiConfirm, uiPrompt } from './useDialogs';
 import HeaderBar from './components/HeaderBar.vue';
@@ -65,7 +60,11 @@ onMounted(async () => {
 
 async function loadSessions() {
   try {
-    const list = await fetchSessions(workspace.value);
+    // 主题设置以 Daemon 配置为单一事实来源，启动时校正本地缓存
+    fetchConfig()
+      .then((cfg) => applyThemeFromDaemon(cfg.theme))
+      .catch(() => {});
+    const list = await fetchSessions();
     sessions.value = list;
     if (list.length > 0 && !currentSessionId.value) {
       selectSession(list[0].session_id);

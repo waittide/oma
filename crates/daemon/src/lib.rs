@@ -482,6 +482,11 @@ async fn handle_put_config(
         }
     }
 
+    // 主题 label 在写入侧校验，防止非法值污染前端
+    cfg.theme
+        .validate()
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid theme config: {e}")))?;
+
     cfg.save_to_file(&state.config_path).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -12,8 +12,11 @@ oma-contract = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 similar = { workspace = true }
-tempfile = { workspace = true }
+
 tokio = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }

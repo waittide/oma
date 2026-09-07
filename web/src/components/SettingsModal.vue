@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { Fa6Cubes, Fa6Gear, Fa6Plug, Fa6Server, Fa6Sliders, Fa6Xmark } from 'vue-icons-plus/fa6';
+import { Fa6Cubes, Fa6Gear, Fa6Palette, Fa6Plug, Fa6Server, Fa6Sliders, Fa6Xmark } from 'vue-icons-plus/fa6';
 import { onMounted, ref } from 'vue';
-import type { OmaConfigView } from '../types';
+import type { DarkFlavor, OmaConfigView, ThemeAccent, ThemeMode } from '../types';
+import { ACCENTS, applyThemeFromDaemon } from '../theme';
 import { fetchConfig, getToken, setToken, updateConfig } from '../api';
 import GeneralTab from './settings/GeneralTab.vue';
 import McpTab from './settings/McpTab.vue';
@@ -16,11 +17,28 @@ const emit = defineEmits<{
   (e: 'update-workspace', ws: string): void;
 }>();
 
-type TabId = 'connection' | 'general' | 'providers' | 'mcp';
+type TabId = 'connection' | 'appearance' | 'general' | 'providers' | 'mcp';
 
 const activeTab = ref<TabId>('general');
 const inputToken = ref(getToken());
 const inputWorkspace = ref(props.workspace);
+
+const DARK_FLAVORS: Array<{ value: DarkFlavor; label: string }> = [
+  { value: 'frappe', label: 'Frappé' },
+  { value: 'macchiato', label: 'Macchiato' },
+  { value: 'mocha', label: 'Mocha' },
+];
+
+const MODES: Array<{ value: ThemeMode; label: string }> = [
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' },
+  { value: 'system', label: '跟随系统' },
+];
+
+/** 当前 flavor 下各 accent label 的实际色值 (用于强调色色板) */
+function accentHex(accent: ThemeAccent): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(`--${accent}`).trim();
+}
 
 const config = ref<OmaConfigView | null>(null);
 const loadError = ref('');
@@ -49,6 +67,7 @@ async function handleSaveConfig() {
   saveSuccess.value = '';
   try {
     await updateConfig(config.value);
+    applyThemeFromDaemon(config.value.theme);
     saveSuccess.value = '配置已保存并热更新至 Daemon';
   } catch (e) {
     saveError.value = `保存失败: ${e}`;
@@ -74,6 +93,13 @@ async function handleSaveConfig() {
             @click="activeTab = 'general'"
           >
             <Fa6Sliders /> 默认偏好
+          </button>
+          <button
+            class="settings-nav-item"
+            :class="{ active: activeTab === 'appearance' }"
+            @click="activeTab = 'appearance'"
+          >
+            <Fa6Palette /> 外观
           </button>
           <button
             class="settings-nav-item"
@@ -123,6 +149,52 @@ async function handleSaveConfig() {
             </div>
           </div>
 
+          <!-- 外观 (主题由 Daemon 持久化，随配置保存) -->
+          <div v-else-if="activeTab === 'appearance' && config" class="settings-panel">
+            <div class="form-field">
+              <label class="field-label">显示模式</label>
+              <div class="mode-switch" role="group" aria-label="显示模式">
+                <button
+                  v-for="m in MODES"
+                  :key="m.value"
+                  :class="{ active: config.theme.mode === m.value }"
+                  @click="config.theme.mode = m.value"
+                >
+                  {{ m.label }}
+                </button>
+              </div>
+            </div>
+
+            <div class="form-field">
+              <label class="field-label">深色风味</label>
+              <div class="mode-switch" role="group" aria-label="深色风味">
+                <button
+                  v-for="f in DARK_FLAVORS"
+                  :key="f.value"
+                  :class="{ active: config.theme.dark_flavor === f.value }"
+                  @click="config.theme.dark_flavor = f.value"
+                >
+                  {{ f.label }}
+                </button>
+              </div>
+              <div class="field-hint">浅色模式固定为 Latte；深色可选 Frappé / Macchiato / Mocha</div>
+            </div>
+
+            <div class="form-field">
+              <label class="field-label">强调色</label>
+              <div class="accent-row">
+                <button
+                  v-for="a in ACCENTS"
+                  :key="a"
+                  class="accent-swatch"
+                  :class="{ active: config.theme.accent === a }"
+                  :style="{ background: accentHex(a) }"
+                  v-tip="a"
+                  @click="config.theme.accent = a"
+                ></button>
+              </div>
+            </div>
+          </div>
           <!-- 服务端持久化配置 -->
           <template v-else>
             <div v-if="loadError" class="settings-error">{{ loadError }}</div>

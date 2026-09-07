@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { Fa6Bolt, Fa6Moon, Fa6Plus, Fa6Sun, Fa6Trash } from 'vue-icons-plus/fa6';
+import { Fa6Bolt, Fa6Moon, Fa6Plus, Fa6RegFolderOpen, Fa6Sun, Fa6Trash } from 'vue-icons-plus/fa6';
 import type { SessionRecord } from '../types';
-import { theme, toggleTheme } from '../useTheme';
+import { isDark, toggleMode } from '../theme';
 
 defineProps<{
   sessions: SessionRecord[];
@@ -66,17 +66,20 @@ function relativeTime(ts: number): string {
       </div>
 
       <div v-if="sessions.length === 0" class="sidebar-empty">
-        <div class="empty-hint-icon">…</div>
+        <div class="empty-hint-icon"><Fa6RegFolderOpen /></div>
         <div>暂无会话</div>
       </div>
-    </div>
-
     <div class="sidebar-footer">
       <div class="workspace-badge" v-tip="workspace">
         {{ workspace || '默认工作区' }}
       </div>
-      <button class="btn-icon" v-tip="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'" @click="toggleTheme">
-        <Fa6Sun v-if="theme === 'dark'" />
+      <button class="btn-icon" v-tip="isDark ? '切换到浅色主题' : '切换到深色主题'" @click="toggleMode">
+        <Fa6Sun v-if="isDark" />
+        <Fa6Moon v-else />
+      </button>
+    </div>
+      <button class="btn-icon" v-tip="isDark ? '切换到浅色主题' : '切换到深色主题'" @click="toggleMode">
+        <Fa6Sun v-if="isDark" />
         <Fa6Moon v-else />
       </button>
     </div>

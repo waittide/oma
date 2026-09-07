@@ -1,17 +1,32 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath fill='%2389b4fa' d='M249.6 471.5 89.5 48.5C85.4 37.5 90.5 25.3 101.5 21.2c4-1.5 8.3-1.6 12.4-.3L443.8 105c11 3.4 17.2 15.1 13.8 26.1-1.6 5.3-5.3 9.7-10.2 12.3l-129.9 74.8 122.4 110.6c8.3 7.5 9 20.3 1.5 28.6-3.9 4.3-9.5 6.8-15.3 6.6l-155.6-4.2 44.4 148.2c3.3 10.6-2.6 21.9-13.2 25.2-6.9 2.2-14.4.4-19.6-4.6z'/%3E%3C/svg%3E"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Oma - 多端协同 AI Agent 工作台</title>
     <script>
-      // 首帧前应用已保存主题，避免闪烁
+      // 首帧前应用缓存的主题设置 (来源为 Daemon 配置的最近一次同步)，避免闪烁
       try {
-        if (localStorage.getItem('oma_theme') === 'light') {
-          document.documentElement.dataset.theme = 'light';
-        }
-      } catch (e) { /* noop */ }
+        var s = JSON.parse(localStorage.getItem('oma_theme_cache') || 'null') || {};
+        var light =
+          s.mode === 'light' ||
+          (s.mode !== 'dark' && matchMedia('(prefers-color-scheme: light)').matches);
+        var flavor = light
+          ? 'latte'
+          : s.dark_flavor === 'frappe' || s.dark_flavor === 'macchiato'
+            ? s.dark_flavor
+            : 'mocha';
+        var A = ['rosewater','flamingo','pink','mauve','red','maroon','peach','yellow','green','teal','sky','sapphire','blue','lavender'];
+        var accent = A.indexOf(s.accent) >= 0 ? s.accent : 'blue';
+        document.documentElement.classList.add('theme-' + flavor, 'accent-' + accent);
+      } catch (e) {
+        document.documentElement.classList.add('theme-mocha', 'accent-blue');
+      }
     </script>
   </head>
   <body>

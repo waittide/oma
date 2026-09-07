@@ -32,6 +32,81 @@ impl Default for ServerConfig {
     }
 }
 
+/// Catppuccin 全部 accent label (供主题设置校验)
+pub const THEME_ACCENTS: [&str; 14] = [
+    "rosewater",
+    "flamingo",
+    "pink",
+    "mauve",
+    "red",
+    "maroon",
+    "peach",
+    "yellow",
+    "green",
+    "teal",
+    "sky",
+    "sapphire",
+    "blue",
+    "lavender",
+];
+
+/// 前端主题设置 (Catppuccin 体系；浅色固定 Latte，深色可选 Frappé/Macchiato/Mocha)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThemeConfig {
+    /// 显示模式: "light" | "dark" | "system"
+    #[serde(default = "default_theme_mode")]
+    pub mode:        String,
+    /// 深色系 flavor: "frappe" | "macchiato" | "mocha"
+    #[serde(default = "default_dark_flavor")]
+    pub dark_flavor: String,
+    /// 强调色 label (THEME_ACCENTS 之一)
+    #[serde(default = "default_accent")]
+    pub accent:      String,
+}
+
+fn default_theme_mode() -> String {
+    "dark".to_string()
+}
+fn default_dark_flavor() -> String {
+    "mocha".to_string()
+}
+fn default_accent() -> String {
+    "blue".to_string()
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            mode:        default_theme_mode(),
+            dark_flavor: default_dark_flavor(),
+            accent:      default_accent(),
+        }
+    }
+}
+
+impl ThemeConfig {
+    /// 校验全部 label；非法值返回错误说明 (写入侧闸门)
+    pub fn validate(&self) -> Result<()> {
+        if !matches!(self.mode.as_str(), "light" | "dark" | "system") {
+            anyhow::bail!("invalid theme.mode {:?}: expect light|dark|system", self.mode);
+        }
+        if !matches!(self.dark_flavor.as_str(), "frappe" | "macchiato" | "mocha") {
+            anyhow::bail!(
+                "invalid theme.dark_flavor {:?}: expect frappe|macchiato|mocha",
+                self.dark_flavor
+            );
+        }
+        if !THEME_ACCENTS.contains(&self.accent.as_str()) {
+            anyhow::bail!(
+                "invalid theme.accent {:?}: expect one of {:?}",
+                self.accent,
+                THEME_ACCENTS
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Oma 根配置文件 (~/.config/oma/config.toml)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OmaConfig {
@@ -41,6 +116,8 @@ pub struct OmaConfig {
     pub default_agent:         String,
     #[serde(default)]
     pub default_approval_mode: ApprovalMode,
+    #[serde(default)]
+    pub theme:                 ThemeConfig,
     #[serde(default)]
     pub server:                ServerConfig,
     #[serde(default)]
@@ -62,6 +139,7 @@ impl Default for OmaConfig {
             default_model:         default_model_str(),
             default_agent:         default_agent_str(),
             default_approval_mode: ApprovalMode::Normal,
+            theme:                 ThemeConfig::default(),
             server:                ServerConfig::default(),
             providers:             BTreeMap::new(),
             mcp_servers:           BTreeMap::new(),
