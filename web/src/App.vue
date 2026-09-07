@@ -240,47 +240,44 @@ function updateWorkspace(newWs: string) {
             :message="msg"
             @fork-message="handleForkMessage"
           />
-          <!-- 当前轮次正在流式生成的临时呈现卡片 -->
+          <!-- 当前轮次正在流式生成的实时流 -->
           <div v-if="isBusy" class="message-row assistant">
-            <div class="avatar assistant"><Fa6Robot /></div>
-            <div class="message-column">
-              <div class="message-card assistant live">
-                <div class="message-header">
-                  <span class="role-tag assistant">ASSISTANT</span>
-                  <span class="badge badge-live"><span class="dot"></span>正在推理与执行中...</span>
-                </div>
+            <div class="message-main">
+              <div class="flow-row running" aria-label="正在推理与执行中">
+                <span class="pending-dot"></span>
+                <span class="flow-title">正在推理与执行</span>
+              </div>
 
-                <!-- 实时思考流 -->
-                <div v-if="liveThinking" class="thinking-box">
-                  <div class="thinking-header open">
-                    <span><Fa6Brain style="vertical-align: -2px;" /> 实时思维链推导中...</span>
-                  </div>
-                  <div class="thinking-content">
-                    {{ liveThinking }}
-                  </div>
+              <!-- 实时思考流 -->
+              <div v-if="liveThinking" class="thinking-box">
+                <div class="flow-row running open">
+                  <span class="flow-icon"><Fa6Brain /></span>
+                  <span class="flow-title">实时思维链</span>
                 </div>
+                <div class="flow-body">{{ liveThinking }}</div>
+              </div>
 
-                <!-- 实时文本流 -->
-                <div v-if="liveText" class="message-body">
-                  {{ liveText }}
+              <!-- 实时文本流 -->
+              <div v-if="liveText" class="message-body">{{ liveText }}</div>
+
+              <!-- 正在调用的工具 -->
+              <div v-for="tc in activeToolCalls" :key="tc.call_id" class="tool-call-card">
+                <div
+                  class="flow-row"
+                  :class="{ running: tc.output === undefined }"
+                  v-tip="JSON.stringify(tc.input)"
+                >
+                  <span class="flow-icon"><Fa6ScrewdriverWrench /></span>
+                  <span class="flow-title">{{ tc.name }}</span>
+                  <span class="flow-dot"></span>
+                  <span class="flow-summary">{{ tc.output === undefined ? '正在执行…' : (tc.is_error ? '执行报错' : '执行完成') }}</span>
+                  <span :class="['tool-status-badge', tc.output !== undefined ? (tc.is_error ? 'error' : 'success') : 'running']">
+                    {{ tc.output !== undefined ? (tc.is_error ? 'error' : 'ok') : '···' }}
+                  </span>
                 </div>
-
-                <!-- 正在调用的工具 -->
-                <div v-for="tc in activeToolCalls" :key="tc.call_id" class="tool-call-card">
-                  <div class="tool-call-header">
-                    <span class="tool-name-badge"><Fa6ScrewdriverWrench style="vertical-align: -2px;" /> {{ tc.name }}</span>
-                    <span :class="['tool-status-badge', tc.output !== undefined ? (tc.is_error ? 'error' : 'success') : 'running']">
-                      {{ tc.output !== undefined ? (tc.is_error ? '执行报错' : '执行完成') : '正在执行...' }}
-                    </span>
-                  </div>
-                  <div class="tool-body">
-                    <div class="label">// 输入参数:</div>
-                    <pre>{{ JSON.stringify(tc.input, null, 2) }}</pre>
-                    <div v-if="tc.output !== undefined" class="section">
-                      <div class="label">// 返回结果:</div>
-                      <pre>{{ tc.output }}</pre>
-                    </div>
-                  </div>
+                <div class="tool-body">
+                  <pre>{{ JSON.stringify(tc.input, null, 2) }}</pre>
+                  <pre v-if="tc.output !== undefined" class="section">{{ tc.output }}</pre>
                 </div>
               </div>
             </div>

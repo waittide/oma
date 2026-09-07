@@ -3,10 +3,8 @@ import {
   Fa6Brain,
   Fa6ChevronDown,
   Fa6Download,
-  Fa6Robot,
   Fa6ScrewdriverWrench,
   Fa6Seedling,
-  Fa6User,
 } from 'vue-icons-plus/fa6';
 import { ref, computed } from 'vue';
 import type { ChatMessage, Block } from '../types';
@@ -37,10 +35,7 @@ const toolResultBlocks = computed(() => {
   return props.message.content.filter((b): b is Extract<Block, { type: 'tool_result' }> => b.type === 'tool_result');
 });
 
-function formatTime(timestamp: number): string {
-  const d = new Date(timestamp);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
+const thinkingChars = computed(() => thinkingBlocks.value.reduce((acc, b) => acc + b.thinking.length, 0));
 
 function isDiffOutput(text: string): boolean {
   return text.includes('Unified Diff:') || text.includes('@@');
@@ -60,64 +55,21 @@ function parseDiffLines(diffText: string): Array<{ type: 'add' | 'del' | 'info' 
 
 <template>
   <div :class="['message-row', message.role]">
-    <div :class="['avatar', message.role]">
-      <Fa6User v-if="message.role === 'user'" />
-      <Fa6Robot v-else />
-    </div>
-
-    <div class="message-column">
-      <div :class="['message-card', message.role]">
-        <div class="message-header">
-          <span :class="['role-tag', message.role]">
-            {{ message.role === 'user' ? 'USER' : 'ASSISTANT' }}
-          </span>
-          <span>{{ formatTime(message.created_at) }}</span>
-          <button
-            v-if="message.role === 'user'"
-            class="btn-fork"
-            v-tip="'以此节点为基准分叉重新生成'"
-            @click="$emit('fork-message', message.id)"
-          >
-            <Fa6Seedling /> 分叉
-          </button>
+    <div class="message-main">
+      <!-- 用户消息: 右对齐气泡 (仅文本)；工具结果以独立卡片跟随 -->
+      <template v-if="message.role === 'user'">
+        <div v-if="textBlocks.length" class="message-card user">
+          <div v-for="(txt, idx) in textBlocks" :key="idx" class="message-body">{{ txt.text }}</div>
         </div>
 
-        <!-- 思维链 Thinking 折叠展示 -->
-        <div v-if="thinkingBlocks.length > 0" class="thinking-box">
-          <div class="thinking-header" :class="{ open: isThinkingOpen }" @click="isThinkingOpen = !isThinkingOpen">
-            <span><Fa6Brain  /> 深度思考过程 ({{ thinkingBlocks.reduce((acc, b) => acc + b.thinking.length, 0) }} 字符)</span>
-            <Fa6ChevronDown class="chevron" />
-          </div>
-          <div v-if="isThinkingOpen" class="thinking-content">
-            <div v-for="(th, idx) in thinkingBlocks" :key="idx">
-              {{ th.thinking }}
-            </div>
-          </div>
-        </div>
-
-        <!-- 文本内容 Text -->
-        <div v-for="(txt, idx) in textBlocks" :key="idx" class="message-body">
-          {{ txt.text }}
-        </div>
-
-        <!-- 工具调用展示 ToolUse -->
-        <div v-for="tu in toolUseBlocks" :key="tu.id" class="tool-call-card">
-          <div class="tool-call-header">
-            <span class="tool-name-badge"><Fa6ScrewdriverWrench  /> {{ tu.name }}</span>
-            <span class="tool-status-badge success">已执行</span>
-          </div>
-          <div class="tool-body">
-            <div class="label">// 输入参数 (Arguments):</div>
-            <pre>{{ JSON.stringify(tu.input, null, 2) }}</pre>
-          </div>
-        </div>
-
-        <!-- 工具结果 ToolResult -->
         <div v-for="tr in toolResultBlocks" :key="tr.tool_use_id" class="tool-call-card">
           <div class="tool-call-header">
-            <span class="tool-name-badge"><Fa6Download  /> 工具结果回传</span>
+            <span class="flow-icon"><Fa6Download /></span>
+            <span class="tool-name-badge neutral">工具结果</span>
+            <span class="flow-dot"></span>
+            <span class="flow-summary">{{ tr.is_error ? '执行报错' : '成功返回' }}</span>
             <span :class="['tool-status-badge', tr.is_error ? 'error' : 'success']">
-              {{ tr.is_error ? '执行报错' : '成功返回' }}
+              {{ tr.is_error ? 'error' : 'ok' }}
             </span>
           </div>
           <div class="tool-body">
@@ -137,31 +89,77 @@ function parseDiffLines(diffText: string): Array<{ type: 'add' | 'del' | 'info' 
             <pre v-else>{{ tr.content }}</pre>
           </div>
         </div>
-      </div>
+
+        <div class="msg-actions">
+          <button class="btn-fork" v-tip="'以此节点为基准分叉重新生成'" @click="$emit('fork-message', message.id)">
+            <Fa6Seedling /> 分叉
+          </button>
+        </div>
+      </template>
+
+      <!-- 助手消息: 无卡片平面流 -->
+      <template v-else>
+        <div v-if="thinkingBlocks.length" class="thinking-box">
+          <button
+            type="button"
+            class="flow-row"
+            :class="{ open: isThinkingOpen }"
+            @click="isThinkingOpen = !isThinkingOpen"
+          >
+            <span class="flow-icon"><Fa6Brain /></span>
+            <span class="flow-title">深度思考</span>
+            <span class="flow-dot"></span>
+            <span class="flow-summary">{{ thinkingChars }} 字符</span>
+            <Fa6ChevronDown class="chevron" />
+          </button>
+          <div v-if="isThinkingOpen" class="flow-body">
+            <div v-for="(th, idx) in thinkingBlocks" :key="idx">{{ th.thinking }}</div>
+          </div>
+        </div>
+
+        <div v-for="(txt, idx) in textBlocks" :key="idx" class="message-body">{{ txt.text }}</div>
+
+        <div v-for="tu in toolUseBlocks" :key="tu.id" class="tool-call-card">
+          <div class="tool-call-header">
+            <span class="flow-icon"><Fa6ScrewdriverWrench /></span>
+            <span class="tool-name-badge">{{ tu.name }}</span>
+            <span class="flow-dot"></span>
+            <span class="flow-summary">{{ JSON.stringify(tu.input) }}</span>
+            <span class="tool-status-badge success">已执行</span>
+          </div>
+          <div class="tool-body">
+            <pre>{{ JSON.stringify(tu.input, null, 2) }}</pre>
+          </div>
+        </div>
+      </template>
     </div>
   </div>
 </template>
 
 <style scoped>
 .btn-fork {
-  margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 5px;
   background: transparent;
-  border: 1px solid var(--border-subtle);
-  color: var(--text-muted);
-  font-size: 11px;
+  border: 0.5px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-size: 12px;
   font-family: inherit;
-  padding: 2px 9px;
-  border-radius: 999px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 13px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all var(--dur-fast) ease;
 }
 
 .btn-fork:hover {
-  color: var(--success);
-  border-color: var(--success);
-  background: var(--success-soft);
+  color: var(--text-primary);
+  background: var(--wash-hover);
+}
+
+.tool-name-badge.neutral {
+  color: var(--text-secondary);
+  font-weight: 400;
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Fa6Bolt, Fa6Moon, Fa6Plus, Fa6RegCommentDots, Fa6Sun, Fa6Trash } from 'vue-icons-plus/fa6';
+import { Fa6Bolt, Fa6Moon, Fa6Plus, Fa6Sun, Fa6Trash } from 'vue-icons-plus/fa6';
 import type { SessionRecord } from '../types';
 import { theme, toggleTheme } from '../useTheme';
 
@@ -33,14 +33,13 @@ function relativeTime(ts: number): string {
     <div class="sidebar-header">
       <div class="brand-title">
         <span class="logo"><Fa6Bolt /></span>
-        <span>Oma Agent</span>
-      </div>
-      <div class="sidebar-actions">
-        <button class="btn-icon" v-tip="'新建会话'" @click="$emit('create-session')">
-          <Fa6Plus />
-        </button>
+        <span>Oma</span>
       </div>
     </div>
+
+    <button class="session-new" @click="$emit('create-session')">
+      <Fa6Plus /> 新建会话
+    </button>
 
     <div class="sidebar-section-label">会话</div>
 
@@ -52,7 +51,7 @@ function relativeTime(ts: number): string {
         @click="$emit('select-session', s.session_id)"
       >
         <div class="session-item-main">
-          <div class="session-title" v-tip="s.title">
+          <div class="session-title">
             {{ s.title }}
           </div>
           <div class="session-meta">{{ relativeTime(s.updated_at) }} · {{ s.active_model }}</div>
@@ -67,9 +66,8 @@ function relativeTime(ts: number): string {
       </div>
 
       <div v-if="sessions.length === 0" class="sidebar-empty">
-        <Fa6RegCommentDots class="empty-hint-icon" />
+        <div class="empty-hint-icon">…</div>
         <div>暂无会话</div>
-        <div>点击右上角 + 创建</div>
       </div>
     </div>
 

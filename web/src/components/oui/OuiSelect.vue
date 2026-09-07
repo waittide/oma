@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { Fa6ChevronDown } from 'vue-icons-plus/fa6';
+import { Fa6Check, Fa6ChevronDown } from 'vue-icons-plus/fa6';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-
 export interface OuiSelectOption {
   value: string;
   label: string;
@@ -83,6 +82,7 @@ onBeforeUnmount(() => {
         >
           <span class="oui-option-label">{{ o.label }}</span>
           <span v-if="o.description" class="oui-option-desc">{{ o.description }}</span>
+          <Fa6Check v-if="o.value === modelValue" class="oui-option-check" />
         </div>
         <div v-if="!options.length" class="oui-select-empty">无可用选项</div>
       </div>
@@ -229,6 +229,13 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--text-muted);
   text-align: center;
+}
+
+.oui-option-check {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-size: 11px;
+  align-self: center;
 }
 
 .oui-pop-enter-active,

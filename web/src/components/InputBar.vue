@@ -77,70 +77,69 @@ function handleSend() {
 <template>
   <div class="input-container">
     <div class="input-inner">
-      <div class="input-controls">
-        <div class="controls-group">
-          <!-- 模型选择 -->
-          <OuiSelect
-            :model-value="ready?.active_model"
-            :options="modelOptions"
-            placeholder="默认模型"
-            v-tip="'切换激活模型'"
-            @update:model-value="(v) => $emit('change-model', v)"
-          >
-            <template #icon><span class="control-icon"><Fa6Robot /></span></template>
-          </OuiSelect>
-
-          <!-- Agent 模板选择 -->
-          <OuiSelect
-            :model-value="ready?.active_agent"
-            :options="agentOptions"
-            placeholder="task"
-            v-tip="'切换预设 Agent'"
-            @update:model-value="(v) => $emit('change-agent', v)"
-          >
-            <template #icon><span class="control-icon"><Fa6MasksTheater /></span></template>
-          </OuiSelect>
-
-          <!-- 权限审批模式 -->
-          <OuiSelect
-            :model-value="ready?.approval_mode"
-            :options="approvalOptions"
-            v-tip="'切换审批防护模式'"
-            @update:model-value="(v) => $emit('change-approval-mode', v as ApprovalMode)"
-          >
-            <template #icon>
-              <span class="control-icon">
-                <component :is="approvalIcon" />
-              </span>
-            </template>
-          </OuiSelect>
-        </div>
-
-        <div class="controls-group">
-          <!-- 正在执行时展示 Cancel 中断按钮 -->
-          <button v-if="isBusy" class="btn-cancel" @click="$emit('cancel')">
-            <Fa6CircleStop /> 停止生成
-          </button>
-        </div>
-      </div>
-
-      <div class="textarea-wrapper">
+      <div class="composer-card">
         <textarea
           v-model="inputContent"
           class="chat-input"
           placeholder="给 Oma 发送消息或任务指令…"
-          rows="2"
+          rows="1"
           @keydown="handleKeyDown"
         ></textarea>
 
-        <button
-          class="btn-send"
-          v-tip="isBusy ? '加入指令队列' : '发送 (Enter)'"
-          :disabled="!inputContent.trim()"
-          @click="handleSend"
-        >
-          <Fa6PaperPlane />
-        </button>
+        <div class="composer-row">
+          <div class="input-controls">
+            <!-- 模型选择 -->
+            <OuiSelect
+              :model-value="ready?.active_model"
+              :options="modelOptions"
+              placeholder="默认模型"
+              v-tip="'切换激活模型'"
+              @update:model-value="(v) => $emit('change-model', v)"
+            >
+              <template #icon><span class="control-icon"><Fa6Robot /></span></template>
+            </OuiSelect>
+
+            <!-- Agent 模板选择 -->
+            <OuiSelect
+              :model-value="ready?.active_agent"
+              :options="agentOptions"
+              placeholder="task"
+              v-tip="'切换预设 Agent'"
+              @update:model-value="(v) => $emit('change-agent', v)"
+            >
+              <template #icon><span class="control-icon"><Fa6MasksTheater /></span></template>
+            </OuiSelect>
+
+            <!-- 权限审批模式 -->
+            <OuiSelect
+              :model-value="ready?.approval_mode"
+              :options="approvalOptions"
+              v-tip="'切换审批防护模式'"
+              @update:model-value="(v) => $emit('change-approval-mode', v as ApprovalMode)"
+            >
+              <template #icon>
+                <span class="control-icon">
+                  <component :is="approvalIcon" />
+                </span>
+              </template>
+            </OuiSelect>
+          </div>
+
+          <div class="trailing">
+            <!-- 正在执行时展示 Cancel 中断按钮 -->
+            <button v-if="isBusy" class="btn-cancel" @click="$emit('cancel')">
+              <Fa6CircleStop /> 停止
+            </button>
+            <button
+              class="btn-send"
+              v-tip="isBusy ? '加入指令队列' : '发送 (Enter)'"
+              :disabled="!inputContent.trim()"
+              @click="handleSend"
+            >
+              <Fa6PaperPlane />
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="input-hint">Enter 发送 · Shift+Enter 换行{{ isBusy ? ' · 执行中的新指令将进入队列' : '' }}</div>
@@ -149,10 +148,11 @@ function handleSend() {
 </template>
 
 <style scoped>
-.control-icon {
-  display: inline-flex;
+.trailing {
+  flex: none;
+  display: flex;
   align-items: center;
-  color: var(--text-muted);
-  font-size: 12px;
+  gap: 12px;
+  margin-left: auto;
 }
 </style>
