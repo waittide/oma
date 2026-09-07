@@ -9,25 +9,6 @@
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Oma - 多端协同 AI Agent 工作台</title>
-    <script>
-      // 首帧前应用缓存的主题设置 (来源为 Daemon 配置的最近一次同步)，避免闪烁
-      try {
-        var s = JSON.parse(localStorage.getItem('oma_theme_cache') || 'null') || {};
-        var light =
-          s.mode === 'light' ||
-          (s.mode !== 'dark' && matchMedia('(prefers-color-scheme: light)').matches);
-        var flavor = light
-          ? 'latte'
-          : s.dark_flavor === 'frappe' || s.dark_flavor === 'macchiato'
-            ? s.dark_flavor
-            : 'mocha';
-        var A = ['rosewater','flamingo','pink','mauve','red','maroon','peach','yellow','green','teal','sky','sapphire','blue','lavender'];
-        var accent = A.indexOf(s.accent) >= 0 ? s.accent : 'blue';
-        document.documentElement.classList.add('theme-' + flavor, 'accent-' + accent);
-      } catch (e) {
-        document.documentElement.classList.add('theme-mocha', 'accent-blue');
-      }
-    </script>
   </head>
   <body>
     <div id="app"></div>
