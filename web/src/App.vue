@@ -4,8 +4,10 @@ import { Toaster } from 'vue-sonner';
 import { api } from './api';
 import Sidebar from './components/Sidebar.vue';
 import ChatView from './components/ChatView.vue';
+import SettingsView from './components/SettingsView.vue';
 import { loadConfig } from './stores/theme';
 
+const view = ref<'chat' | 'settings'>('chat');
 const online = ref(false);
 
 onMounted(async () => {
@@ -21,9 +23,13 @@ onMounted(async () => {
 
 <template>
   <div class="shell">
-    <Sidebar @open-settings="() => {}" @back="() => {}" />
+    <Sidebar
+      @open-settings="view = 'settings'"
+      @back="view = 'chat'"
+    />
     <main class="main">
-      <ChatView :online="online" @need-settings="() => {}" />
+      <SettingsView v-if="view === 'settings'" @back="view = 'chat'" />
+      <ChatView v-else :online="online" @need-settings="view = 'settings'" />
     </main>
   </div>
   <Toaster position="bottom-right" :expand="false" />
