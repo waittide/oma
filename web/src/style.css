@@ -33,9 +33,9 @@ summary:focus-visible {
   outline-offset: 2px;
 }
 
-/* 输入控件的焦点态由外层容器（.o-input / .box）的边框变化表达，不再叠加 outline */
-input:focus-visible,
-textarea:focus-visible {
+/* 焦点态统一由外层容器（.o-input / .box）表达，彻底屏蔽 UA 内框（不同浏览器
+   对 text 输入的 :focus-visible 判定不一致，故直接按 :focus 兜底） */
+:where(input, textarea):focus {
   outline: none;
 }
 
