@@ -58,6 +58,7 @@ const flavorOptions: { value: Theme['dark_flavor']; label: string }[] = [
   { value: 'macchiato', label: 'Macchiato' },
   { value: 'mocha', label: 'Mocha' },
 ];
+const LIGHT_FLAVORS: { value: 'latte'; label: string }[] = [{ value: 'latte', label: 'Latte' }];
 
 async function applyTheme() {
   savingTheme.value = true;
@@ -416,7 +417,8 @@ function pickLocale(v: Locale) {
           <div class="row">
             <span class="k">{{ t('themeLabel') }}</span>
             <div class="v">
-              <span v-if="mode === 'light'" class="flavor-fixed">Latte</span>
+              <!-- 浅色系当前仅 Latte，后续扩展时追加选项即可 -->
+              <ORadio v-if="mode === 'light'" model-value="latte" :options="LIGHT_FLAVORS" />
               <ORadio v-else v-model="flavor" :options="flavorOptions" />
             </div>
           </div>
@@ -694,21 +696,6 @@ function pickLocale(v: Locale) {
   transition:
     box-shadow 0.12s ease,
     filter 0.12s ease;
-}
-.dot.active {
-  box-shadow:
-    0 0 0 2px var(--paper),
-    0 0 0 4px var(--dot);
-}
-.flavor-fixed {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface-strong);
-  font-size: 12.5px;
-  color: var(--text-secondary);
 }
 .grid {
   display: grid;
