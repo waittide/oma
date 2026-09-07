@@ -204,9 +204,10 @@ watch(open, async (v) => {
 }
 .menu {
   position: fixed;
-  z-index: 80;
+  z-index: 95;
   display: flex;
-  height: 328px;
+  max-height: 328px;
+  min-height: 120px;
   padding: 4px;
   background: var(--surface-strong);
   border: 1px solid var(--line);

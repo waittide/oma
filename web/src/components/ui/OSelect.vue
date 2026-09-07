@@ -161,7 +161,7 @@ watch(open, async (v) => {
 }
 .menu {
   position: fixed;
-  z-index: 80;
+  z-index: 95;
   max-height: 320px;
   overflow-y: auto;
   padding: 4px;

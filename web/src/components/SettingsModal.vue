@@ -637,6 +637,7 @@ function pickLocale(v: Locale) {
   padding: 16px 18px 18px;
 }
 .card {
+  min-height: 100%;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--surface);
