@@ -1,5 +1,5 @@
 <script setup lang="ts" generic="T extends string">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { LuCheck, LuChevronDown } from 'vue-icons-plus/lu';
 import { useTranslations } from '../../composables/i18n';
 
@@ -30,14 +30,22 @@ const popup = ref<HTMLElement | null>(null);
 
 const current = computed(() => props.options.find((o) => o.value === props.modelValue) ?? null);
 
-const popupStyle = computed(() => {
+const popupStyle = ref<{ top: string; left: string; width: string }>({ top: '0', left: '0', width: '0' });
+
+/** 弹层与触发器等宽，按视口夹取位置，避免右侧溢出。 */
+function updatePosition() {
   const rect = root.value?.getBoundingClientRect();
-  return {
-    top: `${(rect?.bottom ?? 0) + 6}px`,
-    left: props.align === 'end' ? `${rect?.right ?? 0}px` : `${rect?.left ?? 0}px`,
-    width: `${rect?.width ?? 0}px`,
+  if (!rect) return;
+  const vw = document.documentElement.clientWidth;
+  const width = rect.width;
+  const rawLeft = props.align === 'end' ? rect.right - width : rect.left;
+  const left = Math.min(Math.max(8, rawLeft), Math.max(8, vw - width - 8));
+  popupStyle.value = {
+    top: `${rect.bottom + 6}px`,
+    left: `${left}px`,
+    width: `${width}px`,
   };
-});
+}
 
 function toggle() {
   open.value = !open.value;
@@ -59,14 +67,20 @@ function onDocKeydown(e: KeyboardEvent) {
 onMounted(() => {
   document.addEventListener('mousedown', onDocClick);
   document.addEventListener('keydown', onDocKeydown);
+  window.addEventListener('resize', updatePosition);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocClick);
   document.removeEventListener('keydown', onDocKeydown);
+  window.removeEventListener('resize', updatePosition);
 });
 
 watch(open, async (v) => {
-  if (v && popup.value) popup.value.scrollTop = 0;
+  if (v) {
+    await nextTick();
+    updatePosition();
+    if (popup.value) popup.value.scrollTop = 0;
+  }
 });
 </script>
 
@@ -156,9 +170,7 @@ watch(open, async (v) => {
   border-radius: 10px;
   box-shadow: 0 8px 28px var(--shadow);
 }
-.align-end {
-  transform: translateX(-100%);
-}
+/* align-end 的右对齐由 updatePosition 计算，无需 transform */
 .item {
   display: flex;
   align-items: center;
@@ -173,10 +185,14 @@ watch(open, async (v) => {
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+  white-space: nowrap;
 }
 .item:hover {
   background: var(--surface-hover);
   color: var(--ink);
+}
+.item {
+  white-space: nowrap;
 }
 .item.active {
   color: var(--accent);
