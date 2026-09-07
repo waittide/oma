@@ -322,6 +322,22 @@ async fn handle_get_messages(
     }
 }
 
+async fn handle_get_message_tree(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+    Query(query): Query<AuthQuery>,
+) -> Result<Json<Vec<ChatMessage>>, StatusCode> {
+    if !check_auth(&headers, query.token.as_deref(), &state.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    match state.storage.get_all_messages(&session_id).await {
+        Ok(msgs) => Ok(Json(msgs)),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
 #[derive(Deserialize)]
 struct RenameSessionReq {
     title: String,
@@ -711,6 +727,7 @@ pub fn create_router(state: DaemonState) -> Router {
             delete(handle_delete_session).patch(handle_rename_session),
         )
         .route("/api/sessions/{id}/messages", get(handle_get_messages))
+        .route("/api/sessions/{id}/messages/tree", get(handle_get_message_tree))
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
         .route("/api/config", get(handle_get_config).put(handle_put_config))
