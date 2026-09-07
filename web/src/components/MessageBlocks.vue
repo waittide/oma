@@ -10,7 +10,12 @@ import type { Block } from '../types';
 import { prettyJson, renderMarkdown } from '../lib/format';
 import { useTranslations } from '../composables/i18n';
 
-const props = defineProps<{ blocks: Block[]; streaming: boolean }>();
+const props = defineProps<{
+  blocks: Block[];
+  streaming: boolean;
+  /** 跨消息的 tool_use_id → 结果映射（重载后完成态） */
+  results?: Record<string, { content: string; is_error: boolean }>;
+}>();
 
 const { t } = useTranslations('blocks');
 
@@ -42,7 +47,16 @@ const items = computed<Item[]>(() => {
     else if (b.type === 'image') out.push({ kind: 'image', key: `i${i}`, imageSrc: imageSrc(b.data) });
     else if (b.type === 'tool_use') {
       toolIndex[b.id] = out.length;
-      out.push({ kind: 'tool', key: b.id, toolName: b.name, toolInput: b.input });
+      const carried = props.results?.[b.id];
+      out.push({
+        kind: 'tool',
+        key: b.id,
+        toolName: b.name,
+        toolInput: b.input,
+        resultContent: carried?.content,
+        resultError: carried?.is_error,
+        resultDone: carried !== undefined,
+      });
     } else {
       const idx = toolIndex[b.tool_use_id];
       if (idx !== undefined) {

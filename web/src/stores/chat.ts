@@ -316,6 +316,25 @@ export function forkAndRun(parentMessageId: string, newContent: string) {
   });
 }
 
+/** 全树 tool_use_id → tool_result 映射：跨消息配对，重载后工具卡片仍为完成态。 */
+export const toolResults = computed(() => {
+  const out: Record<string, { content: string; is_error: boolean }> = {};
+  for (const m of messages.value) {
+    for (const b of m.content) {
+      if (b.type === 'tool_result') out[b.tool_use_id] = { content: b.content, is_error: b.is_error };
+    }
+  }
+  return out;
+});
+
+/** 运行时内部消息（仅 tool_result 的回执或空壳），不渲染气泡。 */
+export function isInternalMessage(m: ChatMessage): boolean {
+  return (
+    m.content.length === 0 ||
+    (m.role === 'user' && m.content.every((b) => b.type === 'tool_result'))
+  );
+}
+
 /** 渲染序列：持久化消息 + 流式缓冲块。 */
 export const renderBlocks = computed<Block[]>(() => {
   const out: Block[] = [];

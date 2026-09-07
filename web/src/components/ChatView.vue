@@ -205,7 +205,12 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
       </div>
 
       <template v-else>
-        <article v-for="m in chat.messages.value" :key="m.id" class="msg" :class="m.role">
+        <article
+          v-for="m in chat.messages.value.filter((x) => !chat.isInternalMessage(x))"
+          :key="m.id"
+          class="msg"
+          :class="m.role"
+        >
           <div class="avatar">
             <LuUser v-if="m.role === 'user'" :size="14" />
             <LuBot v-else :size="14" />
@@ -233,7 +238,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
                 />
               </template>
             </div>
-            <MessageBlocks :blocks="m.content" :streaming="false" />
+            <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
           </div>
         </article>
 
