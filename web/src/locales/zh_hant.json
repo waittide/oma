@@ -106,7 +106,7 @@
     "saveAll": "儲存全部",
     "newProvider": "新增 Provider",
     "providerName": "名稱",
-    "providerNameRule": "名稱需以字母開頭，僅含字母/數字/底線",
+    "providerNameRule": "名稱需以字母或數字開頭，可含字母、數字、點、底線、連字號",
     "providerExists": "該 Provider 已存在",
     "providerAdded": "已新增，填寫後請點擊「儲存全部」",
     "providersSaved": "Provider 設定已儲存",
@@ -130,7 +130,22 @@
       "sapphire": "藍寶石",
       "blue": "藍色",
       "lavender": "薰衣草"
-    }
+    },
+    "addModel": "新增模型",
+    "removeModel": "刪除模型",
+    "modelName": "顯示名稱",
+    "contextLen": "上下文大小",
+    "maxOutput": "最大輸出",
+    "unset": "未設定（使用內建預設）",
+    "reasoningEffort": "推理等級",
+    "effortOff": "關閉",
+    "capabilities": "能力",
+    "supportsThinking": "支援思考",
+    "supportsVision": "支援視覺",
+    "inputTypes": "輸入類型",
+    "inputText": "文字",
+    "inputImage": "圖片",
+    "inputVideo": "影片"
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"

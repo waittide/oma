@@ -78,7 +78,8 @@ export async function saveTheme(next: Theme): Promise<void> {
 /** 提交任意配置修改（providers 等），成功后同步缓存。 */
 export async function saveConfig(next: OmaConfig): Promise<void> {
   await api.putConfig(next);
-  config.value = next;
-  theme.value = { ...DEFAULT_THEME, ...next.theme };
+  // 以服务端回读为准：本地回写会让脱敏密钥等字段停留在过期值上
+  config.value = await api.getConfig();
+  theme.value = { ...DEFAULT_THEME, ...config.value.theme };
   applyTheme();
 }

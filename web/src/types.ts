@@ -145,6 +145,12 @@ export interface ModelEntry {
   context_len: number;
   supports_vision: boolean;
   supports_thinking: boolean;
+  /** 最大输出 Token；未设置时各协议使用内置默认 */
+  max_output?: number;
+  /** 推理等级："" (关闭) | low | medium | high */
+  reasoning_effort?: string;
+  /** 支持的输入模态：text / image / video */
+  input_types?: string[];
 }
 
 export interface ProviderConfig {

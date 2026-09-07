@@ -84,7 +84,9 @@ export const api = {
       `/api/workspace/file?workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}`,
     ),
 
-  getConfig: () => request<OmaConfig>('/api/config'),
+  /** reveal=1 时服务端返回真实 api_key（默认脱敏为 "***"） */
+  getConfig: (opts?: { reveal?: boolean }) =>
+    request<OmaConfig>('/api/config' + (opts?.reveal ? '?reveal=1' : '')),
 
   putConfig: (config: OmaConfig) =>
     request<{ success: boolean }>('/api/config', {

@@ -106,7 +106,7 @@
     "saveAll": "Save All",
     "newProvider": "New Provider",
     "providerName": "Name",
-    "providerNameRule": "Name must start with a letter; letters, digits and underscores only",
+    "providerNameRule": "Name must start with a letter or digit; may contain letters, digits, dot, underscore and hyphen",
     "providerExists": "Provider already exists",
     "providerAdded": "Added. Fill it in, then click Save All.",
     "providersSaved": "Provider config saved",
@@ -130,7 +130,22 @@
       "sapphire": "Sapphire",
       "blue": "Blue",
       "lavender": "Lavender"
-    }
+    },
+    "addModel": "Add Model",
+    "removeModel": "Remove model",
+    "modelName": "Display Name",
+    "contextLen": "Context Size",
+    "maxOutput": "Max Output",
+    "unset": "Unset (built-in default)",
+    "reasoningEffort": "Reasoning Effort",
+    "effortOff": "Off",
+    "capabilities": "Capabilities",
+    "supportsThinking": "Thinking",
+    "supportsVision": "Vision",
+    "inputTypes": "Input Types",
+    "inputText": "Text",
+    "inputImage": "Image",
+    "inputVideo": "Video"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"

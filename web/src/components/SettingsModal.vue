@@ -1,10 +1,18 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
-import { LuLanguages, LuPalette, LuServer, LuSquareUserRound } from 'vue-icons-plus/lu';
+import {
+  LuLanguages,
+  LuPalette,
+  LuPlus,
+  LuServer,
+  LuSquareUserRound,
+  LuTrash2,
+} from 'vue-icons-plus/lu';
 import OButton from './ui/OButton.vue';
 import OCheckbox from './ui/OCheckbox.vue';
 import OInput from './ui/OInput.vue';
+import { api } from '../api';
 import OModal from './ui/OModal.vue';
 import ORadio from './ui/ORadio.vue';
 import OSelect from './ui/OSelect.vue';
@@ -13,7 +21,7 @@ import OModelSelect from './ui/OModelSelect.vue';
 import { ACCENTS, config, loadConfig, saveConfig, saveTheme, theme } from '../stores/theme';
 import { agents } from '../stores/chat';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
-import type { AgentSummary, ModelInfo, OmaConfig, Theme } from '../types';
+import type { AgentSummary, ModelInfo, OmaConfig, ProviderConfig, Theme } from '../types';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ open: boolean }>();
@@ -66,9 +74,8 @@ async function applyTheme() {
   }
 }
 
-// ---------- 默认参数 / Provider ----------
+// ---------- 默认参数 ----------
 const defaults = reactive({ model: '', agent: '', approval: 'normal' as OmaConfig['default_approval_mode'] });
-const showKey = ref<Record<string, boolean>>({});
 const savingDefaults = ref(false);
 
 watch(
@@ -101,60 +108,6 @@ async function saveDefaults() {
   }
 }
 
-const showProvider = ref(false);
-const providerId = ref('');
-
-function addProvider() {
-  providerId.value = '';
-  showProvider.value = true;
-}
-
-function confirmProvider() {
-  if (!config.value) return;
-  const id = providerId.value.trim();
-  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(id)) {
-    toast.error(t('providerNameRule'));
-    return;
-  }
-  if (config.value.providers[id]) {
-    toast.error(t('providerExists'));
-    return;
-  }
-  config.value.providers[id] = {
-    api_type: 'anthropic',
-    base_url: 'https://api.anthropic.com',
-    api_key: '',
-    headers: {},
-    body: {},
-    models: [],
-  };
-  showProvider.value = false;
-  toast.success(t('providerAdded'));
-}
-
-async function saveProviders() {
-  if (!config.value) return;
-  try {
-    await saveConfig(config.value);
-    toast.success(t('providersSaved'));
-  } catch (e) {
-    toast.error(t('saveFailed', { message: (e as Error).message }));
-  }
-}
-
-function removeProvider(id: string) {
-  if (!config.value) return;
-  delete config.value.providers[id];
-}
-
-const approvalOptions = computed<{ value: OmaConfig['default_approval_mode']; label: string }[]>(
-  () => [
-    { value: 'normal', label: t('approvalNormal') },
-    { value: 'strict', label: t('approvalStrict') },
-    { value: 'auto', label: t('approvalAuto') },
-  ],
-);
-
 /** 默认参数：模型选择器按提供商分组；未开会话时回退到内置 agent 清单。 */
 const providerGroups = computed<Record<string, ModelInfo[]>>(() => {
   if (!config.value) return {};
@@ -170,6 +123,225 @@ const agentOptions = computed<{ value: string; label: string }[]>(() => {
     : BUILTIN_AGENTS.map((id) => ({ id, name: id, description: '' }));
   return list.map((a) => ({ value: a.id, label: a.name }));
 });
+
+// ---------- 模型提供商（草稿编辑，保存时统一校验与写回） ----------
+interface ModelDraft {
+  id: string;
+  name: string;
+  context_len: string;
+  max_output: string;
+  reasoning_effort: string;
+  supports_thinking: boolean;
+  supports_vision: boolean;
+  input_types: string[];
+}
+interface ProviderDraft {
+  /** null = 本次新增，尚无服务端原键 */
+  origId: string | null;
+  name: string;
+  api_type: string;
+  base_url: string;
+  api_key: string;
+  headers: Record<string, string>;
+  body: unknown;
+  models: ModelDraft[];
+}
+
+const providerDrafts = ref<ProviderDraft[]>([]);
+const savingProviders = ref(false);
+
+function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
+  return {
+    origId,
+    name: origId,
+    api_type: p.api_type,
+    base_url: p.base_url,
+    api_key: p.api_key,
+    headers: { ...p.headers },
+    body: p.body,
+    models: (p.models ?? []).map((m) => ({
+      id: m.id,
+      name: m.name,
+      context_len: String(m.context_len),
+      max_output: m.max_output === undefined ? '' : String(m.max_output),
+      reasoning_effort: m.reasoning_effort ?? '',
+      supports_thinking: m.supports_thinking,
+      supports_vision: m.supports_vision,
+      input_types: [...(m.input_types ?? [])],
+    })),
+  };
+}
+
+function rebuildDrafts() {
+  providerDrafts.value = config.value
+    ? Object.entries(config.value.providers).map(([id, p]) => toDraft(id, p))
+    : [];
+}
+
+watch(
+  () => [props.open, section.value] as const,
+  ([o, s]) => {
+    if (o && s === 'providers') rebuildDrafts();
+  },
+);
+
+const apiTypeOptions = ['anthropic', 'completion', 'response', 'google'].map((v) => ({ value: v, label: v }));
+const effortOptions = computed(() => [
+  { value: '', label: t('effortOff') },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+]);
+const INPUT_TYPES = ['text', 'image', 'video'] as const;
+const INPUT_TYPE_LABELS: Record<string, string> = {
+  text: 'inputText',
+  image: 'inputImage',
+  video: 'inputVideo',
+};
+
+function inputTypeLabel(ty: string): string {
+  return t(INPUT_TYPE_LABELS[ty] ?? ty);
+}
+
+const showProvider = ref(false);
+const providerId = ref('');
+
+function addProvider() {
+  providerId.value = '';
+  showProvider.value = true;
+}
+
+function confirmProvider() {
+  const id = providerId.value.trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) {
+    toast.error(t('providerNameRule'));
+    return;
+  }
+  if (providerDrafts.value.some((d) => d.name === id)) {
+    toast.error(t('providerExists'));
+    return;
+  }
+  providerDrafts.value.push({
+    origId: null,
+    name: id,
+    api_type: 'anthropic',
+    base_url: 'https://api.anthropic.com',
+    api_key: '',
+    headers: {},
+    body: {},
+    models: [],
+  });
+  showProvider.value = false;
+}
+
+function removeDraft(index: number) {
+  providerDrafts.value.splice(index, 1);
+}
+
+function addModel(d: ProviderDraft) {
+  d.models.push({
+    id: '',
+    name: '',
+    context_len: '128000',
+    max_output: '',
+    reasoning_effort: '',
+    supports_thinking: true,
+    supports_vision: true,
+    input_types: ['text', 'image'],
+  });
+}
+
+function toggleInputType(m: ModelDraft, type: string, on: boolean) {
+  m.input_types = on
+    ? [...m.input_types, type]
+    : m.input_types.filter((x) => x !== type);
+}
+
+/** "provider/model" 选择器仅在首个 '/' 处切分（模型 id 可含 '/'）。 */
+function splitSelector(v: string): [string, string] {
+  const i = v.indexOf('/');
+  return i === -1 ? ['', v] : [v.slice(0, i), v.slice(i + 1)];
+}
+
+async function saveProviders() {
+  if (!config.value) return;
+  // 名称校验：合法标识符且互不重复
+  for (const d of providerDrafts.value) {
+    // 选择器格式为 "provider/model"，名称不能含 '/'；连字符/点等其余字符均合法
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(d.name.trim())) {
+      toast.error(t('providerNameRule'));
+      return;
+    }
+  }
+  const names = providerDrafts.value.map((d) => d.name.trim());
+  if (new Set(names).size !== names.length) {
+    toast.error(t('providerExists'));
+    return;
+  }
+
+  // 重命名提供商时同步修正 default_model 的前缀
+  const [defaultProvider] = splitSelector(config.value.default_model);
+  const renamed = providerDrafts.value.find((d) => d.origId === defaultProvider && d.name.trim() !== d.origId);
+  const default_model = renamed
+    ? renamed.name.trim() + config.value.default_model.slice(defaultProvider.length)
+    : config.value.default_model;
+
+  savingProviders.value = true;
+  try {
+    // 脱敏值回传前先还原真实密钥：否则重命名后服务端按新键名找不到旧值，密钥会被清空
+    if (providerDrafts.value.some((d) => d.api_key === '***')) {
+      const real = await api.getConfig({ reveal: true });
+      for (const d of providerDrafts.value) {
+        if (d.api_key !== '***') continue;
+        const orig = d.origId ? real.providers[d.origId]?.api_key : undefined;
+        if (orig !== undefined) d.api_key = orig;
+      }
+    }
+
+    const providers: Record<string, ProviderConfig> = {};
+    for (const d of providerDrafts.value) {
+      providers[d.name.trim()] = {
+        api_type: d.api_type,
+        base_url: d.base_url.trim(),
+        api_key: d.api_key,
+        headers: d.headers,
+        body: d.body,
+        models: d.models
+          .filter((m) => m.id.trim())
+          .map((m) => {
+            const ctx = parseInt(m.context_len, 10);
+            const mo = parseInt(m.max_output, 10);
+            return {
+              id: m.id.trim(),
+              name: m.name.trim(),
+              context_len: Number.isFinite(ctx) && ctx > 0 ? ctx : 128000,
+              supports_vision: m.supports_vision,
+              supports_thinking: m.supports_thinking,
+              ...(Number.isFinite(mo) && mo > 0 ? { max_output: mo } : {}),
+              ...(m.reasoning_effort ? { reasoning_effort: m.reasoning_effort } : {}),
+              ...(m.input_types.length ? { input_types: [...m.input_types] } : {}),
+            };
+          }),
+      };
+    }
+    await saveConfig({ ...config.value, providers, default_model });
+    rebuildDrafts();
+    toast.success(t('providersSaved'));
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  } finally {
+    savingProviders.value = false;
+  }
+}
+
+const approvalOptions = computed<{ value: OmaConfig['default_approval_mode']; label: string }[]>(
+  () => [
+    { value: 'normal', label: t('approvalNormal') },
+    { value: 'strict', label: t('approvalStrict') },
+    { value: 'auto', label: t('approvalAuto') },
+  ],
+);
+
 const localeOptions = computed(() =>
   LOCALES.map((l) => ({ value: l.value, label: l.label })),
 );
@@ -178,8 +350,6 @@ function pickLocale(v: Locale) {
   setLocale(v);
 }
 </script>
-
-
 
 <template>
   <OModal :open="open" :title="t('title')" width="880px" flush @close="emit('close')">
@@ -215,6 +385,7 @@ function pickLocale(v: Locale) {
               <ORadio v-else v-model="flavor" :options="flavorOptions" />
             </div>
           </div>
+
           <div class="row">
             <span class="k">{{ t('accent') }}</span>
             <div class="v dots">
@@ -234,7 +405,6 @@ function pickLocale(v: Locale) {
               </OTooltip>
             </div>
           </div>
-
 
           <div class="row end">
             <OButton variant="primary" :loading="savingTheme" @click="applyTheme">{{ t('saveTheme') }}</OButton>
@@ -282,46 +452,76 @@ function pickLocale(v: Locale) {
         <!-- Providers -->
         <section v-else-if="section === 'providers' && config" class="card">
           <div class="card-head">
-            <h3>{{ t('providersCount', { count: Object.keys(config.providers).length }) }}</h3>
+            <h3>{{ t('providersCount', { count: providerDrafts.length }) }}</h3>
             <div class="ch-actions">
               <OButton size="sm" variant="soft" @click="addProvider">{{ t('add') }}</OButton>
-              <OButton size="sm" variant="primary" @click="saveProviders">{{ t('saveAll') }}</OButton>
+              <OButton size="sm" variant="primary" :loading="savingProviders" @click="saveProviders">
+                {{ t('saveAll') }}
+              </OButton>
             </div>
           </div>
 
-          <div v-for="(p, id) in config.providers" :key="id" class="provider">
+          <div v-for="(d, pi) in providerDrafts" :key="d.origId ?? `new-${pi}`" class="provider">
             <div class="pv-head">
-              <span class="pv-id">{{ id }}</span>
-              <OCheckbox
-                :model-value="showKey[id] === true"
-                :label="t('showKey')"
-                @update:model-value="showKey[id] = $event"
-              />
-              <OButton size="sm" variant="danger" @click="removeProvider(String(id))">{{ tc('delete') }}</OButton>
+              <OInput v-model="d.name" class="pv-name" :placeholder="t('providerName')" />
+              <OButton size="sm" variant="danger" :title="tc('delete')" @click="removeDraft(pi)">
+                <template #icon><LuTrash2 :size="13" /></template>
+              </OButton>
             </div>
             <div class="grid">
               <label>api_type</label>
-              <OInput v-model="p.api_type" />
+              <OSelect v-model="d.api_type" :options="apiTypeOptions" />
               <label>base_url</label>
-              <OInput v-model="p.base_url" />
+              <OInput v-model="d.base_url" />
               <label>api_key</label>
-              <OInput v-model="p.api_key" :type="showKey[id] ? 'text' : 'password'" />
-              <label>models</label>
-              <div class="tags">
-                <span v-for="m in p.models ?? []" :key="m.id" class="tag">
-                  {{ m.name || m.id }}
-                  <button type="button" class="tag-x" @click="p.models = (p.models ?? []).filter((x) => x.id !== m.id)">
-                    ×
-                  </button>
-                </span>
-                <span v-if="(p.models ?? []).length === 0" class="muted">{{ t('modelsNone') }}</span>
+              <OInput v-model="d.api_key" type="password" />
+            </div>
+
+            <div class="models-head">
+              <span class="models-title">models</span>
+              <OButton size="sm" variant="soft" @click="addModel(d)">
+                <template #icon><LuPlus :size="13" /></template>
+                {{ t('addModel') }}
+              </OButton>
+            </div>
+            <p v-if="d.models.length === 0" class="muted">{{ t('modelsNone') }}</p>
+
+            <div v-for="(m, mi) in d.models" :key="mi" class="model">
+              <div class="m-head">
+                <OInput v-model="m.id" class="m-id" placeholder="model-id" />
+                <button type="button" class="m-del" :title="t('removeModel')" @click="d.models.splice(mi, 1)">
+                  <LuTrash2 :size="13" />
+                </button>
+              </div>
+              <div class="m-grid">
+                <label>{{ t('modelName') }}</label>
+                <OInput v-model="m.name" />
+                <label>{{ t('contextLen') }}</label>
+                <OInput v-model="m.context_len" />
+                <label>{{ t('maxOutput') }}</label>
+                <OInput v-model="m.max_output" :placeholder="t('unset')" />
+                <label>{{ t('reasoningEffort') }}</label>
+                <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
+                <label>{{ t('capabilities') }}</label>
+                <div class="checks">
+                  <OCheckbox v-model="m.supports_thinking" :label="t('supportsThinking')" />
+                  <OCheckbox v-model="m.supports_vision" :label="t('supportsVision')" />
+                </div>
+                <label>{{ t('inputTypes') }}</label>
+                <div class="checks">
+                  <OCheckbox
+                    v-for="ty in INPUT_TYPES"
+                    :key="ty"
+                    :model-value="m.input_types.includes(ty)"
+                    :label="inputTypeLabel(ty)"
+                    @update:model-value="toggleInputType(m, ty, $event)"
+                  />
+                </div>
               </div>
             </div>
           </div>
 
-          <p v-if="Object.keys(config.providers).length === 0" class="muted empty">
-            {{ t('providersEmpty') }}
-          </p>
+          <p v-if="providerDrafts.length === 0" class="muted empty">{{ t('providersEmpty') }}</p>
         </section>
 
         <section v-else-if="section === 'defaults' || section === 'providers'" class="card">
@@ -429,16 +629,6 @@ function pickLocale(v: Locale) {
   flex: 1;
   min-width: 0;
 }
-.flavor-fixed {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface-strong);
-  font-size: 12.5px;
-  color: var(--text-secondary);
-}
 /* 强调色点阵：两行各 7 个，整齐排列；悬停经 OTooltip 显示名称 */
 .dots {
   display: grid;
@@ -458,13 +648,20 @@ function pickLocale(v: Locale) {
     box-shadow 0.12s ease,
     filter 0.12s ease;
 }
-.dot:hover {
-  filter: brightness(1.12);
-}
 .dot.active {
   box-shadow:
     0 0 0 2px var(--paper),
     0 0 0 4px var(--dot);
+}
+.flavor-fixed {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-strong);
+  font-size: 12.5px;
+  color: var(--text-secondary);
 }
 .grid {
   display: grid;
@@ -490,41 +687,84 @@ function pickLocale(v: Locale) {
 .pv-head {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   margin-bottom: 10px;
 }
-.pv-id {
+.pv-name {
   flex: 1;
+  max-width: 280px;
+}
+.pv-name :deep(input) {
   font-family: var(--font-mono);
-  font-size: 13px;
   font-weight: 600;
-  color: var(--accent);
 }
-.tags {
+.models-head {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
 }
-.tag {
+.models-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--overlay0);
+}
+.model {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  margin-top: 8px;
+  background: var(--surface);
+}
+.m-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.m-id {
+  max-width: 320px;
+}
+.m-id :deep(input) {
+  font-family: var(--font-mono);
+}
+.m-del {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: 99px;
-  background: var(--surface-strong);
-  font-size: 11.5px;
-  color: var(--text-secondary);
-}
-.tag-x {
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   border: none;
+  border-radius: 6px;
   background: transparent;
   color: var(--overlay0);
   cursor: pointer;
-  font-size: 12px;
-  padding: 0 2px;
+  flex-shrink: 0;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
 }
-.tag-x:hover {
+.m-del:hover {
+  background: var(--danger-soft);
   color: var(--danger);
+}
+.m-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+  margin-top: 8px;
+}
+.m-grid label {
+  font-size: 12px;
+  color: var(--overlay0);
+  white-space: nowrap;
+}
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
 }
 .muted {
   font-size: 12.5px;
