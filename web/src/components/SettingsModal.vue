@@ -196,10 +196,11 @@ function pickLocale(v: Locale) {
             </div>
           </div>
 
-          <div v-if="mode !== 'light'" class="row">
-            <span class="k">{{ t('flavor') }}</span>
+          <div class="row">
+            <span class="k">{{ t('themeLabel') }}</span>
             <div class="v">
-              <OSelect v-model="flavor" :options="flavorOptions" width="160px" />
+              <span v-if="mode === 'light'" class="flavor-fixed">Latte</span>
+              <ORadio v-else v-model="flavor" :options="flavorOptions" />
             </div>
           </div>
 
@@ -412,6 +413,16 @@ function pickLocale(v: Locale) {
 .v {
   flex: 1;
   min-width: 0;
+}
+.flavor-fixed {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-strong);
+  font-size: 12.5px;
+  color: var(--text-secondary);
 }
 .swatches {
   display: flex;
