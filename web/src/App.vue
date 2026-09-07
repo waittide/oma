@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted } from 'vue';
 import { Toaster } from 'vue-sonner';
+import Sidebar from './components/Sidebar.vue';
 import { loadConfig } from './stores/theme';
 
 onMounted(() => loadConfig());
@@ -8,21 +9,30 @@ onMounted(() => loadConfig());
 
 <template>
   <div class="shell">
-    <header class="bar">Oma</header>
+    <Sidebar @open-settings="() => {}" @back="() => {}" />
+    <main class="main">
+      <div class="placeholder">选择或新建会话</div>
+    </main>
   </div>
   <Toaster position="bottom-right" :expand="false" />
 </template>
 
 <style scoped>
 .shell {
+  display: flex;
   height: 100vh;
+  overflow: hidden;
   background: var(--paper);
   color: var(--ink);
 }
-.bar {
-  padding: 14px 18px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
-  font-weight: 700;
+.main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  place-items: center;
+}
+.placeholder {
+  color: var(--overlay0);
+  font-size: 13px;
 }
 </style>
