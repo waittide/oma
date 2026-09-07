@@ -1,17 +1,29 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, ref } from 'vue';
 import { Toaster } from 'vue-sonner';
+import { api } from './api';
 import Sidebar from './components/Sidebar.vue';
+import ChatView from './components/ChatView.vue';
 import { loadConfig } from './stores/theme';
 
-onMounted(() => loadConfig());
+const online = ref(false);
+
+onMounted(async () => {
+  await loadConfig();
+  try {
+    await api.status();
+    online.value = true;
+  } catch {
+    online.value = false;
+  }
+});
 </script>
 
 <template>
   <div class="shell">
     <Sidebar @open-settings="() => {}" @back="() => {}" />
     <main class="main">
-      <div class="placeholder">选择或新建会话</div>
+      <ChatView :online="online" @need-settings="() => {}" />
     </main>
   </div>
   <Toaster position="bottom-right" :expand="false" />
@@ -28,11 +40,6 @@ onMounted(() => loadConfig());
 .main {
   flex: 1;
   min-width: 0;
-  display: grid;
-  place-items: center;
-}
-.placeholder {
-  color: var(--overlay0);
-  font-size: 13px;
+  display: flex;
 }
 </style>
