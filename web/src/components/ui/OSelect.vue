@@ -57,7 +57,11 @@ function pick(value: T) {
 }
 
 function onDocClick(e: MouseEvent) {
-  if (open.value && root.value && !root.value.contains(e.target as Node)) open.value = false;
+  if (!open.value) return;
+  const t = e.target as Node;
+  // 弹层 Teleport 到 body，点击弹层内部不属于 root，需显式排除
+  if (root.value?.contains(t) || popup.value?.contains(t)) return;
+  open.value = false;
 }
 
 function onDocKeydown(e: KeyboardEvent) {
