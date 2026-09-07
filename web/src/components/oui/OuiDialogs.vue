@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Fa6Check, Fa6TriangleExclamation, Fa6Xmark } from 'vue-icons-plus/fa6';
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { closeDialog, dialogRequest, dialogVisible, toasts } from '../../useDialogs';
+import { closeDialog, dialogRequest, dialogVisible } from '../../useDialogs';
 
 const inputValue = ref('');
 const input = ref<HTMLInputElement | null>(null);
@@ -85,17 +85,6 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocKeydown));
         </div>
       </div>
     </Transition>
-
-    <!-- Toast 通知栈 -->
-    <div class="toast-stack">
-      <TransitionGroup name="toast">
-        <div v-for="t in toasts" :key="t.id" class="toast" :class="t.type">
-          <Fa6Check v-if="t.type === 'success'" />
-          <Fa6TriangleExclamation v-else />
-          {{ t.text }}
-        </div>
-      </TransitionGroup>
-    </div>
   </Teleport>
 </template>
 
@@ -135,50 +124,4 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onDocKeydown));
   transform: scale(0.96) translateY(6px);
 }
 
-.toast-stack {
-  position: fixed;
-  top: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 3100;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  pointer-events: none;
-}
-
-.toast {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  color: var(--text-primary);
-  font-size: 13px;
-  padding: 9px 16px;
-  border-radius: 12px;
-  box-shadow: var(--shadow-lg);
-}
-
-.toast.success {
-  border-color: var(--success);
-  color: var(--success);
-}
-
-.toast.error {
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-.toast-enter-active,
-.toast-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-
-.toast-enter-from,
-.toast-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
-}
 </style>

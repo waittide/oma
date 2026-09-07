@@ -210,8 +210,6 @@
   --overlay-bg: color-mix(in srgb, var(--crust) 55%, transparent);
   --tooltip-bg: var(--inverse-bg);
   --tooltip-ink: var(--inverse-ink);
-  --toast-bg: var(--inverse-bg);
-  --toast-ink: var(--inverse-ink);
   --scrollbar-thumb: color-mix(in srgb, var(--surface2) 70%, transparent);
   --scrollbar-thumb-hover: var(--surface2);
 

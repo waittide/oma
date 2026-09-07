@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { Fa6Bolt, Fa6Brain, Fa6Robot, Fa6ScrewdriverWrench } from 'vue-icons-plus/fa6';
+import { Toaster, toast } from 'vue-sonner';
 import { ref, onMounted, nextTick, watch } from 'vue';
 import type { ChatMessage, FileNode, SessionRecord, ApprovalDecision, ApprovalMode } from './types';
 import { fetchConfig, fetchSessions, createSession, deleteSession, fetchMessages, fetchWorkspaceTree } from './api';
-import { applyThemeFromDaemon } from './theme';
+import { applyThemeFromDaemon, isDark } from './theme';
 import { useWebSocket } from './useWebSocket';
-import { toast, uiConfirm, uiPrompt } from './useDialogs';
+import { uiConfirm, uiPrompt } from './useDialogs';
 import HeaderBar from './components/HeaderBar.vue';
 import Sidebar from './components/Sidebar.vue';
 import MessageItem from './components/MessageItem.vue';
@@ -96,7 +97,7 @@ async function handleCreateSession() {
     sessions.value.unshift(res.session);
     selectSession(res.session_id);
   } catch (e) {
-    toast(`创建会话失败: ${e instanceof Error ? e.message : e}`, 'error');
+    toast.error(`创建会话失败: ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -120,7 +121,7 @@ async function handleDeleteSession(id: string) {
       }
     }
   } catch (e) {
-    toast(`删除失败: ${e instanceof Error ? e.message : e}`, 'error');
+    toast.error(`删除失败: ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -329,5 +330,8 @@ function updateWorkspace(newWs: string) {
     <!-- 自绘对话框与通知宿主 -->
     <OuiDialogs />
   </div>
+    <!-- vue-sonner 通知宿主 -->
+    <Toaster position="bottom-right" :theme="isDark ? 'dark' : 'light'" rich-colors close-button :toast-options="{ duration: 4800 }" />
 </template>
+
 

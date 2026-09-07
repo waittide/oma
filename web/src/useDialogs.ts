@@ -62,20 +62,3 @@ export function uiAlert(title: string, message: string): Promise<null> {
   return open({ kind: 'alert', title, message }).then(() => null);
 }
 
-// ===== Toast 通知 =====
-export interface Toast {
-  id: number;
-  text: string;
-  type: 'success' | 'error';
-}
-
-export const toasts = ref<Toast[]>([]);
-let toastSeq = 0;
-
-export function toast(text: string, type: Toast['type'] = 'success') {
-  const id = ++toastSeq;
-  toasts.value.push({ id, text, type });
-  setTimeout(() => {
-    toasts.value = toasts.value.filter((t) => t.id !== id);
-  }, 3200);
-}
