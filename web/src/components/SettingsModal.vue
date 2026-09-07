@@ -388,7 +388,7 @@ function pickLocale(v: Locale) {
 </script>
 
 <template>
-  <OModal :open="open" :title="t('title')" width="880px" flush @close="emit('close')">
+  <OModal :open="open" width="1080px" flush floating-close @close="emit('close')">
     <div class="split">
       <nav class="nav">
         <button
@@ -594,7 +594,7 @@ function pickLocale(v: Locale) {
 <style scoped>
 .split {
   display: flex;
-  height: min(520px, calc(100vh - 200px));
+  height: min(680px, calc(100vh - 120px));
 }
 .nav {
   display: flex;
@@ -636,10 +636,13 @@ function pickLocale(v: Locale) {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 16px 18px 18px;
+  /* 右侧留出悬浮关闭按钮的安全区 */
+  padding: 14px 52px 18px 18px;
 }
 .card {
   min-height: 100%;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--surface);
@@ -666,6 +669,7 @@ function pickLocale(v: Locale) {
 }
 .row.end {
   justify-content: flex-end;
+  margin-top: auto;
   padding-top: 12px;
 }
 .k {

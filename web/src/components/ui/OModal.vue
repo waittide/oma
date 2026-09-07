@@ -10,8 +10,10 @@ withDefaults(
     width?: string;
     /** true 时 body 不带内边距与滚动，由内容自行布局（如左右分栏） */
     flush?: boolean;
+    /** true 时不渲染标题栏，关闭按钮悬浮于面板右上角 */
+    floatingClose?: boolean;
   }>(),
-  { title: '', width: '440px', flush: false },
+  { title: '', width: '440px', flush: false, floatingClose: false },
 );
 
 const emit = defineEmits<{ close: [] }>();
@@ -24,12 +26,21 @@ const { t } = useTranslations('common');
     <Transition name="modal">
       <div v-if="open" class="scrim" @mousedown.self="emit('close')">
         <div class="panel" :style="{ width }" role="dialog" aria-modal="true">
-          <header class="head">
+          <header v-if="!floatingClose" class="head">
             <h3>{{ title }}</h3>
             <OButton variant="ghost" size="sm" :title="t('close')" @click="emit('close')">
               <template #icon><LuX :size="15" /></template>
             </OButton>
           </header>
+          <button
+            v-else
+            type="button"
+            class="close-float"
+            :title="t('close')"
+            @click="emit('close')"
+          >
+            <LuX :size="16" />
+          </button>
           <div class="body" :class="{ flush }"><slot /></div>
           <footer v-if="$slots.footer" class="foot"><slot name="footer" /></footer>
         </div>
@@ -37,6 +48,7 @@ const { t } = useTranslations('common');
     </Transition>
   </Teleport>
 </template>
+
 
 <style scoped>
 .scrim {
@@ -70,13 +82,40 @@ const { t } = useTranslations('common');
   font-weight: 600;
   color: var(--ink);
 }
-.body {
-  padding: 4px 18px 16px;
-  overflow-y: auto;
-}
-.body.flush {
-  padding: 0;
+.panel {
+  position: relative;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 16px 48px var(--shadow);
   overflow: hidden;
+}
+.close-float {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+.close-float:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
 }
 .foot {
   display: flex;
