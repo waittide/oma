@@ -299,6 +299,10 @@ pub enum AgentEvent {
         mode: ApprovalMode,
     },
     ActiveTurnCatchUp(ActiveTurnCatchUp),
+    SessionRenamed {
+        session_id: String,
+        title:      String,
+    },
     Error {
         message: String,
     },

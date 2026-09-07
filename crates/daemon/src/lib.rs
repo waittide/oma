@@ -343,7 +343,15 @@ async fn handle_rename_session(
         .rename_session(&session_id, &payload.title)
         .await
     {
-        Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
+        Ok(_) => {
+            if let Some(room) = state.rooms.read().get(&session_id) {
+                room.broadcast(AgentEvent::SessionRenamed {
+                    session_id: session_id.clone(),
+                    title:      payload.title,
+                });
+            }
+            Ok(Json(serde_json::json!({ "success": true })))
+        }
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
@@ -594,6 +602,14 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
 
     let agents = AgentLoader::list_agents(&room.workspace);
 
+    let current_leaf_id = state
+        .storage
+        .get_session(&room.session_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|rec| rec.current_leaf_id);
+
     let ready = Ready {
         version: "0.1.0".into(),
         session_id: room.session_id.clone(),
@@ -601,7 +617,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         active_model: room.active_model.read().clone(),
         active_agent: room.active_agent.read().clone(),
         approval_mode: *room.approval_mode.read(),
-        current_leaf_id: None,
+        current_leaf_id,
         providers: providers_map,
         agents,
     };
