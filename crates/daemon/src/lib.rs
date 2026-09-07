@@ -493,16 +493,27 @@ fn mask_config(config: &OmaConfig) -> serde_json::Value {
     v
 }
 
+#[derive(Deserialize)]
+struct GetConfigQuery {
+    token:  Option<String>,
+    /// 1 = 返回真实密钥（供设置页「显示密钥」使用）；默认脱敏
+    reveal: Option<String>,
+}
+
 async fn handle_get_config(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
+    Query(query): Query<GetConfigQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     if !check_auth(&headers, query.token.as_deref(), &state.token) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    Ok(Json(mask_config(&state.config.read())))
+    let cfg = state.config.read();
+    if query.reveal.as_deref() == Some("1") {
+        return Ok(Json(serde_json::to_value(&*cfg).unwrap_or(serde_json::Value::Null)));
+    }
+    Ok(Json(mask_config(&cfg)))
 }
 
 async fn handle_put_config(

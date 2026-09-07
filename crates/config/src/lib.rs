@@ -207,6 +207,8 @@ impl OmaConfig {
                 context_len:       m.context_len,
                 supports_vision:   m.supports_vision,
                 supports_thinking: m.supports_thinking,
+                max_output:        m.max_output,
+                reasoning_effort:  m.reasoning_effort.clone(),
                 headers:           BTreeMap::new(),
                 body:              serde_json::json!({}),
             })
@@ -216,6 +218,8 @@ impl OmaConfig {
                 context_len:       128_000,
                 supports_vision:   true,
                 supports_thinking: true,
+                max_output:        None,
+                reasoning_effort:  String::new(),
                 headers:           BTreeMap::new(),
                 body:              serde_json::json!({}),
             });
@@ -240,6 +244,9 @@ impl OmaConfig {
                         context_len:       m.context_len,
                         supports_vision:   m.supports_vision,
                         supports_thinking: m.supports_thinking,
+                        max_output:        m.max_output,
+                        reasoning_effort:  m.reasoning_effort.clone(),
+                        input_types:       m.input_types.clone(),
                     })
                     .collect::<Vec<_>>();
                 (p_id.clone(), models)

@@ -165,6 +165,14 @@ pub struct ModelInfo {
     pub context_len:       usize,
     pub supports_vision:   bool,
     pub supports_thinking: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output:        Option<usize>,
+    /// 推理等级: "" | low | medium | high
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reasoning_effort:  String,
+    /// 支持的输入模态: text / image / video
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_types:       Vec<String>,
 }
 
 /// Agent 模板元数据

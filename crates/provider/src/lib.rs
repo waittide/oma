@@ -52,6 +52,15 @@ pub struct ModelEntry {
     pub supports_vision:   bool,
     #[serde(default = "model_entry_default_true")]
     pub supports_thinking: bool,
+    /// 最大输出 Token 数；None 时各协议使用内置默认
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output:        Option<usize>,
+    /// 推理等级: "" (关闭) | low | medium | high
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reasoning_effort:  String,
+    /// 支持的输入模态: text / image / video
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_types:       Vec<String>,
 }
 
 fn model_entry_default_name() -> String {
@@ -102,6 +111,10 @@ pub struct ModelConfig {
     pub context_len:       usize,
     pub supports_vision:   bool,
     pub supports_thinking: bool,
+    #[serde(default)]
+    pub max_output:        Option<usize>,
+    #[serde(default)]
+    pub reasoning_effort:  String,
     #[serde(default)]
     pub headers:           BTreeMap<String, String>,
     #[serde(default = "empty_json_object", deserialize_with = "deserialize_json_body")]
@@ -264,7 +277,7 @@ impl UniversalProvider {
         // 构造三级覆盖后的 Body
         let mut body = serde_json::json!({
             "model": model.id,
-            "max_tokens": 4096,
+            "max_tokens": model.max_output.unwrap_or(4096),
             "stream": true,
             "messages": anthropic_messages
         });
@@ -446,6 +459,12 @@ impl UniversalProvider {
             "stream": true,
             "messages": openai_messages
         });
+        if let Some(n) = model.max_output {
+            body["max_tokens"] = serde_json::json!(n);
+        }
+        if !model.reasoning_effort.is_empty() {
+            body["reasoning_effort"] = serde_json::json!(model.reasoning_effort);
+        }
 
         if !tools.is_empty() {
             let openai_tools: Vec<serde_json::Value> = tools
@@ -549,6 +568,9 @@ impl UniversalProvider {
         let mut body = serde_json::json!({
             "contents": contents
         });
+        if let Some(n) = model.max_output {
+            body["generationConfig"] = serde_json::json!({ "maxOutputTokens": n });
+        }
 
         if let Some(sys) = system_prompt {
             body["systemInstruction"] = serde_json::json!({
@@ -706,6 +728,12 @@ impl UniversalProvider {
             "stream": true,
             "input": input
         });
+        if let Some(n) = model.max_output {
+            body["max_output_tokens"] = serde_json::json!(n);
+        }
+        if !model.reasoning_effort.is_empty() {
+            body["reasoning"] = serde_json::json!({ "effort": model.reasoning_effort });
+        }
 
         if !tools.is_empty() {
             let responses_tools: Vec<serde_json::Value> = tools
