@@ -150,7 +150,11 @@
     "fApiType": "API 類型",
     "fBaseUrl": "服務地址",
     "fApiKey": "API 密鑰",
-    "fModels": "模型清單"
+    "fModels": "模型清單",
+    "navSectionPersonal": "個人化",
+    "navSectionService": "服務",
+    "themeDesc": "淺色固定 Latte，深色可選風味",
+    "modelId": "模型 ID"
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"

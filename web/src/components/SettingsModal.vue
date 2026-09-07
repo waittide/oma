@@ -35,12 +35,25 @@ const { t: tc } = useTranslations('common');
 type SectionId = 'theme' | 'language' | 'defaults' | 'providers';
 const section = ref<SectionId>('theme');
 
-const sections = computed(() => [
-  { id: 'theme' as SectionId, label: t('navTheme'), icon: LuPalette },
-  { id: 'language' as SectionId, label: t('navLanguage'), icon: LuLanguages },
-  { id: 'defaults' as SectionId, label: t('navDefaults'), icon: LuSquareUserRound },
-  { id: 'providers' as SectionId, label: t('navProviders'), icon: LuServer },
+/** 参照 opencode 设置弹窗：导航按分组小标题聚类，底部展示应用版本。 */
+const navGroups = computed(() => [
+  {
+    title: t('navSectionPersonal'),
+    items: [
+      { id: 'theme' as SectionId, label: t('navTheme'), icon: LuPalette },
+      { id: 'language' as SectionId, label: t('navLanguage'), icon: LuLanguages },
+    ],
+  },
+  {
+    title: t('navSectionService'),
+    items: [
+      { id: 'defaults' as SectionId, label: t('navDefaults'), icon: LuSquareUserRound },
+      { id: 'providers' as SectionId, label: t('navProviders'), icon: LuServer },
+    ],
+  },
 ]);
+
+const version = ref('');
 
 // ---------- 主题 ----------
 const mode = ref<Theme['mode']>(theme.value.mode);
@@ -94,6 +107,9 @@ watch(
     mode.value = theme.value.mode;
     flavor.value = theme.value.dark_flavor;
     accent.value = theme.value.accent;
+    if (!version.value) {
+      version.value = await api.status().then((s) => s.version).catch(() => '');
+    }
   },
   { immediate: true },
 );
@@ -160,7 +176,6 @@ const keyRevealed = ref<Record<number, boolean>>({});
 /** reveal 接口拉取的真实密钥缓存（provider 原键 → key） */
 let revealedReal: Record<string, string> | null = null;
 
-
 function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
   return {
     uid: ++uidSeq,
@@ -183,7 +198,6 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
     })),
   };
 }
-
 
 watch(
   () => [props.open, section.value] as const,
@@ -225,7 +239,6 @@ async function toggleKeyVisibility(d: ProviderDraft) {
   }
   keyRevealed.value[d.uid] = on;
 }
-
 
 const INPUT_TYPES = ['text', 'image', 'video'] as const;
 const INPUT_TYPE_LABELS: Record<string, string> = {
@@ -388,109 +401,145 @@ function pickLocale(v: Locale) {
 </script>
 
 <template>
-  <OModal :open="open" width="1080px" flush floating-close @close="emit('close')">
+  <OModal :open="open" width="min(calc(100vw - 32px), 980px)" flush floating-close @close="emit('close')">
     <div class="split">
       <nav class="nav">
-        <button
-          v-for="s in sections"
-          :key="s.id"
-          type="button"
-          class="nav-item"
-          :class="{ active: section === s.id }"
-          @click="section = s.id"
-        >
-          <component :is="s.icon" :size="15" />
-          <span>{{ s.label }}</span>
-        </button>
+        <div v-for="g in navGroups" :key="g.title" class="nav-group">
+          <span class="nav-title">{{ g.title }}</span>
+          <button
+            v-for="s in g.items"
+            :key="s.id"
+            type="button"
+            class="nav-item"
+            :class="{ active: section === s.id }"
+            @click="section = s.id"
+          >
+            <component :is="s.icon" :size="14" />
+            <span>{{ s.label }}</span>
+          </button>
+        </div>
+        <div class="nav-foot">
+          <span class="nav-foot-name">Oma</span>
+          <span v-if="version" class="nav-foot-ver">v{{ version }}</span>
+        </div>
       </nav>
 
       <div class="content">
-        <!-- 主题 -->
-        <section v-if="section === 'theme'" class="card">
-          <div class="row">
-            <span class="k">{{ t('mode') }}</span>
-            <div class="v">
-              <ORadio v-model="mode" :options="modeOptions" />
+        <!-- 外观 -->
+        <section v-if="section === 'theme'" class="pane">
+          <h2 class="pane-title">{{ t('navTheme') }}</h2>
+          <div class="list">
+            <div class="srow">
+              <div class="srow-main">
+                <span class="srow-title">{{ t('mode') }}</span>
+              </div>
+              <div class="srow-ctl">
+                <ORadio v-model="mode" :options="modeOptions" />
+              </div>
+            </div>
+            <div class="srow">
+              <div class="srow-main">
+                <span class="srow-title">{{ t('themeLabel') }}</span>
+                <span class="srow-desc">{{ t('themeDesc') }}</span>
+              </div>
+              <div class="srow-ctl">
+                <!-- 浅色系当前仅 Latte，后续扩展时追加选项即可 -->
+                <ORadio v-if="mode === 'light'" model-value="latte" :options="LIGHT_FLAVORS" />
+                <ORadio v-else v-model="flavor" :options="flavorOptions" />
+              </div>
+            </div>
+            <div class="srow">
+              <div class="srow-main">
+                <span class="srow-title">{{ t('accent') }}</span>
+              </div>
+              <div class="srow-ctl">
+                <div class="dots">
+                  <OTooltip
+                    v-for="(a, i) in ACCENTS"
+                    :key="a"
+                    :label="t(`accentNames.${a}`)"
+                    :align="i % 7 === 0 ? 'start' : i % 7 === 6 ? 'end' : 'center'"
+                  >
+                    <button
+                      type="button"
+                      class="dot"
+                      :class="{ active: a === accent }"
+                      :style="{ '--dot': `var(--${a === 'green' ? 'green-color' : a})` }"
+                      @click="accent = a"
+                    />
+                  </OTooltip>
+                </div>
+              </div>
             </div>
           </div>
-
-          <div class="row">
-            <span class="k">{{ t('themeLabel') }}</span>
-            <div class="v">
-              <!-- 浅色系当前仅 Latte，后续扩展时追加选项即可 -->
-              <ORadio v-if="mode === 'light'" model-value="latte" :options="LIGHT_FLAVORS" />
-              <ORadio v-else v-model="flavor" :options="flavorOptions" />
-            </div>
-          </div>
-
-          <div class="row">
-            <span class="k">{{ t('accent') }}</span>
-            <div class="v dots">
-              <OTooltip
-                v-for="(a, i) in ACCENTS"
-                :key="a"
-                :label="t(`accentNames.${a}`)"
-                :align="i % 7 === 0 ? 'start' : i % 7 === 6 ? 'end' : 'center'"
-              >
-                <button
-                  type="button"
-                  class="dot"
-                  :class="{ active: a === accent }"
-                  :style="{ '--dot': `var(--${a === 'green' ? 'green-color' : a})` }"
-                  @click="accent = a"
-                />
-              </OTooltip>
-            </div>
-          </div>
-
-          <div class="row end">
-            <OButton variant="primary" :loading="savingTheme" @click="applyTheme">{{ t('saveTheme') }}</OButton>
+          <div class="pane-actions">
+            <OButton variant="primary" size="sm" :loading="savingTheme" @click="applyTheme">
+              {{ t('saveTheme') }}
+            </OButton>
           </div>
         </section>
 
         <!-- 语言 -->
-        <section v-else-if="section === 'language'" class="card">
-          <div class="row">
-            <span class="k">{{ t('languageLabel') }}</span>
-            <div class="v">
-              <OSelect
-                :model-value="settingStore.locale"
-                :options="localeOptions"
-                width="180px"
-                @update:model-value="pickLocale"
-              />
+        <section v-else-if="section === 'language'" class="pane">
+          <h2 class="pane-title">{{ t('navLanguage') }}</h2>
+          <div class="list">
+            <div class="srow">
+              <div class="srow-main">
+                <span class="srow-title">{{ t('languageLabel') }}</span>
+              </div>
+              <div class="srow-ctl">
+                <OSelect
+                  :model-value="settingStore.locale"
+                  :options="localeOptions"
+                  width="160px"
+                  @update:model-value="pickLocale"
+                />
+              </div>
             </div>
           </div>
         </section>
 
         <!-- 默认参数 -->
-        <section v-else-if="section === 'defaults' && config" class="card">
-          <div class="row">
-            <span class="k">{{ t('defaultModel') }}</span>
-            <div class="v">
-              <OModelSelect v-model="defaults.model" :groups="providerGroups" width="100%" />
+        <section v-else-if="section === 'defaults' && config" class="pane">
+          <h2 class="pane-title">{{ t('navDefaults') }}</h2>
+          <div class="list">
+            <div class="srow">
+              <div class="srow-main">
+                <span class="srow-title">{{ t('defaultModel') }}</span>
+              </div>
+              <div class="srow-ctl wide">
+                <OModelSelect v-model="defaults.model" :groups="providerGroups" width="300px" />
+              </div>
+            </div>
+            <div class="srow">
+              <div class="srow-main">
+                <span class="srow-title">{{ t('defaultAgent') }}</span>
+              </div>
+              <div class="srow-ctl">
+                <OSelect v-model="defaults.agent" :options="agentOptions" width="200px" />
+              </div>
+            </div>
+            <div class="srow">
+              <div class="srow-main">
+                <span class="srow-title">{{ t('defaultApproval') }}</span>
+              </div>
+              <div class="srow-ctl">
+                <OSelect v-model="defaults.approval" :options="approvalOptions" width="200px" />
+              </div>
             </div>
           </div>
-          <div class="row">
-            <span class="k">{{ t('defaultAgent') }}</span>
-            <div class="v"><OSelect v-model="defaults.agent" :options="agentOptions" width="240px" /></div>
-          </div>
-          <div class="row">
-            <span class="k">{{ t('defaultApproval') }}</span>
-            <div class="v">
-              <OSelect v-model="defaults.approval" :options="approvalOptions" width="240px" />
-            </div>
-          </div>
-          <div class="row end">
-            <OButton variant="primary" :loading="savingDefaults" @click="saveDefaults">{{ t('saveDefaults') }}</OButton>
+          <div class="pane-actions">
+            <OButton variant="primary" size="sm" :loading="savingDefaults" @click="saveDefaults">
+              {{ t('saveDefaults') }}
+            </OButton>
           </div>
         </section>
 
-        <!-- Providers -->
-        <section v-else-if="section === 'providers' && config" class="card">
-          <div class="card-head">
-            <h3>{{ t('providersCount', { count: providerDrafts.length }) }}</h3>
-            <div class="ch-actions">
+        <!-- 模型提供商 -->
+        <section v-else-if="section === 'providers' && config" class="pane">
+          <div class="pane-head">
+            <h2 class="pane-title">{{ t('navProviders') }}</h2>
+            <div class="pane-actions inline">
               <OButton size="sm" variant="soft" @click="addProvider">{{ t('add') }}</OButton>
               <OButton size="sm" variant="primary" :loading="savingProviders" @click="saveProviders">
                 {{ t('saveAll') }}
@@ -498,36 +547,43 @@ function pickLocale(v: Locale) {
             </div>
           </div>
 
-          <div v-for="(d, pi) in providerDrafts" :key="d.origId ?? `new-${pi}`" class="provider">
-            <div class="pv-head">
-              <OInput v-model="d.name" class="pv-name" :placeholder="t('providerName')" />
-              <OButton size="sm" variant="danger" :title="tc('delete')" @click="removeDraft(pi)">
-                <template #icon><LuTrash2 :size="13" /></template>
-              </OButton>
+          <div v-for="(d, pi) in providerDrafts" :key="d.uid" class="prov">
+            <div class="prov-head">
+              <OInput v-model="d.name" class="prov-name" :placeholder="t('providerName')" />
+              <button type="button" class="m-del" :title="tc('delete')" @click="removeDraft(pi)">
+                <LuTrash2 :size="14" />
+              </button>
             </div>
-            <div class="grid">
-              <label>{{ t('fApiType') }}</label>
-              <OSelect v-model="d.api_type" :options="apiTypeOptions" />
-              <label>{{ t('fBaseUrl') }}</label>
-              <OInput v-model="d.base_url" />
-              <label>{{ t('fApiKey') }}</label>
-              <div class="key-row">
-                <OInput v-model="d.api_key" :type="keyRevealed[d.uid] ? 'text' : 'password'" />
-                <button
-                  type="button"
-                  class="key-eye"
-                  :title="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
-                  @click="toggleKeyVisibility(d)"
-                >
-                  <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
-                  <LuEye v-else :size="14" />
-                </button>
+
+            <div class="fields">
+              <div class="field">
+                <label>{{ t('fApiType') }}</label>
+                <OSelect v-model="d.api_type" :options="apiTypeOptions" />
+              </div>
+              <div class="field">
+                <label>{{ t('fBaseUrl') }}</label>
+                <OInput v-model="d.base_url" />
+              </div>
+              <div class="field span2">
+                <label>{{ t('fApiKey') }}</label>
+                <div class="key-row">
+                  <OInput v-model="d.api_key" :type="keyRevealed[d.uid] ? 'text' : 'password'" />
+                  <button
+                    type="button"
+                    class="m-del"
+                    :title="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
+                    @click="toggleKeyVisibility(d)"
+                  >
+                    <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
+                    <LuEye v-else :size="14" />
+                  </button>
+                </div>
               </div>
             </div>
 
             <div class="models-head">
-              <span class="models-title">{{ t('fModels') }}</span>
-              <OButton size="sm" variant="soft" @click="addModel(d)">
+              <span class="group-label">{{ t('fModels') }}</span>
+              <OButton size="sm" variant="ghost" @click="addModel(d)">
                 <template #icon><LuPlus :size="13" /></template>
                 {{ t('addModel') }}
               </OButton>
@@ -535,45 +591,60 @@ function pickLocale(v: Locale) {
             <p v-if="d.models.length === 0" class="muted">{{ t('modelsNone') }}</p>
 
             <div v-for="(m, mi) in d.models" :key="mi" class="model">
-              <div class="m-head">
-                <OInput v-model="m.id" class="m-id" placeholder="model-id" />
-                <button type="button" class="m-del" :title="t('removeModel')" @click="d.models.splice(mi, 1)">
-                  <LuTrash2 :size="13" />
-                </button>
-              </div>
               <div class="m-grid">
-                <label>{{ t('modelName') }}</label>
-                <OInput v-model="m.name" />
-                <label>{{ t('contextLen') }}</label>
-                <OInput v-model="m.context_len" />
-                <label>{{ t('maxOutput') }}</label>
-                <OInput v-model="m.max_output" :placeholder="t('unset')" />
-                <label>{{ t('reasoningEffort') }}</label>
-                <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
-                <label>{{ t('capabilities') }}</label>
-                <div class="checks">
-                  <OCheckbox v-model="m.supports_thinking" :label="t('supportsThinking')" />
-                  <OCheckbox v-model="m.supports_vision" :label="t('supportsVision')" />
+                <div class="field">
+                  <label>{{ t('modelId') }}</label>
+                  <div class="inline-field">
+                    <OInput v-model="m.id" placeholder="model-id" />
+                    <button type="button" class="m-del" :title="t('removeModel')" @click="d.models.splice(mi, 1)">
+                      <LuTrash2 :size="14" />
+                    </button>
+                  </div>
                 </div>
-                <label>{{ t('inputTypes') }}</label>
-                <div class="checks">
-                  <OCheckbox
-                    v-for="ty in INPUT_TYPES"
-                    :key="ty"
-                    :model-value="m.input_types.includes(ty)"
-                    :label="inputTypeLabel(ty)"
-                    @update:model-value="toggleInputType(m, ty, $event)"
-                  />
+                <div class="field">
+                  <label>{{ t('modelName') }}</label>
+                  <OInput v-model="m.name" />
+                </div>
+                <div class="field">
+                  <label>{{ t('contextLen') }}</label>
+                  <OInput v-model="m.context_len" />
+                </div>
+                <div class="field">
+                  <label>{{ t('maxOutput') }}</label>
+                  <OInput v-model="m.max_output" :placeholder="t('unset')" />
+                </div>
+                <div class="field">
+                  <label>{{ t('reasoningEffort') }}</label>
+                  <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
+                </div>
+                <div class="field">
+                  <label>{{ t('capabilities') }}</label>
+                  <div class="checks">
+                    <OCheckbox v-model="m.supports_thinking" :label="t('supportsThinking')" />
+                    <OCheckbox v-model="m.supports_vision" :label="t('supportsVision')" />
+                  </div>
+                </div>
+                <div class="field span2">
+                  <label>{{ t('inputTypes') }}</label>
+                  <div class="checks">
+                    <OCheckbox
+                      v-for="ty in INPUT_TYPES"
+                      :key="ty"
+                      :model-value="m.input_types.includes(ty)"
+                      :label="inputTypeLabel(ty)"
+                      @update:model-value="toggleInputType(m, ty, $event)"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
           </div>
 
-          <p v-if="providerDrafts.length === 0" class="muted empty">{{ t('providersEmpty') }}</p>
+          <p v-if="providerDrafts.length === 0" class="muted">{{ t('providersEmpty') }}</p>
         </section>
 
-        <section v-else-if="section === 'defaults' || section === 'providers'" class="card">
-          <p class="muted empty">{{ t('configUnavailable') }}</p>
+        <section v-else-if="section === 'defaults' || section === 'providers'" class="pane">
+          <p class="muted">{{ t('configUnavailable') }}</p>
         </section>
       </div>
     </div>
@@ -594,25 +665,38 @@ function pickLocale(v: Locale) {
 <style scoped>
 .split {
   display: flex;
-  height: min(680px, calc(100vh - 120px));
+  height: min(640px, calc(100vh - 92px));
 }
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  width: 172px;
+  gap: 14px;
+  width: 188px;
   flex-shrink: 0;
-  padding: 10px;
+  padding: 14px 10px 10px;
   border-right: 1px solid var(--line);
   background: var(--sidebar);
+}
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-title {
+  padding: 0 10px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--overlay0);
 }
 .nav-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border: none;
-  border-radius: 8px;
+  border-radius: 7px;
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
@@ -632,55 +716,90 @@ function pickLocale(v: Locale) {
   color: var(--accent);
   font-weight: 600;
 }
+.nav-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  color: var(--overlay0);
+}
+.nav-foot-name {
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
 .content {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  /* 右侧留出悬浮关闭按钮的安全区 */
-  padding: 14px 52px 18px 18px;
+  padding: 22px 28px 28px;
 }
-.card {
-  min-height: 100%;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface);
-  padding: 16px 18px 18px;
+/* 参照 opencode：内容栏限宽、扁平行 + 细分隔线，不用卡片嵌套 */
+.pane {
+  max-width: 640px;
 }
-.card-head {
+.pane-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  margin-bottom: 4px;
 }
-.card-head h3 {
-  margin: 0;
-  font-size: 14px;
+.pane-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
 }
-.ch-actions {
+.pane-head .pane-title {
+  margin-bottom: 0;
+}
+.pane-actions {
   display: flex;
   gap: 8px;
+  margin-top: 14px;
 }
-.row {
+.pane-actions.inline {
+  margin-top: 0;
+}
+.list {
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 2px 14px;
+}
+.srow {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 8px 0;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
 }
-.row.end {
-  justify-content: flex-end;
-  margin-top: auto;
-  padding-top: 12px;
+.srow:last-child {
+  border-bottom: none;
 }
-.k {
-  width: 108px;
-  flex-shrink: 0;
-  font-size: 12.5px;
-  color: var(--text-tertiary);
-}
-.v {
+.srow-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.srow-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.srow-desc {
+  font-size: 11.5px;
+  color: var(--overlay1);
+}
+.srow-ctl {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+.srow-ctl.wide {
+  flex-shrink: 1;
 }
 /* 强调色点阵：两行各 7 个，整齐排列；悬停经 OTooltip 显示名称 */
 .dots {
@@ -701,40 +820,64 @@ function pickLocale(v: Locale) {
     box-shadow 0.12s ease,
     filter 0.12s ease;
 }
+.dot:hover {
+  filter: brightness(1.12);
+}
+.dot.active {
+  box-shadow:
+    0 0 0 2px var(--paper),
+    0 0 0 4px var(--dot);
+}
 .grid {
   display: grid;
-  grid-template-columns: 90px 1fr;
+  grid-template-columns: 60px 1fr;
   gap: 8px 12px;
   align-items: center;
-}
-.grid.one {
-  grid-template-columns: 60px 1fr;
 }
 .grid label {
   font-size: 12px;
   color: var(--overlay0);
   font-family: var(--font-mono);
 }
-.provider {
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--paper);
-  padding: 12px 14px;
-  margin-top: 10px;
+/* 提供商：扁平区块 + 细分隔线 */
+.prov {
+  padding: 16px 0 14px;
+  border-bottom: 1px solid var(--line);
 }
-.pv-head {
+.prov:last-of-type {
+  border-bottom: none;
+}
+.prov-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 8px;
 }
-.pv-name {
+.prov-name {
   flex: 1;
-  max-width: 280px;
+  max-width: 320px;
 }
-.pv-name :deep(input) {
+.prov-name :deep(input) {
   font-family: var(--font-mono);
   font-weight: 600;
+}
+.fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin-top: 10px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.field > label {
+  font-size: 11.5px;
+  color: var(--overlay1);
+}
+.field.span2 {
+  grid-column: span 2;
 }
 .key-row {
   display: flex;
@@ -744,7 +887,37 @@ function pickLocale(v: Locale) {
 .key-row .o-input {
   flex: 1;
 }
-.key-eye {
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.inline-field .o-input {
+  flex: 1;
+}
+.models-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+}
+.group-label {
+  font-size: 11.5px;
+  color: var(--overlay1);
+}
+.model {
+  padding: 12px 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+.model:last-of-type {
+  border-bottom: none;
+}
+.m-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+.m-del {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -760,84 +933,20 @@ function pickLocale(v: Locale) {
     background-color 0.12s ease,
     color 0.12s ease;
 }
-.key-eye:hover {
-  background: var(--surface-hover);
-  color: var(--ink);
-}
-.models-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--line);
-}
-.models-title {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--overlay0);
-}
-.model {
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  padding: 10px 12px;
-  margin-top: 8px;
-  background: var(--surface);
-}
-.m-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.m-id {
-  max-width: 320px;
-}
-.m-id :deep(input) {
-  font-family: var(--font-mono);
-}
-.m-del {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--overlay0);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition:
-    background-color 0.12s ease,
-    color 0.12s ease;
-}
 .m-del:hover {
   background: var(--danger-soft);
   color: var(--danger);
-}
-.m-grid {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
-  gap: 8px 12px;
-  align-items: center;
-  margin-top: 8px;
-}
-.m-grid label {
-  font-size: 12px;
-  color: var(--overlay0);
-  white-space: nowrap;
 }
 .checks {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 14px;
+  min-height: 30px;
+  align-items: center;
 }
 .muted {
   font-size: 12.5px;
   color: var(--overlay0);
-}
-.empty {
-  padding: 10px 0;
   margin: 6px 0 0;
 }
 </style>

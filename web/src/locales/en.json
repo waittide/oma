@@ -150,7 +150,11 @@
     "fApiType": "API Type",
     "fBaseUrl": "Base URL",
     "fApiKey": "API Key",
-    "fModels": "Models"
+    "fModels": "Models",
+    "navSectionPersonal": "Personal",
+    "navSectionService": "Service",
+    "themeDesc": "Light uses Latte; dark flavors selectable",
+    "modelId": "Model ID"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"
