@@ -4,10 +4,10 @@ import { Toaster } from 'vue-sonner';
 import { api } from './api';
 import Sidebar from './components/Sidebar.vue';
 import ChatView from './components/ChatView.vue';
-import SettingsView from './components/SettingsView.vue';
+import SettingsModal from './components/SettingsModal.vue';
 import { loadConfig } from './stores/theme';
 
-const view = ref<'chat' | 'settings'>('chat');
+const settingsOpen = ref(false);
 const online = ref(false);
 
 onMounted(async () => {
@@ -23,14 +23,11 @@ onMounted(async () => {
 
 <template>
   <div class="shell">
-    <Sidebar
-      @open-settings="view = 'settings'"
-      @back="view = 'chat'"
-    />
+    <Sidebar @open-settings="settingsOpen = true" />
     <main class="main">
-      <SettingsView v-if="view === 'settings'" @back="view = 'chat'" />
-      <ChatView v-else :online="online" @need-settings="view = 'settings'" />
+      <ChatView :online="online" @need-settings="settingsOpen = true" />
     </main>
+    <SettingsModal :open="settingsOpen" @close="settingsOpen = false" />
   </div>
   <Toaster position="bottom-right" :expand="false" />
 </template>

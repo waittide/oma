@@ -8,8 +8,10 @@ withDefaults(
     open: boolean;
     title?: string;
     width?: string;
+    /** true 时 body 不带内边距与滚动，由内容自行布局（如左右分栏） */
+    flush?: boolean;
   }>(),
-  { title: '', width: '440px' },
+  { title: '', width: '440px', flush: false },
 );
 
 const emit = defineEmits<{ close: [] }>();
@@ -28,7 +30,7 @@ const { t } = useTranslations('common');
               <template #icon><LuX :size="15" /></template>
             </OButton>
           </header>
-          <div class="body"><slot /></div>
+          <div class="body" :class="{ flush }"><slot /></div>
           <footer v-if="$slots.footer" class="foot"><slot name="footer" /></footer>
         </div>
       </div>
@@ -71,6 +73,10 @@ const { t } = useTranslations('common');
 .body {
   padding: 4px 18px 16px;
   overflow-y: auto;
+}
+.body.flush {
+  padding: 0;
+  overflow: hidden;
 }
 .foot {
   display: flex;

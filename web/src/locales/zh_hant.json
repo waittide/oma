@@ -11,7 +11,7 @@
     "empty": "尚無會話，點擊右上角建立",
     "rename": "重新命名",
     "deleteAria": "刪除",
-    "settings": "設定 · 主題",
+    "settings": "設定",
     "workspacePath": "工作區路徑",
     "workspacePlaceholder": "/home/me/project",
     "sessionTitle": "會話標題（選填）",
@@ -115,7 +115,12 @@
     "modelsNone": "未宣告（依 id 動態合成）",
     "saveFailed": "儲存失敗：{message}",
     "configUnavailable": "無法讀取服務端設定，請確認 Daemon 正在執行且 Token 有效。",
-    "providersCount": "Providers（{count}）"
+    "providersCount": "Providers（{count}）",
+    "providersEmpty": "尚無 Provider，點擊右上角「新增」開始設定。",
+    "navTheme": "外觀",
+    "navLanguage": "語言",
+    "navDefaults": "預設參數",
+    "navProviders": "模型提供商"
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"

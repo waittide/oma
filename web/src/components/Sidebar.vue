@@ -17,7 +17,7 @@ import * as store from '../stores/sessions';
 import { activeSessionId } from '../stores/sessions';
 import { useTranslations } from '../composables/i18n';
 
-const emit = defineEmits<{ openSettings: []; back: [] }>();
+const emit = defineEmits<{ openSettings: [] }>();
 
 const { t } = useTranslations('sidebar');
 const { t: tc } = useTranslations('common');
@@ -35,7 +35,6 @@ const groups = store.groups;
 
 function select(id: string) {
   activeSessionId.value = id;
-  emit('back');
 }
 
 function startRename(id: string, title: string) {

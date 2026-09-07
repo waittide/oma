@@ -11,7 +11,7 @@
     "empty": "No sessions yet. Click New Session above.",
     "rename": "Rename",
     "deleteAria": "Delete",
-    "settings": "Settings · Theme",
+    "settings": "Settings",
     "workspacePath": "Workspace Path",
     "workspacePlaceholder": "/home/me/project",
     "sessionTitle": "Session Title (optional)",
@@ -115,7 +115,12 @@
     "modelsNone": "Not declared (synthesized by id)",
     "saveFailed": "Save failed: {message}",
     "configUnavailable": "Cannot read server config. Ensure the daemon is running and the token is valid.",
-    "providersCount": "Providers ({count})"
+    "providersCount": "Providers ({count})",
+    "providersEmpty": "No providers yet. Click Add above to create one.",
+    "navTheme": "Appearance",
+    "navLanguage": "Language",
+    "navDefaults": "Defaults",
+    "navProviders": "Providers"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"
