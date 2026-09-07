@@ -386,7 +386,16 @@ impl SessionRoom {
             });
         }
 
-        let user_parent = parent_id_override;
+        let user_parent = match parent_id_override {
+            Some(p) => Some(p),
+            None => self
+                .storage
+                .get_session(&self.session_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|rec| rec.current_leaf_id),
+        };
 
         let user_msg = ChatMessage {
             id:         user_msg_id.clone(),
