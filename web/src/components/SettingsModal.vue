@@ -9,10 +9,12 @@ import OModal from './ui/OModal.vue';
 import ORadio from './ui/ORadio.vue';
 import OSelect from './ui/OSelect.vue';
 import OTooltip from './ui/OTooltip.vue';
+import OModelSelect from './ui/OModelSelect.vue';
 import { ACCENTS, config, loadConfig, saveConfig, saveTheme, theme } from '../stores/theme';
+import { agents } from '../stores/chat';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
+import type { AgentSummary, ModelInfo, OmaConfig, Theme } from '../types';
 import { useTranslations } from '../composables/i18n';
-import type { OmaConfig, Theme } from '../types';
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ close: [] }>();
@@ -153,6 +155,21 @@ const approvalOptions = computed<{ value: OmaConfig['default_approval_mode']; la
   ],
 );
 
+/** 默认参数：模型选择器按提供商分组；未开会话时回退到内置 agent 清单。 */
+const providerGroups = computed<Record<string, ModelInfo[]>>(() => {
+  if (!config.value) return {};
+  return Object.fromEntries(
+    Object.entries(config.value.providers).map(([id, p]) => [id, p.models ?? []]),
+  );
+});
+
+const BUILTIN_AGENTS = ['task', 'plan', 'explore', 'review', 'build'];
+const agentOptions = computed<{ value: string; label: string }[]>(() => {
+  const list: AgentSummary[] = agents.value.length
+    ? agents.value
+    : BUILTIN_AGENTS.map((id) => ({ id, name: id, description: '' }));
+  return list.map((a) => ({ value: a.id, label: a.name }));
+});
 const localeOptions = computed(() =>
   LOCALES.map((l) => ({ value: l.value, label: l.label })),
 );
@@ -243,11 +260,13 @@ function pickLocale(v: Locale) {
         <section v-else-if="section === 'defaults' && config" class="card">
           <div class="row">
             <span class="k">{{ t('defaultModel') }}</span>
-            <div class="v"><OInput v-model="defaults.model" :placeholder="t('defaultModelPlaceholder')" /></div>
+            <div class="v">
+              <OModelSelect v-model="defaults.model" :groups="providerGroups" width="100%" />
+            </div>
           </div>
           <div class="row">
             <span class="k">{{ t('defaultAgent') }}</span>
-            <div class="v"><OInput v-model="defaults.agent" placeholder="task" /></div>
+            <div class="v"><OSelect v-model="defaults.agent" :options="agentOptions" width="240px" /></div>
           </div>
           <div class="row">
             <span class="k">{{ t('defaultApproval') }}</span>

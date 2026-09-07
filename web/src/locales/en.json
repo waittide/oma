@@ -134,5 +134,9 @@
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"
+  },
+  "modelSelect": {
+    "placeholder": "Select model",
+    "empty": "No models available"
   }
 }

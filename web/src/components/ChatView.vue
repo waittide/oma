@@ -15,6 +15,7 @@ import {
   LuZap,
 } from 'vue-icons-plus/lu';
 import OButton from './ui/OButton.vue';
+import OModelSelect from './ui/OModelSelect.vue';
 import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
 import type { ApprovalMode, ChatMessage } from '../types';
@@ -95,14 +96,6 @@ function userText(id: string): string {
   return b && b.type === 'text' ? b.text : '';
 }
 
-const modelOptions = computed(() =>
-  chat.modelList.value.map((m) => ({
-    value: m.selector,
-    label: m.info.name,
-    hint: `${Math.round(m.info.context_len / 1024)}K`,
-  })),
-);
-
 const agentOptions = computed(() => chat.agents.value.map((a) => ({ value: a.id, label: a.name })));
 
 const approvalOptions = computed<{ value: ApprovalMode; label: string }[]>(() => [
@@ -175,9 +168,9 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
           width="120px"
           @update:model-value="chat.setAgent"
         />
-        <OSelect
+        <OModelSelect
           v-model="chat.activeModel.value"
-          :options="modelOptions"
+          :groups="chat.providers.value"
           width="180px"
           @update:model-value="chat.setModel"
         />

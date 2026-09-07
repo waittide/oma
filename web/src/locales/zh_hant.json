@@ -134,5 +134,9 @@
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"
+  },
+  "modelSelect": {
+    "placeholder": "選擇模型",
+    "empty": "暫無可用模型"
   }
 }
