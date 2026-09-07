@@ -139,8 +139,8 @@ async fn run_web(addr: &str, token_opt: Option<&str>, dev: bool, port: u16) -> R
     let web_dir = Path::new("web");
     if dev {
         if web_dir.exists() {
-            println!("📦 正在启动 Vite 前端开发服务器 (npm run dev)...");
-            let mut child = tokio::process::Command::new("npm")
+            println!("📦 正在启动 Vite 前端开发服务器 (pnpm run dev)...");
+            let mut child = tokio::process::Command::new("pnpm")
                 .arg("run")
                 .arg("dev")
                 .arg("--")
@@ -148,45 +148,45 @@ async fn run_web(addr: &str, token_opt: Option<&str>, dev: bool, port: u16) -> R
                 .arg("0.0.0.0")
                 .arg("--port")
                 .arg(port.to_string())
+                .current_dir(web_dir)
                 .spawn()?;
             let _ = child.wait().await;
         }
-    } else {
-        if web_dir.exists() {
-            let dist_dir = web_dir.join("dist");
-            let mut cmd = if dist_dir.exists() {
-                let mut c = tokio::process::Command::new("npx");
-                c.arg("vite")
-                    .arg("preview")
-                    .arg("--host")
-                    .arg("0.0.0.0")
-                    .arg("--port")
-                    .arg(port.to_string());
-                c
-            } else {
-                let mut c = tokio::process::Command::new("npm");
-                c.arg("run")
-                    .arg("dev")
-                    .arg("--")
-                    .arg("--host")
-                    .arg("0.0.0.0")
-                    .arg("--port")
-                    .arg(port.to_string());
-                c
-            };
-            cmd.current_dir(web_dir);
-            println!("🌐 正在启动本地前端端口 {} 服务...", port);
-            let _ = tokio::process::Command::new("xdg-open")
-                .arg(&daemon_url)
-                .spawn();
-            let mut child = cmd.spawn()?;
-            let _ = child.wait().await;
+    } else if web_dir.exists() {
+        let dist_dir = web_dir.join("dist");
+        let mut cmd = if dist_dir.exists() {
+            let mut c = tokio::process::Command::new("pnpm");
+            c.arg("exec")
+                .arg("vite")
+                .arg("preview")
+                .arg("--host")
+                .arg("0.0.0.0")
+                .arg("--port")
+                .arg(port.to_string());
+            c
         } else {
-            let _ = tokio::process::Command::new("xdg-open")
-                .arg(&daemon_url)
-                .spawn();
-            tokio::signal::ctrl_c().await?;
-        }
+            let mut c = tokio::process::Command::new("pnpm");
+            c.arg("run")
+                .arg("dev")
+                .arg("--")
+                .arg("--host")
+                .arg("0.0.0.0")
+                .arg("--port")
+                .arg(port.to_string());
+            c
+        };
+        cmd.current_dir(web_dir);
+        println!("🌐 正在启动本地前端端口 {} 服务...", port);
+        let _ = tokio::process::Command::new("xdg-open")
+            .arg(&daemon_url)
+            .spawn();
+        let mut child = cmd.spawn()?;
+        let _ = child.wait().await;
+    } else {
+        let _ = tokio::process::Command::new("xdg-open")
+            .arg(&daemon_url)
+            .spawn();
+        tokio::signal::ctrl_c().await?;
     }
 
     Ok(())
