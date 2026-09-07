@@ -2,6 +2,7 @@
 import { Fa6Plus, Fa6Server, Fa6Trash } from 'vue-icons-plus/fa6';
 import { computed, ref, watch } from 'vue';
 import type { OmaConfigView, ProviderConfig } from '../../types';
+import OuiCheckbox from '../oui/OuiCheckbox.vue';
 import OuiSelect from '../oui/OuiSelect.vue';
 import { uiConfirm } from '../../useDialogs';
 
@@ -150,8 +151,8 @@ async function deleteProvider(n: string) {
                 <td><input v-model="m.id" class="field-input" type="text" placeholder="gpt-4o" /></td>
                 <td><input v-model="m.name" class="field-input" type="text" placeholder="缺省同 ID" /></td>
                 <td><input v-model.number="m.context_len" class="field-input" type="number" /></td>
-                <td class="col-flag"><input v-model="m.supports_vision" type="checkbox" /></td>
-                <td class="col-flag"><input v-model="m.supports_thinking" type="checkbox" /></td>
+                <td class="col-flag"><OuiCheckbox v-model="m.supports_vision" /></td>
+                <td class="col-flag"><OuiCheckbox v-model="m.supports_thinking" /></td>
                 <td class="col-del">
                   <button class="btn-icon" v-tip="'删除模型'" @click="provider.models!.splice(i, 1)"><Fa6Trash /></button>
                 </td>

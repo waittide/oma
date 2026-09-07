@@ -2,6 +2,7 @@
 import { Fa6NetworkWired, Fa6Plus, Fa6Terminal, Fa6Trash } from 'vue-icons-plus/fa6';
 import { computed, ref, watch } from 'vue';
 import type { McpServerConfig, OmaConfigView } from '../../types';
+import OuiRadioGroup from '../oui/OuiRadioGroup.vue';
 import StringMapEditor from './StringMapEditor.vue';
 import { uiConfirm } from '../../useDialogs';
 
@@ -110,10 +111,14 @@ function switchType(t: 'local' | 'remote') {
       <div v-else class="settings-panel">
         <div class="form-field">
           <label class="field-label">连接类型</label>
-          <div class="radio-row">
-            <label><input type="radio" :checked="server.type === 'local'" @change="switchType('local')" /> 本地 Stdio (子进程)</label>
-            <label><input type="radio" :checked="server.type === 'remote'" @change="switchType('remote')" /> 远程 Streamable HTTP</label>
-          </div>
+          <OuiRadioGroup
+            :model-value="server.type"
+            :options="[
+              { label: '本地 Stdio (子进程)', value: 'local' },
+              { label: '远程 Streamable HTTP', value: 'remote' },
+            ]"
+            @update:model-value="(v) => switchType(v as 'local' | 'remote')"
+          />
         </div>
 
         <template v-if="server.type === 'local'">
