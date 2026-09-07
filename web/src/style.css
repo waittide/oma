@@ -223,14 +223,6 @@ input[type='radio']:hover {
   color: var(--text-primary);
 }
 
-.sidebar-section-label {
-  padding: 8px 16px 4px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.4px;
-  color: var(--text-muted);
-}
-
 .session-list {
   flex: 1;
   overflow-y: auto;
@@ -246,15 +238,111 @@ input[type='radio']:hover {
   gap: 6px;
   border-radius: 8px;
   padding: 8px 10px;
-  cursor: pointer;
-  user-select: none;
-  color: var(--text-primary);
-  transition: background-color var(--dur-fast) ease;
 }
 
 .session-item:hover {
   background: var(--wash-hover);
 }
+
+.session-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  margin-top: 4px;
+  padding: 0 8px;
+  border-radius: 7px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.group-header:hover {
+  background: var(--wash-hover);
+  color: var(--text-secondary);
+}
+
+.group-chevron {
+  flex-shrink: 0;
+  font-size: 9px;
+  transition: transform var(--dur-fast) var(--ease-in-out);
+}
+
+.group-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.group-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-count {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--wash-hover);
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 500;
+}
+
+.group-add {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) ease,
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+.group-header:hover .group-add {
+  opacity: 1;
+}
+
+.group-add:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.group-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-left: 6px;
+}
+
 
 .session-item.active {
   background: var(--wash-active);

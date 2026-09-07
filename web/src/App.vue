@@ -85,15 +85,16 @@ async function selectSession(sessionId: string) {
   } catch (e) {
     console.error('Failed to load messages:', e);
   }
-  connect(sessionId, workspace.value);
+  // 以会话自身记录的工作区握手，而非全局默认工作区
+  const ws = sessions.value.find((s) => s.session_id === sessionId)?.workspace ?? workspace.value;
+  connect(sessionId, ws);
 }
 
-async function handleCreateSession() {
+async function handleCreateSession(ws?: string) {
   try {
-    const res = await createSession({
-      workspace: workspace.value,
-      title: `会话 #${sessions.value.length + 1}`,
-    });
+    const target = ws || workspace.value;
+    const title = `会话 #${sessions.value.filter((s) => s.workspace === target).length + 1}`;
+    const res = await createSession({ workspace: target, title });
     sessions.value.unshift(res.session);
     selectSession(res.session_id);
   } catch (e) {
