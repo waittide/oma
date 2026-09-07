@@ -17,7 +17,7 @@ import type {
   TokenUsage,
 } from '../types';
 import { tr } from '../composables/i18n';
-import { applyRemoteRename } from './sessions';
+import { activeSessionId, applyRemoteRename } from './sessions';
 
 /** 流式轮次缓冲：当前 Turn 的实时块序列。 */
 export interface LiveTool {
@@ -177,6 +177,11 @@ function handleEvent(ev: AgentEvent) {
     case 'session_renamed':
       if (ev.data) applyRemoteRename(ev.data.session_id, ev.data.title);
       break;
+    case 'messages_deleted':
+      // 本端或他端删除消息（含编辑重发失败自动回滚）后统一回读
+      currentLeafId.value = ev.data?.current_leaf_id ?? null;
+      void reload();
+      break;
     case 'error':
       toast.error(ev.data?.message ?? tr('chat.serverError'));
       break;
@@ -302,6 +307,18 @@ export function setAgent(agent: string) {
 
 export function setApprovalMode(mode: ApprovalMode) {
   command({ type: 'set_approval_mode', data: { mode } });
+}
+
+/** 删除消息及其子树；结果经 messages_deleted 事件广播回读。 */
+export async function deleteMessage(messageId: string) {
+  const sid = activeSessionId.value;
+  if (!sid) return;
+  try {
+    await api.deleteMessage(sid, messageId);
+    toast.success(tr('chat.deleted'));
+  } catch (e) {
+    toast.error(tr('chat.deleteFailed', { message: (e as Error).message }));
+  }
 }
 
 export function switchBranch(leafId: string) {

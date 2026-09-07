@@ -69,6 +69,13 @@ export const api = {
 
   messageTree: (id: string) => request<ChatMessage[]>(`/api/sessions/${id}/messages/tree`),
 
+  /** 删除消息及其子树；返回删除的 ID 列表与新的当前叶子 */
+  deleteMessage: (id: string, messageId: string) =>
+    request<{ success: boolean; deleted: string[]; current_leaf_id: string | null }>(
+      `/api/sessions/${id}/messages/${messageId}`,
+      { method: 'DELETE' },
+    ),
+
   messages: (id: string, leafId?: string | null) => {
     const q = leafId ? `?leaf_id=${encodeURIComponent(leafId)}` : '';
     return request<ChatMessage[]>(`/api/sessions/${id}/messages${q}`);

@@ -58,7 +58,11 @@
     "cancelRequested": "Cancellation requested",
     "loadMessagesFailed": "Failed to load messages: {message}",
     "turnError": "This turn failed with an error",
-    "serverError": "Server error"
+    "serverError": "Server error",
+    "delete": "Delete",
+    "deleteHint": "Delete this message and its replies",
+    "deleted": "Message deleted",
+    "deleteFailed": "Delete failed: {message}"
   },
   "blocks": {
     "thinking": "Thinking",

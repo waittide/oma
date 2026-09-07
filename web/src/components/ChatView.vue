@@ -10,6 +10,7 @@ import {
   LuPencil,
   LuSend,
   LuSquare,
+  LuTrash2,
   LuUser,
   LuX,
   LuZap,
@@ -220,6 +221,14 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
                   @click="startFork(m.parent_id, userText(m.id))"
                 >
                   <LuPencil :size="11" /> {{ t('editResend') }}
+                </button>
+                <button
+                  type="button"
+                  class="fork"
+                  :title="t('deleteHint')"
+                  @click="chat.deleteMessage(m.id)"
+                >
+                  <LuTrash2 :size="11" /> {{ t('delete') }}
                 </button>
                 <OSelect
                   v-if="branchGroups[m.id]"

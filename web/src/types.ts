@@ -78,6 +78,7 @@ export type AgentEvent =
   | { type: 'approval_mode_changed'; data?: { mode: ApprovalMode } }
   | { type: 'active_turn_catch_up'; data?: ActiveTurnCatchUp }
   | { type: 'session_renamed'; data?: { session_id: string; title: string } }
+  | { type: 'messages_deleted'; data?: { deleted_ids: string[]; current_leaf_id: string | null } }
   | { type: 'error'; data?: { message: string } };
 
 export interface Ready {

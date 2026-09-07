@@ -58,7 +58,11 @@
     "cancelRequested": "已請求中止當前輪次",
     "loadMessagesFailed": "載入訊息失敗：{message}",
     "turnError": "本輪執行錯誤",
-    "serverError": "服務端錯誤"
+    "serverError": "服務端錯誤",
+    "delete": "刪除",
+    "deleteHint": "刪除該訊息及其後續回覆",
+    "deleted": "訊息已刪除",
+    "deleteFailed": "刪除失敗：{message}"
   },
   "blocks": {
     "thinking": "思考過程",
