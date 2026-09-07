@@ -9,9 +9,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "vue": "^3.5.42"
+    "@catppuccin/palette": "^1.8.0",
+    "markdown-it": "^15.0.1",
+    "vue": "^3.5.42",
+    "vue-icons-plus": "^0.1.8",
+    "vue-sonner": "^2.0.9"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.2.0",
     "@vitejs/plugin-vue": "^6.0.8",
     "typescript": "^6.0.3",
     "vite": "^8.2.2",

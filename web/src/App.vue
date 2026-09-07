@@ -1,17 +1,28 @@
-<script setup lang="ts"></script>
+<script setup lang="ts">
+import { onMounted } from 'vue';
+import { Toaster } from 'vue-sonner';
+import { loadConfig } from './stores/theme';
+
+onMounted(() => loadConfig());
+</script>
 
 <template>
-  <div class="app">
-    <h1>Oma</h1>
-    <p>Vite + Vue 3 + TypeScript 基础框架已就绪。</p>
+  <div class="shell">
+    <header class="bar">Oma</header>
   </div>
+  <Toaster position="bottom-right" :expand="false" />
 </template>
 
 <style scoped>
-.app {
-  display: grid;
-  place-content: center;
-  min-height: 100vh;
-  font-family: system-ui, sans-serif;
+.shell {
+  height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+}
+.bar {
+  padding: 14px 18px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-weight: 700;
 }
 </style>
