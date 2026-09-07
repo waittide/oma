@@ -290,6 +290,26 @@ impl StorageManager {
         Ok(())
     }
 
+    /// 重命名会话（同步更新索引与会话库 meta）
+    pub async fn rename_session(&self, session_id: &str, title: &str) -> Result<()> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query("UPDATE sessions_index SET title = ?, updated_at = ? WHERE session_id = ?")
+            .bind(title)
+            .bind(now)
+            .bind(session_id)
+            .execute(&self.index_pool)
+            .await
+            .context("Failed to rename session in index")?;
+
+        let pool = self.get_session_pool(session_id).await?;
+        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('title', ?)")
+            .bind(title)
+            .execute(&pool)
+            .await?;
+
+        Ok(())
+    }
+
     /// 更新会话配置 (model, agent, approval_mode)
     pub async fn update_session_settings(
         &self,

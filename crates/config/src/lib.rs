@@ -52,7 +52,7 @@ pub const THEME_ACCENTS: [&str; 14] = [
 
 /// 前端主题设置 (Catppuccin 体系；浅色固定 Latte，深色可选 Frappé/Macchiato/Mocha)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThemeConfig {
+pub struct Theme {
     /// 显示模式: "light" | "dark" | "system"
     #[serde(default = "default_theme_mode")]
     pub mode:        String,
@@ -74,7 +74,7 @@ fn default_accent() -> String {
     "blue".to_string()
 }
 
-impl Default for ThemeConfig {
+impl Default for Theme {
     fn default() -> Self {
         Self {
             mode:        default_theme_mode(),
@@ -84,7 +84,7 @@ impl Default for ThemeConfig {
     }
 }
 
-impl ThemeConfig {
+impl Theme {
     /// 校验全部 label；非法值返回错误说明 (写入侧闸门)
     pub fn validate(&self) -> Result<()> {
         if !matches!(self.mode.as_str(), "light" | "dark" | "system") {
@@ -117,7 +117,7 @@ pub struct OmaConfig {
     #[serde(default)]
     pub default_approval_mode: ApprovalMode,
     #[serde(default)]
-    pub theme:                 ThemeConfig,
+    pub theme:                 Theme,
     #[serde(default)]
     pub server:                ServerConfig,
     #[serde(default)]
@@ -139,7 +139,7 @@ impl Default for OmaConfig {
             default_model:         default_model_str(),
             default_agent:         default_agent_str(),
             default_approval_mode: ApprovalMode::Normal,
-            theme:                 ThemeConfig::default(),
+            theme:                 Theme::default(),
             server:                ServerConfig::default(),
             providers:             BTreeMap::new(),
             mcp_servers:           BTreeMap::new(),

@@ -323,6 +323,32 @@ async fn handle_get_messages(
 }
 
 #[derive(Deserialize)]
+struct RenameSessionReq {
+    title: String,
+}
+
+async fn handle_rename_session(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    AxumPath(session_id): AxumPath<String>,
+    Json(payload): Json<RenameSessionReq>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !check_auth(&headers, query.token.as_deref(), &state.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    match state
+        .storage
+        .rename_session(&session_id, &payload.title)
+        .await
+    {
+        Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+#[derive(Deserialize)]
 struct WorkspaceTreeQuery {
     workspace: String,
     token:     Option<String>,
@@ -664,7 +690,10 @@ pub fn create_router(state: DaemonState) -> Router {
     let mut router = Router::new()
         .route("/api/server/status", get(handle_server_status))
         .route("/api/sessions", get(handle_list_sessions).post(handle_create_session))
-        .route("/api/sessions/{id}", delete(handle_delete_session))
+        .route(
+            "/api/sessions/{id}",
+            delete(handle_delete_session).patch(handle_rename_session),
+        )
         .route("/api/sessions/{id}/messages", get(handle_get_messages))
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
