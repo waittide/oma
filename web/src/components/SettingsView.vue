@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { toast } from 'vue-sonner';
 import {
   LuCheck,
+  LuLanguages,
   LuMonitor,
   LuMoon,
   LuPalette,
@@ -16,20 +17,25 @@ import OModal from './ui/OModal.vue';
 import ORadio from './ui/ORadio.vue';
 import OSelect from './ui/OSelect.vue';
 import { ACCENTS, config, configReady, loadConfig, saveConfig, saveTheme, theme } from '../stores/theme';
+import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
+import { useTranslations } from '../composables/i18n';
 import type { OmaConfig, Theme } from '../types';
 
 const emit = defineEmits<{ back: [] }>();
+
+const { t } = useTranslations('settings');
+const { t: tc } = useTranslations('common');
 
 const mode = ref<Theme['mode']>(theme.value.mode);
 const flavor = ref<Theme['dark_flavor']>(theme.value.dark_flavor);
 const accent = ref<string>(theme.value.accent);
 const savingTheme = ref(false);
 
-const modeOptions: { value: Theme['mode']; label: string }[] = [
-  { value: 'light', label: '浅色' },
-  { value: 'dark', label: '深色' },
-  { value: 'system', label: '跟随系统' },
-];
+const modeOptions = computed<{ value: Theme['mode']; label: string }[]>(() => [
+  { value: 'light', label: t('modeLight') },
+  { value: 'dark', label: t('modeDark') },
+  { value: 'system', label: t('modeSystem') },
+]);
 const flavorOptions: { value: Theme['dark_flavor']; label: string }[] = [
   { value: 'frappe', label: 'Frappé' },
   { value: 'macchiato', label: 'Macchiato' },
@@ -45,9 +51,9 @@ async function applyTheme() {
       accent: accent.value,
     };
     await saveTheme(next);
-    toast.success('主题已保存至服务端');
+    toast.success(t('themeSaved'));
   } catch (e) {
-    toast.error(`保存失败：${(e as Error).message}`);
+    toast.error(t('saveFailed', { message: (e as Error).message }));
   } finally {
     savingTheme.value = false;
   }
@@ -72,9 +78,9 @@ async function saveDefaults() {
   savingDefaults.value = true;
   try {
     await saveConfig({ ...config.value, ...defaults });
-    toast.success('默认配置已保存');
+    toast.success(t('defaultsSaved'));
   } catch (e) {
-    toast.error(`保存失败：${(e as Error).message}`);
+    toast.error(t('saveFailed', { message: (e as Error).message }));
   } finally {
     savingDefaults.value = false;
   }
@@ -92,11 +98,11 @@ function confirmProvider() {
   if (!config.value) return;
   const id = providerId.value.trim();
   if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(id)) {
-    toast.error('名称需以字母开头，仅含字母/数字/下划线');
+    toast.error(t('providerNameRule'));
     return;
   }
   if (config.value.providers[id]) {
-    toast.error('该 Provider 已存在');
+    toast.error(t('providerExists'));
     return;
   }
   config.value.providers[id] = {
@@ -108,16 +114,16 @@ function confirmProvider() {
     models: [],
   };
   showProvider.value = false;
-  toast.success('已新增，填写后请点击「保存全部」');
+  toast.success(t('providerAdded'));
 }
 
 async function saveProviders() {
   if (!config.value) return;
   try {
     await saveConfig(config.value);
-    toast.success('Provider 配置已保存');
+    toast.success(t('providersSaved'));
   } catch (e) {
-    toast.error(`保存失败：${(e as Error).message}`);
+    toast.error(t('saveFailed', { message: (e as Error).message }));
   }
 }
 
@@ -126,44 +132,54 @@ function removeProvider(id: string) {
   delete config.value.providers[id];
 }
 
-const approvalOptions: { value: OmaConfig['default_approval_mode']; label: string }[] = [
-  { value: 'normal', label: 'Normal（危险操作审批）' },
-  { value: 'strict', label: 'Strict（全部审批）' },
-  { value: 'auto', label: 'Auto（自动放行）' },
-];
+const approvalOptions = computed<{ value: OmaConfig['default_approval_mode']; label: string }[]>(
+  () => [
+    { value: 'normal', label: t('approvalNormal') },
+    { value: 'strict', label: t('approvalStrict') },
+    { value: 'auto', label: t('approvalAuto') },
+  ],
+);
+
+const localeOptions = computed(() =>
+  LOCALES.map((l) => ({ value: l.value, label: l.label })),
+);
+
+function pickLocale(v: Locale) {
+  setLocale(v);
+}
 </script>
 
 <template>
   <div class="settings">
     <header class="head">
       <div>
-        <h2>设置</h2>
-        <p>主题与模型配置由后端统一管理，保存后立即生效。</p>
+        <h2>{{ t('title') }}</h2>
+        <p>{{ t('subtitle') }}</p>
       </div>
-      <OButton variant="soft" @click="emit('back')">返回会话</OButton>
+      <OButton variant="soft" @click="emit('back')">{{ t('back') }}</OButton>
     </header>
 
     <div class="body">
       <!-- 主题 -->
       <section class="card">
-        <h3><LuPalette :size="15" /> 主题</h3>
+        <h3><LuPalette :size="15" /> {{ t('theme') }}</h3>
 
         <div class="row">
-          <span class="k">显示模式</span>
+          <span class="k">{{ t('mode') }}</span>
           <div class="v">
             <ORadio v-model="mode" :options="modeOptions" />
           </div>
         </div>
 
         <div v-if="mode !== 'light'" class="row">
-          <span class="k">深色系 flavor</span>
+          <span class="k">{{ t('flavor') }}</span>
           <div class="v">
             <OSelect v-model="flavor" :options="flavorOptions" width="160px" />
           </div>
         </div>
 
         <div class="row">
-          <span class="k">强调色</span>
+          <span class="k">{{ t('accent') }}</span>
           <div class="v swatches">
             <button
               v-for="a in ACCENTS"
@@ -182,7 +198,7 @@ const approvalOptions: { value: OmaConfig['default_approval_mode']; label: strin
         </div>
 
         <div class="row">
-          <span class="k">预览</span>
+          <span class="k">{{ t('preview') }}</span>
           <div class="v preview">
             <span class="pv-bg">Base</span>
             <span class="pv-mantle">Mantle</span>
@@ -195,39 +211,55 @@ const approvalOptions: { value: OmaConfig['default_approval_mode']; label: strin
         </div>
 
         <div class="row end">
-          <OButton variant="primary" :loading="savingTheme" @click="applyTheme">保存主题</OButton>
+          <OButton variant="primary" :loading="savingTheme" @click="applyTheme">{{ t('saveTheme') }}</OButton>
+        </div>
+      </section>
+
+      <!-- 语言 -->
+      <section class="card">
+        <h3><LuLanguages :size="15" /> {{ t('languageSection') }}</h3>
+        <div class="row">
+          <span class="k">{{ t('languageLabel') }}</span>
+          <div class="v">
+            <OSelect
+              :model-value="settingStore.locale"
+              :options="localeOptions"
+              width="180px"
+              @update:model-value="pickLocale"
+            />
+          </div>
         </div>
       </section>
 
       <!-- 默认参数 -->
       <section v-if="config" class="card">
-        <h3><LuServer :size="15" /> 默认参数</h3>
+        <h3><LuServer :size="15" /> {{ t('defaults') }}</h3>
         <div class="row">
-          <span class="k">默认模型</span>
-          <div class="v"><OInput v-model="defaults.model" placeholder="provider/model-id" /></div>
+          <span class="k">{{ t('defaultModel') }}</span>
+          <div class="v"><OInput v-model="defaults.model" :placeholder="t('defaultModelPlaceholder')" /></div>
         </div>
         <div class="row">
-          <span class="k">默认 Agent</span>
+          <span class="k">{{ t('defaultAgent') }}</span>
           <div class="v"><OInput v-model="defaults.agent" placeholder="task" /></div>
         </div>
         <div class="row">
-          <span class="k">默认审批模式</span>
+          <span class="k">{{ t('defaultApproval') }}</span>
           <div class="v">
             <OSelect v-model="defaults.approval" :options="approvalOptions" width="240px" />
           </div>
         </div>
         <div class="row end">
-          <OButton variant="primary" :loading="savingDefaults" @click="saveDefaults">保存默认</OButton>
+          <OButton variant="primary" :loading="savingDefaults" @click="saveDefaults">{{ t('saveDefaults') }}</OButton>
         </div>
       </section>
 
       <!-- Providers -->
       <section v-if="config" class="card">
         <div class="card-head">
-          <h3><LuServer :size="15" /> Providers（{{ Object.keys(config.providers).length }}）</h3>
+          <h3><LuServer :size="15" /> {{ t('providersCount', { count: Object.keys(config.providers).length }) }}</h3>
           <div class="ch-actions">
-            <OButton size="sm" variant="soft" @click="addProvider">新增</OButton>
-            <OButton size="sm" variant="primary" @click="saveProviders">保存全部</OButton>
+            <OButton size="sm" variant="soft" @click="addProvider">{{ t('add') }}</OButton>
+            <OButton size="sm" variant="primary" @click="saveProviders">{{ t('saveAll') }}</OButton>
           </div>
         </div>
 
@@ -236,10 +268,10 @@ const approvalOptions: { value: OmaConfig['default_approval_mode']; label: strin
             <span class="pv-id">{{ id }}</span>
             <OCheckbox
               :model-value="showKey[id] === true"
-              label="显示密钥"
+              :label="t('showKey')"
               @update:model-value="showKey[id] = $event"
             />
-            <OButton size="sm" variant="danger" @click="removeProvider(String(id))">删除</OButton>
+            <OButton size="sm" variant="danger" @click="removeProvider(String(id))">{{ tc('delete') }}</OButton>
           </div>
           <div class="grid">
             <label>api_type</label>
@@ -256,7 +288,7 @@ const approvalOptions: { value: OmaConfig['default_approval_mode']; label: strin
                   ×
                 </button>
               </span>
-              <span v-if="(p.models ?? []).length === 0" class="muted">未声明（按 id 动态合成）</span>
+              <span v-if="(p.models ?? []).length === 0" class="muted">{{ t('modelsNone') }}</span>
             </div>
           </div>
         </div>
@@ -267,18 +299,18 @@ const approvalOptions: { value: OmaConfig['default_approval_mode']; label: strin
       </section>
 
       <p v-if="!config" class="muted empty">
-        无法读取服务端配置，请确认 Daemon 正在运行且 Token 有效。
+        {{ t('configUnavailable') }}
       </p>
     </div>
 
-    <OModal :open="showProvider" title="新增 Provider" width="400px" @close="showProvider = false">
+    <OModal :open="showProvider" :title="t('newProvider')" width="400px" @close="showProvider = false">
       <div class="grid one">
-        <label>名称</label>
+        <label>{{ t('providerName') }}</label>
         <OInput v-model="providerId" placeholder="my_anthropic" autofocus @enter="confirmProvider" />
       </div>
       <template #footer>
-        <OButton variant="ghost" @click="showProvider = false">取消</OButton>
-        <OButton variant="primary" @click="confirmProvider">新增</OButton>
+        <OButton variant="ghost" @click="showProvider = false">{{ tc('cancel') }}</OButton>
+        <OButton variant="primary" @click="confirmProvider">{{ t('add') }}</OButton>
       </template>
     </OModal>
   </div>

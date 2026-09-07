@@ -8,8 +8,11 @@ import {
 } from 'vue-icons-plus/lu';
 import type { Block } from '../types';
 import { prettyJson, renderMarkdown } from '../lib/format';
+import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ blocks: Block[]; streaming: boolean }>();
+
+const { t } = useTranslations('blocks');
 
 interface Item {
   kind: 'text' | 'thinking' | 'tool' | 'image';
@@ -62,7 +65,7 @@ const items = computed<Item[]>(() => {
       <details v-else-if="it.kind === 'thinking'" class="fold think">
         <summary>
           <LuBrain :size="13" />
-          <span>思考过程</span>
+          <span>{{ t('thinking') }}</span>
           <LuChevronDown :size="13" class="caret" />
         </summary>
         <pre class="think-body">{{ it.thinking }}</pre>
@@ -75,9 +78,9 @@ const items = computed<Item[]>(() => {
           <LuTerminalSquare v-if="it.toolName === 'shell'" :size="13" />
           <LuFileCode2 v-else :size="13" />
           <span class="tname">{{ it.toolName }}</span>
-          <span v-if="!it.resultDone" class="tstatus running">执行中…</span>
-          <span v-else-if="it.resultError" class="tstatus err">失败</span>
-          <span v-else class="tstatus ok">完成</span>
+          <span v-if="!it.resultDone" class="tstatus running">{{ t('running') }}</span>
+          <span v-else-if="it.resultError" class="tstatus err">{{ t('failed') }}</span>
+          <span v-else class="tstatus ok">{{ t('done') }}</span>
           <LuChevronDown :size="13" class="caret" />
         </summary>
         <pre class="tjson">{{ prettyJson(it.toolInput) }}</pre>

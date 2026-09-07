@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { LuX } from 'vue-icons-plus/lu';
 import OButton from './OButton.vue';
+import { useTranslations } from '../../composables/i18n';
 
 withDefaults(
   defineProps<{
@@ -12,6 +13,8 @@ withDefaults(
 );
 
 const emit = defineEmits<{ close: [] }>();
+
+const { t } = useTranslations('common');
 </script>
 
 <template>
@@ -21,7 +24,7 @@ const emit = defineEmits<{ close: [] }>();
         <div class="panel" :style="{ width }" role="dialog" aria-modal="true">
           <header class="head">
             <h3>{{ title }}</h3>
-            <OButton variant="ghost" size="sm" title="关闭" @click="emit('close')">
+            <OButton variant="ghost" size="sm" :title="t('close')" @click="emit('close')">
               <template #icon><LuX :size="15" /></template>
             </OButton>
           </header>

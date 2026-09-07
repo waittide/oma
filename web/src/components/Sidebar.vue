@@ -15,8 +15,12 @@ import OInput from './ui/OInput.vue';
 import OModal from './ui/OModal.vue';
 import * as store from '../stores/sessions';
 import { activeSessionId } from '../stores/sessions';
+import { useTranslations } from '../composables/i18n';
 
 const emit = defineEmits<{ openSettings: []; back: [] }>();
+
+const { t } = useTranslations('sidebar');
+const { t: tc } = useTranslations('common');
 
 const showNew = ref(false);
 const newWorkspace = ref(localStorage.getItem('oma.lastWorkspace') ?? '');
@@ -49,7 +53,7 @@ function commitRename() {
 async function createSession() {
   const ws = newWorkspace.value.trim();
   if (!ws) return;
-  const rec = await store.create(ws, newTitle.value.trim() || 'New Session');
+  const rec = await store.create(ws, newTitle.value.trim() || t('defaultTitle'));
   if (rec) {
     localStorage.setItem('oma.lastWorkspace', ws);
     showNew.value = false;
@@ -68,15 +72,15 @@ const deleteTarget = computed(
     <header class="brand">
       <span class="logo"><LuSparkles :size="16" /></span>
       <span class="brand-name">Oma</span>
-      <OButton size="sm" variant="soft" title="新建会话" @click="showNew = true">
+      <OButton size="sm" variant="soft" :title="t('newSession')" @click="showNew = true">
         <template #icon><LuPlus :size="14" /></template>
-        新建会话
+        {{ t('newSession') }}
       </OButton>
     </header>
 
     <nav class="tree">
       <div v-if="groups.length === 0 && !store.loading.value" class="empty">
-        暂无会话，点击右上角新建
+        {{ t('empty') }}
       </div>
 
       <section v-for="g in groups" :key="g.workspace" class="group">
@@ -120,7 +124,7 @@ const deleteTarget = computed(
                 <button
                   type="button"
                   class="mini"
-                  title="重命名"
+                  :title="t('rename')"
                   @click.stop="startRename(s.session_id, s.title)"
                 >
                   <LuPencil :size="12" />
@@ -128,7 +132,7 @@ const deleteTarget = computed(
                 <button
                   type="button"
                   class="mini danger"
-                  title="删除"
+                  :title="t('deleteAria')"
                   @click.stop="confirmDelete = s.session_id"
                 >
                   <LuTrash2 :size="12" />
@@ -142,36 +146,36 @@ const deleteTarget = computed(
 
     <footer class="foot">
       <button type="button" class="foot-item" @click="emit('openSettings')">
-        <LuSettings :size="14" /> 设置 · 主题
+        <LuSettings :size="14" /> {{ t('settings') }}
       </button>
     </footer>
 
-    <OModal :open="showNew" title="新建会话" width="480px" @close="showNew = false">
+    <OModal :open="showNew" :title="t('newSession')" width="480px" @close="showNew = false">
       <div class="form">
-        <label>工作区路径</label>
-        <OInput v-model="newWorkspace" placeholder="/home/me/project" autofocus />
-        <label>会话标题（可选）</label>
-        <OInput v-model="newTitle" placeholder="New Session" @enter="createSession" />
+        <label>{{ t('workspacePath') }}</label>
+        <OInput v-model="newWorkspace" :placeholder="t('workspacePlaceholder')" autofocus />
+        <label>{{ t('sessionTitle') }}</label>
+        <OInput v-model="newTitle" :placeholder="t('titlePlaceholder')" @enter="createSession" />
       </div>
       <template #footer>
-        <OButton variant="ghost" @click="showNew = false">取消</OButton>
+        <OButton variant="ghost" @click="showNew = false">{{ tc('cancel') }}</OButton>
         <OButton variant="primary" :disabled="!newWorkspace.trim()" @click="createSession">
-          创建
+          {{ tc('create') }}
         </OButton>
       </template>
     </OModal>
 
-    <OModal :open="confirmDelete !== null" title="删除会话" width="380px" @close="confirmDelete = null">
+    <OModal :open="confirmDelete !== null" :title="t('deleteSession')" width="380px" @close="confirmDelete = null">
       <p class="confirm-text">
-        确定删除「{{ deleteTarget?.title }}」？该会话的全部消息将被永久移除。
+        {{ t('deleteConfirm', { title: deleteTarget?.title ?? '' }) }}
       </p>
       <template #footer>
-        <OButton variant="ghost" @click="confirmDelete = null">取消</OButton>
+        <OButton variant="ghost" @click="confirmDelete = null">{{ tc('cancel') }}</OButton>
         <OButton
           variant="danger"
           @click="confirmDelete && store.remove(confirmDelete); confirmDelete = null"
         >
-          删除
+          {{ tc('delete') }}
         </OButton>
       </template>
     </OModal>

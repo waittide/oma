@@ -1,6 +1,7 @@
 <script setup lang="ts" generic="T extends string">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { LuCheck, LuChevronDown } from 'vue-icons-plus/lu';
+import { useTranslations } from '../../composables/i18n';
 
 export interface SelectOption<V extends string = string> {
   value: V;
@@ -16,10 +17,12 @@ const props = withDefaults(
     width?: string;
     align?: 'start' | 'end';
   }>(),
-  { placeholder: '请选择', width: '100%', align: 'start' },
+  { placeholder: undefined, width: '100%', align: 'start' },
 );
 
 const emit = defineEmits<{ 'update:modelValue': [T] }>();
+
+const { t } = useTranslations('select');
 
 const root = ref<HTMLElement | null>(null);
 const open = ref(false);
@@ -62,7 +65,7 @@ watch(open, async (v) => {
   <div ref="root" class="o-select" :style="{ width }">
     <button type="button" class="trigger" @click="toggle">
       <span class="label" :class="{ empty: !current }">
-        {{ current?.label ?? placeholder }}
+        {{ current?.label ?? placeholder ?? t('placeholder') }}
       </span>
       <LuChevronDown :size="14" class="chevron" :class="{ open }" />
     </button>
@@ -93,7 +96,7 @@ watch(open, async (v) => {
           <span v-if="opt.hint" class="item-hint">{{ opt.hint }}</span>
           <LuCheck v-if="opt.value === modelValue" :size="13" class="check" />
         </button>
-        <div v-if="options.length === 0" class="empty-menu">暂无选项</div>
+        <div v-if="options.length === 0" class="empty-menu">{{ t('empty') }}</div>
       </div>
     </Teleport>
   </div>

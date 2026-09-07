@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue';
 import { toast } from 'vue-sonner';
 import { api } from '../api';
+import { tr } from '../composables/i18n';
 import type { SessionRecord } from '../types';
 
 const COLLAPSED_KEY = 'oma.sidebar.collapsed';
@@ -71,7 +72,7 @@ export async function refresh() {
   try {
     sessions.value = await api.listSessions();
   } catch (e) {
-    toast.error(`加载会话失败：${(e as Error).message}`);
+    toast.error(tr('sessions.loadListFailed', { message: (e as Error).message }));
   } finally {
     loading.value = false;
   }
@@ -83,10 +84,10 @@ export async function create(workspace: string, title: string): Promise<SessionR
     sessions.value.unshift(session);
     collapsed.value[workspace] = false;
     persistCollapsed();
-    toast.success('会话已创建');
+    toast.success(tr('sessions.created'));
     return session;
   } catch (e) {
-    toast.error(`创建会话失败：${(e as Error).message}`);
+    toast.error(tr('sessions.createFailed', { message: (e as Error).message }));
     return null;
   }
 }
@@ -99,7 +100,7 @@ export async function rename(id: string, title: string) {
     await api.renameSession(id, title);
   } catch (e) {
     if (target && old !== undefined) target.title = old;
-    toast.error(`重命名失败：${(e as Error).message}`);
+    toast.error(tr('sessions.renameFailed', { message: (e as Error).message }));
   }
 }
 
@@ -114,17 +115,8 @@ export async function remove(id: string) {
     await api.deleteSession(id);
     sessions.value = sessions.value.filter((s) => s.session_id !== id);
     if (activeSessionId.value === id) activeSessionId.value = null;
-    toast.success('会话已删除');
+    toast.success(tr('sessions.deleted'));
   } catch (e) {
-    toast.error(`删除会话失败：${(e as Error).message}`);
-  }
-}
-
-/** 服务端在首轮消息后会自动更新 updated_at；轮询节奏内静默刷新。 */
-export function touchToFront(id: string) {
-  const idx = sessions.value.findIndex((s) => s.session_id === id);
-  if (idx > 0) {
-    const [rec] = sessions.value.splice(idx, 1);
-    if (rec) sessions.value.unshift(rec);
+    toast.error(tr('sessions.deleteFailed', { message: (e as Error).message }));
   }
 }

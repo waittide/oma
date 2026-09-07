@@ -16,6 +16,7 @@ import type {
   ServerMessage,
   TokenUsage,
 } from '../types';
+import { tr } from '../composables/i18n';
 import { applyRemoteRename } from './sessions';
 
 /** 流式轮次缓冲：当前 Turn 的实时块序列。 */
@@ -92,7 +93,7 @@ async function reload() {
       currentLeafId.value = linear[linear.length - 1]!.id;
     }
   } catch (e) {
-    toast.error(`加载消息失败：${(e as Error).message}`);
+    toast.error(tr('chat.loadMessagesFailed', { message: (e as Error).message }));
   }
 }
 
@@ -141,7 +142,7 @@ function handleEvent(ev: AgentEvent) {
       live.value = emptyLive();
       if (ev.data) {
         lastUsage.value = ev.data.usage;
-        if (ev.data.stop_reason === 'error') toast.error('本轮执行出错');
+        if (ev.data.stop_reason === 'error') toast.error(tr('chat.turnError'));
       }
       currentLeafId.value = null; // 让服务端解析默认 leaf
       void reload();
@@ -177,7 +178,7 @@ function handleEvent(ev: AgentEvent) {
       if (ev.data) applyRemoteRename(ev.data.session_id, ev.data.title);
       break;
     case 'error':
-      toast.error(ev.data?.message ?? '服务端错误');
+      toast.error(ev.data?.message ?? tr('chat.serverError'));
       break;
   }
 }

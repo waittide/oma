@@ -20,9 +20,14 @@ import MessageBlocks from './MessageBlocks.vue';
 import type { ApprovalMode, ChatMessage } from '../types';
 import * as chat from '../stores/chat';
 import { activeSession, activeSessionId } from '../stores/sessions';
+import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ online: boolean }>();
 const emit = defineEmits<{ needSettings: [] }>();
+
+const { t } = useTranslations('chat');
+const { t: tc } = useTranslations('common');
+const { t: ta } = useTranslations('approval');
 
 const draft = ref('');
 /** 非空表示下一条发送将从该消息处分叉重跑（编辑重发）。 */
@@ -81,7 +86,7 @@ function cancelFork() {
 
 function cancel() {
   chat.cancel();
-  toast.info('已请求中止当前轮次');
+  toast.info(t('cancelRequested'));
 }
 
 function userText(id: string): string {
@@ -100,11 +105,11 @@ const modelOptions = computed(() =>
 
 const agentOptions = computed(() => chat.agents.value.map((a) => ({ value: a.id, label: a.name })));
 
-const approvalOptions: { value: ApprovalMode; label: string }[] = [
-  { value: 'normal', label: '普通审批' },
-  { value: 'strict', label: '严格审批' },
-  { value: 'auto', label: '自动放行' },
-];
+const approvalOptions = computed<{ value: ApprovalMode; label: string }[]>(() => [
+  { value: 'normal', label: ta('normal') },
+  { value: 'strict', label: ta('strict') },
+  { value: 'auto', label: ta('auto') },
+]);
 
 function textOf(m: ChatMessage): string {
   const b = m.content.find((c) => c.type === 'text');
@@ -135,7 +140,7 @@ const branchGroups = computed(() => {
     if (m.role !== 'user') continue;
     const sibs = byParent[m.parent_id ?? '__root__'] ?? [];
     if (sibs.length < 2) continue;
-    out[m.id] = sibs.map((s) => ({ value: s.id, label: textOf(s).slice(0, 18) || s.id.slice(0, 6) }));
+    out[m.id] = sibs.map((s, i) => ({ value: s.id, label: textOf(s).slice(0, 18) || t('branchN', { index: i + 1 }) }));
   }
   return out;
 });
@@ -153,7 +158,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   <div class="chat">
     <header class="top">
       <div class="top-left">
-        <span class="session-title">{{ activeSession?.title ?? '未选择会话' }}</span>
+        <span class="session-title">{{ activeSession?.title ?? t('noSession') }}</span>
         <span class="ws-path" :title="activeSession?.workspace">{{ activeSession?.workspace }}</span>
       </div>
       <div v-if="activeSessionId" class="top-right">
@@ -182,21 +187,21 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
     <div ref="scrollEl" class="stream" @scroll.passive="onScroll">
       <div v-if="!activeSessionId" class="hero">
         <LuBot :size="42" class="hero-icon" />
-        <h2>欢迎使用 Oma</h2>
-        <p>从左侧选择会话，或按工作区路径新建一个会话开始协作。</p>
+        <h2>{{ t('welcomeTitle') }}</h2>
+        <p>{{ t('welcomeBody') }}</p>
       </div>
 
       <div v-else-if="!props.online" class="hero">
         <LuAlertTriangle :size="42" class="hero-icon warn" />
-        <h2>Daemon 未连接</h2>
-        <p>请确认 oma daemon 已在后端运行，或检查访问 Token 是否有效。</p>
+        <h2>{{ t('offlineTitle') }}</h2>
+        <p>{{ t('offlineBody') }}</p>
       </div>
 
       <div v-else-if="isEmpty" class="hero">
         <LuZap :size="42" class="hero-icon" />
-        <h2>空会话</h2>
-        <p>在下方输入第一条消息开始对话。模型未配置时可前往设置添加 Provider。</p>
-        <OButton v-if="!hasProviders" variant="soft" @click="emit('needSettings')">前往设置</OButton>
+        <h2>{{ t('emptyTitle') }}</h2>
+        <p>{{ t('emptyBody') }}</p>
+        <OButton v-if="!hasProviders" variant="soft" @click="emit('needSettings')">{{ t('goSettings') }}</OButton>
       </div>
 
       <template v-else>
@@ -207,22 +212,22 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
           </div>
           <div class="bubble">
             <div class="meta">
-              <span class="who">{{ m.role === 'user' ? '你' : 'Assistant' }}</span>
+              <span class="who">{{ m.role === 'user' ? t('you') : t('assistant') }}</span>
               <template v-if="m.role === 'user'">
                 <button
                   v-if="m.parent_id"
                   type="button"
                   class="fork"
-                  title="编辑并从该处分叉重跑"
+                  :title="t('editResendHint')"
                   @click="startFork(m.parent_id, userText(m.id))"
                 >
-                  <LuPencil :size="11" /> 编辑重发
+                  <LuPencil :size="11" /> {{ t('editResend') }}
                 </button>
                 <OSelect
                   v-if="branchGroups[m.id]"
                   :model-value="m.id"
                   :options="branchGroups[m.id]!"
-                  placeholder="分支"
+                  :placeholder="t('branch')"
                   width="128px"
                   @update:model-value="switchBranch"
                 />
@@ -248,19 +253,19 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
         <LuAlertTriangle :size="15" class="warn" />
         <div class="ap-text">
           <strong>{{ chat.pendingApproval.value.name }}</strong>
-          请求执行：<code>{{ chat.pendingApproval.value.summary }}</code>
+          {{ t('approvalRequest') }}<code>{{ chat.pendingApproval.value.summary }}</code>
         </div>
         <div class="ap-actions">
           <OButton variant="primary" size="sm" @click="chat.respond('allow_once')">
             <template #icon><LuCheck :size="13" /></template>
-            本次允许
+            {{ t('allowOnce') }}
           </OButton>
           <OButton variant="soft" size="sm" @click="chat.respond('allow_session')">
-            本会话允许
+            {{ t('allowSession') }}
           </OButton>
           <OButton variant="danger" size="sm" @click="chat.respond('deny')">
             <template #icon><LuX :size="13" /></template>
-            拒绝
+            {{ t('deny') }}
           </OButton>
         </div>
       </div>
@@ -269,18 +274,14 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
     <footer class="composer">
       <div v-if="forkFrom !== null" class="fork-banner">
         <LuGitBranch :size="12" />
-        <span>编辑重发：将从上一条消息处分叉出新分支</span>
-        <button type="button" class="fork-cancel" @click="cancelFork">取消</button>
+        <span>{{ t('editResendBanner') }}</span>
+        <button type="button" class="fork-cancel" @click="cancelFork">{{ tc('cancel') }}</button>
       </div>
       <div class="box" :class="{ disabled: !activeSessionId || !props.online }">
         <textarea
           v-model="draft"
           rows="3"
-          :placeholder="
-            activeSessionId
-              ? '输入消息，Enter 发送，Shift+Enter 换行'
-              : '请先选择或新建会话'
-          "
+          :placeholder="activeSessionId ? t('placeholder') : t('placeholderNoSession')"
           :disabled="!activeSessionId || !props.online"
           @keydown.enter.exact.prevent="send"
         />
@@ -289,17 +290,17 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
             v-if="chat.running.value"
             variant="danger"
             size="sm"
-            title="中止当前轮次"
+            :title="t('stopHint')"
             @click="cancel"
           >
             <template #icon><LuSquare :size="12" /></template>
-            中止
+            {{ t('stop') }}
           </OButton>
           <OButton
             variant="primary"
             size="sm"
             :disabled="!draft.trim() || !activeSessionId || !props.online"
-            title="发送"
+            :title="t('sendHint')"
             @click="send"
           >
             <template #icon><LuSend :size="13" /></template>
@@ -308,10 +309,9 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
       </div>
       <div class="hint">
         <LuBot :size="11" />
-        {{ chat.activeModel.value || '未选择模型' }} · {{ chat.activeAgent.value || '—' }}
+        {{ chat.activeModel.value || t('noModel') }} · {{ chat.activeAgent.value || '—' }}
         <template v-if="chat.lastUsage.value">
-          · 上轮 {{ chat.lastUsage.value.input_tokens }}↑ /
-          {{ chat.lastUsage.value.output_tokens }}↓ tokens
+          · {{ t('lastUsage', { input: chat.lastUsage.value.input_tokens, output: chat.lastUsage.value.output_tokens }) }}
         </template>
       </div>
     </footer>

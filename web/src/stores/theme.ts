@@ -1,5 +1,6 @@
 import { ref } from 'vue';
 import { api } from '../api';
+import { tr } from '../composables/i18n';
 import type { OmaConfig, Theme } from '../types';
 
 export const ACCENTS = [
@@ -68,7 +69,7 @@ export async function loadConfig(): Promise<void> {
 export async function saveTheme(next: Theme): Promise<void> {
   theme.value = next;
   applyTheme();
-  if (!config.value) throw new Error('服务端配置未加载');
+  if (!config.value) throw new Error(tr('settings.configNotLoaded'));
   const payload: OmaConfig = { ...config.value, theme: next };
   await api.putConfig(payload);
   config.value = payload;
