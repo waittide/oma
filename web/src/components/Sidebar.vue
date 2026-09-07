@@ -241,6 +241,7 @@ const deleteTarget = computed(
   font-weight: 600;
   cursor: pointer;
   text-align: left;
+  transition: background-color 0.12s ease;
 }
 .group-head:hover {
   background: var(--surface-hover);
@@ -282,7 +283,9 @@ const deleteTarget = computed(
   cursor: pointer;
   color: var(--text-tertiary);
   font-size: 13px;
-  transition: background-color 0.12s ease;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
 }
 .session:hover {
   background: var(--surface-hover);
@@ -330,11 +333,15 @@ const deleteTarget = computed(
   justify-content: center;
   width: 22px;
   height: 22px;
-  border: none;
   border-radius: 6px;
   background: transparent;
   color: var(--overlay0);
   cursor: pointer;
+  border: none;
+  flex-shrink: 0;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
 }
 .mini:hover {
   background: var(--surface-strong);
