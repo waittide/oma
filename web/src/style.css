@@ -48,6 +48,20 @@ input[type='number']::-webkit-outer-spin-button {
 }
 
 /* ===== 全局动画 ===== */
+
+@keyframes icon-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin {
+  animation: icon-spin 0.9s linear infinite;
+}
+
 @keyframes fade-in-up {
   from {
     opacity: 0;

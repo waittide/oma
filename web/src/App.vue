@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Fa6Bolt, Fa6Brain, Fa6Robot, Fa6ScrewdriverWrench } from 'vue-icons-plus/fa6';
+import { Fa6Bolt, Fa6Brain, Fa6Robot, Fa6ScrewdriverWrench, Fa6Spinner } from 'vue-icons-plus/fa6';
 import { Toaster, toast } from 'vue-sonner';
 import { ref, onMounted, nextTick, watch } from 'vue';
 import type { ChatMessage, FileNode, SessionRecord, ApprovalDecision, ApprovalMode } from './types';
@@ -273,7 +273,8 @@ function updateWorkspace(newWs: string) {
                   <span class="flow-dot"></span>
                   <span class="flow-summary">{{ tc.output === undefined ? '正在执行…' : (tc.is_error ? '执行报错' : '执行完成') }}</span>
                   <span :class="['tool-status-badge', tc.output !== undefined ? (tc.is_error ? 'error' : 'success') : 'running']">
-                    {{ tc.output !== undefined ? (tc.is_error ? 'error' : 'ok') : '···' }}
+                    <Fa6Spinner v-if="tc.output === undefined" class="spin" />
+                    <template v-else>{{ tc.is_error ? 'error' : 'ok' }}</template>
                   </span>
                 </div>
                 <div class="tool-body">
