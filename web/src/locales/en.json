@@ -146,7 +146,11 @@
     "inputText": "Text",
     "inputImage": "Image",
     "inputVideo": "Video",
-    "hideKey": "Hide key"
+    "hideKey": "Hide key",
+    "fApiType": "API Type",
+    "fBaseUrl": "Base URL",
+    "fApiKey": "API Key",
+    "fModels": "Models"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"

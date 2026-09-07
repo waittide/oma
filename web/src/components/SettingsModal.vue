@@ -506,11 +506,11 @@ function pickLocale(v: Locale) {
               </OButton>
             </div>
             <div class="grid">
-              <label>api_type</label>
+              <label>{{ t('fApiType') }}</label>
               <OSelect v-model="d.api_type" :options="apiTypeOptions" />
-              <label>base_url</label>
+              <label>{{ t('fBaseUrl') }}</label>
               <OInput v-model="d.base_url" />
-              <label>api_key</label>
+              <label>{{ t('fApiKey') }}</label>
               <div class="key-row">
                 <OInput v-model="d.api_key" :type="keyRevealed[d.uid] ? 'text' : 'password'" />
                 <button
@@ -526,7 +526,7 @@ function pickLocale(v: Locale) {
             </div>
 
             <div class="models-head">
-              <span class="models-title">models</span>
+              <span class="models-title">{{ t('fModels') }}</span>
               <OButton size="sm" variant="soft" @click="addModel(d)">
                 <template #icon><LuPlus :size="13" /></template>
                 {{ t('addModel') }}

@@ -146,7 +146,11 @@
     "inputText": "文字",
     "inputImage": "圖片",
     "inputVideo": "影片",
-    "hideKey": "隱藏密鑰"
+    "hideKey": "隱藏密鑰",
+    "fApiType": "API 類型",
+    "fBaseUrl": "服務地址",
+    "fApiKey": "API 密鑰",
+    "fModels": "模型清單"
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"
