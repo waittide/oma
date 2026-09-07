@@ -1,19 +1,14 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
-import {
-  LuCheck,
-  LuLanguages,
-  LuPalette,
-  LuServer,
-  LuSquareUserRound,
-} from 'vue-icons-plus/lu';
+import { LuLanguages, LuPalette, LuServer, LuSquareUserRound } from 'vue-icons-plus/lu';
 import OButton from './ui/OButton.vue';
 import OCheckbox from './ui/OCheckbox.vue';
 import OInput from './ui/OInput.vue';
 import OModal from './ui/OModal.vue';
 import ORadio from './ui/ORadio.vue';
 import OSelect from './ui/OSelect.vue';
+import OTooltip from './ui/OTooltip.vue';
 import { ACCENTS, config, loadConfig, saveConfig, saveTheme, theme } from '../stores/theme';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
 import { useTranslations } from '../composables/i18n';
@@ -203,25 +198,26 @@ function pickLocale(v: Locale) {
               <ORadio v-else v-model="flavor" :options="flavorOptions" />
             </div>
           </div>
-
           <div class="row">
             <span class="k">{{ t('accent') }}</span>
-            <div class="v swatches">
-              <button
-                v-for="a in ACCENTS"
+            <div class="v dots">
+              <OTooltip
+                v-for="(a, i) in ACCENTS"
                 :key="a"
-                type="button"
-                class="swatch"
-                :class="{ active: a === accent }"
-                :title="a"
-                @click="accent = a"
+                :label="t(`accentNames.${a}`)"
+                :align="i % 7 === 0 ? 'start' : i % 7 === 6 ? 'end' : 'center'"
               >
-                <span class="chip" :style="{ background: `var(--${a === 'green' ? 'green-color' : a})` }" />
-                <span class="sw-name">{{ a }}</span>
-                <LuCheck v-if="a === accent" :size="11" class="sw-check" />
-              </button>
+                <button
+                  type="button"
+                  class="dot"
+                  :class="{ active: a === accent }"
+                  :style="{ '--dot': `var(--${a === 'green' ? 'green-color' : a})` }"
+                  @click="accent = a"
+                />
+              </OTooltip>
             </div>
           </div>
+
 
           <div class="row end">
             <OButton variant="primary" :loading="savingTheme" @click="applyTheme">{{ t('saveTheme') }}</OButton>
@@ -424,43 +420,32 @@ function pickLocale(v: Locale) {
   font-size: 12.5px;
   color: var(--text-secondary);
 }
-.swatches {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+/* 强调色点阵：两行各 7 个，整齐排列；悬停经 OTooltip 显示名称 */
+.dots {
+  display: grid;
+  grid-template-columns: repeat(7, 18px);
+  gap: 9px 10px;
+  justify-content: start;
 }
-.swatch {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 9px 4px 5px;
-  border: 1px solid var(--line);
+.dot {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--crust) 28%, transparent);
   border-radius: 99px;
-  background: var(--paper);
-  color: var(--text-tertiary);
-  font-family: inherit;
-  font-size: 11.5px;
+  background: var(--dot);
   cursor: pointer;
-  transition: border-color 0.15s ease;
+  transition:
+    box-shadow 0.12s ease,
+    filter 0.12s ease;
 }
-.swatch:hover {
-  border-color: var(--overlay0);
-  color: var(--ink);
+.dot:hover {
+  filter: brightness(1.12);
 }
-.swatch.active {
-  border-color: var(--accent);
-  color: var(--ink);
-  background: var(--surface-active);
-}
-.chip {
-  width: 13px;
-  height: 13px;
-  border-radius: 99px;
-  flex-shrink: 0;
-}
-.sw-check {
-  color: var(--accent);
+.dot.active {
+  box-shadow:
+    0 0 0 2px var(--paper),
+    0 0 0 4px var(--dot);
 }
 .grid {
   display: grid;

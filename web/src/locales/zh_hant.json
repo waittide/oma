@@ -114,7 +114,23 @@
     "modelsNone": "未宣告（依 id 動態合成）",
     "saveFailed": "儲存失敗：{message}",
     "configUnavailable": "無法讀取服務端設定，請確認 Daemon 正在執行且 Token 有效。",
-    "providersCount": "Providers（{count}）"
+    "providersCount": "Providers（{count}）",
+    "accentNames": {
+      "rosewater": "玫瑰水",
+      "flamingo": "火鶴",
+      "pink": "粉紅",
+      "mauve": "淡紫",
+      "red": "紅色",
+      "maroon": "褐紅",
+      "peach": "蜜桃",
+      "yellow": "黃色",
+      "green": "綠色",
+      "teal": "青綠",
+      "sky": "天藍",
+      "sapphire": "藍寶石",
+      "blue": "藍色",
+      "lavender": "薰衣草"
+    }
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"

@@ -114,7 +114,23 @@
     "modelsNone": "Not declared (synthesized by id)",
     "saveFailed": "Save failed: {message}",
     "configUnavailable": "Cannot read server config. Ensure the daemon is running and the token is valid.",
-    "providersCount": "Providers ({count})"
+    "providersCount": "Providers ({count})",
+    "accentNames": {
+      "rosewater": "Rosewater",
+      "flamingo": "Flamingo",
+      "pink": "Pink",
+      "mauve": "Mauve",
+      "red": "Red",
+      "maroon": "Maroon",
+      "peach": "Peach",
+      "yellow": "Yellow",
+      "green": "Green",
+      "teal": "Teal",
+      "sky": "Sky",
+      "sapphire": "Sapphire",
+      "blue": "Blue",
+      "lavender": "Lavender"
+    }
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"
