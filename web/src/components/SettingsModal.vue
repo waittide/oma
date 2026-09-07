@@ -2,6 +2,8 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
 import {
+  LuEye,
+  LuEyeOff,
   LuLanguages,
   LuPalette,
   LuPlus,
@@ -135,7 +137,10 @@ interface ModelDraft {
   supports_vision: boolean;
   input_types: string[];
 }
+
 interface ProviderDraft {
+  /** 稳定标识：与可编辑的 name 解耦，供密钥显隐等局部状态作键 */
+  uid: number;
   /** null = 本次新增，尚无服务端原键 */
   origId: string | null;
   name: string;
@@ -149,9 +154,15 @@ interface ProviderDraft {
 
 const providerDrafts = ref<ProviderDraft[]>([]);
 const savingProviders = ref(false);
+let uidSeq = 0;
+const keyRevealed = ref<Record<number, boolean>>({});
+/** reveal 接口拉取的真实密钥缓存（provider 原键 → key） */
+let revealedReal: Record<string, string> | null = null;
+
 
 function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
   return {
+    uid: ++uidSeq,
     origId,
     name: origId,
     api_type: p.api_type,
@@ -172,11 +183,6 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
   };
 }
 
-function rebuildDrafts() {
-  providerDrafts.value = config.value
-    ? Object.entries(config.value.providers).map(([id, p]) => toDraft(id, p))
-    : [];
-}
 
 watch(
   () => [props.open, section.value] as const,
@@ -192,6 +198,34 @@ const effortOptions = computed(() => [
   { value: 'medium', label: 'medium' },
   { value: 'high', label: 'high' },
 ]);
+
+function rebuildDrafts() {
+  keyRevealed.value = {};
+  revealedReal = null;
+  providerDrafts.value = config.value
+    ? Object.entries(config.value.providers).map(([id, p]) => toDraft(id, p))
+    : [];
+}
+
+/** 密钥显隐：展示真实密钥需经 reveal 接口获取；隐藏时若未被编辑则回填掩码。 */
+async function toggleKeyVisibility(d: ProviderDraft) {
+  const on = !keyRevealed.value[d.uid];
+  if (on && d.api_key === '***') {
+    if (!revealedReal) {
+      const real = await api.getConfig({ reveal: true });
+      revealedReal = Object.fromEntries(
+        Object.entries(real.providers).map(([id, p]) => [id, p.api_key]),
+      );
+    }
+    const orig = d.origId ? revealedReal[d.origId] : undefined;
+    if (orig !== undefined) d.api_key = orig;
+  } else if (!on && d.origId && revealedReal && d.api_key === revealedReal[d.origId]) {
+    d.api_key = '***';
+  }
+  keyRevealed.value[d.uid] = on;
+}
+
+
 const INPUT_TYPES = ['text', 'image', 'video'] as const;
 const INPUT_TYPE_LABELS: Record<string, string> = {
   text: 'inputText',
@@ -222,6 +256,7 @@ function confirmProvider() {
     return;
   }
   providerDrafts.value.push({
+    uid: ++uidSeq,
     origId: null,
     name: id,
     api_type: 'anthropic',
@@ -474,7 +509,18 @@ function pickLocale(v: Locale) {
               <label>base_url</label>
               <OInput v-model="d.base_url" />
               <label>api_key</label>
-              <OInput v-model="d.api_key" type="password" />
+              <div class="key-row">
+                <OInput v-model="d.api_key" :type="keyRevealed[d.uid] ? 'text' : 'password'" />
+                <button
+                  type="button"
+                  class="key-eye"
+                  :title="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
+                  @click="toggleKeyVisibility(d)"
+                >
+                  <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
+                  <LuEye v-else :size="14" />
+                </button>
+              </div>
             </div>
 
             <div class="models-head">
@@ -697,6 +743,34 @@ function pickLocale(v: Locale) {
 .pv-name :deep(input) {
   font-family: var(--font-mono);
   font-weight: 600;
+}
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.key-row .o-input {
+  flex: 1;
+}
+.key-eye {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--overlay0);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+.key-eye:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
 }
 .models-head {
   display: flex;

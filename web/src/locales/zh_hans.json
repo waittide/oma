@@ -145,7 +145,8 @@
     "inputTypes": "输入类型",
     "inputText": "文本",
     "inputImage": "图片",
-    "inputVideo": "视频"
+    "inputVideo": "视频",
+    "hideKey": "隐藏密钥"
   },
   "app": {
     "title": "Oma - 多端协同 AI Agent 工作台"

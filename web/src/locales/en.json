@@ -145,7 +145,8 @@
     "inputTypes": "Input Types",
     "inputText": "Text",
     "inputImage": "Image",
-    "inputVideo": "Video"
+    "inputVideo": "Video",
+    "hideKey": "Hide key"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"
