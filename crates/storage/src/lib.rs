@@ -500,6 +500,89 @@ impl StorageManager {
         }
         Ok(msgs)
     }
+
+    /// 删除指定消息及其整棵子树。
+    /// 若当前叶子位于被删子树内，则回退到被删消息的父节点（可能为空）。
+    /// 返回 (被删除的消息 ID 列表, 删除后的当前叶子)。
+    pub async fn delete_message_subtree(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> Result<(Vec<String>, Option<String>)> {
+        use std::collections::HashMap;
+        let pool = self.get_session_pool(session_id).await?;
+        let rows = sqlx::query("SELECT id, parent_id FROM messages")
+            .fetch_all(&pool)
+            .await?;
+        let mut children: HashMap<Option<String>, Vec<String>> = HashMap::new();
+        let mut deleted_parent: Option<String> = None;
+        let mut exists = false;
+        for r in rows {
+            let id: String = r.get("id");
+            let parent_id: Option<String> = r.get("parent_id");
+            if id == message_id {
+                deleted_parent = parent_id.clone();
+                exists = true;
+            }
+            children.entry(parent_id).or_default().push(id);
+        }
+        anyhow::ensure!(exists, "Message {} not found in session {}", message_id, session_id);
+
+        // BFS 收集子树
+        let mut deleted = Vec::new();
+        let mut stack = vec![message_id.to_string()];
+        while let Some(cur) = stack.pop() {
+            deleted.push(cur.clone());
+            if let Some(kids) = children.remove(&Some(cur)) {
+                stack.extend(kids);
+            }
+        }
+
+        // 当前叶子位于子树内时回退到被删消息的父节点
+        let leaf_row = sqlx::query("SELECT value FROM session_meta WHERE key = 'current_leaf_id'")
+            .fetch_optional(&pool)
+            .await?;
+        let current_leaf: Option<String> = leaf_row.map(|r| r.get::<String, _>("value"));
+        let new_leaf = match current_leaf {
+            Some(l) if deleted.contains(&l) => deleted_parent.clone(),
+            other => other,
+        };
+        // messages.parent_id 存在外键约束，必须先删子后删父（deleted 为父先子后序，取逆）
+        for id in deleted.iter().rev() {
+            sqlx::query("DELETE FROM messages WHERE id = ?")
+                .bind(id)
+                .execute(&pool)
+                .await?;
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        match &new_leaf {
+            Some(l) => {
+                sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('current_leaf_id', ?)")
+                    .bind(l)
+                    .execute(&pool)
+                    .await?;
+                sqlx::query("UPDATE sessions_index SET current_leaf_id = ?, updated_at = ? WHERE session_id = ?")
+                    .bind(l)
+                    .bind(now)
+                    .bind(session_id)
+                    .execute(&self.index_pool)
+                    .await?;
+            }
+            None => {
+                sqlx::query("DELETE FROM session_meta WHERE key = 'current_leaf_id'")
+                    .execute(&pool)
+                    .await?;
+                sqlx::query("UPDATE sessions_index SET current_leaf_id = NULL, updated_at = ? WHERE session_id = ?")
+                    .bind(now)
+                    .bind(session_id)
+                    .execute(&self.index_pool)
+                    .await?;
+            }
+        }
+
+        Ok((deleted, new_leaf))
+    }
 }
 
 #[cfg(test)]
@@ -584,6 +667,53 @@ mod tests {
         storage.delete_session("s_1").await?;
         let deleted = storage.get_session("s_1").await?;
         assert!(deleted.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_message_subtree() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let storage = StorageManager::new(tmp.path()).await?;
+        storage
+            .create_session("s_del", "/w", "Del", "m", "task", ApprovalMode::Normal)
+            .await?;
+
+        let msg = |id: &str, parent: Option<&str>| ChatMessage {
+            id:         id.into(),
+            parent_id:  parent.map(|p| p.into()),
+            role:       Role::User,
+            content:    vec![Block::Text { text: id.into() }],
+            created_at: 0,
+        };
+
+        // 树：m1 → m2 → m3（活跃链），m1 → m4（兄弟分支）
+        for (id, p) in [("m1", None), ("m2", Some("m1")), ("m3", Some("m2")), ("m4", Some("m1"))] {
+            storage.append_message("s_del", &msg(id, p), 0, 0).await?;
+        }
+        // 当前叶子为 m4（最后追加）
+
+        // 删除 m2 子树：{m2, m3}；当前叶子 m4 不在子树内 → 保持不变
+        let (deleted, leaf) = storage.delete_message_subtree("s_del", "m2").await?;
+        assert_eq!(deleted, vec!["m2", "m3"]);
+        assert_eq!(leaf.as_deref(), Some("m4"));
+        let all = storage.get_all_messages("s_del").await?;
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|m| m.id != "m2" && m.id != "m3"));
+
+        // 删除 m4：当前叶子在子树内 → 回退到父节点 m1
+        let (deleted, leaf) = storage.delete_message_subtree("s_del", "m4").await?;
+        assert_eq!(deleted, vec!["m4"]);
+        assert_eq!(leaf.as_deref(), Some("m1"));
+        assert_eq!(storage.get_linear_messages("s_del", None).await?.len(), 1);
+
+        // 删除不存在的消息报错
+        assert!(
+            storage
+                .delete_message_subtree("s_del", "nope")
+                .await
+                .is_err()
+        );
 
         Ok(())
     }

@@ -311,6 +311,10 @@ pub enum AgentEvent {
         session_id: String,
         title:      String,
     },
+    MessagesDeleted {
+        deleted_ids:     Vec<String>,
+        current_leaf_id: Option<String>,
+    },
     Error {
         message: String,
     },

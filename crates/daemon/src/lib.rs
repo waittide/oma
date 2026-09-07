@@ -338,6 +338,39 @@ async fn handle_get_message_tree(
     }
 }
 
+async fn handle_delete_message(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath((session_id, message_id)): AxumPath<(String, String)>,
+    Query(query): Query<AuthQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !check_auth(&headers, query.token.as_deref(), &state.token) {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid token".into()));
+    }
+
+    // 有活跃房间时走房间（广播事件并拒绝运行中删除），否则直接操作存储
+    let room = state.rooms.read().get(&session_id).cloned();
+    let result = if let Some(room) = room {
+        room.delete_message(&message_id).await
+    } else {
+        state
+            .storage
+            .delete_message_subtree(&session_id, &message_id)
+            .await
+    };
+
+    match result {
+        Ok((deleted, leaf)) => Ok(Json(serde_json::json!({
+            "success": true,
+            "deleted": deleted,
+            "current_leaf_id": leaf,
+        }))),
+        Err(e) if e.to_string().contains("not found") => Err((StatusCode::NOT_FOUND, e.to_string())),
+        Err(e) if e.to_string().contains("while a turn is running") => Err((StatusCode::CONFLICT, e.to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
 #[derive(Deserialize)]
 struct RenameSessionReq {
     title: String,
@@ -739,6 +772,10 @@ pub fn create_router(state: DaemonState) -> Router {
         )
         .route("/api/sessions/{id}/messages", get(handle_get_messages))
         .route("/api/sessions/{id}/messages/tree", get(handle_get_message_tree))
+        .route(
+            "/api/sessions/{id}/messages/{message_id}",
+            delete(handle_delete_message),
+        )
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
         .route("/api/config", get(handle_get_config).put(handle_put_config))

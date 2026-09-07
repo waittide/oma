@@ -356,6 +356,23 @@ impl SessionRoom {
         }
     }
 
+    /// 删除消息及其子树；运行中的轮次禁止删除，避免撕裂进行中的会话状态。
+    pub async fn delete_message(&self, message_id: &str) -> Result<(Vec<String>, Option<String>)> {
+        anyhow::ensure!(
+            !self.is_running.load(Ordering::SeqCst),
+            "Cannot delete messages while a turn is running"
+        );
+        let (deleted, leaf) = self
+            .storage
+            .delete_message_subtree(&self.session_id, message_id)
+            .await?;
+        self.broadcast(AgentEvent::MessagesDeleted {
+            deleted_ids:     deleted.clone(),
+            current_leaf_id: leaf.clone(),
+        });
+        Ok((deleted, leaf))
+    }
+
     /// 执行单轮 Turn
     async fn run_user_turn(
         self: &Arc<Self>,
@@ -378,6 +395,18 @@ impl SessionRoom {
 
         // 1. 构造并持久化 User Message
         let user_msg_id = uuid::Uuid::new_v4().to_string();
+        // 编辑重发（fork_and_run）失败的自动回滚目标：本轮错误时删除该分叉用户消息
+        let fork_user_msg: Option<String> = parent_id_override.as_ref().map(|_| user_msg_id.clone());
+        let pre_fork_leaf: Option<String> = if parent_id_override.is_some() {
+            self.storage
+                .get_session(&self.session_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|rec| rec.current_leaf_id)
+        } else {
+            None
+        };
         let mut user_blocks = vec![Block::Text { text: user_text }];
         for att in attachments {
             user_blocks.push(Block::Image {
@@ -413,6 +442,8 @@ impl SessionRoom {
             self.broadcast(AgentEvent::Error {
                 message: format!("Failed to save user message: {}", e),
             });
+            self.rollback_failed_fork(fork_user_msg.as_deref(), pre_fork_leaf.as_deref())
+                .await;
             self.finish_turn(turn_id, StopReason::Error, TokenUsage::default())
                 .await;
             return;
@@ -589,6 +620,10 @@ impl SessionRoom {
             loop_parent_id = assistant_msg_id.clone();
 
             // 若无工具调用或模型已自然结束，退出循环
+            if stop_reason == StopReason::Error {
+                self.rollback_failed_fork(fork_user_msg.as_deref(), pre_fork_leaf.as_deref())
+                    .await;
+            }
             if assistant_tool_calls.is_empty() || stop_reason != StopReason::ToolUse {
                 self.finish_turn(turn_id, stop_reason, turn_usage).await;
                 return;
@@ -727,8 +762,35 @@ impl SessionRoom {
             loop_parent_id = tool_msg_id;
         }
 
+        self.rollback_failed_fork(fork_user_msg.as_deref(), pre_fork_leaf.as_deref())
+            .await;
         self.finish_turn(turn_id, StopReason::Error, turn_usage)
             .await;
+    }
+
+    /// 编辑重发失败时回滚：删除分叉出的用户消息子树，并恢复分叉前的当前叶子。
+    async fn rollback_failed_fork(&self, fork_user_msg: Option<&str>, pre_fork_leaf: Option<&str>) {
+        let Some(msg_id) = fork_user_msg else {
+            return;
+        };
+        if let Ok((deleted, fallback_leaf)) = self
+            .storage
+            .delete_message_subtree(&self.session_id, msg_id)
+            .await
+        {
+            // 优先回到分叉前用户所在的叶子（它不在被删子树内）
+            let leaf = pre_fork_leaf
+                .filter(|l| !deleted.iter().any(|d| d == l))
+                .map(|l| l.to_string())
+                .or(fallback_leaf);
+            if let Some(l) = &leaf {
+                let _ = self.storage.switch_branch(&self.session_id, l).await;
+            }
+            self.broadcast(AgentEvent::MessagesDeleted {
+                deleted_ids:     deleted,
+                current_leaf_id: leaf,
+            });
+        }
     }
 
     /// 结束轮次并自动弹出下一条排队命令
