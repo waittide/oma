@@ -11,9 +11,15 @@ const emit = defineEmits<{ close: [] }>();
 
 const { t } = useTranslations('historyTree');
 
+/** 每层缩进列宽（px） */
+const INDENT = 18;
+
 interface Row {
   msg: ChatMessage;
+  /** 分叉代数：主线第一层，从第 n 层分叉出的分支为第 n+1 层 */
   depth: number;
+  /** 每层引导线是否属于当前激活分支（亮线） */
+  guides: boolean[];
   /** 位于当前激活分支上 */
   active: boolean;
   /** 当前激活叶子 */
@@ -22,7 +28,11 @@ interface Row {
   branch: boolean;
 }
 
-/** 展平消息树：跳过运行时内部消息（子节点挂到最近可见祖先），按先序排列。 */
+/**
+ * 展平消息树：跳过运行时内部消息（子节点挂到最近可见祖先），按先序排列。
+ * 层级按分叉代数计：每个父节点的首个子节点与其同层（延续主线），
+ * 更晚的兄弟节点（编辑重发产生的分支）下移一层。
+ */
 const rows = computed<Row[]>(() => {
   const byId = new Map(chat.tree.value.map((m) => [m.id, m]));
 
@@ -50,21 +60,27 @@ const rows = computed<Row[]>(() => {
   const leafId = chat.messages.value[chat.messages.value.length - 1]?.id ?? null;
 
   const out: Row[] = [];
-  const walk = (parent: string | null, depth: number) => {
-    const list = kids.get(parent);
-    if (!list) return;
-    for (const m of list) {
+  /** chain[d] = 深度 d 处该行祖先的 id，用于判定各层引导线是否在激活分支上 */
+  const walk = (list: ChatMessage[], depth: number, chain: (string | null)[]) => {
+    list.forEach((m, idx) => {
+      // 首个子节点延续父层；分叉出的兄弟分支下移一层
+      const d = idx === 0 ? depth : depth + 1;
+      const myChain = chain.slice();
+      myChain[d] = m.id;
+      const guides: boolean[] = [];
+      for (let l = 0; l < d; l++) guides.push(activeIds.has(myChain[l] ?? ''));
       out.push({
         msg: m,
-        depth,
+        depth: d,
+        guides,
         active: activeIds.has(m.id),
         leaf: m.id === leafId,
-        branch: (kids.get(nearestVisible(m))?.length ?? 0) > 1,
+        branch: list.length > 1,
       });
-      walk(m.id, depth + 1);
-    }
+      walk(kids.get(m.id) ?? [], d, myChain);
+    });
   };
-  walk(null, 0);
+  walk(kids.get(null) ?? [], 0, []);
   return out;
 });
 
@@ -94,10 +110,17 @@ function pick(m: ChatMessage) {
         type="button"
         class="node"
         :class="{ user: r.msg.role === 'user', active: r.active, leaf: r.leaf, off: !r.active }"
-        :style="{ paddingLeft: `${6 + r.depth * 16}px` }"
+        :style="{ paddingLeft: `${6 + r.depth * INDENT}px` }"
         :disabled="chat.running.value"
         @click="pick(r.msg)"
       >
+        <span
+          v-for="(on, li) in r.guides"
+          :key="li"
+          class="guide"
+          :class="{ on }"
+          :style="{ left: `${li * INDENT + 8}px` }"
+        />
         <LuUser v-if="r.msg.role === 'user'" :size="12" class="n-icon" />
         <LuBot v-else :size="12" class="n-icon bot" />
         <span class="n-text">{{ snippet(r.msg) }}</span>
@@ -112,18 +135,18 @@ function pick(m: ChatMessage) {
 .tree {
   display: flex;
   flex-direction: column;
-  gap: 1px;
   max-height: 60vh;
   overflow-y: auto;
 }
 .node {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
   width: 100%;
   border: none;
   background: transparent;
-  padding: 6px 10px;
+  padding: 5px 10px 5px 0;
   border-radius: 7px;
   font-family: inherit;
   font-size: 12.5px;
@@ -147,6 +170,19 @@ function pick(m: ChatMessage) {
 .node:disabled {
   cursor: default;
   opacity: 0.55;
+}
+/* 层引导线：亮色 = 该层段属于当前激活分支 */
+.guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--surface2);
+  pointer-events: none;
+}
+.guide.on {
+  background: var(--accent);
 }
 .n-icon {
   flex-shrink: 0;
