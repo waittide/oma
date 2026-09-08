@@ -12,7 +12,6 @@ import {
   LuPlug,
   LuSquare,
   LuTrash2,
-  LuUser,
   LuX,
   LuZap,
 } from 'vue-icons-plus/lu';
@@ -210,52 +209,48 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
           class="msg"
           :class="m.role"
         >
-          <div class="avatar">
-            <LuUser v-if="m.role === 'user'" :size="14" />
-            <LuBot v-else :size="14" />
-          </div>
-          <div class="bubble">
-            <div class="meta">
-              <span class="who">{{ m.role === 'user' ? t('you') : t('assistant') }}</span>
-              <template v-if="m.role === 'user'">
-                <button
-                  v-if="m.parent_id"
-                  type="button"
-                  class="fork"
-                  :title="t('editResendHint')"
-                  @click="startFork(m.parent_id, userText(m.id))"
-                >
-                  <LuPencil :size="11" /> {{ t('editResend') }}
-                </button>
-                <button
-                  type="button"
-                  class="fork"
-                  :title="t('deleteHint')"
-                  @click="chat.deleteMessage(m.id)"
-                >
-                  <LuTrash2 :size="11" /> {{ t('delete') }}
-                </button>
-                <OSelect
-                  v-if="branchGroups[m.id]"
-                  :model-value="m.id"
-                  :options="branchGroups[m.id]!"
-                  :placeholder="t('branch')"
-                  width="128px"
-                  @update:model-value="switchBranch"
-                />
-              </template>
+          <template v-if="m.role === 'user'">
+            <div class="user-bubble">
+              <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
             </div>
+            <div class="user-actions">
+              <button
+                v-if="m.parent_id"
+                type="button"
+                class="fork"
+                :aria-label="t('editResendHint')"
+                @click="startFork(m.parent_id, userText(m.id))"
+              >
+                <LuPencil :size="11" /> {{ t('editResend') }}
+              </button>
+              <button
+                type="button"
+                class="fork"
+                :aria-label="t('deleteHint')"
+                @click="chat.deleteMessage(m.id)"
+              >
+                <LuTrash2 :size="11" /> {{ t('delete') }}
+              </button>
+              <OSelect
+                v-if="branchGroups[m.id]"
+                :model-value="m.id"
+                :options="branchGroups[m.id]!"
+                :placeholder="t('branch')"
+                width="128px"
+                @update:model-value="switchBranch"
+              />
+            </div>
+          </template>
+          <template v-else>
             <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
-          </div>
+          </template>
         </article>
 
         <article v-if="chat.running.value" class="msg assistant">
-          <div class="avatar live">
-            <LuLoader :size="14" class="spin" />
+          <div class="live-row">
+            <LuLoader :size="13" class="spin" />
           </div>
-          <div class="bubble">
-            <MessageBlocks :blocks="chat.renderBlocks.value" :streaming="true" />
-          </div>
+          <MessageBlocks :blocks="chat.renderBlocks.value" :streaming="true" />
         </article>
       </template>
     </div>
@@ -450,48 +445,36 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
 }
 .msg {
   display: flex;
-  gap: 10px;
-  padding: 9px 22px;
+  flex-direction: column;
+  padding: 10px 22px;
   max-width: 920px;
   margin: 0 auto;
 }
-.avatar {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
+.msg.user {
+  align-items: flex-end;
+}
+.user-bubble {
   background: var(--surface-strong);
-  color: var(--text-tertiary);
-  margin-top: 2px;
+  border-radius: 10px;
+  padding: 8px 12px;
+  max-width: min(82%, 64ch);
+  overflow-wrap: break-word;
 }
-.msg.user .avatar {
-  background: var(--surface-hover);
-  color: var(--text-secondary);
-}
-.msg.assistant .avatar {
-  background: var(--surface-active);
-  color: var(--accent);
-}
-.avatar.live {
-  color: var(--accent);
-}
-.bubble {
-  flex: 1;
-  min-width: 0;
-}
-.meta {
+.user-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 11.5px;
-  color: var(--overlay0);
-  margin-bottom: 4px;
+  gap: 4px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
 }
-.who {
-  font-weight: 600;
+.msg.user:hover .user-actions,
+.msg.user:focus-within .user-actions {
+  opacity: 1;
+}
+.live-row {
+  color: var(--accent);
+  padding-bottom: 4px;
 }
 .fork {
   display: inline-flex;
