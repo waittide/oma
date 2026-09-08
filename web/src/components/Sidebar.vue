@@ -66,6 +66,13 @@ function commitRename() {
   renaming.value = null;
 }
 
+/** 从工作区分组头部新建该工作区下的会话：预填路径并打开弹窗 */
+function openNewFor(workspace: string) {
+  newWorkspace.value = workspace;
+  newTitle.value = '';
+  showNew.value = true;
+}
+
 async function createSession() {
   const ws = newWorkspace.value.trim();
   if (!ws) return;
@@ -103,20 +110,23 @@ const deleteTarget = computed(
 
       <section v-for="g in groups" :key="g.workspace" class="group">
         <OTooltip :label="g.workspace" align="start" block>
-          <button
-            type="button"
-            class="group-head"
-            @click="store.toggleGroup(g.workspace)"
-          >
-            <LuChevronRight
-              :size="13"
-              class="caret"
-              :class="{ expanded: !store.collapsed.value[g.workspace] }"
-            />
-            <LuFolder :size="13" class="g-icon" />
-            <span class="g-label">{{ g.label }}</span>
-            <span class="g-count">{{ g.items.length }}</span>
-          </button>
+          <div class="group-head">
+            <button type="button" class="gh-toggle" @click="store.toggleGroup(g.workspace)">
+              <LuChevronRight
+                :size="13"
+                class="caret"
+                :class="{ expanded: !store.collapsed.value[g.workspace] }"
+              />
+              <LuFolder :size="13" class="g-icon" />
+              <span class="g-label">{{ g.label }}</span>
+              <span class="g-count">{{ g.items.length }}</span>
+            </button>
+            <OTooltip :label="t('addSessionHere')" align="end">
+              <button type="button" class="gh-add" :aria-label="t('addSessionHere')" @click="openNewFor(g.workspace)">
+                <LuPlus :size="13" />
+              </button>
+            </OTooltip>
+          </div>
         </OTooltip>
 
         <div v-if="!store.collapsed.value[g.workspace]" class="group-body">
@@ -260,11 +270,23 @@ const deleteTarget = computed(
 .group-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
+  gap: 2px;
+  padding: 2px 4px;
   border-radius: 8px;
+  transition: background-color 0.12s ease;
+}
+.group-head:hover {
+  background: var(--surface-hover);
+}
+.gh-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 10px 4px;
+  border: none;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
@@ -272,10 +294,32 @@ const deleteTarget = computed(
   font-weight: 600;
   cursor: pointer;
   text-align: left;
-  transition: background-color 0.12s ease;
 }
-.group-head:hover {
-  background: var(--surface-hover);
+.gh-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--overlay0);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    color 0.12s ease,
+    background-color 0.12s ease;
+}
+.group-head:hover .gh-add,
+.gh-add:focus-visible {
+  opacity: 1;
+}
+.gh-add:hover {
+  color: var(--accent);
+  background: var(--surface-active);
 }
 .caret {
   flex-shrink: 0;

@@ -18,7 +18,8 @@
     "deleteSession": "删除会话",
     "deleteConfirm": "确定删除「{title}」？该会话的全部消息将被永久移除。",
     "titlePlaceholder": "新会话",
-    "defaultTitle": "新会话"
+    "defaultTitle": "新会话",
+    "addSessionHere": "在此工作区新建会话"
   },
   "sessions": {
     "created": "会话已创建",

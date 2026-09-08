@@ -18,7 +18,8 @@
     "deleteSession": "Delete Session",
     "deleteConfirm": "Delete \"{title}\"? All messages in this session will be permanently removed.",
     "titlePlaceholder": "New Session",
-    "defaultTitle": "New Session"
+    "defaultTitle": "New Session",
+    "addSessionHere": "New session in this workspace"
   },
   "sessions": {
     "created": "Session created",

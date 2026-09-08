@@ -18,7 +18,8 @@
     "deleteSession": "刪除會話",
     "deleteConfirm": "確定刪除「{title}」？該會話的全部訊息將被永久移除。",
     "titlePlaceholder": "新會話",
-    "defaultTitle": "新會話"
+    "defaultTitle": "新會話",
+    "addSessionHere": "在此工作區新建會話"
   },
   "sessions": {
     "created": "會話已建立",
