@@ -435,7 +435,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   display: flex;
   flex-direction: column;
   padding: 8px 14px;
-  max-width: 920px;
+  max-width: 1120px;
   margin: 0 auto;
 }
 .msg.user {
@@ -517,7 +517,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
 }
 .composer {
   padding: 8px 14px 12px;
-  max-width: 920px;
+  max-width: 1120px;
   width: 100%;
   margin: 0 auto;
 }
