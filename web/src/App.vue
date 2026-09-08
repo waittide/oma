@@ -37,12 +37,13 @@ onMounted(async () => {
   display: flex;
   height: 100vh;
   overflow: hidden;
-  background: var(--paper);
+  background: var(--surface);
   color: var(--ink);
 }
 .main {
   flex: 1;
   min-width: 0;
   display: flex;
+  padding: 10px 10px 10px 0;
 }
 </style>

@@ -193,4 +193,18 @@
   --warning-soft: color-mix(in srgb, var(--yellow) 16%, var(--surface));
   --overlay-scrim: color-mix(in srgb, var(--crust) 78%, transparent);
   --shadow: color-mix(in srgb, var(--crust) 42%, transparent);
+  /* 参照 opencode 的复合阴影：0.5px 描边 ring + 分层投影，避免普通模糊阴影发虚 */
+  --ring: color-mix(in srgb, var(--crust) 30%, transparent);
+  --shadow-raised:
+    0 2px 4px color-mix(in srgb, var(--crust) 10%, transparent),
+    0 1px 2px -1px color-mix(in srgb, var(--crust) 18%, transparent),
+    0 0 0 0.5px var(--ring);
+  --shadow-floating:
+    0 8px 16px color-mix(in srgb, var(--crust) 10%, transparent),
+    0 4px 8px color-mix(in srgb, var(--crust) 16%, transparent),
+    0 0 0 0.5px var(--ring);
+  --shadow-overlay:
+    0 16px 32px color-mix(in srgb, var(--crust) 10%, transparent),
+    0 8px 16px color-mix(in srgb, var(--crust) 16%, transparent),
+    0 0 0 0.5px var(--ring);
 }

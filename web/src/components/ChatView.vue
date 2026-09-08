@@ -355,15 +355,20 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   flex: 1;
   min-width: 0;
   background: var(--paper);
+  border-radius: 10px;
+  box-shadow: var(--shadow-raised);
+  overflow: hidden;
 }
 .top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 18px;
+  height: 48px;
+  padding: 0 16px;
   border-bottom: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--paper);
+  flex-shrink: 0;
 }
 .top-left {
   min-width: 0;
