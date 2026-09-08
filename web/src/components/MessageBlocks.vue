@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import {
+  LuBot,
   LuBrain,
-  LuChevronDown,
-  LuFileCode2,
+  LuChevronRight,
+  LuFileDiff,
+  LuFileText,
+  LuGlobe,
+  LuSearch,
   LuTerminalSquare,
+  LuWrench,
 } from 'vue-icons-plus/lu';
 import type { Block } from '../types';
 import { prettyJson, renderMarkdown } from '../lib/format';
@@ -69,6 +74,44 @@ const items = computed<Item[]>(() => {
   });
   return out;
 });
+
+// ---------- 自绘折叠（替代原生 details/summary，保证跨浏览器一致） ----------
+const openKeys = ref<Record<string, boolean>>({});
+function toggleFold(key: string) {
+  openKeys.value[key] = !openKeys.value[key];
+}
+function isOpen(key: string): boolean {
+  return !!openKeys.value[key];
+}
+
+// ---------- 工具展示元数据：图标 + 副标题（参照 opencode 的 Title · Subtitle 形态） ----------
+
+function toolIcon(name?: string) {
+  switch (name) {
+    case 'shell':
+      return LuTerminalSquare;
+    case 'read':
+    case 'write':
+    case 'edit':
+      return LuFileDiff;
+    case 'grep':
+      return LuSearch;
+    case 'web_fetch':
+    case 'web_search':
+      return LuGlobe;
+    case 'task':
+      return LuBot;
+    default:
+      return LuWrench;
+  }
+}
+
+function toolSubtitle(it: Item): string {
+  const input = (it.toolInput ?? {}) as Record<string, unknown>;
+  const raw = input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.query ?? input.prompt ?? '';
+  const text = String(raw).replace(/\s+/g, ' ').trim();
+  return text.length > 64 ? `${text.slice(0, 64)}…` : text;
+}
 </script>
 
 <template>
@@ -76,30 +119,37 @@ const items = computed<Item[]>(() => {
     <template v-for="it in items" :key="it.key">
       <div v-if="it.kind === 'text' && it.text" class="md" v-html="renderMarkdown(it.text)" />
 
-      <details v-else-if="it.kind === 'thinking'" class="fold think">
-        <summary>
+      <div v-else-if="it.kind === 'thinking'" class="fold" :class="{ open: isOpen(it.key) }">
+        <button type="button" class="fold-head think" @click="toggleFold(it.key)">
           <LuBrain :size="13" />
-          <span>{{ t('thinking') }}</span>
-          <LuChevronDown :size="13" class="caret" />
-        </summary>
-        <pre class="think-body">{{ it.thinking }}</pre>
-      </details>
+          <span class="fold-title">{{ t('thinking') }}</span>
+          <LuChevronRight :size="13" class="caret" />
+        </button>
+        <pre v-show="isOpen(it.key)" class="fold-body">{{ it.thinking }}</pre>
+      </div>
 
       <img v-else-if="it.kind === 'image' && it.imageSrc" class="att" :src="it.imageSrc" alt="attachment" />
 
-      <details v-else-if="it.kind === 'tool'" class="fold tool">
-        <summary>
-          <LuTerminalSquare v-if="it.toolName === 'shell'" :size="13" />
-          <LuFileCode2 v-else :size="13" />
-          <span class="tname">{{ it.toolName }}</span>
+      <div
+        v-else-if="it.kind === 'tool'"
+        class="fold tool"
+        :class="{ open: isOpen(it.key), error: it.resultDone && it.resultError }"
+      >
+        <button type="button" class="fold-head" @click="toggleFold(it.key)">
+          <component :is="toolIcon(it.toolName)" :size="13" class="tool-icon" />
+          <span class="fold-title">{{ it.toolName }}</span>
+          <span v-if="toolSubtitle(it)" class="fold-sep">·</span>
+          <span v-if="toolSubtitle(it)" class="fold-sub">{{ toolSubtitle(it) }}</span>
           <span v-if="!it.resultDone" class="tstatus running">{{ t('running') }}</span>
           <span v-else-if="it.resultError" class="tstatus err">{{ t('failed') }}</span>
           <span v-else class="tstatus ok">{{ t('done') }}</span>
-          <LuChevronDown :size="13" class="caret" />
-        </summary>
-        <pre class="tjson">{{ prettyJson(it.toolInput) }}</pre>
-        <pre v-if="it.resultDone" class="tres" :class="{ err: it.resultError }">{{ it.resultContent }}</pre>
-      </details>
+          <LuChevronRight :size="13" class="caret" />
+        </button>
+        <div v-show="isOpen(it.key)" class="fold-body-wrap">
+          <pre class="fold-body">{{ prettyJson(it.toolInput) }}</pre>
+          <pre v-if="it.resultDone" class="fold-body result" :class="{ err: it.resultError }">{{ it.resultContent }}</pre>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -121,15 +171,14 @@ const items = computed<Item[]>(() => {
   margin: 8px 0;
   padding: 12px 14px;
   background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 8px;
   overflow-x: auto;
   font-size: 12.5px;
   line-height: 1.6;
 }
 .md :deep(code) {
   font-family: var(--font-mono);
-  font-size: 0.92em;
+  font-size: 12.5px;
   background: var(--surface);
   border-radius: 4px;
   padding: 1px 5px;
@@ -156,94 +205,113 @@ const items = computed<Item[]>(() => {
   border: 1px solid var(--line);
   padding: 5px 10px;
 }
+
+/* 折叠行：无边框扁平形态（参照 opencode basic-tool） */
 .fold {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0;
 }
-.fold summary {
+.fold.error {
+  border-left: 2px solid var(--danger);
+  padding-left: 10px;
+}
+.fold-head {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 7px 11px;
-  font-size: 12.5px;
+  min-height: 20px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  font-family: inherit;
   color: var(--text-secondary);
   cursor: pointer;
-  list-style: none;
+  text-align: left;
   user-select: none;
 }
-.fold summary::-webkit-details-marker {
-  display: none;
+.fold-head:hover .fold-title {
+  color: var(--ink);
 }
-.fold summary:hover {
-  background: var(--surface-hover);
+.fold.think .fold-head {
+  color: var(--mauve);
+}
+.tool-icon {
+  color: var(--overlay1);
+  flex-shrink: 0;
+}
+.fold-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fold-sep {
+  font-size: 11px;
+  color: var(--overlay1);
+}
+.fold-sub {
+  font-size: 12.5px;
+  color: var(--overlay1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
 }
 .caret {
   margin-left: auto;
   color: var(--overlay0);
+  flex-shrink: 0;
   transition: transform 0.15s ease;
 }
-.fold[open] .caret {
-  transform: rotate(180deg);
-}
-.think summary {
-  color: var(--mauve);
-}
-.think-body {
-  margin: 0;
-  padding: 10px 13px;
-  border-top: 1px solid var(--line);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-tertiary);
-  max-height: 260px;
-  overflow-y: auto;
-}
-.tname {
-  font-weight: 600;
-  font-family: var(--font-mono);
+.fold.open .caret {
+  transform: rotate(90deg);
 }
 .tstatus {
+  flex-shrink: 0;
   font-size: 11px;
-  padding: 1px 7px;
-  border-radius: 99px;
+  font-variant-numeric: tabular-nums;
 }
 .tstatus.ok {
   color: var(--success);
-  background: var(--success-soft);
 }
 .tstatus.err {
   color: var(--danger);
-  background: var(--danger-soft);
 }
 .tstatus.running {
   color: var(--warning);
-  background: var(--warning-soft);
 }
-.tjson,
-.tres {
-  margin: 0;
-  padding: 9px 13px;
-  border-top: 1px solid var(--line);
+.fold-body-wrap {
+  display: flex;
+  flex-direction: column;
+  padding-left: 22px;
+}
+.fold-body {
+  margin: 4px 0 0;
+  padding: 8px 11px;
+  background: var(--surface);
+  border-radius: 6px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-tertiary);
-  max-height: 220px;
+  max-height: 240px;
   overflow-y: auto;
 }
-.tres.err {
+.fold-body.result {
+  color: var(--text-secondary);
+}
+.fold-body.result.err {
   color: var(--danger);
 }
 .att {
   max-width: 320px;
-  border-radius: 10px;
-  border: 1px solid var(--line);
+  border-radius: 8px;
 }
 </style>
