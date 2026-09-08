@@ -534,7 +534,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   flex-shrink: 0;
 }
 .composer {
-  padding: 10px 22px 14px;
+  padding: 10px 14px 14px;
   max-width: 920px;
   width: 100%;
   margin: 0 auto;
@@ -560,6 +560,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   flex-direction: column;
   min-height: 96px;
   background: var(--paper);
+  border: 1px solid var(--control-border);
   border-radius: 12px;
   box-shadow: var(--shadow-raised);
   transition: border-color 0.15s ease, background-color 0.15s ease;
@@ -591,7 +592,7 @@ textarea::placeholder {
   align-items: center;
   gap: 8px;
   height: 44px;
-  padding: 0 8px 4px;
+  padding: 0 7px 4px;
 }
 .c-controls {
   display: flex;
