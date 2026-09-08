@@ -1548,13 +1548,23 @@ function pickLocale(v: Locale) {
   color: var(--overlay0);
   font-family: var(--font-mono);
 }
-/* 提供商：扁平区块 + 细分隔线 */
+/* 提供商/MCP 编辑卡片：底色卡片，与摘要行区分 */
 .prov {
-  padding: 16px 0 14px;
-  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
 }
-.prov:last-of-type {
-  border-bottom: none;
+.card-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.srow-desc.mono {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .prov-head {
   display: flex;
