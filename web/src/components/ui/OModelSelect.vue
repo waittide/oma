@@ -29,13 +29,13 @@ const popup = ref<HTMLElement | null>(null);
 
 const popupStyle = ref<{ top: string; left: string; width: string }>({ top: '0', left: '0', width: '0' });
 
-/** 弹层窄于 min 260 时取 260；下方放不下且上方更宽裕时向上展开；左右按视口夹取。 */
+/** 弹层与触发器同宽；下方放不下且上方更宽裕时向上展开；左右按视口夹取。 */
 function updatePosition() {
   const rect = root.value?.getBoundingClientRect();
   if (!rect) return;
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
-  const width = Math.min(Math.max(rect.width, 260), vw - 16);
+  const width = rect.width;
   const rawLeft = rect.left + width > vw - 8 ? rect.right - width : rect.left;
   const left = Math.min(Math.max(8, rawLeft), Math.max(8, vw - width - 8));
   const h = popup.value?.offsetHeight ?? 0;
@@ -109,7 +109,6 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocClick);
-  document.removeEventListener('keydown', onDocKeydown);
   window.removeEventListener('resize', updatePosition);
   window.removeEventListener('scroll', updatePosition, true);
 });
@@ -221,11 +220,9 @@ watch(open, async (v) => {
   gap: 6px;
   padding: 6px 9px 3px;
   background: var(--surface-strong);
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  color: var(--overlay1);
+  color: var(--text-secondary);
   user-select: none;
 }
 .gh-name {
