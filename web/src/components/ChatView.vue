@@ -255,9 +255,9 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
           </template>
         </article>
 
-        <article v-if="chat.running.value" class="msg assistant">
+        <article v-if="chat.running.value || chat.finalizing.value" class="msg assistant">
           <MessageBlocks :blocks="chat.renderBlocks.value" :streaming="true" />
-          <div class="live-row">
+          <div v-if="chat.running.value" class="live-row">
             <LuLoader :size="13" class="spin" />
           </div>
         </article>

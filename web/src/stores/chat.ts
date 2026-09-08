@@ -53,6 +53,8 @@ export const live = ref<LiveTurn>(emptyLive());
 export const running = ref(false);
 export const pendingApproval = ref<PermissionRequestedData | null>(null);
 export const currentLeafId = ref<string | null>(null);
+/** 本轮已结束、正在回读持久化消息：期间保留流式缓冲，避免内容先消失再出现造成跳动 */
+export const finalizing = ref(false);
 
 export const activeModel = ref('');
 export const activeAgent = ref('');
@@ -153,13 +155,17 @@ function handleEvent(ev: AgentEvent) {
       break;
     case 'turn_finished': {
       running.value = false;
-      live.value = emptyLive();
+      finalizing.value = true;
       if (ev.data) {
         lastUsage.value = ev.data.usage;
         if (ev.data.stop_reason === 'error') toast.error(tr('chat.turnError'));
       }
       currentLeafId.value = null; // 让服务端解析默认 leaf
-      void reload();
+      // 回读完成后再清空缓冲，持久化消息与流式内容同帧交接，界面不跳动
+      void reload().finally(() => {
+        live.value = emptyLive();
+        finalizing.value = false;
+      });
       break;
     }
     case 'permission_requested':
@@ -275,6 +281,7 @@ export async function open(id: string, workspace: string) {
   live.value = emptyLive();
   pendingApproval.value = null;
   running.value = false;
+  finalizing.value = false;
   currentLeafId.value = null;
   lastUsage.value = null;
   connect();
