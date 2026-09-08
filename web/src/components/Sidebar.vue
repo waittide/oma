@@ -113,17 +113,17 @@ const deleteTarget = computed(
           <div class="group-head">
             <button type="button" class="gh-toggle" @click="store.toggleGroup(g.workspace)">
               <LuChevronRight
-                :size="13"
+                :size="14"
                 class="caret"
                 :class="{ expanded: !store.collapsed.value[g.workspace] }"
               />
-              <LuFolder :size="13" class="g-icon" />
+              <LuFolder :size="14" class="g-icon" />
               <span class="g-label">{{ g.label }}</span>
               <span class="g-count">{{ g.items.length }}</span>
             </button>
             <OTooltip :label="t('addSessionHere')" align="end">
               <button type="button" class="gh-add" :aria-label="t('addSessionHere')" @click="openNewFor(g.workspace)">
-                <LuPlus :size="13" />
+                <LuPlus :size="14" />
               </button>
             </OTooltip>
           </div>
@@ -271,6 +271,7 @@ const deleteTarget = computed(
   display: flex;
   align-items: center;
   gap: 2px;
+  width: 100%;
   padding: 2px 4px;
   border-radius: 8px;
   transition: background-color 0.12s ease;
@@ -290,7 +291,7 @@ const deleteTarget = computed(
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
   text-align: left;
