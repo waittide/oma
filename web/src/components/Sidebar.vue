@@ -12,6 +12,7 @@ import {
 } from 'vue-icons-plus/lu';
 import OButton from './ui/OButton.vue';
 import OInput from './ui/OInput.vue';
+import OTooltip from './ui/OTooltip.vue';
 import OModal from './ui/OModal.vue';
 import * as store from '../stores/sessions';
 import { activeSessionId } from '../stores/sessions';
@@ -71,7 +72,7 @@ const deleteTarget = computed(
     <header class="brand">
       <span class="logo"><LuSparkles :size="16" /></span>
       <span class="brand-name">Oma</span>
-      <OButton size="sm" variant="soft" :title="t('newSession')" @click="showNew = true">
+      <OButton size="sm" variant="soft" @click="showNew = true">
         <template #icon><LuPlus :size="14" /></template>
         {{ t('newSession') }}
       </OButton>
@@ -83,21 +84,22 @@ const deleteTarget = computed(
       </div>
 
       <section v-for="g in groups" :key="g.workspace" class="group">
-        <button
-          type="button"
-          class="group-head"
-          :title="g.workspace"
-          @click="store.toggleGroup(g.workspace)"
-        >
-          <LuChevronRight
-            :size="13"
-            class="caret"
-            :class="{ expanded: !store.collapsed.value[g.workspace] }"
-          />
-          <LuFolder :size="13" class="g-icon" />
-          <span class="g-label">{{ g.label }}</span>
-          <span class="g-count">{{ g.items.length }}</span>
-        </button>
+        <OTooltip :label="g.workspace" align="start" block>
+          <button
+            type="button"
+            class="group-head"
+            @click="store.toggleGroup(g.workspace)"
+          >
+            <LuChevronRight
+              :size="13"
+              class="caret"
+              :class="{ expanded: !store.collapsed.value[g.workspace] }"
+            />
+            <LuFolder :size="13" class="g-icon" />
+            <span class="g-label">{{ g.label }}</span>
+            <span class="g-count">{{ g.items.length }}</span>
+          </button>
+        </OTooltip>
 
         <div v-if="!store.collapsed.value[g.workspace]" class="group-body">
           <div
@@ -118,24 +120,30 @@ const deleteTarget = computed(
             </template>
             <template v-else>
               <LuMessageSquare :size="13" class="s-icon" />
-              <span class="s-title" :title="s.title">{{ s.title }}</span>
+              <OTooltip :label="s.title" align="start" block>
+                <span class="s-title">{{ s.title }}</span>
+              </OTooltip>
               <span class="s-actions">
-                <button
-                  type="button"
-                  class="mini"
-                  :title="t('rename')"
-                  @click.stop="startRename(s.session_id, s.title)"
-                >
-                  <LuPencil :size="12" />
-                </button>
-                <button
-                  type="button"
-                  class="mini danger"
-                  :title="t('deleteAria')"
-                  @click.stop="confirmDelete = s.session_id"
-                >
-                  <LuTrash2 :size="12" />
-                </button>
+                <OTooltip :label="t('rename')" align="end">
+                  <button
+                    type="button"
+                    class="mini"
+                    :aria-label="t('rename')"
+                    @click.stop="startRename(s.session_id, s.title)"
+                  >
+                    <LuPencil :size="12" />
+                  </button>
+                </OTooltip>
+                <OTooltip :label="t('deleteAria')" align="end">
+                  <button
+                    type="button"
+                    class="mini danger"
+                    :aria-label="t('deleteAria')"
+                    @click.stop="confirmDelete = s.session_id"
+                  >
+                    <LuTrash2 :size="12" />
+                  </button>
+                </OTooltip>
               </span>
             </template>
           </div>

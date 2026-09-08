@@ -165,7 +165,9 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
     <header class="top">
       <div class="top-left">
         <span class="session-title">{{ activeSession?.title ?? t('noSession') }}</span>
-        <span class="ws-path" :title="activeSession?.workspace">{{ activeSession?.workspace }}</span>
+        <OTooltip :label="activeSession?.workspace ?? ''" align="start" block>
+          <span class="ws-path">{{ activeSession?.workspace }}</span>
+        </OTooltip>
       </div>
       <div v-if="activeSessionId" class="top-right">
         <span class="dot" :class="chat.connected.value ? 'ok' : 'off'" />

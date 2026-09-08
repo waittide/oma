@@ -42,6 +42,11 @@ summary:focus-visible {
 code {
   font-family: var(--font-mono);
 }
+/* 跨浏览器滚动条一致性：Firefox 用标准属性，WebKit/Blink 用伪元素 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface2) transparent;
+}
 
 ::-webkit-scrollbar {
   width: 9px;

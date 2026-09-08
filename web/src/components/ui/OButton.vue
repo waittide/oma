@@ -8,9 +8,9 @@ const props = withDefaults(
     size?: 'sm' | 'md';
     loading?: boolean;
     disabled?: boolean;
-    title?: string;
+    ariaLabel?: string;
   }>(),
-  { variant: 'soft', size: 'md', loading: false, disabled: false, title: undefined },
+  { variant: 'soft', size: 'md', loading: false, disabled: false, ariaLabel: undefined },
 );
 
 const emit = defineEmits<{ click: [MouseEvent] }>();
@@ -24,7 +24,12 @@ function onClick(e: MouseEvent) {
 </script>
 
 <template>
-  <button :class="classes" :disabled="disabled || loading" :title="title" @click="onClick">
+  <button
+    :class="classes"
+    :disabled="disabled || loading"
+    :aria-label="ariaLabel"
+    @click="onClick"
+  >
     <LuLoader v-if="loading" class="spin" :size="size === 'sm' ? 13 : 15" />
     <slot v-else name="icon" />
     <span class="btn-label"><slot /></span>

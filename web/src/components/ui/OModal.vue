@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { LuX } from 'vue-icons-plus/lu';
 import OButton from './OButton.vue';
+import OTooltip from './OTooltip.vue';
 import { useTranslations } from '../../composables/i18n';
 
 withDefaults(
@@ -28,19 +29,17 @@ const { t } = useTranslations('common');
         <div class="panel" :style="{ width }" role="dialog" aria-modal="true">
           <header v-if="!floatingClose" class="head">
             <h3>{{ title }}</h3>
-            <OButton variant="ghost" size="sm" :title="t('close')" @click="emit('close')">
-              <template #icon><LuX :size="15" /></template>
-            </OButton>
+            <OTooltip :label="t('close')" align="end">
+              <OButton variant="ghost" size="sm" :ariaLabel="t('close')" @click="emit('close')">
+                <template #icon><LuX :size="15" /></template>
+              </OButton>
+            </OTooltip>
           </header>
-          <button
-            v-else
-            type="button"
-            class="close-float"
-            :title="t('close')"
-            @click="emit('close')"
-          >
-            <LuX :size="16" />
-          </button>
+          <OTooltip v-else :label="t('close')" align="end">
+            <button type="button" class="close-float" :aria-label="t('close')" @click="emit('close')">
+              <LuX :size="16" />
+            </button>
+          </OTooltip>
           <div class="body" :class="{ flush }"><slot /></div>
           <footer v-if="$slots.footer" class="foot"><slot name="footer" /></footer>
         </div>

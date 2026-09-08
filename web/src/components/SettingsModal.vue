@@ -910,9 +910,11 @@ function pickLocale(v: Locale) {
           <div v-for="(d, pi) in providerDrafts" :key="d.uid" class="prov">
             <div class="prov-head">
               <OInput v-model="d.name" class="prov-name" :placeholder="t('providerName')" />
-              <button type="button" class="m-del" :title="tc('delete')" @click="removeDraft(pi)">
-                <LuTrash2 :size="14" />
-              </button>
+              <OTooltip :label="tc('delete')" align="end">
+                <button type="button" class="m-del" :aria-label="tc('delete')" @click="removeDraft(pi)">
+                  <LuTrash2 :size="14" />
+                </button>
+              </OTooltip>
             </div>
 
             <div class="fields">
@@ -928,15 +930,17 @@ function pickLocale(v: Locale) {
                 <label>{{ t('fApiKey') }}</label>
                 <div class="key-row">
                   <OInput v-model="d.api_key" :type="keyRevealed[d.uid] ? 'text' : 'password'" />
-                  <button
-                    type="button"
-                    class="m-del"
-                    :title="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
-                    @click="toggleKeyVisibility(d)"
-                  >
-                    <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
-                    <LuEye v-else :size="14" />
-                  </button>
+                  <OTooltip :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
+                    <button
+                      type="button"
+                      class="m-del"
+                      :aria-label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
+                      @click="toggleKeyVisibility(d)"
+                    >
+                      <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
+                      <LuEye v-else :size="14" />
+                    </button>
+                  </OTooltip>
                 </div>
               </div>
             </div>
@@ -956,9 +960,11 @@ function pickLocale(v: Locale) {
                   <label>{{ t('modelId') }}</label>
                   <div class="inline-field">
                     <OInput v-model="m.id" placeholder="model-id" />
-                    <button type="button" class="m-del" :title="t('removeModel')" @click="d.models.splice(mi, 1)">
-                      <LuTrash2 :size="14" />
-                    </button>
+                    <OTooltip :label="t('removeModel')" align="end">
+                      <button type="button" class="m-del" :aria-label="t('removeModel')" @click="d.models.splice(mi, 1)">
+                        <LuTrash2 :size="14" />
+                      </button>
+                    </OTooltip>
                   </div>
                 </div>
                 <div class="field">
@@ -1050,9 +1056,11 @@ function pickLocale(v: Locale) {
             <div class="prov-head">
               <OInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
               <ORadio v-model="d.kind" :options="mcpKindOptions" />
-              <button type="button" class="m-del" :title="tc('delete')" @click="mcpDrafts.splice(i, 1)">
-                <LuTrash2 :size="14" />
-              </button>
+              <OTooltip :label="tc('delete')" align="end">
+                <button type="button" class="m-del" :aria-label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
+                  <LuTrash2 :size="14" />
+                </button>
+              </OTooltip>
             </div>
             <div class="fields">
               <template v-if="d.kind === 'local'">

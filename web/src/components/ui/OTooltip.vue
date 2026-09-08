@@ -4,13 +4,15 @@ withDefaults(
     label: string;
     /** 气泡水平锚定方式，避免在容器边缘被裁剪 */
     align?: 'center' | 'start' | 'end';
+    /** true 时外层占满 flex 剩余宽度，保持内部文本的省略号约束 */
+    block?: boolean;
   }>(),
-  { align: 'center' },
+  { align: 'center', block: false },
 );
 </script>
 
 <template>
-  <span class="o-tip" :class="`align-${align}`">
+  <span class="o-tip" :class="[`align-${align}`, { block }]">
     <slot />
     <span class="bubble" role="tooltip">{{ label }}</span>
   </span>
@@ -20,6 +22,11 @@ withDefaults(
 .o-tip {
   position: relative;
   display: inline-flex;
+}
+.o-tip.block {
+  display: flex;
+  flex: 1;
+  min-width: 0;
 }
 .bubble {
   position: absolute;
