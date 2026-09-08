@@ -80,11 +80,13 @@ const deleteTarget = computed(
     <header class="brand">
       <span class="logo"><LuSparkles :size="16" /></span>
       <span class="brand-name">Oma</span>
-      <OButton size="sm" variant="soft" @click="showNew = true">
+    </header>
+    <div class="brand-actions">
+      <OButton variant="soft" class="new-ws" @click="showNew = true">
         <template #icon><LuPlus :size="14" /></template>
         {{ t('newSession') }}
       </OButton>
-    </header>
+    </div>
 
     <nav class="tree">
       <div v-if="groups.length === 0 && !store.loading.value" class="empty">
@@ -225,7 +227,12 @@ const deleteTarget = computed(
 .brand-name {
   font-weight: 700;
   font-size: 15px;
-  flex: 1;
+}
+.brand-actions {
+  padding: 0 12px 10px;
+}
+.new-ws {
+  width: 100%;
 }
 .tree {
   flex: 1;

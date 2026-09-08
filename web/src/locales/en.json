@@ -7,7 +7,7 @@
     "close": "Close"
   },
   "sidebar": {
-    "newSession": "New Session",
+    "newSession": "New workspace",
     "empty": "No sessions yet. Click New Session above.",
     "rename": "Rename",
     "deleteAria": "Delete",
@@ -63,7 +63,7 @@
     "deleteHint": "Delete this message and its replies",
     "deleted": "Message deleted",
     "deleteFailed": "Delete failed: {message}",
-    "newSession": "New Session",
+    "newSession": "New workspace",
     "connected": "Connected",
     "disconnected": "Disconnected"
   },

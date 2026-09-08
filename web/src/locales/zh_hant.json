@@ -7,7 +7,7 @@
     "close": "關閉"
   },
   "sidebar": {
-    "newSession": "新會話",
+    "newSession": "新建工作區",
     "empty": "尚無會話，點擊右上角建立",
     "rename": "重新命名",
     "deleteAria": "刪除",
@@ -63,7 +63,7 @@
     "deleteHint": "刪除該訊息及其後續回覆",
     "deleted": "訊息已刪除",
     "deleteFailed": "刪除失敗：{message}",
-    "newSession": "新建會話",
+    "newSession": "新建工作區",
     "connected": "已連接",
     "disconnected": "未連接"
   },
