@@ -451,6 +451,19 @@ function addMcpServer() {
   });
 }
 
+/** 正在展开编辑的已有服务器名；null 表示无编辑（新增卡片由 origName === null 区分） */
+const editingMcp = ref<string | null>(null);
+
+function cancelEditMcp() {
+  editingMcp.value = null;
+  rebuildMcpDrafts();
+}
+
+function mcpSummary(d: McpDraft): string {
+  const raw = d.kind === 'local' ? [d.command, d.argsText].filter(Boolean).join(' ') : d.url;
+  return raw.replace(/\s+/g, ' ').trim() || '—';
+}
+
 async function saveMcp() {
   if (!config.value) return;
   const names = mcpDrafts.value.map((d) => d.name.trim());
@@ -1052,54 +1065,81 @@ function pickLocale(v: Locale) {
 
         <!-- MCP 服务器 -->
         <section v-else-if="section === 'mcp' && config" class="pane">
-          <div class="pane-head">
-            <h2 class="pane-title">{{ t('navMcp') }}</h2>
-            <div class="pane-actions inline">
-              <OButton size="sm" variant="soft" @click="addMcpServer">{{ t('add') }}</OButton>
-              <OButton size="sm" variant="primary" :loading="savingMcp" @click="saveMcp">{{ t('saveAll') }}</OButton>
-            </div>
+          <div class="pane-actions inline">
+            <OButton size="sm" variant="soft" @click="addMcpServer">
+              <template #icon><LuPlus :size="13" /></template>
+              {{ t('add') }}
+            </OButton>
           </div>
           <p class="muted">{{ t('mcpHint') }}</p>
 
-          <div v-for="(d, i) in mcpDrafts" :key="d.origName ?? `mcp-new-${i}`" class="prov">
-            <div class="prov-head">
-              <OInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
-              <ORadio v-model="d.kind" :options="mcpKindOptions" />
-              <OTooltip :label="tc('delete')" align="end">
-                <button type="button" class="m-del" :aria-label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
-                  <LuTrash2 :size="14" />
-                </button>
-              </OTooltip>
+          <div class="list">
+            <div v-for="(d, i) in mcpDrafts" :key="d.origName ?? `mcp-new-${i}`">
+              <!-- 编辑中 / 新增：展开卡片表单 -->
+              <div v-if="d.origName === null || d.origName === editingMcp" class="prov card">
+                <div class="prov-head">
+                  <OInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
+                  <ORadio v-model="d.kind" :options="mcpKindOptions" />
+                  <OTooltip :label="tc('delete')" align="end">
+                    <button type="button" class="m-del" :aria-label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
+                      <LuTrash2 :size="14" />
+                    </button>
+                  </OTooltip>
+                </div>
+                <div class="fields">
+                  <template v-if="d.kind === 'local'">
+                    <div class="field">
+                      <label>{{ t('mcpCommand') }}</label>
+                      <OInput v-model="d.command" />
+                    </div>
+                    <div class="field">
+                      <label>{{ t('mcpArgs') }}</label>
+                      <OInput v-model="d.argsText" />
+                    </div>
+                    <div class="field span2">
+                      <label>{{ t('mcpEnv') }}</label>
+                      <OInput v-model="d.envText" placeholder="KEY=value" />
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="field span2">
+                      <label>{{ t('mcpUrl') }}</label>
+                      <OInput v-model="d.url" />
+                    </div>
+                    <div class="field span2">
+                      <label>{{ t('mcpHeaders') }}</label>
+                      <OInput v-model="d.headersText" placeholder="Authorization=Bearer xxx" />
+                    </div>
+                  </template>
+                </div>
+                <div v-if="d.origName !== null" class="card-foot">
+                  <OButton size="sm" variant="ghost" @click="cancelEditMcp">{{ tc('cancel') }}</OButton>
+                </div>
+              </div>
+              <!-- 未编辑：摘要行 -->
+              <div v-else class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">
+                    {{ d.name }}
+                    <span class="scope-tag">{{ d.kind === 'local' ? t('mcpKindLocal') : t('mcpKindRemote') }}</span>
+                  </span>
+                  <span class="srow-desc mono">{{ mcpSummary(d) }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <OButton size="sm" variant="ghost" @click="editingMcp = d.origName">{{ t('edit') }}</OButton>
+                  <OButton size="sm" variant="ghost" @click="mcpDrafts.splice(i, 1)">{{ tc('delete') }}</OButton>
+                </div>
+              </div>
             </div>
-            <div class="fields">
-              <template v-if="d.kind === 'local'">
-                <div class="field">
-                  <label>{{ t('mcpCommand') }}</label>
-                  <OInput v-model="d.command" />
-                </div>
-                <div class="field">
-                  <label>{{ t('mcpArgs') }}</label>
-                  <OInput v-model="d.argsText" />
-                </div>
-                <div class="field span2">
-                  <label>{{ t('mcpEnv') }}</label>
-                  <OInput v-model="d.envText" placeholder="KEY=value" />
-                </div>
-              </template>
-              <template v-else>
-                <div class="field span2">
-                  <label>{{ t('mcpUrl') }}</label>
-                  <OInput v-model="d.url" />
-                </div>
-                <div class="field span2">
-                  <label>{{ t('mcpHeaders') }}</label>
-                  <OInput v-model="d.headersText" placeholder="Authorization=Bearer xxx" />
-                </div>
-              </template>
+            <div v-if="mcpDrafts.length === 0" class="srow">
+              <span class="srow-desc">{{ t('mcpEmpty') }}</span>
             </div>
           </div>
 
-          <p v-if="mcpDrafts.length === 0" class="muted">{{ t('mcpEmpty') }}</p>
+          <div class="pane-actions">
+            <OButton variant="primary" size="sm" :loading="savingMcp" @click="saveMcp">{{ t('saveAll') }}</OButton>
+          </div>
+
         </section>
 
         <section v-else-if="section === 'defaults' || section === 'providers'" class="pane">
@@ -1481,7 +1521,7 @@ function pickLocale(v: Locale) {
   width: 16px;
   height: 16px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--crust) 28%, transparent);
+  border: none;
   border-radius: 99px;
   background: var(--dot);
   cursor: pointer;
@@ -1528,12 +1568,6 @@ function pickLocale(v: Locale) {
 .prov-name :deep(input) {
   font-family: var(--font-mono);
   font-weight: 600;
-}
-.fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 14px;
-  margin-top: 10px;
 }
 .field {
   display: flex;
