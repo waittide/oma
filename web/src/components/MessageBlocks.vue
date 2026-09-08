@@ -27,6 +27,8 @@ const { t } = useTranslations('blocks');
 interface Item {
   kind: 'text' | 'thinking' | 'tool' | 'image';
   key: string;
+  /** 思考块正在流式输出（位于末尾）：未手动操作时默认展开 */
+  active?: boolean;
   text?: string;
   thinking?: string;
   imageSrc?: string;
@@ -46,9 +48,15 @@ function imageSrc(data: string): string | undefined {
 const items = computed<Item[]>(() => {
   const out: Item[] = [];
   const toolIndex: Record<string, number> = {};
+  const live = props.streaming;
   props.blocks.forEach((b, i) => {
     if (b.type === 'text') out.push({ kind: 'text', key: `t${i}`, text: b.text });
-    else if (b.type === 'thinking') out.push({ kind: 'thinking', key: `h${i}`, thinking: b.thinking });
+    else if (b.type === 'thinking') {
+      const it: Item = { kind: 'thinking', key: `h${i}`, thinking: b.thinking };
+      // 仅流式轮次末尾、仍在增长中的思考块视为 active
+      it.active = live && i === props.blocks.length - 1;
+      out.push(it);
+    }
     else if (b.type === 'image') out.push({ kind: 'image', key: `i${i}`, imageSrc: imageSrc(b.data) });
     else if (b.type === 'tool_use') {
       toolIndex[b.id] = out.length;
@@ -76,12 +84,13 @@ const items = computed<Item[]>(() => {
 });
 
 // ---------- 自绘折叠（替代原生 details/summary，保证跨浏览器一致） ----------
-const openKeys = ref<Record<string, boolean>>({});
-function toggleFold(key: string) {
-  openKeys.value[key] = !openKeys.value[key];
+// manual 记录用户显式开合；未操作过的思考块按 active 自动展开/折叠
+const manual = ref<Record<string, boolean>>({});
+function toggleFold(it: Item) {
+  manual.value[it.key] = !isOpen(it);
 }
-function isOpen(key: string): boolean {
-  return !!openKeys.value[key];
+function isOpen(it: Item): boolean {
+  return manual.value[it.key] ?? !!it.active;
 }
 
 // ---------- 工具展示元数据：图标 + 副标题（参照 opencode 的 Title · Subtitle 形态） ----------
@@ -118,24 +127,19 @@ function toolSubtitle(it: Item): string {
   <div class="blocks">
     <template v-for="it in items" :key="it.key">
       <div v-if="it.kind === 'text' && it.text" class="md" v-html="renderMarkdown(it.text)" />
-
-      <div v-else-if="it.kind === 'thinking'" class="fold" :class="{ open: isOpen(it.key) }">
-        <button type="button" class="fold-head think" @click="toggleFold(it.key)">
+      <div v-else-if="it.kind === 'thinking'" class="fold" :class="{ open: isOpen(it) }">
+        <button type="button" class="fold-head think" @click="toggleFold(it)">
           <LuBrain :size="13" />
           <span class="fold-title">{{ t('thinking') }}</span>
           <LuChevronRight :size="13" class="caret" />
         </button>
-        <pre v-show="isOpen(it.key)" class="fold-body">{{ it.thinking }}</pre>
+        <pre v-show="isOpen(it)" class="fold-body">{{ it.thinking }}</pre>
       </div>
 
       <img v-else-if="it.kind === 'image' && it.imageSrc" class="att" :src="it.imageSrc" alt="attachment" />
 
-      <div
-        v-else-if="it.kind === 'tool'"
-        class="fold tool"
-        :class="{ open: isOpen(it.key), error: it.resultDone && it.resultError }"
-      >
-        <button type="button" class="fold-head" @click="toggleFold(it.key)">
+      <div v-else-if="it.kind === 'tool'" class="fold" :class="{ open: isOpen(it), error: it.resultDone && it.resultError }">
+        <button type="button" class="fold-head" @click="toggleFold(it)">
           <component :is="toolIcon(it.toolName)" :size="13" class="tool-icon" />
           <span class="fold-title">{{ it.toolName }}</span>
           <span v-if="toolSubtitle(it)" class="fold-sep">·</span>
@@ -145,7 +149,7 @@ function toolSubtitle(it: Item): string {
           <span v-else class="tstatus ok">{{ t('done') }}</span>
           <LuChevronRight :size="13" class="caret" />
         </button>
-        <div v-show="isOpen(it.key)" class="fold-body-wrap">
+        <div v-show="isOpen(it)" class="fold-body-wrap">
           <pre class="fold-body">{{ prettyJson(it.toolInput) }}</pre>
           <pre v-if="it.resultDone" class="fold-body result" :class="{ err: it.resultError }">{{ it.resultContent }}</pre>
         </div>
