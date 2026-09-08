@@ -173,13 +173,18 @@ function pick(m: ChatMessage) {
           class="vline"
           :style="{ left: `${CURSOR_CHARS + level * LEVEL_CHARS}ch` }"
         />
-        <!-- 本层肘形连接：├ 或 └ -->
-        <span
-          v-if="r.connector && !r.vlines.includes(r.indent - 1)"
-          class="elbow"
-          :class="{ last: r.last }"
-          :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
-        />
+        <!-- 本层肘形连接：竖线段（├ 贯穿整行 / └ 止于行中） -->
+        <template v-if="r.connector && !r.vlines.includes(r.indent - 1)">
+          <span
+            class="elbow"
+            :class="{ last: r.last }"
+            :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
+          />
+          <span
+            class="stub"
+            :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
+          />
+        </template>
         <!-- 激活分支圆点：固定 2ch 槽位，保证后续文字落在字符网格上 -->
         <span v-if="r.active" class="bullet"><i /></span>
         <span class="role" :class="r.msg.role">{{ r.msg.role }}:&nbsp;</span>
@@ -263,15 +268,15 @@ function pick(m: ChatMessage) {
 .elbow.last {
   bottom: 50%;
 }
-.elbow::after {
-  content: '';
+/* 肘形横线：独立元素，相对整行居中（伪元素会相对肘形自身盒子定位而跑偏） */
+.stub {
   position: absolute;
   top: 50%;
-  left: 0;
   width: 3ch;
   height: 1.5px;
   margin-top: -0.75px;
   background: var(--overlay0);
+  pointer-events: none;
 }
 .role {
   flex-shrink: 0;
