@@ -5,7 +5,7 @@ import { useTranslations } from '../../composables/i18n';
 import type { ModelInfo } from '../../types';
 
 /**
- * 模型选择器：弹层左栏为提供商分组、右栏为该提供商的模型清单。
+ * 模型选择器：单栏分组弹层，provider 作为分组标题，模型为其下条目。
  * modelValue 为 "provider/model" 选择器（与后端 find_model 一致）。
  */
 const props = withDefaults(
@@ -26,27 +26,29 @@ const { t } = useTranslations('modelSelect');
 const root = ref<HTMLElement | null>(null);
 const open = ref(false);
 const popup = ref<HTMLElement | null>(null);
-const modelPane = ref<HTMLElement | null>(null);
-const activeProvider = ref('');
 
 const popupStyle = ref<{ top: string; left: string; width: string }>({ top: '0', left: '0', width: '0' });
 
-/** 弹层至少容纳双栏；左缘对齐触发器并按视口夹取，右侧溢出时右对齐触发器。 */
+/** 弹层窄于 min 260 时取 260；下方放不下且上方更宽裕时向上展开；左右按视口夹取。 */
 function updatePosition() {
   const rect = root.value?.getBoundingClientRect();
   if (!rect) return;
   const vw = document.documentElement.clientWidth;
-  const width = Math.max(rect.width, 478);
+  const vh = document.documentElement.clientHeight;
+  const width = Math.min(Math.max(rect.width, 260), vw - 16);
   const rawLeft = rect.left + width > vw - 8 ? rect.right - width : rect.left;
   const left = Math.min(Math.max(8, rawLeft), Math.max(8, vw - width - 8));
+  const h = popup.value?.offsetHeight ?? 0;
+  const spaceBelow = vh - rect.bottom;
+  const spaceAbove = rect.top;
+  const below = h === 0 || h + 12 <= spaceBelow || spaceBelow >= spaceAbove;
+  const top = below ? rect.bottom + 6 : Math.max(8, rect.top - h - 6);
   popupStyle.value = {
-    top: `${rect.bottom + 6}px`,
+    top: `${top}px`,
     left: `${left}px`,
     width: `${width}px`,
   };
 }
-
-const providerIds = computed(() => Object.keys(props.groups));
 
 /** "provider/model" → [provider, model]；模型 id 本身可含 '/'，仅在首个 '/' 处切分。 */
 function splitSelector(v: string): [string, string] {
@@ -63,7 +65,11 @@ const currentLabel = computed(() => {
   return model ? model.name || model.id : props.modelValue;
 });
 
-const activeModels = computed(() => props.groups[activeProvider.value] ?? []);
+const providerEntries = computed(() => Object.entries(props.groups));
+
+function isSel(pid: string, m: ModelInfo): boolean {
+  return curSel.value[0] === pid && curSel.value[1] === m.id;
+}
 
 function modelName(m: ModelInfo): string {
   return m.name || m.id;
@@ -77,12 +83,8 @@ function toggle() {
   open.value = !open.value;
 }
 
-function pickProvider(id: string) {
-  activeProvider.value = id;
-}
-
-function pick(model: ModelInfo) {
-  emit('update:modelValue', `${activeProvider.value}/${model.id}`);
+function pick(pid: string, model: ModelInfo) {
+  emit('update:modelValue', `${pid}/${model.id}`);
   open.value = false;
 }
 
@@ -102,20 +104,21 @@ onMounted(() => {
   document.addEventListener('mousedown', onDocClick);
   document.addEventListener('keydown', onDocKeydown);
   window.addEventListener('resize', updatePosition);
+  // 容器内部滚动（capture 捕获 .stream 等局部滚动）时保持弹层贴合触发器
+  window.addEventListener('scroll', updatePosition, true);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocClick);
   document.removeEventListener('keydown', onDocKeydown);
   window.removeEventListener('resize', updatePosition);
+  window.removeEventListener('scroll', updatePosition, true);
 });
 
 watch(open, async (v) => {
   if (!v) return;
-  const [p] = splitSelector(props.modelValue);
-  activeProvider.value = props.groups[p] ? p : (providerIds.value[0] ?? '');
   await nextTick();
   updatePosition();
-  if (modelPane.value) modelPane.value.scrollTop = 0;
+  if (popup.value) popup.value.scrollTop = 0;
 });
 </script>
 
@@ -130,37 +133,25 @@ watch(open, async (v) => {
 
     <Teleport to="body">
       <div v-if="open" ref="popup" class="menu" :style="popupStyle">
-        <template v-if="providerIds.length > 0">
-          <div class="prov-col">
-            <button
-              v-for="id in providerIds"
-              :key="id"
-              type="button"
-              class="prov"
-              :class="{ active: id === activeProvider }"
-              @click="pickProvider(id)"
-            >
-              <span class="prov-name">{{ id }}</span>
-              <span class="prov-count">{{ (groups[id] ?? []).length }}</span>
-            </button>
-          </div>
-          <div ref="modelPane" class="model-col">
-            <button
-              v-for="m in activeModels"
-              :key="m.id"
-              type="button"
-              class="item"
-              :class="{ active: activeProvider === curSel[0] && m.id === curSel[1] }"
-              @click="pick(m)"
-            >
-              <span class="item-label">{{ modelName(m) }}</span>
-              <span class="item-hint">{{ hintOf(m) }}</span>
-              <LuCheck v-if="activeProvider === curSel[0] && m.id === curSel[1]" :size="13" class="check" />
-            </button>
-            <div v-if="activeModels.length === 0" class="empty-menu">{{ t('empty') }}</div>
-          </div>
-        </template>
-        <div v-else class="empty-menu full">{{ t('empty') }}</div>
+        <section v-for="[pid, models] in providerEntries" :key="pid" class="group">
+          <header class="group-head">
+            <span class="gh-name">{{ pid }}</span>
+            <span class="gh-count">{{ models.length }}</span>
+          </header>
+          <button
+            v-for="m in models"
+            :key="m.id"
+            type="button"
+            class="item"
+            :class="{ active: isSel(pid, m) }"
+            @click="pick(pid, m)"
+          >
+            <span class="item-label">{{ modelName(m) }}</span>
+            <span class="item-hint">{{ hintOf(m) }}</span>
+            <LuCheck v-if="isSel(pid, m)" :size="13" class="check" />
+          </button>
+        </section>
+        <div v-if="providerEntries.length === 0" class="empty-menu">{{ t('empty') }}</div>
       </div>
     </Teleport>
   </div>
@@ -209,68 +200,46 @@ watch(open, async (v) => {
 .menu {
   position: fixed;
   z-index: 95;
-  display: flex;
-  max-height: 328px;
-  min-height: 120px;
+  max-height: 360px;
   padding: 4px;
+  overflow-y: auto;
   background: var(--surface-strong);
   border: 1px solid var(--line);
   border-radius: 10px;
   box-shadow: 0 8px 28px var(--shadow);
 }
-.prov-col {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  width: 170px;
-  flex-shrink: 0;
-  padding-right: 4px;
-  border-right: 1px solid var(--line);
-  overflow-y: auto;
+.group + .group {
+  margin-top: 2px;
 }
-.prov {
+.group-head {
+  position: sticky;
+  top: -4px;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  width: 100%;
-  padding: 7px 9px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-family: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.prov:hover {
-  background: var(--surface-hover);
-  color: var(--ink);
-}
-.prov.active {
-  background: var(--surface-active);
-  color: var(--accent);
+  padding: 6px 9px 3px;
+  background: var(--surface-strong);
+  font-size: 10.5px;
   font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--overlay1);
+  user-select: none;
 }
-.prov-name {
+.gh-name {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.prov-count {
+.gh-count {
   flex-shrink: 0;
-  font-size: 10.5px;
-  color: var(--overlay0);
+  font-variant-numeric: tabular-nums;
   background: var(--surface);
   border-radius: 99px;
   padding: 0 6px;
-}
-.model-col {
-  flex: 1;
-  min-width: 0;
-  padding-left: 4px;
-  overflow-y: auto;
+  line-height: 14px;
 }
 .item {
   display: flex;
@@ -306,6 +275,7 @@ watch(open, async (v) => {
 .item-hint {
   flex-shrink: 0;
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   color: var(--overlay0);
 }
 .check {
@@ -316,11 +286,5 @@ watch(open, async (v) => {
   font-size: 12px;
   color: var(--overlay0);
   text-align: center;
-}
-.empty-menu.full {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
 }
 </style>

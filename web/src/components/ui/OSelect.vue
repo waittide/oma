@@ -33,16 +33,22 @@ const current = computed(() => props.options.find((o) => o.value === props.model
 
 const popupStyle = ref<{ top: string; left: string; width: string }>({ top: '0', left: '0', width: '0' });
 
-/** 弹层与触发器等宽，按视口夹取位置，避免右侧溢出。 */
+/** 弹层与触发器等宽；下方放不下且上方更宽裕时向上展开，位置按视口夹取。 */
 function updatePosition() {
   const rect = root.value?.getBoundingClientRect();
   if (!rect) return;
   const vw = document.documentElement.clientWidth;
+  const vh = document.documentElement.clientHeight;
   const width = rect.width;
   const rawLeft = props.align === 'end' ? rect.right - width : rect.left;
   const left = Math.min(Math.max(8, rawLeft), Math.max(8, vw - width - 8));
+  const h = popup.value?.offsetHeight ?? 0;
+  const spaceBelow = vh - rect.bottom;
+  const spaceAbove = rect.top;
+  const below = h === 0 || h + 12 <= spaceBelow || spaceBelow >= spaceAbove;
+  const top = below ? rect.bottom + 6 : Math.max(8, rect.top - h - 6);
   popupStyle.value = {
-    top: `${rect.bottom + 6}px`,
+    top: `${top}px`,
     left: `${left}px`,
     width: `${width}px`,
   };
@@ -73,11 +79,14 @@ onMounted(() => {
   document.addEventListener('mousedown', onDocClick);
   document.addEventListener('keydown', onDocKeydown);
   window.addEventListener('resize', updatePosition);
+  // 容器内部滚动（capture 捕获 .stream 等局部滚动）时保持弹层贴合触发器
+  window.addEventListener('scroll', updatePosition, true);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocClick);
   document.removeEventListener('keydown', onDocKeydown);
   window.removeEventListener('resize', updatePosition);
+  window.removeEventListener('scroll', updatePosition, true);
 });
 
 watch(open, async (v) => {
