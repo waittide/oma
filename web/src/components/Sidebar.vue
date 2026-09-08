@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import {
   LuChevronRight,
   LuFolder,
+  LuLoader,
   LuMessageSquare,
   LuPencil,
   LuPlus,
@@ -16,6 +17,8 @@ import OTooltip from './ui/OTooltip.vue';
 import OModal from './ui/OModal.vue';
 import * as store from '../stores/sessions';
 import { activeSessionId } from '../stores/sessions';
+import * as chat from '../stores/chat';
+import type { SessionRecord } from '../types';
 import { useTranslations } from '../composables/i18n';
 
 const emit = defineEmits<{ openSettings: [] }>();
@@ -44,6 +47,11 @@ const groups = store.groups;
 
 function select(id: string) {
   activeSessionId.value = id;
+}
+
+/** 当前会话正在执行轮次时，侧栏条目显示加载动画 */
+function isRunning(s: SessionRecord): boolean {
+  return chat.running.value && s.session_id === activeSessionId.value;
 }
 
 function startRename(id: string, title: string) {
@@ -129,7 +137,8 @@ const deleteTarget = computed(
               />
             </template>
             <template v-else>
-              <LuMessageSquare :size="13" class="s-icon" />
+              <LuLoader v-if="isRunning(s)" :size="13" class="s-icon spin" />
+              <LuMessageSquare v-else :size="13" class="s-icon" />
               <OTooltip :label="s.title" align="start" block>
                 <span class="s-title">{{ s.title }}</span>
               </OTooltip>
@@ -341,6 +350,15 @@ const deleteTarget = computed(
 .session:focus-within .s-actions {
   opacity: 1;
   pointer-events: auto;
+}
+.s-icon.spin {
+  color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .rename-input {
   flex: 1;
