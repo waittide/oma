@@ -57,12 +57,13 @@ function splitSelector(v: string): [string, string] {
 }
 
 const curSel = computed(() => splitSelector(props.modelValue));
-
 const currentLabel = computed(() => {
   if (!props.modelValue) return null;
   const [p, m] = splitSelector(props.modelValue);
   const model = (props.groups[p] ?? []).find((x) => x.id === m);
-  return model ? model.name || model.id : props.modelValue;
+  // 查得到元数据显示展示名；查不到也只显示模型部分，绝不露出 "provider/" 前缀
+  if (model) return model.name || model.id;
+  return m || p || props.modelValue;
 });
 
 const providerEntries = computed(() => Object.entries(props.groups));
