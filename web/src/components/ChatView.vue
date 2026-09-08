@@ -227,24 +227,26 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
     </div>
 
     <Transition name="slide">
-      <div v-if="chat.pendingApproval.value" class="approval">
-        <LuAlertTriangle :size="15" class="warn" />
-        <div class="ap-text">
-          <strong>{{ chat.pendingApproval.value.name }}</strong>
-          {{ t('approvalRequest') }}<code>{{ chat.pendingApproval.value.summary }}</code>
-        </div>
-        <div class="ap-actions">
-          <OButton variant="primary" size="sm" @click="chat.respond('allow_once')">
-            <template #icon><LuCheck :size="13" /></template>
-            {{ t('allowOnce') }}
-          </OButton>
-          <OButton variant="soft" size="sm" @click="chat.respond('allow_session')">
-            {{ t('allowSession') }}
-          </OButton>
-          <OButton variant="danger" size="sm" @click="chat.respond('deny')">
-            <template #icon><LuX :size="13" /></template>
-            {{ t('deny') }}
-          </OButton>
+      <div v-if="chat.pendingApproval.value" class="approval-row">
+        <div class="approval">
+          <LuAlertTriangle :size="15" class="warn" />
+          <div class="ap-text">
+            <strong>{{ chat.pendingApproval.value.name }}</strong>
+            {{ t('approvalRequest') }}<code>{{ chat.pendingApproval.value.summary }}</code>
+          </div>
+          <div class="ap-actions">
+            <OButton variant="primary" size="sm" @click="chat.respond('allow_once')">
+              <template #icon><LuCheck :size="13" /></template>
+              {{ t('allowOnce') }}
+            </OButton>
+            <OButton variant="soft" size="sm" @click="chat.respond('allow_session')">
+              {{ t('allowSession') }}
+            </OButton>
+            <OButton variant="danger" size="sm" @click="chat.respond('deny')">
+              <template #icon><LuX :size="13" /></template>
+              {{ t('deny') }}
+            </OButton>
+          </div>
         </div>
       </div>
     </Transition>
@@ -316,6 +318,8 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   flex: 1;
   min-width: 0;
   background: var(--paper);
+  /* 消息、审批条、输入框共用同一列宽，保证左右边缘对齐 */
+  --chat-col: 1120px;
 }
 .top {
   display: flex;
@@ -435,7 +439,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   display: flex;
   flex-direction: column;
   padding: 8px 14px;
-  max-width: 1120px;
+  max-width: var(--chat-col);
   margin: 0 auto;
 }
 .msg.user {
@@ -481,11 +485,16 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   color: var(--accent);
   background: var(--surface-hover);
 }
+.approval-row {
+  max-width: var(--chat-col);
+  width: 100%;
+  margin: 0 auto;
+  padding: 0 14px 8px;
+}
 .approval {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 0 14px 8px;
   padding: 10px 14px;
   border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
   background: var(--warning-soft);
@@ -517,7 +526,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
 }
 .composer {
   padding: 8px 14px 12px;
-  max-width: 1120px;
+  max-width: var(--chat-col);
   width: 100%;
   margin: 0 auto;
 }
