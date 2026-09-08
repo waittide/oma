@@ -106,6 +106,10 @@ impl McpClient {
         }
     }
 
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// 初始化握手并拉取工具列表
     pub async fn connect_and_discover(&self) -> Result<Vec<McpToolInfo>> {
         match &self.config {
@@ -440,6 +444,17 @@ impl McpManager {
     }
 
     /// 发现并获取所有 MCP 服务器的包装工具集
+    /// 各服务器已缓存的工具数量（未完成发现的计 0，不触发连接）
+    pub async fn server_tool_counts(&self) -> Vec<(String, usize)> {
+        let clients: Vec<Arc<McpClient>> = self.clients.read().values().cloned().collect();
+        let mut out = Vec::with_capacity(clients.len());
+        for client in clients {
+            let count = client.tools_cache.read().len();
+            out.push((client.name.clone(), count));
+        }
+        out
+    }
+
     pub async fn create_all_tools(&self) -> Vec<Arc<dyn Tool>> {
         let clients: Vec<Arc<McpClient>> = self.clients.read().values().cloned().collect();
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();

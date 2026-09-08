@@ -449,20 +449,14 @@ impl AgentLoader {
 
     /// 列出所有可用的 Agent 元数据列表
     pub fn list_agents(workspace: &Path) -> Vec<AgentSummary> {
-        let default_ids = ["task", "plan", "explore", "review", "build"];
-        let mut list = Vec::new();
-
-        for id in default_ids {
-            if let Ok(tmpl) = Self::load_agent(id, workspace) {
-                list.push(AgentSummary {
-                    id:          tmpl.id,
-                    name:        tmpl.name,
-                    description: tmpl.description,
-                });
-            }
-        }
-
-        list
+        Self::list_skills(Some(workspace))
+            .into_iter()
+            .map(|s| AgentSummary {
+                id:          s.id,
+                name:        s.name,
+                description: s.description,
+            })
+            .collect()
     }
 
     /// 动态拼装注入实时环境块的最终 System Prompt

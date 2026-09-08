@@ -183,6 +183,13 @@ pub struct AgentSummary {
     pub description: String,
 }
 
+/// MCP 服务器工具概览（供主界面指示器展示）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerSummary {
+    pub name:       String,
+    pub tool_count: usize,
+}
+
 /// 握手成功就绪载荷
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ready {
@@ -195,6 +202,7 @@ pub struct Ready {
     pub current_leaf_id: Option<String>,
     pub providers:       BTreeMap<String, Vec<ModelInfo>>,
     pub agents:          Vec<AgentSummary>,
+    pub mcp_servers:     Vec<McpServerSummary>,
 }
 
 /// 结束原因

@@ -18,7 +18,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use oma_config::{AgentLoader, OmaConfig};
-use oma_contract::{AgentEvent, ApprovalMode, ChatMessage, ClientMessage, Ready, ServerMessage};
+use oma_contract::{AgentEvent, ApprovalMode, ChatMessage, ClientMessage, McpServerSummary, Ready, ServerMessage};
 use oma_mcp::McpManager;
 use oma_runtime::{RoomSubagentRunner, SessionRoom};
 use oma_storage::{SessionRecord, StorageManager};
@@ -800,6 +800,14 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         .flatten()
         .and_then(|rec| rec.current_leaf_id);
 
+    let mcp_servers = state
+        .mcp
+        .server_tool_counts()
+        .await
+        .into_iter()
+        .map(|(name, tool_count)| McpServerSummary { name, tool_count })
+        .collect();
+
     let ready = Ready {
         version: "0.1.0".into(),
         session_id: room.session_id.clone(),
@@ -810,6 +818,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         current_leaf_id,
         providers: providers_map,
         agents,
+        mcp_servers,
     };
 
     let _ = socket
