@@ -494,6 +494,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
 .approval {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 10px 14px;
   border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
@@ -521,6 +522,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
 }
 .ap-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   flex-shrink: 0;
 }
