@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import {
   LuChevronRight,
   LuFolder,
@@ -31,6 +31,14 @@ const renameValue = ref('');
 const confirmDelete = ref<string | null>(null);
 
 onMounted(() => store.refresh());
+
+// 空态 CTA 等外部入口请求新建会话时打开弹窗
+watch(store.newSessionRequested, (v) => {
+  if (v) {
+    showNew.value = true;
+    store.newSessionRequested.value = false;
+  }
+});
 
 const groups = store.groups;
 

@@ -10,6 +10,12 @@ const COLLAPSED_KEY = 'oma.sidebar.collapsed';
 export const sessions = ref<SessionRecord[]>([]);
 export const loading = ref(false);
 export const activeSessionId = ref<string | null>(null);
+/** 跨组件请求打开「新建会话」弹窗的信号（空态 CTA → 侧栏）。 */
+export const newSessionRequested = ref(false);
+
+export function requestNewSession() {
+  newSessionRequested.value = true;
+}
 
 export const collapsed = ref<Record<string, boolean>>(
   (() => {

@@ -7,6 +7,7 @@ import {
   LuBot,
   LuCheck,
   LuGitBranch,
+  LuPlus,
   LuLoader,
   LuPencil,
   LuPlug,
@@ -22,7 +23,7 @@ import MessageBlocks from './MessageBlocks.vue';
 import OButton from './ui/OButton.vue';
 import type { ApprovalMode, ChatMessage } from '../types';
 import * as chat from '../stores/chat';
-import { activeSession, activeSessionId } from '../stores/sessions';
+import { activeSession, activeSessionId, requestNewSession } from '../stores/sessions';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ online: boolean }>();
@@ -189,6 +190,10 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
         <LuBot :size="42" class="hero-icon" />
         <h2>{{ t('welcomeTitle') }}</h2>
         <p>{{ t('welcomeBody') }}</p>
+        <OButton variant="primary" size="md" @click="requestNewSession">
+          <template #icon><LuPlus :size="14" /></template>
+          {{ t('newSession') }}
+        </OButton>
       </div>
 
       <div v-else-if="!props.online" class="hero">
