@@ -36,6 +36,12 @@ function updatePosition() {
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
 
+  // 触发器滚出视口后隐藏，避免气泡滞留在边缘
+  if (trigger.bottom < 0 || trigger.top > vh || trigger.right < 0 || trigger.left > vw) {
+    hide();
+    return;
+  }
+
   // 垂直：优先 props.placement，空间不足且反向更宽裕时翻转
   const spaceAbove = trigger.top;
   const spaceBelow = vh - trigger.bottom;
@@ -136,7 +142,10 @@ onBeforeUnmount(() => {
   background: var(--crust);
   color: var(--text);
   font-size: 11px;
-  white-space: nowrap;
+  line-height: 1.45;
+  max-width: min(360px, calc(100vw - 16px));
+  white-space: normal;
+  overflow-wrap: anywhere;
   pointer-events: none;
   box-shadow: 0 4px 14px var(--shadow);
 }
