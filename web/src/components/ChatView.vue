@@ -419,7 +419,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
 .stream {
   flex: 1;
   overflow-y: auto;
-  padding: 22px 0 10px;
+  padding: 14px 0 8px;
 }
 .hero {
   height: 100%;
@@ -452,7 +452,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
 .msg {
   display: flex;
   flex-direction: column;
-  padding: 10px 22px;
+  padding: 8px 14px;
   max-width: 920px;
   margin: 0 auto;
 }
@@ -503,7 +503,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 0 22px 10px;
+  margin: 0 14px 8px;
   padding: 10px 14px;
   border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
   background: var(--warning-soft);
@@ -534,7 +534,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   flex-shrink: 0;
 }
 .composer {
-  padding: 10px 14px 14px;
+  padding: 8px 14px 12px;
   max-width: 920px;
   width: 100%;
   margin: 0 auto;
