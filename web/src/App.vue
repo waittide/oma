@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { Toaster } from 'vue-sonner';
+import { isDark } from './stores/theme';
 import { api } from './api';
 import Sidebar from './components/Sidebar.vue';
 import ChatView from './components/ChatView.vue';
@@ -29,7 +30,7 @@ onMounted(async () => {
     </main>
     <SettingsModal :open="settingsOpen" @close="settingsOpen = false" />
   </div>
-  <Toaster position="bottom-right" :expand="false" />
+  <Toaster position="bottom-right" :expand="false" :theme="isDark ? 'dark' : 'light'" rich-colors close-button />
 </template>
 
 <style scoped>

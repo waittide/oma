@@ -59,6 +59,9 @@ const media =
 
 export const customThemes = computed<CustomTheme[]>(() => config.value?.custom_themes ?? []);
 
+/** 当前生效主题是否为暗色（latte 为唯一浅色基底）。 */
+export const isDark = computed(() => resolveActiveTheme().base !== 'latte');
+
 /** 解析当前生效主题：引用自定义主题时给出基底 flavor 与覆盖表。 */
 export function resolveActiveTheme(): { base: Flavor; custom?: CustomTheme } {
   const preferLight =

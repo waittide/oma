@@ -208,3 +208,26 @@
     0 8px 16px color-mix(in srgb, var(--crust) 16%, transparent),
     0 0 0 0.5px var(--ring);
 }
+
+/* ---- vue-sonner 通知主题化：随 flavor class 作用于 [data-sonner-toaster] ---- */
+:root.theme-latte [data-sonner-toaster],
+:root.theme-frappe [data-sonner-toaster],
+:root.theme-macchiato [data-sonner-toaster],
+:root.theme-mocha [data-sonner-toaster] {
+  --border-radius: 10px;
+  --normal-bg: var(--surface-strong);
+  --normal-text: var(--ink);
+  --normal-border: var(--control-border);
+  --success-bg: var(--success-soft);
+  --success-text: var(--success);
+  --success-border: color-mix(in srgb, var(--success) 32%, transparent);
+  --error-bg: var(--danger-soft);
+  --error-text: var(--danger);
+  --error-border: color-mix(in srgb, var(--danger) 32%, transparent);
+  --warning-bg: var(--warning-soft);
+  --warning-text: var(--warning);
+  --warning-border: color-mix(in srgb, var(--warning) 32%, transparent);
+  --info-bg: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  --info-text: var(--accent);
+  --info-border: color-mix(in srgb, var(--accent) 32%, transparent);
+}
