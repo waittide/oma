@@ -18,9 +18,7 @@ interface Row {
   msg: ChatMessage;
   /** 分叉代数：主线第一层，从第 n 层分叉出的分支为第 n+1 层 */
   depth: number;
-  /** 每层引导线是否属于当前激活分支（亮线） */
-  guides: boolean[];
-  /** 位于当前激活分支上 */
+  /** 位于当前激活分支上（圆点亮色） */
   active: boolean;
   /** 当前激活叶子 */
   leaf: boolean;
@@ -60,27 +58,21 @@ const rows = computed<Row[]>(() => {
   const leafId = chat.messages.value[chat.messages.value.length - 1]?.id ?? null;
 
   const out: Row[] = [];
-  /** chain[d] = 深度 d 处该行祖先的 id，用于判定各层引导线是否在激活分支上 */
-  const walk = (list: ChatMessage[], depth: number, chain: (string | null)[]) => {
+  const walk = (list: ChatMessage[], depth: number) => {
     list.forEach((m, idx) => {
       // 首个子节点延续父层；分叉出的兄弟分支下移一层
       const d = idx === 0 ? depth : depth + 1;
-      const myChain = chain.slice();
-      myChain[d] = m.id;
-      const guides: boolean[] = [];
-      for (let l = 0; l < d; l++) guides.push(activeIds.has(myChain[l] ?? ''));
       out.push({
         msg: m,
         depth: d,
-        guides,
         active: activeIds.has(m.id),
         leaf: m.id === leafId,
         branch: list.length > 1,
       });
-      walk(kids.get(m.id) ?? [], d, myChain);
+      walk(kids.get(m.id) ?? [], d);
     });
   };
-  walk(kids.get(null) ?? [], 0, []);
+  walk(kids.get(null) ?? [], 0);
   return out;
 });
 
@@ -110,16 +102,20 @@ function pick(m: ChatMessage) {
         type="button"
         class="node"
         :class="{ user: r.msg.role === 'user', active: r.active, leaf: r.leaf, off: !r.active }"
-        :style="{ paddingLeft: `${6 + r.depth * INDENT}px` }"
+        :style="{ paddingLeft: `${16 + r.depth * INDENT}px` }"
         :disabled="chat.running.value"
         @click="pick(r.msg)"
       >
         <span
-          v-for="(on, li) in r.guides"
-          :key="li"
+          v-for="li in r.depth"
+          :key="`g${li}`"
           class="guide"
-          :class="{ on }"
-          :style="{ left: `${li * INDENT + 8}px` }"
+          :style="{ left: `${(li - 1) * INDENT + 8.25}px` }"
+        />
+        <span
+          class="dot"
+          :class="{ on: r.active }"
+          :style="{ left: `${r.depth * INDENT + 5.5}px` }"
         />
         <LuUser v-if="r.msg.role === 'user'" :size="12" class="n-icon" />
         <LuBot v-else :size="12" class="n-icon bot" />
@@ -171,18 +167,33 @@ function pick(m: ChatMessage) {
   cursor: default;
   opacity: 0.55;
 }
-/* 层引导线：亮色 = 该层段属于当前激活分支 */
+/* 结构连接线：仅表达层级，统一暗色 */
 .guide {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 2px;
+  width: 1.5px;
   border-radius: 1px;
   background: var(--surface2);
   pointer-events: none;
 }
-.guide.on {
+/* 层级圆点：激活分支亮色，其余暗色；第一层同样有点 */
+.dot {
+  position: absolute;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  transform: translateY(-50%);
+  background: var(--surface2);
+  pointer-events: none;
+  transition:
+    background-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.dot.on {
   background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .n-icon {
   flex-shrink: 0;
