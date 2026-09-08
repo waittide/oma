@@ -63,7 +63,9 @@
     "deleteHint": "删除该消息及其后续回复",
     "deleted": "消息已删除",
     "deleteFailed": "删除失败：{message}",
-    "newSession": "新建会话"
+    "newSession": "新建会话",
+    "connected": "已连接",
+    "disconnected": "未连接"
   },
   "blocks": {
     "thinking": "思考过程",

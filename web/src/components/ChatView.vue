@@ -165,16 +165,19 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
     <header class="top">
       <div class="top-left">
         <span class="session-title">{{ activeSession?.title ?? t('noSession') }}</span>
-        <OTooltip :label="activeSession?.workspace ?? ''" align="start" block>
+        <OTooltip :label="activeSession?.workspace ?? ''" align="start" block placement="bottom">
           <span class="ws-path">{{ activeSession?.workspace }}</span>
         </OTooltip>
       </div>
       <div v-if="activeSessionId" class="top-right">
-        <span class="dot" :class="chat.connected.value ? 'ok' : 'off'" />
+        <OTooltip :label="chat.connected.value ? t('connected') : t('disconnected')" align="end" placement="bottom">
+          <span class="dot" :class="chat.connected.value ? 'ok' : 'off'" />
+        </OTooltip>
         <OTooltip
           v-if="chat.mcpServers.value.length"
           :label="mcpTip"
           align="end"
+          placement="bottom"
         >
           <span class="mcp-chip">
             <LuPlug :size="11" />
@@ -350,9 +353,6 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   flex: 1;
   min-width: 0;
   background: var(--paper);
-  border-radius: 10px;
-  box-shadow: var(--shadow-raised);
-  overflow: hidden;
 }
 .top {
   display: flex;

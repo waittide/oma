@@ -44,6 +44,5 @@ onMounted(async () => {
   flex: 1;
   min-width: 0;
   display: flex;
-  padding: 10px 10px 10px 0;
 }
 </style>

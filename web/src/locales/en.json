@@ -63,7 +63,9 @@
     "deleteHint": "Delete this message and its replies",
     "deleted": "Message deleted",
     "deleteFailed": "Delete failed: {message}",
-    "newSession": "New Session"
+    "newSession": "New Session",
+    "connected": "Connected",
+    "disconnected": "Disconnected"
   },
   "blocks": {
     "thinking": "Thinking",
