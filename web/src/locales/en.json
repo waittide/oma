@@ -188,7 +188,21 @@
     "mcpEmpty": "No MCP servers yet. Click Add to connect one.",
     "mcpNameRequired": "MCP server name is required",
     "mcpNameDuplicate": "Duplicate MCP server name",
-    "mcpSaved": "MCP configuration saved"
+    "mcpSaved": "MCP configuration saved",
+    "themeRowLight": "Light Theme",
+    "themeRowDark": "Dark Theme",
+    "manageThemes": "Custom Themes",
+    "manageThemesDesc": "Create your own themes on top of built-in palettes.",
+    "newTheme": "New Theme",
+    "editTheme": "Edit Theme",
+    "themeName": "Name",
+    "themeModeLabel": "Mode",
+    "themeBaseLabel": "Base palette",
+    "themeColors": "Color overrides (empty = inherit base)",
+    "themeReset": "Reset to base",
+    "themeNameRequired": "Theme name is required",
+    "themeDeleted": "Theme deleted",
+    "edit": "Edit"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"

@@ -188,7 +188,21 @@
     "mcpEmpty": "尚無 MCP 伺服器，點擊「新增」接入。",
     "mcpNameRequired": "MCP 伺服器名稱不能為空",
     "mcpNameDuplicate": "MCP 伺服器名稱重複",
-    "mcpSaved": "MCP 設定已儲存"
+    "mcpSaved": "MCP 設定已儲存",
+    "themeRowLight": "淺色主題",
+    "themeRowDark": "深色主題",
+    "manageThemes": "自訂主題",
+    "manageThemesDesc": "基於內建配色建立屬於你的主題。",
+    "newTheme": "新建主題",
+    "editTheme": "編輯主題",
+    "themeName": "名稱",
+    "themeModeLabel": "模式",
+    "themeBaseLabel": "基底配色",
+    "themeColors": "顏色覆蓋（留空繼承基底）",
+    "themeReset": "重設為基底",
+    "themeNameRequired": "主題名稱不能為空",
+    "themeDeleted": "主題已刪除",
+    "edit": "編輯"
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"

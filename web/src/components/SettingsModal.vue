@@ -22,11 +22,11 @@ import ORadio from './ui/ORadio.vue';
 import OSelect from './ui/OSelect.vue';
 import OTooltip from './ui/OTooltip.vue';
 import OModelSelect from './ui/OModelSelect.vue';
-import { ACCENTS, config, loadConfig, saveConfig, saveTheme, theme } from '../stores/theme';
+import { ACCENTS, PALETTES, config, customThemes, loadConfig, saveConfig, saveTheme, theme, type Flavor } from '../stores/theme';
 import { agents } from '../stores/chat';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
 import { activeSession } from '../stores/sessions';
-import type { AgentSummary, McpServerConfig, ModelInfo, OmaConfig, ProviderConfig, SkillFile, Theme } from '../types';
+import type { AgentSummary, CustomTheme, McpServerConfig, ModelInfo, OmaConfig, ProviderConfig, SkillFile, Theme } from '../types';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ open: boolean }>();
@@ -71,19 +71,28 @@ const modeOptions = computed<{ value: Theme['mode']; label: string }[]>(() => [
   { value: 'dark', label: t('modeDark') },
   { value: 'system', label: t('modeSystem') },
 ]);
-const flavorOptions: { value: Theme['dark_flavor']; label: string }[] = [
+
+// 浅色/深色各自的主题 id 选择（内置 + 自定义）
+const themeSel = reactive({ light: 'latte', dark: 'mocha' });
+
+const lightThemeOptions = computed(() => [
+  { value: 'latte', label: 'Latte' },
+  ...customThemes.value.filter((t) => t.mode === 'light').map((t) => ({ value: t.id, label: t.name })),
+]);
+const darkThemeOptions = computed(() => [
   { value: 'frappe', label: 'Frappé' },
   { value: 'macchiato', label: 'Macchiato' },
   { value: 'mocha', label: 'Mocha' },
-];
-const LIGHT_FLAVORS: { value: 'latte'; label: string }[] = [{ value: 'latte', label: 'Latte' }];
+  ...customThemes.value.filter((t) => t.mode === 'dark').map((t) => ({ value: t.id, label: t.name })),
+]);
 
 async function applyTheme() {
   savingTheme.value = true;
   try {
     const next: Theme = {
       mode: mode.value,
-      dark_flavor: flavor.value,
+      dark_flavor: themeSel.dark,
+      light_theme: themeSel.light,
       accent: accent.value,
     };
     await saveTheme(next);
@@ -92,6 +101,112 @@ async function applyTheme() {
     toast.error(t('saveFailed', { message: (e as Error).message }));
   } finally {
     savingTheme.value = false;
+  }
+}
+
+// ---------- 自定义主题编辑 ----------
+const THEME_TOKENS = [
+  'base', 'mantle', 'crust', 'text', 'subtext1', 'subtext0',
+  'surface0', 'surface1', 'surface2', 'overlay0', 'overlay1', 'overlay2',
+] as const;
+
+const themeEdit = reactive<{
+  open: boolean;
+  isNew: boolean;
+  id: string;
+  name: string;
+  mode: 'light' | 'dark';
+  base: Flavor;
+  colors: Record<string, string>;
+}>({
+  open: false,
+  isNew: false,
+  id: '',
+  name: '',
+  mode: 'dark',
+  base: 'mocha',
+  colors: {},
+});
+
+const themeBaseOptions = computed(() =>
+  themeEdit.mode === 'light'
+    ? [{ value: 'latte' as Flavor, label: 'Latte' }]
+    : [
+        { value: 'frappe' as Flavor, label: 'Frappé' },
+        { value: 'macchiato' as Flavor, label: 'Macchiato' },
+        { value: 'mocha' as Flavor, label: 'Mocha' },
+      ],
+);
+
+function effectiveColor(token: string): string {
+  const c = themeEdit.colors[token];
+  if (c && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c)) return c;
+  return PALETTES[themeEdit.base]?.[token] ?? '#000000';
+}
+
+function newTheme() {
+  themeEdit.open = true;
+  themeEdit.isNew = true;
+  themeEdit.id = '';
+  themeEdit.name = '';
+  themeEdit.mode = mode.value === 'light' ? 'light' : 'dark';
+  themeEdit.base = themeEdit.mode === 'light' ? 'latte' : 'mocha';
+  themeEdit.colors = {};
+}
+
+function editTheme(t: CustomTheme) {
+  themeEdit.open = true;
+  themeEdit.isNew = false;
+  themeEdit.id = t.id;
+  themeEdit.name = t.name;
+  themeEdit.mode = t.mode;
+  themeEdit.base = (PALETTES[t.base as Flavor] ? t.base : 'mocha') as Flavor;
+  themeEdit.colors = { ...t.colors };
+}
+
+function slugifyThemeName(name: string): string {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug || `custom-${Date.now()}`;
+}
+
+async function saveThemeEdit() {
+  const name = themeEdit.name.trim();
+  if (!name) {
+    toast.error(t('themeNameRequired'));
+    return;
+  }
+  const id = themeEdit.isNew ? slugifyThemeName(name) : themeEdit.id;
+  const colors: Record<string, string> = {};
+  for (const tok of THEME_TOKENS) {
+    const v = (themeEdit.colors[tok] ?? '').trim();
+    if (v && v !== PALETTES[themeEdit.base]?.[tok]) colors[tok] = v;
+  }
+  const entry: CustomTheme = { id, name, mode: themeEdit.mode, base: themeEdit.base, colors };
+  const list = [...(config.value?.custom_themes ?? [])];
+  const idx = list.findIndex((t) => t.id === id);
+  if (idx >= 0) list[idx] = entry;
+  else list.push(entry);
+  try {
+    await saveConfig({ ...(config.value as OmaConfig), custom_themes: list });
+    // 编辑/新建后让选择跟随新主题
+    if (entry.mode === 'light') themeSel.light = id;
+    else themeSel.dark = id;
+    themeEdit.open = false;
+    toast.success(t('themeSaved'));
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  }
+}
+
+async function removeTheme(id: string) {
+  const list = (config.value?.custom_themes ?? []).filter((t) => t.id !== id);
+  try {
+    await saveConfig({ ...(config.value as OmaConfig), custom_themes: list });
+    if (themeSel.light === id) themeSel.light = 'latte';
+    if (themeSel.dark === id) themeSel.dark = 'mocha';
+    toast.success(t('themeDeleted'));
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
   }
 }
 
@@ -110,7 +225,8 @@ watch(
       defaults.approval = config.value.default_approval_mode;
     }
     mode.value = theme.value.mode;
-    flavor.value = theme.value.dark_flavor;
+    themeSel.light = theme.value.light_theme || 'latte';
+    themeSel.dark = theme.value.dark_flavor || 'mocha';
     accent.value = theme.value.accent;
     if (!version.value) {
       version.value = await api.status().then((s) => s.version).catch(() => '');
@@ -348,7 +464,7 @@ async function saveMcp() {
     for (const d of mcpDrafts.value) {
       mcp_servers[d.name.trim()] =
         d.kind === 'local'
-          ? { type: 'local', command: d.command.trim(), args: d.argsText.split(',').map((a) => a.trim()).filter(Boolean), env: parseKvText(d.envText) }
+          ? { type: 'local' as const, command: d.command.trim(), args: d.argsText.split(',').map((a) => a.trim()).filter(Boolean), env: parseKvText(d.envText) }
           : { type: 'remote', url: d.url.trim(), headers: parseKvText(d.headersText) };
     }
     await saveConfig({ ...config.value, mcp_servers });
@@ -658,13 +774,19 @@ function pickLocale(v: Locale) {
             </div>
             <div class="srow">
               <div class="srow-main">
-                <span class="srow-title">{{ t('themeLabel') }}</span>
+                <span class="srow-title">{{ t('themeRowLight') }}</span>
                 <span class="srow-desc">{{ t('themeDesc') }}</span>
               </div>
               <div class="srow-ctl">
-                <!-- 浅色系当前仅 Latte，后续扩展时追加选项即可 -->
-                <ORadio v-if="mode === 'light'" model-value="latte" :options="LIGHT_FLAVORS" />
-                <ORadio v-else v-model="flavor" :options="flavorOptions" />
+                <ORadio v-model="themeSel.light" :options="lightThemeOptions" />
+              </div>
+            </div>
+            <div class="srow">
+              <div class="srow-main">
+                <span class="srow-title">{{ t('themeRowDark') }}</span>
+              </div>
+              <div class="srow-ctl">
+                <ORadio v-model="themeSel.dark" :options="darkThemeOptions" />
               </div>
             </div>
             <div class="srow">
@@ -688,6 +810,25 @@ function pickLocale(v: Locale) {
                     />
                   </OTooltip>
                 </div>
+              </div>
+            </div>
+            <div class="srow">
+              <div class="srow-main">
+                <span class="srow-title">{{ t('manageThemes') }}</span>
+                <span class="srow-desc">{{ t('manageThemesDesc') }}</span>
+              </div>
+              <div class="srow-ctl">
+                <OButton size="sm" variant="soft" @click="newTheme">{{ t('newTheme') }}</OButton>
+              </div>
+            </div>
+            <div v-for="ct in customThemes" :key="ct.id" class="srow">
+              <div class="srow-main">
+                <span class="srow-title">{{ ct.name }} <span class="scope-tag">{{ ct.mode === 'light' ? t('modeLight') : t('modeDark') }}</span></span>
+                <span class="srow-desc">{{ t('themeBaseLabel') }}: {{ ct.base }}</span>
+              </div>
+              <div class="srow-ctl">
+                <OButton size="sm" variant="ghost" @click="editTheme(ct)">{{ t('edit') }}</OButton>
+                <OButton size="sm" variant="ghost" @click="removeTheme(ct.id)">{{ tc('delete') }}</OButton>
               </div>
             </div>
           </div>
@@ -1008,6 +1149,46 @@ function pickLocale(v: Locale) {
     </template>
   </OModal>
 
+  <OModal
+    :open="themeEdit.open"
+    :title="themeEdit.isNew ? t('newTheme') : t('editTheme')"
+    width="560px"
+    @close="themeEdit.open = false"
+  >
+    <div class="skill-form">
+      <div class="field">
+        <label>{{ t('themeName') }}</label>
+        <OInput v-model="themeEdit.name" placeholder="Nord Dark" />
+      </div>
+      <div class="sk-grid">
+        <div class="field">
+          <label>{{ t('themeModeLabel') }}</label>
+          <ORadio
+            v-model="themeEdit.mode"
+            :options="[{ value: 'light', label: t('modeLight') }, { value: 'dark', label: t('modeDark') }]"
+          />
+        </div>
+        <div class="field">
+          <label>{{ t('themeBaseLabel') }}</label>
+          <ORadio v-model="themeEdit.base" :options="themeBaseOptions" />
+        </div>
+      </div>
+      <div class="field">
+        <label>{{ t('themeColors') }}</label>
+        <div class="color-grid">
+          <div v-for="tok in THEME_TOKENS" :key="tok" class="color-cell">
+            <span class="color-swatch" :style="{ background: effectiveColor(tok) }" />
+            <input v-model="themeEdit.colors[tok]" class="color-input" :placeholder="effectiveColor(tok)" spellcheck="false" />
+          </div>
+        </div>
+      </div>
+    </div>
+    <template #footer>
+      <OButton variant="ghost" size="sm" @click="themeEdit.colors = {}">{{ t('themeReset') }}</OButton>
+      <OButton variant="primary" size="sm" @click="saveThemeEdit">{{ tc('save') }}</OButton>
+    </template>
+  </OModal>
+
   <OModal :open="showProvider" :title="t('newProvider')" width="400px" @close="showProvider = false">
     <div class="grid one">
       <label>{{ t('providerName') }}</label>
@@ -1158,6 +1339,39 @@ function pickLocale(v: Locale) {
 }
 .srow-ctl.wide {
   flex-shrink: 1;
+}
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+}
+.color-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.color-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.color-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+}
+.color-input:focus {
+  border-color: var(--accent);
 }
 .scope-tag {
   display: inline-block;

@@ -148,10 +148,20 @@ export interface SessionRecord {
   updated_at: number;
 }
 
-/** 后端主题设置 (config::Theme) */
+/** 用户自定义主题：以内置 flavor 为基底的调色板覆盖 */
+export interface CustomTheme {
+  id: string;
+  name: string;
+  mode: 'light' | 'dark';
+  base: string;
+  colors: Record<string, string>;
+}
+
+/** 后端主题设置 (config::Theme)；浅色/深色均可引用内置或自定义主题 id */
 export interface Theme {
   mode: 'light' | 'dark' | 'system';
-  dark_flavor: 'frappe' | 'macchiato' | 'mocha';
+  dark_flavor: string;
+  light_theme: string;
   accent: string;
 }
 
@@ -187,6 +197,7 @@ export interface OmaConfig {
   server: { listen_addr: string };
   providers: Record<string, ProviderConfig>;
   mcp_servers: Record<string, McpServerConfig>;
+  custom_themes: CustomTheme[];
 }
 
 export interface FileNode {
