@@ -173,15 +173,15 @@ function pick(m: ChatMessage) {
           class="vline"
           :style="{ left: `${CURSOR_CHARS + level * LEVEL_CHARS}ch` }"
         />
-        <!-- 本层肘形连接：竖线段（├ 贯穿整行 / └ 止于行中） -->
+        <!-- 本层肘形连接：border 绘制，转角圆角；├ 另加下半段竖线 -->
         <template v-if="r.connector && !r.vlines.includes(r.indent - 1)">
           <span
             class="elbow"
-            :class="{ last: r.last }"
             :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
           />
           <span
-            class="stub"
+            v-if="!r.last"
+            class="elbow-below"
             :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
           />
         </template>
@@ -254,29 +254,33 @@ function pick(m: ChatMessage) {
   border-radius: 99px;
   background: var(--accent);
 }
-/* 引导线：CSS 绘制并贯穿整行（上下各溢出 1px 消除行间缝隙），
-   不依赖字体字形，跨行连续无断点 */
+/* 引导线统一用 border 绘制：横竖同为边框宽度，粗细一致；
+   上下各溢出 1px 消除行间缝隙。 */
 .vline,
-.elbow {
+.elbow,
+.elbow-below {
   position: absolute;
+  width: 0;
+  border-left: 1.5px solid var(--overlay0);
+  pointer-events: none;
+}
+.vline {
   top: -1px;
   bottom: -1px;
-  width: 1.5px;
-  background: var(--overlay0);
-  pointer-events: none;
 }
-.elbow.last {
-  bottom: 50%;
-}
-/* 肘形横线：独立元素，相对整行居中（伪元素会相对肘形自身盒子定位而跑偏） */
-.stub {
-  position: absolute;
-  top: 50%;
+/* 肘形转角盒：border-left 为上半段竖线，border-bottom 为横线，
+   border-bottom-left-radius 形成圆角（└ 的全部与 ├ 的上半段） */
+.elbow {
+  top: -1px;
+  height: calc(50% + 0.75px);
   width: 3ch;
-  height: 1.5px;
-  margin-top: -0.75px;
-  background: var(--overlay0);
-  pointer-events: none;
+  border-bottom: 1.5px solid var(--overlay0);
+  border-bottom-left-radius: 7px;
+}
+/* ├ 的下半段竖线，与转角盒在行中心接续 */
+.elbow-below {
+  top: 50%;
+  bottom: -1px;
 }
 .role {
   flex-shrink: 0;
