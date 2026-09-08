@@ -172,8 +172,8 @@ function handleEvent(ev: AgentEvent) {
       break;
     case 'active_branch_changed':
       currentLeafId.value = ev.data?.current_leaf_id ?? null;
-      live.value = emptyLive();
-      running.value = false;
+      // 编辑重发同样广播此事件：轮次进行中保留实时缓冲，避免打断流式渲染
+      if (!running.value) live.value = emptyLive();
       void reload();
       break;
     case 'model_changed':

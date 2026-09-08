@@ -415,6 +415,7 @@ impl SessionRoom {
             });
         }
 
+        let is_fork = parent_id_override.is_some();
         let user_parent = match parent_id_override {
             Some(p) => Some(p),
             None => self
@@ -447,6 +448,14 @@ impl SessionRoom {
             self.finish_turn(turn_id, StopReason::Error, TokenUsage::default())
                 .await;
             return;
+        }
+
+        // 编辑重发：分叉用户消息即成为当前叶子，广播让所有客户端立即切换到新分支视图，
+        // 旧分支的上一条回答随即从界面消失，无需等本轮跑完
+        if is_fork {
+            self.broadcast(AgentEvent::ActiveBranchChanged {
+                current_leaf_id: user_msg_id.clone(),
+            });
         }
 
         // 2. 循环与模型交互并驱动工具调用
