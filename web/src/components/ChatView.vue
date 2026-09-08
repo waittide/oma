@@ -100,9 +100,7 @@ function userText(id: string): string {
   return b && b.type === 'text' ? b.text : '';
 }
 
-const agentOptions = computed(() =>
-  chat.agents.value.map((a) => ({ value: a.id, label: a.name, hint: a.description }))
-);
+const agentOptions = computed(() => chat.agents.value.map((a) => ({ value: a.id, label: a.name })));
 
 const mcpToolTotal = computed(() =>
   chat.mcpServers.value.reduce((sum, s) => sum + s.tool_count, 0)
