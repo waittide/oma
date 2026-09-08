@@ -770,6 +770,16 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         _ => return,
     };
 
+    if params.session_id.trim().is_empty() {
+        let err = ServerMessage::Error {
+            message: "session_id is required".into(),
+        };
+        let _ = socket
+            .send(Message::text(serde_json::to_string(&err).unwrap()))
+            .await;
+        return;
+    }
+
     // 2. 挂载或创建 Room
     let room = match state
         .get_or_create_room(&params.session_id, &params.workspace)
