@@ -406,6 +406,8 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   flex: 1;
   overflow-y: auto;
   padding: 14px 0 8px;
+  /* 两侧对称预留滚动条槽位：滚动条出现时消息列仍与输入框列对齐 */
+  scrollbar-gutter: stable both-edges;
 }
 .hero {
   height: 100%;
