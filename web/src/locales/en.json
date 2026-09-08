@@ -158,7 +158,23 @@
     "navSectionPersonal": "Personal",
     "navSectionService": "Service",
     "themeDesc": "Light uses Latte; dark flavors selectable",
-    "modelId": "Model ID"
+    "modelId": "Model ID",
+    "navSkills": "Skills",
+    "scopeGlobal": "Global",
+    "scopeProject": "Workspace",
+    "scopeBundled": "Built-in",
+    "skillNoWorkspace": "Open a session to manage project skills for its workspace.",
+    "skillsEmpty": "No skills yet. Click Add to create one.",
+    "newSkill": "New Skill",
+    "editSkill": "Edit Skill",
+    "scopeLabel": "Scope",
+    "skillId": "Identifier",
+    "skillDesc": "Description",
+    "skillTools": "Tools (comma separated, empty = all)",
+    "skillContent": "Prompt content (Markdown)",
+    "skillReadonly": "Built-in skills are read-only; save as a new skill instead.",
+    "skillSaved": "Skill saved",
+    "skillDeleted": "Skill deleted"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"

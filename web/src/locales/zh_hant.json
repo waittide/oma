@@ -158,7 +158,23 @@
     "navSectionPersonal": "個人化",
     "navSectionService": "服務",
     "themeDesc": "淺色固定 Latte，深色可選風味",
-    "modelId": "模型 ID"
+    "modelId": "模型 ID",
+    "navSkills": "技能",
+    "scopeGlobal": "全域",
+    "scopeProject": "工作區",
+    "scopeBundled": "內建",
+    "skillNoWorkspace": "選擇一個會話後可管理該工作區的專案技能。",
+    "skillsEmpty": "暫無技能，點擊「新增」建立。",
+    "newSkill": "新建技能",
+    "editSkill": "編輯技能",
+    "scopeLabel": "作用域",
+    "skillId": "標識符",
+    "skillDesc": "描述",
+    "skillTools": "可用工具（逗號分隔，留空表示全部）",
+    "skillContent": "提示詞內容（Markdown）",
+    "skillReadonly": "內建技能唯讀，可另存為新技能。",
+    "skillSaved": "技能已儲存",
+    "skillDeleted": "技能已刪除"
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"

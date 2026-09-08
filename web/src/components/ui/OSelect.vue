@@ -16,8 +16,9 @@ const props = withDefaults(
     placeholder?: string;
     width?: string;
     align?: 'start' | 'end';
+    disabled?: boolean;
   }>(),
-  { placeholder: undefined, width: '100%', align: 'start' },
+  { placeholder: undefined, width: '100%', align: 'start', disabled: false },
 );
 
 const emit = defineEmits<{ 'update:modelValue': [T] }>();
@@ -90,7 +91,7 @@ watch(open, async (v) => {
 
 <template>
   <div ref="root" class="o-select" :style="{ width }">
-    <button type="button" class="trigger" @click="toggle">
+    <button type="button" class="trigger" :class="{ disabled }" :disabled="disabled" @click="toggle">
       <span class="label" :class="{ empty: !current }">
         {{ current?.label ?? placeholder ?? t('placeholder') }}
       </span>
@@ -146,6 +147,10 @@ watch(open, async (v) => {
 }
 .trigger:hover {
   border-color: var(--overlay0);
+}
+.trigger.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .label {
   overflow: hidden;

@@ -81,6 +81,16 @@ export type AgentEvent =
   | { type: 'messages_deleted'; data?: { deleted_ids: string[]; current_leaf_id: string | null } }
   | { type: 'error'; data?: { message: string } };
 
+/** 技能（Agent 模板）文件条目；scope = bundled | global | project */
+export interface SkillFile {
+  id: string;
+  name: string;
+  description: string;
+  tools: string[];
+  scope: string;
+  content: string;
+}
+
 export interface Ready {
   version: string;
   session_id: string;

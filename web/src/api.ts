@@ -3,6 +3,7 @@ import type {
   OmaConfig,
   ServerStatus,
   SessionRecord,
+  SkillFile,
 } from './types';
 
 /** 鉴权 Token：优先 URL ?token=，其次 localStorage。 */
@@ -75,7 +76,34 @@ export const api = {
       `/api/sessions/${id}/messages/${messageId}`,
       { method: 'DELETE' },
     ),
+  skills: (workspace?: string) =>
+    request<SkillFile[]>(
+      `/api/skills${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,
+    ),
 
+  getSkill: (id: string, workspace?: string) =>
+    request<SkillFile>(
+      `/api/skills/${id}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,
+    ),
+
+  putSkill: (
+    id: string,
+    body: { name: string; description: string; tools: string[]; content: string; scope: string },
+    workspace?: string,
+  ) =>
+    request<{ success: boolean; path: string }>(
+      `/api/skills/${id}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+
+  deleteSkill: (id: string, scope: string, workspace?: string) => {
+    const qs = new URLSearchParams({ scope });
+    if (workspace) qs.set('workspace', workspace);
+    return request<{ success: boolean }>(
+      `/api/skills/${id}?${qs.toString()}`,
+      { method: 'DELETE' },
+    );
+  },
   messages: (id: string, leafId?: string | null) => {
     const q = leafId ? `?leaf_id=${encodeURIComponent(leafId)}` : '';
     return request<ChatMessage[]>(`/api/sessions/${id}/messages${q}`);

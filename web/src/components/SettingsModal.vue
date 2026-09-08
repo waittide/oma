@@ -8,6 +8,7 @@ import {
   LuPalette,
   LuPlus,
   LuServer,
+  LuSparkles,
   LuSquareUserRound,
   LuTrash2,
 } from 'vue-icons-plus/lu';
@@ -23,7 +24,8 @@ import OModelSelect from './ui/OModelSelect.vue';
 import { ACCENTS, config, loadConfig, saveConfig, saveTheme, theme } from '../stores/theme';
 import { agents } from '../stores/chat';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
-import type { AgentSummary, ModelInfo, OmaConfig, ProviderConfig, Theme } from '../types';
+import { activeSession } from '../stores/sessions';
+import type { AgentSummary, ModelInfo, OmaConfig, ProviderConfig, SkillFile, Theme } from '../types';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ open: boolean }>();
@@ -32,7 +34,7 @@ const emit = defineEmits<{ close: [] }>();
 const { t } = useTranslations('settings');
 const { t: tc } = useTranslations('common');
 
-type SectionId = 'theme' | 'language' | 'defaults' | 'providers';
+type SectionId = 'theme' | 'language' | 'defaults' | 'providers' | 'skills';
 const section = ref<SectionId>('theme');
 
 /** 参照 opencode 设置弹窗：导航按分组小标题聚类，底部展示应用版本。 */
@@ -49,6 +51,7 @@ const navGroups = computed(() => [
     items: [
       { id: 'defaults' as SectionId, label: t('navDefaults'), icon: LuSquareUserRound },
       { id: 'providers' as SectionId, label: t('navProviders'), icon: LuServer },
+      { id: 'skills' as SectionId, label: t('navSkills'), icon: LuSparkles },
     ],
   },
 ]);
@@ -142,6 +145,119 @@ const agentOptions = computed<{ value: string; label: string }[]>(() => {
     : BUILTIN_AGENTS.map((id) => ({ id, name: id, description: '' }));
   return list.map((a) => ({ value: a.id, label: a.name }));
 });
+
+// ---------- 技能（多工作区：全局作用域 + 当前会话工作区作用域） ----------
+type SkillScope = 'global' | 'project';
+const skillScope = ref<SkillScope>('global');
+const skills = ref<SkillFile[]>([]);
+const skillsLoading = ref(false);
+const skillWorkspace = computed(() => activeSession.value?.workspace ?? '');
+
+const skillScopeOptions = computed(() => [
+  { value: 'global' as SkillScope, label: t('scopeGlobal') },
+  { value: 'project' as SkillScope, label: t('scopeProject') },
+]);
+
+async function loadSkills() {
+  skillsLoading.value = true;
+  try {
+    const ws = skillScope.value === 'project' ? skillWorkspace.value : '';
+    skills.value = await api.skills(ws);
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  } finally {
+    skillsLoading.value = false;
+  }
+}
+
+watch(
+  () => [props.open, section.value, skillScope.value] as const,
+  ([o, s]) => {
+    if (o && s === 'skills') void loadSkills();
+  },
+);
+
+const skillEdit = reactive({
+  open: false,
+  isNew: false,
+  readonly: false,
+  id: '',
+  name: '',
+  description: '',
+  toolsText: '',
+  content: '',
+  scope: 'global' as SkillScope,
+});
+
+function scopeLabel(scope: string): string {
+  if (scope === 'bundled') return t('scopeBundled');
+  return scope === 'project' ? t('scopeProject') : t('scopeGlobal');
+}
+
+function editSkill(s: SkillFile) {
+  skillEdit.open = true;
+  skillEdit.isNew = false;
+  skillEdit.readonly = s.scope === 'bundled';
+  skillEdit.id = s.id;
+  skillEdit.name = s.name;
+  skillEdit.description = s.description;
+  skillEdit.toolsText = s.tools.join(', ');
+  skillEdit.content = s.content;
+  skillEdit.scope = s.scope === 'bundled' ? skillScope.value : (s.scope as SkillScope);
+}
+
+function newSkill() {
+  skillEdit.open = true;
+  skillEdit.isNew = true;
+  skillEdit.readonly = false;
+  skillEdit.id = '';
+  skillEdit.name = '';
+  skillEdit.description = '';
+  skillEdit.toolsText = '';
+  skillEdit.content = '';
+  skillEdit.scope = skillScope.value;
+}
+
+async function saveSkill() {
+  const id = skillEdit.id.trim();
+  if (skillEdit.scope === 'project' && !skillWorkspace.value) {
+    toast.error(t('skillNoWorkspace'));
+    return;
+  }
+  try {
+    await api.putSkill(
+      id,
+      {
+        name: skillEdit.name.trim() || id,
+        description: skillEdit.description.trim(),
+        tools: skillEdit.toolsText.split(',').map((x) => x.trim()).filter(Boolean),
+        content: skillEdit.content,
+        scope: skillEdit.scope,
+      },
+      skillEdit.scope === 'project' ? skillWorkspace.value : '',
+    );
+    skillEdit.open = false;
+    toast.success(t('skillSaved'));
+    await loadSkills();
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  }
+}
+
+async function removeSkill() {
+  try {
+    await api.deleteSkill(
+      skillEdit.id,
+      skillEdit.scope,
+      skillEdit.scope === 'project' ? skillWorkspace.value : '',
+    );
+    skillEdit.open = false;
+    toast.success(t('skillDeleted'));
+    await loadSkills();
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  }
+}
 
 // ---------- 模型提供商（草稿编辑，保存时统一校验与写回） ----------
 interface ModelDraft {
@@ -643,11 +759,100 @@ function pickLocale(v: Locale) {
           <p v-if="providerDrafts.length === 0" class="muted">{{ t('providersEmpty') }}</p>
         </section>
 
+        <!-- 技能 -->
+        <section v-else-if="section === 'skills'" class="pane">
+          <div class="pane-head">
+            <h2 class="pane-title">{{ t('navSkills') }}</h2>
+            <div class="pane-actions inline">
+              <ORadio v-model="skillScope" :options="skillScopeOptions" />
+              <OButton size="sm" variant="soft" @click="newSkill">{{ t('add') }}</OButton>
+            </div>
+          </div>
+          <p v-if="skillScope === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
+          <div class="list">
+            <div
+              v-for="s in skills"
+              :key="s.scope + '/' + s.id"
+              class="srow skill-row"
+              role="button"
+              @click="editSkill(s)"
+            >
+              <div class="srow-main">
+                <span class="srow-title">
+                  {{ s.name }}
+                  <span class="scope-tag" :class="'scope-' + s.scope">{{ scopeLabel(s.scope) }}</span>
+                </span>
+                <span class="srow-desc">{{ s.description || s.id }}</span>
+              </div>
+            </div>
+            <div v-if="skills.length === 0 && !skillsLoading" class="srow">
+              <span class="srow-desc">{{ t('skillsEmpty') }}</span>
+            </div>
+          </div>
+        </section>
+
         <section v-else-if="section === 'defaults' || section === 'providers'" class="pane">
           <p class="muted">{{ t('configUnavailable') }}</p>
         </section>
       </div>
     </div>
+  </OModal>
+
+  <OModal
+    :open="skillEdit.open"
+    :title="skillEdit.isNew ? t('newSkill') : t('editSkill')"
+    width="640px"
+    @close="skillEdit.open = false"
+  >
+    <div class="skill-form">
+      <div class="sk-grid">
+        <div class="field">
+          <label>{{ t('skillId') }}</label>
+          <OInput v-model="skillEdit.id" :disabled="!skillEdit.isNew" placeholder="my-skill" />
+        </div>
+        <div class="field">
+          <label>{{ t('scopeLabel') }}</label>
+          <OSelect
+            v-model="skillEdit.scope"
+            :options="[{ value: 'global', label: t('scopeGlobal') }, { value: 'project', label: t('scopeProject') }]"
+            :disabled="!skillEdit.isNew"
+          />
+        </div>
+      </div>
+      <div class="field">
+        <label>{{ t('modelName') }}</label>
+        <OInput v-model="skillEdit.name" />
+      </div>
+      <div class="field">
+        <label>{{ t('skillDesc') }}</label>
+        <OInput v-model="skillEdit.description" />
+      </div>
+      <div class="field">
+        <label>{{ t('skillTools') }}</label>
+        <OInput v-model="skillEdit.toolsText" placeholder="read, write, shell" />
+      </div>
+      <div class="field">
+        <label>{{ t('skillContent') }}</label>
+        <div class="skill-content-box">
+          <textarea v-model="skillEdit.content" rows="12" spellcheck="false" :disabled="skillEdit.readonly" />
+        </div>
+        <p v-if="skillEdit.readonly" class="muted">{{ t('skillReadonly') }}</p>
+      </div>
+    </div>
+    <template #footer>
+      <OButton
+        v-if="!skillEdit.isNew && !skillEdit.readonly"
+        variant="danger"
+        size="sm"
+        @click="removeSkill"
+      >
+        {{ tc('delete') }}
+      </OButton>
+      <OButton variant="ghost" size="sm" @click="skillEdit.open = false">{{ tc('cancel') }}</OButton>
+      <OButton variant="primary" size="sm" :disabled="skillEdit.readonly || !skillEdit.id.trim() || (skillEdit.scope === 'project' && !skillWorkspace)" @click="saveSkill">
+        {{ tc('save') }}
+      </OButton>
+    </template>
   </OModal>
 
   <OModal :open="showProvider" :title="t('newProvider')" width="400px" @close="showProvider = false">
@@ -800,6 +1005,53 @@ function pickLocale(v: Locale) {
 }
 .srow-ctl.wide {
   flex-shrink: 1;
+}
+.scope-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 7px;
+  border-radius: 99px;
+  font-size: 10.5px;
+  font-weight: 500;
+  vertical-align: 1px;
+  background: var(--surface-strong);
+  color: var(--overlay1);
+}
+.scope-tag.scope-project {
+  background: var(--surface-active);
+  color: var(--accent);
+}
+.skill-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sk-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.skill-content-box {
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.skill-content-box:focus-within {
+  border-color: var(--accent);
+}
+.skill-content-box textarea {
+  display: block;
+  width: 100%;
+  min-height: 220px;
+  padding: 10px 12px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  resize: vertical;
 }
 /* 强调色点阵：两行各 7 个，整齐排列；悬停经 OTooltip 显示名称 */
 .dots {
