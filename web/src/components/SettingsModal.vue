@@ -762,7 +762,6 @@ function pickLocale(v: Locale) {
       <div class="content">
         <!-- 外观 -->
         <section v-if="section === 'theme'" class="pane">
-          <h2 class="pane-title">{{ t('navTheme') }}</h2>
           <div class="list">
             <div class="srow">
               <div class="srow-main">
@@ -841,7 +840,6 @@ function pickLocale(v: Locale) {
 
         <!-- 语言 -->
         <section v-else-if="section === 'language'" class="pane">
-          <h2 class="pane-title">{{ t('navLanguage') }}</h2>
           <div class="list">
             <div class="srow">
               <div class="srow-main">
@@ -861,7 +859,6 @@ function pickLocale(v: Locale) {
 
         <!-- 默认参数 -->
         <section v-else-if="section === 'defaults' && config" class="pane">
-          <h2 class="pane-title">{{ t('navDefaults') }}</h2>
           <div class="list">
             <div class="srow">
               <div class="srow-main">
@@ -1282,9 +1279,10 @@ function pickLocale(v: Locale) {
   overflow-y: auto;
   padding: 22px 28px 28px;
 }
-/* 参照 opencode：内容栏限宽、扁平行 + 细分隔线，不用卡片嵌套 */
+/* 参照 opencode：内容栏限宽并居中（左右间距对称），扁平行 + 细分隔线 */
 .pane {
   max-width: 640px;
+  margin: 0 auto;
 }
 .pane-head {
   display: flex;
@@ -1303,6 +1301,7 @@ function pickLocale(v: Locale) {
 }
 .pane-actions {
   display: flex;
+  justify-content: flex-end;
   gap: 8px;
   margin-top: 14px;
 }
