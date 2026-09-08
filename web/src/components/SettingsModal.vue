@@ -586,36 +586,30 @@ function inputTypeLabel(ty: string): string {
   return t(INPUT_TYPE_LABELS[ty] ?? ty);
 }
 
-const showProvider = ref(false);
-const providerId = ref('');
+
+/** 当前展示的提供商 tab；草稿列表变化时兜底选中第一个 */
+const activeProviderUid = ref<number | null>(null);
+const activeDraft = computed(() => providerDrafts.value.find((d) => d.uid === activeProviderUid.value) ?? null);
+watch(providerDrafts, (list) => {
+  if (!list.some((d) => d.uid === activeProviderUid.value)) {
+    activeProviderUid.value = list[0]?.uid ?? null;
+  }
+});
 
 function addProvider() {
-  providerId.value = '';
-  showProvider.value = true;
-}
-
-function confirmProvider() {
-  const id = providerId.value.trim();
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) {
-    toast.error(t('providerNameRule'));
-    return;
-  }
-  if (providerDrafts.value.some((d) => d.name === id)) {
-    toast.error(t('providerExists'));
-    return;
-  }
-  providerDrafts.value.push({
+  const draft: ProviderDraft = {
     uid: ++uidSeq,
     origId: null,
-    name: id,
+    name: '',
     api_type: 'anthropic',
     base_url: 'https://api.anthropic.com',
     api_key: '',
     headers: {},
     body: {},
     models: [],
-  });
-  showProvider.value = false;
+  };
+  providerDrafts.value.push(draft);
+  activeProviderUid.value = draft.uid;
 }
 
 function removeDraft(index: number) {
@@ -894,21 +888,30 @@ function pickLocale(v: Locale) {
 
         <!-- 模型提供商 -->
         <section v-else-if="section === 'providers' && config" class="pane">
-          <div class="pane-head">
-            <h2 class="pane-title">{{ t('navProviders') }}</h2>
-            <div class="pane-actions inline">
-              <OButton size="sm" variant="soft" @click="addProvider">{{ t('add') }}</OButton>
-              <OButton size="sm" variant="primary" :loading="savingProviders" @click="saveProviders">
-                {{ t('saveAll') }}
-              </OButton>
+          <div class="tabs-row">
+            <div class="tabs">
+              <button
+                v-for="d in providerDrafts"
+                :key="d.uid"
+                type="button"
+                class="tab"
+                :class="{ active: d.uid === activeProviderUid }"
+                @click="activeProviderUid = d.uid"
+              >
+                {{ d.name || t('providerName') }}
+              </button>
             </div>
+            <OButton size="sm" variant="soft" @click="addProvider">
+              <template #icon><LuPlus :size="13" /></template>
+              {{ t('addProvider') }}
+            </OButton>
           </div>
 
-          <div v-for="(d, pi) in providerDrafts" :key="d.uid" class="prov">
+          <div v-for="(d, pi) in activeDraft ? [activeDraft] : []" :key="d.uid" class="prov">
             <div class="prov-head">
               <OInput v-model="d.name" class="prov-name" :placeholder="t('providerName')" />
               <OTooltip :label="tc('delete')" align="end">
-                <button type="button" class="m-del" :aria-label="tc('delete')" @click="removeDraft(pi)">
+                <button type="button" class="m-del" :aria-label="tc('delete')" @click="removeDraft(providerDrafts.indexOf(d))">
                   <LuTrash2 :size="14" />
                 </button>
               </OTooltip>
@@ -1004,6 +1007,11 @@ function pickLocale(v: Locale) {
           </div>
 
           <p v-if="providerDrafts.length === 0" class="muted">{{ t('providersEmpty') }}</p>
+          <div class="pane-actions">
+            <OButton variant="primary" size="sm" :loading="savingProviders" @click="saveProviders">
+              {{ t('saveAll') }}
+            </OButton>
+          </div>
         </section>
 
         <!-- 技能 -->
@@ -1194,16 +1202,6 @@ function pickLocale(v: Locale) {
     </template>
   </OModal>
 
-  <OModal :open="showProvider" :title="t('newProvider')" width="400px" @close="showProvider = false">
-    <div class="grid one">
-      <label>{{ t('providerName') }}</label>
-      <OInput v-model="providerId" placeholder="my_anthropic" autofocus @enter="confirmProvider" />
-    </div>
-    <template #footer>
-      <OButton variant="ghost" @click="showProvider = false">{{ tc('cancel') }}</OButton>
-      <OButton variant="primary" @click="confirmProvider">{{ t('add') }}</OButton>
-    </template>
-  </OModal>
 </template>
 
 <style scoped>
@@ -1295,6 +1293,47 @@ function pickLocale(v: Locale) {
   font-size: 15px;
   font-weight: 600;
   color: var(--ink);
+}
+.tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 2px;
+  background: var(--surface);
+  border-radius: 8px;
+}
+.tab {
+  flex-shrink: 0;
+  padding: 5px 11px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+.tab:hover {
+  color: var(--ink);
+}
+.tab.active {
+  background: var(--surface-strong);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px var(--shadow);
 }
 .pane-head .pane-title {
   margin-bottom: 0;

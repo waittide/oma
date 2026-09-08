@@ -85,7 +85,7 @@
   "settings": {
     "title": "设置",
     "navDefaults": "默认参数",
-    "navProviders": "模型提供商",
+    "navProviders": "提供商",
     "navLanguage": "语言",
     "languageLabel": "界面语言",
     "navTheme": "外观",
@@ -205,7 +205,8 @@
     "themeReset": "重置为基底",
     "themeNameRequired": "主题名称不能为空",
     "themeDeleted": "主题已删除",
-    "edit": "编辑"
+    "edit": "编辑",
+    "addProvider": "添加提供商"
   },
   "app": {
     "title": "Oma - 多端协同 AI Agent 工作台"

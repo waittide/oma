@@ -205,7 +205,8 @@
     "themeReset": "Reset to base",
     "themeNameRequired": "Theme name is required",
     "themeDeleted": "Theme deleted",
-    "edit": "Edit"
+    "edit": "Edit",
+    "addProvider": "Add provider"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"
