@@ -48,10 +48,11 @@ watch(activeSessionId, () => {
 });
 
 watch(
-  () => [chat.messages.value.length, chat.live.value.text, chat.running.value],
+  () => [chat.messages.value.length, chat.live.value.segments, chat.running.value],
   () => {
     if (stickBottom.value) void nextTick(() => scrollToBottom());
   },
+  { deep: true },
 );
 
 function scrollToBottom() {

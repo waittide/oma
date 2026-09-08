@@ -20,7 +20,7 @@ import type {
 import { tr } from '../composables/i18n';
 import { activeSessionId, applyRemoteRename } from './sessions';
 
-/** 流式轮次缓冲：当前 Turn 的实时块序列。 */
+/** 流式轮次缓冲：按到达顺序排列的实时段（thinking/text/tool 交错）。 */
 export interface LiveTool {
   call_id: string;
   name: string;
@@ -30,14 +30,19 @@ export interface LiveTool {
   done: boolean;
 }
 
+export type LiveSegment =
+  | { kind: 'thinking'; key: string; text: string }
+  | { kind: 'text'; key: string; text: string }
+  | { kind: 'tool'; key: string; tool: LiveTool };
+
 export interface LiveTurn {
-  thinking: string;
-  text: string;
-  tools: LiveTool[];
+  segments: LiveSegment[];
 }
 
+let liveSeq = 0;
+
 function emptyLive(): LiveTurn {
-  return { thinking: '', text: '', tools: [] };
+  return { segments: [] };
 }
 
 export const connected = ref(false);
@@ -105,21 +110,28 @@ function handleEvent(ev: AgentEvent) {
       running.value = true;
       live.value = emptyLive();
       break;
-    case 'thinking_delta':
-      live.value.thinking += ev.data?.delta ?? '';
+    case 'thinking_delta': {
+      // 同类段连续则续写，否则新开一段，保持与真实到达顺序一致
+      const last = live.value.segments[live.value.segments.length - 1];
+      if (last && last.kind === 'thinking') last.text += ev.data?.delta ?? '';
+      else live.value.segments.push({ kind: 'thinking', key: `th${liveSeq++}`, text: ev.data?.delta ?? '' });
       break;
-    case 'text_delta':
-      live.value.text += ev.data?.delta ?? '';
+    }
+    case 'text_delta': {
+      const last = live.value.segments[live.value.segments.length - 1];
+      if (last && last.kind === 'text') last.text += ev.data?.delta ?? '';
+      else live.value.segments.push({ kind: 'text', key: `tx${liveSeq++}`, text: ev.data?.delta ?? '' });
       break;
+    }
     case 'tool_call_started':
-      if (ev.data) live.value.tools.push({ ...ev.data, done: false });
+      if (ev.data) live.value.segments.push({ kind: 'tool', key: ev.data.call_id, tool: { ...ev.data, done: false } });
       break;
     case 'tool_call_finished': {
-      const t = live.value.tools.find((x) => x.call_id === ev.data?.call_id);
-      if (t && ev.data) {
-        t.output = ev.data.output;
-        t.is_error = ev.data.is_error;
-        t.done = true;
+      const seg = live.value.segments.find((s) => s.kind === 'tool' && s.tool.call_id === ev.data?.call_id);
+      if (seg && seg.kind === 'tool' && ev.data) {
+        seg.tool.output = ev.data.output;
+        seg.tool.is_error = ev.data.is_error;
+        seg.tool.done = true;
       }
       break;
     }
@@ -193,11 +205,12 @@ function handleEvent(ev: AgentEvent) {
 function applyCatchUp(c: ActiveTurnCatchUp | null) {
   if (!c) return;
   running.value = true;
-  live.value = {
-    thinking: c.accumulated_thinking,
-    text: c.accumulated_text,
-    tools: c.active_tool_call ? [{ ...c.active_tool_call, done: false }] : [],
-  };
+  // catch-up 快照不含到达顺序，按 thinking → text → 活动工具 重建
+  const segments: LiveSegment[] = [];
+  if (c.accumulated_thinking) segments.push({ kind: 'thinking', key: 'cu-th', text: c.accumulated_thinking });
+  if (c.accumulated_text) segments.push({ kind: 'text', key: 'cu-tx', text: c.accumulated_text });
+  if (c.active_tool_call) segments.push({ kind: 'tool', key: c.active_tool_call.call_id, tool: { ...c.active_tool_call, done: false } });
+  live.value = { segments };
   pendingApproval.value = c.pending_approval ?? null;
 }
 
@@ -355,22 +368,24 @@ export function isInternalMessage(m: ChatMessage): boolean {
   );
 }
 
-/** 渲染序列：持久化消息 + 流式缓冲块。 */
+/** 渲染序列：流式缓冲按到达顺序展开为块。 */
 export const renderBlocks = computed<Block[]>(() => {
   const out: Block[] = [];
   const l = live.value;
-  if (!running.value && l.thinking === '' && l.text === '' && l.tools.length === 0) return out;
-  if (l.thinking) out.push({ type: 'thinking', thinking: l.thinking });
-  if (l.text) out.push({ type: 'text', text: l.text });
-  for (const t of l.tools) {
-    out.push({ type: 'tool_use', id: t.call_id, name: t.name, input: t.input });
-    if (t.done) {
-      out.push({
-        type: 'tool_result',
-        tool_use_id: t.call_id,
-        content: t.output ?? '',
-        is_error: !!t.is_error,
-      });
+  if (!running.value && l.segments.length === 0) return out;
+  for (const seg of l.segments) {
+    if (seg.kind === 'thinking') out.push({ type: 'thinking', thinking: seg.text });
+    else if (seg.kind === 'text') out.push({ type: 'text', text: seg.text });
+    else {
+      out.push({ type: 'tool_use', id: seg.tool.call_id, name: seg.tool.name, input: seg.tool.input });
+      if (seg.tool.done) {
+        out.push({
+          type: 'tool_result',
+          tool_use_id: seg.tool.call_id,
+          content: seg.tool.output ?? '',
+          is_error: !!seg.tool.is_error,
+        });
+      }
     }
   }
   return out;
