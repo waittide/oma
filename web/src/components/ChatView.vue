@@ -7,6 +7,7 @@ import {
   LuBot,
   LuCheck,
   LuGitBranch,
+  LuListTree,
   LuPlus,
   LuLoader,
   LuPencil,
@@ -21,7 +22,8 @@ import OTooltip from './ui/OTooltip.vue';
 import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
 import OButton from './ui/OButton.vue';
-import type { ApprovalMode, ChatMessage } from '../types';
+import HistoryTree from './HistoryTree.vue';
+import type { ApprovalMode } from '../types';
 import * as chat from '../stores/chat';
 import { activeSession, activeSessionId, requestNewSession } from '../stores/sessions';
 import { useTranslations } from '../composables/i18n';
@@ -32,6 +34,7 @@ const emit = defineEmits<{ needSettings: [] }>();
 const { t } = useTranslations('chat');
 const { t: tc } = useTranslations('common');
 const { t: ta } = useTranslations('approval');
+const treeOpen = ref(false);
 
 const draft = ref('');
 /** 非空表示下一条发送将从该消息处分叉重跑（编辑重发）。 */
@@ -117,46 +120,8 @@ const approvalOptions = computed<{ value: ApprovalMode; label: string }[]>(() =>
   { value: 'auto', label: ta('auto') },
 ]);
 
-function textOf(m: ChatMessage): string {
-  const b = m.content.find((c) => c.type === 'text');
-  return b && b.type === 'text' ? b.text : '';
-}
-
-function tipOf(startId: string): string {
-  // 从分支起点向下沿唯一后继走到叶子（供 switch_branch 使用）
-  const byParent: Record<string, ChatMessage[]> = {};
-  for (const m of chat.tree.value) (byParent[m.parent_id ?? '__root__'] ??= []).push(m);
-  let cur = startId;
-  for (;;) {
-    const kids = (byParent[cur] ?? []).sort((a, b) => a.created_at - b.created_at);
-    if (kids.length === 0) return cur;
-    cur = kids[kids.length - 1]!.id;
-  }
-}
-
-/** 当前分支链上每个 user 节点的分支组（兄弟含自身），用于切换激活分支。 */
-const branchGroups = computed(() => {
-  const byParent: Record<string, ChatMessage[]> = {};
-  for (const m of chat.tree.value) {
-    if (m.role !== 'user') continue;
-    (byParent[m.parent_id ?? '__root__'] ??= []).push(m);
-  }
-  const out: Record<string, { value: string; label: string }[]> = {};
-  for (const m of chat.messages.value) {
-    if (m.role !== 'user') continue;
-    const sibs = byParent[m.parent_id ?? '__root__'] ?? [];
-    if (sibs.length < 2) continue;
-    out[m.id] = sibs.map((s, i) => ({ value: s.id, label: textOf(s).slice(0, 18) || t('branchN', { index: i + 1 }) }));
-  }
-  return out;
-});
-
-function switchBranch(startId: string) {
-  chat.switchBranch(tipOf(startId));
-  stickBottom.value = true;
-}
-
 const isEmpty = computed(() => chat.messages.value.length === 0 && !chat.running.value);
+
 const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0);
 </script>
 
@@ -183,6 +148,11 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
             <LuPlug :size="11" />
             {{ mcpToolTotal }}
           </span>
+        </OTooltip>
+        <OTooltip :label="t('historyTree')" align="end" placement="bottom">
+          <button type="button" class="icon-ghost" :aria-label="t('historyTree')" @click="treeOpen = true">
+            <LuListTree :size="14" />
+          </button>
         </OTooltip>
       </div>
     </header>
@@ -240,14 +210,6 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
               >
                 <LuTrash2 :size="11" /> {{ t('delete') }}
               </button>
-              <OSelect
-                v-if="branchGroups[m.id]"
-                :model-value="m.id"
-                :options="branchGroups[m.id]!"
-                :placeholder="t('branch')"
-                width="128px"
-                @update:model-value="switchBranch"
-              />
             </div>
           </template>
           <template v-else>
@@ -343,6 +305,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
         </div>
       </div>
     </footer>
+    <HistoryTree :open="treeOpen" @close="treeOpen = false" />
   </div>
 </template>
 
@@ -412,6 +375,25 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   color: var(--text-tertiary);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+.icon-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.icon-ghost:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
 }
 .dot.off {
   background: var(--overlay0);

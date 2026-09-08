@@ -42,8 +42,7 @@
     "editResend": "Edit & Resend",
     "editResendHint": "Edit and fork a new branch from here",
     "editResendBanner": "Edit & resend: will fork a new branch from the previous message",
-    "branch": "Branch",
-    "branchN": "Branch {index}",
+    "historyTree": "History tree",
     "placeholder": "Type a message. Enter to send, Shift+Enter for newline",
     "placeholderNoSession": "Select or create a session first",
     "stop": "Stop",
@@ -214,5 +213,12 @@
   "modelSelect": {
     "placeholder": "Select model",
     "empty": "No models available"
+  },
+  "historyTree": {
+    "title": "History Tree",
+    "empty": "No messages yet",
+    "toolCall": "Tool call: {name}",
+    "imageBlock": "[image]",
+    "emptySnippet": "(empty)"
   }
 }
