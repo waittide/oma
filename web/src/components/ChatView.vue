@@ -8,6 +8,7 @@ import {
   LuGitBranch,
   LuLoader,
   LuPencil,
+  LuPlug,
   LuSend,
   LuSquare,
   LuTrash2,
@@ -17,6 +18,7 @@ import {
 } from 'vue-icons-plus/lu';
 import OButton from './ui/OButton.vue';
 import OModelSelect from './ui/OModelSelect.vue';
+import OTooltip from './ui/OTooltip.vue';
 import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
 import type { ApprovalMode, ChatMessage } from '../types';
@@ -97,7 +99,18 @@ function userText(id: string): string {
   return b && b.type === 'text' ? b.text : '';
 }
 
-const agentOptions = computed(() => chat.agents.value.map((a) => ({ value: a.id, label: a.name })));
+const agentOptions = computed(() =>
+  chat.agents.value.map((a) => ({ value: a.id, label: a.name, hint: a.description }))
+);
+
+const mcpToolTotal = computed(() =>
+  chat.mcpServers.value.reduce((sum, s) => sum + s.tool_count, 0)
+);
+const mcpTip = computed(() =>
+  chat.mcpServers.value
+    .map((s) => `${s.name} (${s.tool_count})`)
+    .join('  ·  ')
+);
 
 const approvalOptions = computed<{ value: ApprovalMode; label: string }[]>(() => [
   { value: 'normal', label: ta('normal') },
@@ -157,6 +170,16 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
       </div>
       <div v-if="activeSessionId" class="top-right">
         <span class="dot" :class="chat.connected.value ? 'ok' : 'off'" />
+        <OTooltip
+          v-if="chat.mcpServers.value.length"
+          :label="mcpTip"
+          align="end"
+        >
+          <span class="mcp-chip">
+            <LuPlug :size="11" />
+            {{ mcpToolTotal }}
+          </span>
+        </OTooltip>
         <OSelect
           v-model="chat.approvalMode.value"
           :options="approvalOptions"
@@ -376,6 +399,19 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
 }
 .dot.ok {
   background: var(--success);
+}
+.mcp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--surface);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 .dot.off {
   background: var(--overlay0);

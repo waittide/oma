@@ -3,6 +3,7 @@ import { toast } from 'vue-sonner';
 import { api, getToken, wsUrl } from '../api';
 import type {
   ActiveTurnCatchUp,
+  McpServerSummary,
   AgentCommand,
   AgentEvent,
   AgentSummary,
@@ -53,6 +54,7 @@ export const activeAgent = ref('');
 export const approvalMode = ref<ApprovalMode>('normal');
 export const providers = ref<Record<string, ModelInfo[]>>({});
 export const agents = ref<AgentSummary[]>([]);
+export const mcpServers = ref<McpServerSummary[]>([]);
 export const lastUsage = ref<TokenUsage | null>(null);
 export const queued = ref(0);
 
@@ -230,6 +232,7 @@ function connect() {
       approvalMode.value = r.approval_mode;
       providers.value = r.providers;
       agents.value = r.agents;
+      mcpServers.value = r.mcp_servers ?? [];
       currentLeafId.value = r.current_leaf_id;
       void reload();
     } else if (msg.kind === 'event') {

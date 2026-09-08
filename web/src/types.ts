@@ -96,6 +96,11 @@ export interface SkillFile {
   content: string;
 }
 
+export interface McpServerSummary {
+  name: string;
+  tool_count: number;
+}
+
 export interface Ready {
   version: string;
   session_id: string;
@@ -106,6 +111,7 @@ export interface Ready {
   current_leaf_id: string | null;
   providers: Record<string, ModelInfo[]>;
   agents: AgentSummary[];
+  mcp_servers: McpServerSummary[];
 }
 
 export type ServerMessage =
