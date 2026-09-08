@@ -6,6 +6,7 @@ import {
   LuEyeOff,
   LuLanguages,
   LuPalette,
+  LuPlug,
   LuPlus,
   LuServer,
   LuSparkles,
@@ -25,7 +26,7 @@ import { ACCENTS, config, loadConfig, saveConfig, saveTheme, theme } from '../st
 import { agents } from '../stores/chat';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
 import { activeSession } from '../stores/sessions';
-import type { AgentSummary, ModelInfo, OmaConfig, ProviderConfig, SkillFile, Theme } from '../types';
+import type { AgentSummary, McpServerConfig, ModelInfo, OmaConfig, ProviderConfig, SkillFile, Theme } from '../types';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ open: boolean }>();
@@ -34,7 +35,7 @@ const emit = defineEmits<{ close: [] }>();
 const { t } = useTranslations('settings');
 const { t: tc } = useTranslations('common');
 
-type SectionId = 'theme' | 'language' | 'defaults' | 'providers' | 'skills';
+type SectionId = 'theme' | 'language' | 'defaults' | 'providers' | 'skills' | 'mcp';
 const section = ref<SectionId>('theme');
 
 /** 参照 opencode 设置弹窗：导航按分组小标题聚类，底部展示应用版本。 */
@@ -52,6 +53,7 @@ const navGroups = computed(() => [
       { id: 'defaults' as SectionId, label: t('navDefaults'), icon: LuSquareUserRound },
       { id: 'providers' as SectionId, label: t('navProviders'), icon: LuServer },
       { id: 'skills' as SectionId, label: t('navSkills'), icon: LuSparkles },
+      { id: 'mcp' as SectionId, label: t('navMcp'), icon: LuPlug },
     ],
   },
 ]);
@@ -152,6 +154,11 @@ const skillScope = ref<SkillScope>('global');
 const skills = ref<SkillFile[]>([]);
 const skillsLoading = ref(false);
 const skillWorkspace = computed(() => activeSession.value?.workspace ?? '');
+
+const mcpKindOptions = [
+  { value: 'local' as const, label: t('mcpKindLocal') },
+  { value: 'remote' as const, label: t('mcpKindRemote') },
+];
 
 const skillScopeOptions = computed(() => [
   { value: 'global' as SkillScope, label: t('scopeGlobal') },
@@ -259,6 +266,101 @@ async function removeSkill() {
   }
 }
 
+// ---------- MCP 服务器（全局配置，保存后 daemon 自动重连） ----------
+interface McpDraft {
+  origName: string | null;
+  name: string;
+  kind: 'local' | 'remote';
+  command: string;
+  argsText: string;
+  envText: string;
+  url: string;
+  headersText: string;
+}
+
+const mcpDrafts = ref<McpDraft[]>([]);
+const savingMcp = ref(false);
+
+function toMcpDraft(name: string, cfg: McpServerConfig): McpDraft {
+  const envText = Object.entries(cfg.type === 'local' ? (cfg.env ?? {}) : {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+  const headersText = Object.entries(cfg.type === 'remote' ? (cfg.headers ?? {}) : {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+  return {
+    origName: name,
+    name,
+    kind: cfg.type,
+    command: cfg.type === 'local' ? cfg.command : '',
+    argsText: cfg.type === 'local' ? (cfg.args ?? []).join(', ') : '',
+    envText,
+    url: cfg.type === 'remote' ? cfg.url : '',
+    headersText,
+  };
+}
+
+function rebuildMcpDrafts() {
+  mcpDrafts.value = config.value
+    ? Object.entries(config.value.mcp_servers).map(([n, c]) => toMcpDraft(n, c))
+    : [];
+}
+
+function parseKvText(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const i = line.indexOf('=');
+    if (i <= 0) continue;
+    const k = line.slice(0, i).trim();
+    const v = line.slice(i + 1).trim();
+    if (k) out[k] = v;
+  }
+  return out;
+}
+
+function addMcpServer() {
+  mcpDrafts.value.push({
+    origName: null,
+    name: '',
+    kind: 'local',
+    command: 'npx',
+    argsText: '-y, @modelcontextprotocol/server-xxx',
+    envText: '',
+    url: 'https://',
+    headersText: '',
+  });
+}
+
+async function saveMcp() {
+  if (!config.value) return;
+  const names = mcpDrafts.value.map((d) => d.name.trim());
+  if (names.some((n) => !n)) {
+    toast.error(t('mcpNameRequired'));
+    return;
+  }
+  if (new Set(names).size !== names.length) {
+    toast.error(t('mcpNameDuplicate'));
+    return;
+  }
+  savingMcp.value = true;
+  try {
+    const mcp_servers: Record<string, McpServerConfig> = {};
+    for (const d of mcpDrafts.value) {
+      mcp_servers[d.name.trim()] =
+        d.kind === 'local'
+          ? { type: 'local', command: d.command.trim(), args: d.argsText.split(',').map((a) => a.trim()).filter(Boolean), env: parseKvText(d.envText) }
+          : { type: 'remote', url: d.url.trim(), headers: parseKvText(d.headersText) };
+    }
+    await saveConfig({ ...config.value, mcp_servers });
+    rebuildMcpDrafts();
+    toast.success(t('mcpSaved'));
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  } finally {
+    savingMcp.value = false;
+  }
+}
+
 // ---------- 模型提供商（草稿编辑，保存时统一校验与写回） ----------
 interface ModelDraft {
   id: string;
@@ -319,6 +421,7 @@ watch(
   () => [props.open, section.value] as const,
   ([o, s]) => {
     if (o && s === 'providers') rebuildDrafts();
+    if (o && s === 'mcp') rebuildMcpDrafts();
   },
 );
 
@@ -789,6 +892,56 @@ function pickLocale(v: Locale) {
               <span class="srow-desc">{{ t('skillsEmpty') }}</span>
             </div>
           </div>
+        </section>
+
+        <!-- MCP 服务器 -->
+        <section v-else-if="section === 'mcp' && config" class="pane">
+          <div class="pane-head">
+            <h2 class="pane-title">{{ t('navMcp') }}</h2>
+            <div class="pane-actions inline">
+              <OButton size="sm" variant="soft" @click="addMcpServer">{{ t('add') }}</OButton>
+              <OButton size="sm" variant="primary" :loading="savingMcp" @click="saveMcp">{{ t('saveAll') }}</OButton>
+            </div>
+          </div>
+          <p class="muted">{{ t('mcpHint') }}</p>
+
+          <div v-for="(d, i) in mcpDrafts" :key="d.origName ?? `mcp-new-${i}`" class="prov">
+            <div class="prov-head">
+              <OInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
+              <ORadio v-model="d.kind" :options="mcpKindOptions" />
+              <button type="button" class="m-del" :title="tc('delete')" @click="mcpDrafts.splice(i, 1)">
+                <LuTrash2 :size="14" />
+              </button>
+            </div>
+            <div class="fields">
+              <template v-if="d.kind === 'local'">
+                <div class="field">
+                  <label>{{ t('mcpCommand') }}</label>
+                  <OInput v-model="d.command" />
+                </div>
+                <div class="field">
+                  <label>{{ t('mcpArgs') }}</label>
+                  <OInput v-model="d.argsText" />
+                </div>
+                <div class="field span2">
+                  <label>{{ t('mcpEnv') }}</label>
+                  <OInput v-model="d.envText" placeholder="KEY=value" />
+                </div>
+              </template>
+              <template v-else>
+                <div class="field span2">
+                  <label>{{ t('mcpUrl') }}</label>
+                  <OInput v-model="d.url" />
+                </div>
+                <div class="field span2">
+                  <label>{{ t('mcpHeaders') }}</label>
+                  <OInput v-model="d.headersText" placeholder="Authorization=Bearer xxx" />
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <p v-if="mcpDrafts.length === 0" class="muted">{{ t('mcpEmpty') }}</p>
         </section>
 
         <section v-else-if="section === 'defaults' || section === 'providers'" class="pane">

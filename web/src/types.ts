@@ -81,6 +81,11 @@ export type AgentEvent =
   | { type: 'messages_deleted'; data?: { deleted_ids: string[]; current_leaf_id: string | null } }
   | { type: 'error'; data?: { message: string } };
 
+/** MCP 服务器配置（与 Rust McpServerConfig 的内部 tag 序列化一致） */
+export type McpServerConfig =
+  | { type: 'local'; command: string; args?: string[]; env?: Record<string, string> }
+  | { type: 'remote'; url: string; headers?: Record<string, string> };
+
 /** 技能（Agent 模板）文件条目；scope = bundled | global | project */
 export interface SkillFile {
   id: string;
@@ -181,7 +186,7 @@ export interface OmaConfig {
   theme: Theme;
   server: { listen_addr: string };
   providers: Record<string, ProviderConfig>;
-  mcp_servers: Record<string, unknown>;
+  mcp_servers: Record<string, McpServerConfig>;
 }
 
 export interface FileNode {

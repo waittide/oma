@@ -174,7 +174,21 @@
     "skillContent": "提示詞內容（Markdown）",
     "skillReadonly": "內建技能唯讀，可另存為新技能。",
     "skillSaved": "技能已儲存",
-    "skillDeleted": "技能已刪除"
+    "skillDeleted": "技能已刪除",
+    "navMcp": "MCP 伺服器",
+    "mcpHint": "設定的 MCP 伺服器在儲存後自動重連，其工具將注入當前會話。",
+    "mcpKindLocal": "本地命令",
+    "mcpKindRemote": "遠端服務",
+    "mcpCommand": "命令",
+    "mcpArgs": "參數（逗號分隔）",
+    "mcpEnv": "環境變數（每行 KEY=value）",
+    "mcpUrl": "服務 URL",
+    "mcpHeaders": "請求標頭（每行 KEY=value）",
+    "mcpNamePlaceholder": "server-name",
+    "mcpEmpty": "尚無 MCP 伺服器，點擊「新增」接入。",
+    "mcpNameRequired": "MCP 伺服器名稱不能為空",
+    "mcpNameDuplicate": "MCP 伺服器名稱重複",
+    "mcpSaved": "MCP 設定已儲存"
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"
