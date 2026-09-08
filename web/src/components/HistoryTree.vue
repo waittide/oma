@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { LuChevronRight } from 'vue-icons-plus/lu';
 import OModal from './ui/OModal.vue';
 import * as chat from '../stores/chat';
 import type { ChatMessage } from '../types';
@@ -12,11 +13,13 @@ const { t } = useTranslations('historyTree');
 
 /** 每个缩进层占 3 个等宽字符（参照 oh-my-pi tree-selector） */
 const LEVEL_CHARS = 3;
+/** 光标槽宽度（字符） */
+const CURSOR_CHARS = 2;
 
 interface Gutter {
   /** 该 gutter 所在的层号 */
   position: number;
-  /** true 绘制 │，false 绘制空格（该层分支已结束） */
+  /** true 绘制竖线，false 表示该层分支已结束 */
   show: boolean;
 }
 
@@ -24,12 +27,12 @@ interface Row {
   msg: ChatMessage;
   /** 显示层号（虚拟根子节点已折算） */
   indent: number;
-  /** 是否绘制连接符（父节点有多个子节点） */
+  /** 是否绘制肘形连接（父节点有多个子节点） */
   connector: boolean;
-  /** 是否为本层最后一个兄弟（└─ 而非 ├─） */
+  /** 是否为本层最后一个兄弟（└ 而非 ├） */
   last: boolean;
-  /** 各祖先分叉点在该行前缀中的竖线 */
-  gutters: Gutter[];
+  /** 需要贯穿本行的竖线层号 */
+  vlines: number[];
   /** 位于当前激活分支上（圆点亮色） */
   active: boolean;
   /** 当前激活叶子（左侧 chevron 标记） */
@@ -46,7 +49,7 @@ function hasText(m: ChatMessage): boolean {
  * 分层与引导线规则对齐 oh-my-pi tree-selector：
  * - 仅父节点分叉（多子）时子节点 indent+1，线性对话保持同层；
  * - 含激活叶子的子树在同级中优先排列；
- * - 祖先分叉点以 gutter 向下传递，非末位兄弟继续画 │。
+ * - 祖先分叉点以 gutter 向下传递，非末位兄弟继续画竖线。
  */
 const rows = computed<Row[]>(() => {
   const activeIds = new Set(chat.messages.value.map((m) => m.id));
@@ -106,7 +109,7 @@ const rows = computed<Row[]>(() => {
       indent: displayIndent,
       connector: connector && !virtualRootChild,
       last,
-      gutters,
+      vlines: gutters.filter((g) => g.show).map((g) => g.position),
       active: activeIds.has(m.id),
       leaf: m.id === leafId,
     });
@@ -129,23 +132,7 @@ const rows = computed<Row[]>(() => {
   return out;
 });
 
-/** 逐字符构建前缀：祖先层竖线 + 本层连接符，每层固定 3 字符 */
-function prefix(r: Row): string {
-  const chars: string[] = [];
-  for (let level = 0; level < r.indent; level++) {
-    const gutter = r.gutters.find((g) => g.position === level);
-    if (gutter) {
-      chars.push(gutter.show ? '│' : ' ', ' ', ' ');
-    } else if (r.connector && level === r.indent - 1) {
-      chars.push(r.last ? '└' : '├', '─', ' ');
-    } else {
-      chars.push(' ', ' ', ' ');
-    }
-  }
-  return chars.join('');
-}
-
-/** 单行摘要：折叠换行与连续空白，避免 pre 行高被撑破 */
+/** 单行摘要：折叠换行与连续空白，避免撑破单行行高 */
 function snippet(m: ChatMessage): string {
   const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
   const text = m.content.find((b) => b.type === 'text' && b.text.trim());
@@ -173,12 +160,28 @@ function pick(m: ChatMessage) {
         type="button"
         class="node"
         :class="{ selected: r.leaf, off: !r.active }"
+        :style="{ paddingLeft: `${CURSOR_CHARS + r.indent * LEVEL_CHARS}ch` }"
         :disabled="chat.running.value"
         @click="pick(r.msg)"
       >
-        <span class="cursor">{{ r.leaf ? '› ' : '  ' }}</span>
-        <span class="prefix">{{ prefix(r) }}</span>
-        <span class="bullet">{{ r.active ? '● ' : '' }}</span>
+        <!-- 光标槽 -->
+        <span v-if="r.leaf" class="cursor"><LuChevronRight :size="12" /></span>
+        <!-- 祖先层竖线：贯穿整行，跨行无缝 -->
+        <span
+          v-for="level in r.vlines"
+          :key="`v${level}`"
+          class="vline"
+          :style="{ left: `${CURSOR_CHARS + level * LEVEL_CHARS}ch` }"
+        />
+        <!-- 本层肘形连接：├ 或 └ -->
+        <span
+          v-if="r.connector && !r.vlines.includes(r.indent - 1)"
+          class="elbow"
+          :class="{ last: r.last }"
+          :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
+        />
+        <!-- 激活分支圆点：固定 2ch 槽位，保证后续文字落在字符网格上 -->
+        <span v-if="r.active" class="bullet"><i /></span>
         <span class="role" :class="r.msg.role">{{ r.msg.role }}:&nbsp;</span>
         <span class="text">{{ snippet(r.msg) }}</span>
       </button>
@@ -195,6 +198,7 @@ function pick(m: ChatMessage) {
   overflow-y: auto;
 }
 .node {
+  position: relative;
   display: flex;
   align-items: center;
   width: 100%;
@@ -223,16 +227,51 @@ function pick(m: ChatMessage) {
   cursor: default;
   opacity: 0.6;
 }
-/* 光标与激活圆点：主题强调色 */
-.cursor,
-.bullet {
+/* 光标槽：固定 2ch，图标居中，不影响文字网格 */
+.cursor {
+  position: absolute;
+  left: 0;
+  width: 2ch;
+  display: flex;
+  align-items: center;
   color: var(--accent);
+}
+/* 圆点槽：固定 2ch，避免 ● 字形回退导致网格偏移 */
+.bullet {
+  display: inline-flex;
+  align-items: center;
+  width: 2ch;
   flex-shrink: 0;
 }
-/* 引导线与连接符：暗色结构 */
-.prefix {
-  color: var(--overlay0);
-  flex-shrink: 0;
+.bullet i {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  background: var(--accent);
+}
+/* 引导线：CSS 绘制并贯穿整行（上下各溢出 1px 消除行间缝隙），
+   不依赖字体字形，跨行连续无断点 */
+.vline,
+.elbow {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 1.5px;
+  background: var(--overlay0);
+  pointer-events: none;
+}
+.elbow.last {
+  bottom: 50%;
+}
+.elbow::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3ch;
+  height: 1.5px;
+  margin-top: -0.75px;
+  background: var(--overlay0);
 }
 .role {
   flex-shrink: 0;
