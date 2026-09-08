@@ -3,24 +3,24 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
 import {
   LuAlertTriangle,
+  LuArrowUp,
   LuBot,
   LuCheck,
   LuGitBranch,
   LuLoader,
   LuPencil,
   LuPlug,
-  LuSend,
   LuSquare,
   LuTrash2,
   LuUser,
   LuX,
   LuZap,
 } from 'vue-icons-plus/lu';
-import OButton from './ui/OButton.vue';
 import OModelSelect from './ui/OModelSelect.vue';
 import OTooltip from './ui/OTooltip.vue';
 import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
+import OButton from './ui/OButton.vue';
 import type { ApprovalMode, ChatMessage } from '../types';
 import * as chat from '../stores/chat';
 import { activeSession, activeSessionId } from '../stores/sessions';
@@ -180,24 +180,6 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
             {{ mcpToolTotal }}
           </span>
         </OTooltip>
-        <OSelect
-          v-model="chat.approvalMode.value"
-          :options="approvalOptions"
-          width="112px"
-          @update:model-value="chat.setApprovalMode"
-        />
-        <OSelect
-          v-model="chat.activeAgent.value"
-          :options="agentOptions"
-          width="120px"
-          @update:model-value="chat.setAgent"
-        />
-        <OModelSelect
-          v-model="chat.activeModel.value"
-          :groups="chat.providers.value"
-          width="180px"
-          @update:model-value="chat.setModel"
-        />
       </div>
     </header>
 
@@ -310,39 +292,51 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
       <div class="box" :class="{ disabled: !activeSessionId || !props.online }">
         <textarea
           v-model="draft"
-          rows="3"
+          rows="2"
           :placeholder="activeSessionId ? t('placeholder') : t('placeholderNoSession')"
           :disabled="!activeSessionId || !props.online"
           @keydown.enter.exact.prevent="send"
         />
-        <div class="c-actions">
-          <OButton
-            v-if="chat.running.value"
-            variant="danger"
-            size="sm"
-            :title="t('stopHint')"
-            @click="cancel"
-          >
-            <template #icon><LuSquare :size="12" /></template>
-            {{ t('stop') }}
-          </OButton>
-          <OButton
-            variant="primary"
-            size="sm"
-            :disabled="!draft.trim() || !activeSessionId || !props.online"
-            :title="t('sendHint')"
-            @click="send"
-          >
-            <template #icon><LuSend :size="13" /></template>
-          </OButton>
+        <div class="c-toolbar">
+          <div class="c-controls">
+            <OSelect
+              v-model="chat.approvalMode.value"
+              :options="approvalOptions"
+              width="96px"
+              @update:model-value="chat.setApprovalMode"
+            />
+            <OSelect
+              v-model="chat.activeAgent.value"
+              :options="agentOptions"
+              width="118px"
+              @update:model-value="chat.setAgent"
+            />
+            <OModelSelect
+              v-model="chat.activeModel.value"
+              :groups="chat.providers.value"
+              width="170px"
+              @update:model-value="chat.setModel"
+            />
+          </div>
+          <div class="c-actions">
+            <OTooltip v-if="chat.running.value" :label="t('stopHint')">
+              <button type="button" class="icon-btn stop" :aria-label="t('stopHint')" @click="cancel">
+                <LuSquare :size="13" />
+              </button>
+            </OTooltip>
+            <OTooltip :label="t('sendHint')">
+              <button
+                type="button"
+                class="icon-btn send"
+                :aria-label="t('sendHint')"
+                :disabled="!draft.trim() || !activeSessionId || !props.online"
+                @click="send"
+              >
+                <LuArrowUp :size="15" />
+              </button>
+            </OTooltip>
+          </div>
         </div>
-      </div>
-      <div class="hint">
-        <LuBot :size="11" />
-        {{ chat.activeModel.value || t('noModel') }} · {{ chat.activeAgent.value || '—' }}
-        <template v-if="chat.lastUsage.value">
-          · {{ t('lastUsage', { input: chat.lastUsage.value.input_tokens, output: chat.lastUsage.value.output_tokens }) }}
-        </template>
       </div>
     </footer>
   </div>
@@ -574,16 +568,15 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
 }
 .box {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 8px 8px 8px 14px;
-  background: var(--surface);
-  border: 1px solid var(--control-border);
-  border-radius: 14px;
-  transition: border-color 0.15s ease;
+  flex-direction: column;
+  min-height: 96px;
+  background: var(--paper);
+  border-radius: 12px;
+  box-shadow: var(--shadow-raised);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 .box:focus-within {
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .box.disabled {
   opacity: 0.6;
@@ -596,27 +589,59 @@ textarea {
   background: transparent;
   color: var(--ink);
   font-family: inherit;
-  font-size: 13.5px;
-  line-height: 1.6;
+  font-size: 13px;
+  line-height: 20px;
   max-height: 180px;
-  padding: 4px 0;
+  padding: 12px 16px 2px;
 }
 textarea::placeholder {
   color: var(--overlay0);
+}
+.c-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 8px 4px;
+}
+.c-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
 }
 .c-actions {
   display: flex;
   gap: 6px;
   align-items: center;
 }
-.hint {
-  display: flex;
+.icon-btn {
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  margin-top: 6px;
-  padding-left: 4px;
-  font-size: 11px;
-  color: var(--overlay0);
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--base);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
+}
+.icon-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.icon-btn.stop {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 .spin {
   animation: rotate 0.9s linear infinite;
