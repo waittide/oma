@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { LuBot, LuGitBranch, LuUser } from 'vue-icons-plus/lu';
+import { LuChevronRight } from 'vue-icons-plus/lu';
 import OModal from './ui/OModal.vue';
 import * as chat from '../stores/chat';
 import type { ChatMessage } from '../types';
@@ -11,33 +11,34 @@ const emit = defineEmits<{ close: [] }>();
 
 const { t } = useTranslations('historyTree');
 
-/** 每层缩进列宽（px） */
-const INDENT = 18;
+/** 左侧 chevron 槽 + 每层列宽（px） */
+const GUTTER = 20;
+const COL = 20;
+
+interface Guide {
+  /** 引导线 x 坐标 */
+  x: number;
+  pos: 'top' | 'mid' | 'bottom' | 'single';
+  /** 是否向右侧画出横向连接（分支首尾行） */
+  stub: boolean;
+}
 
 interface Row {
   msg: ChatMessage;
   /** 层级：主线第一层，自父节点分叉出的子节点整体下移一层 */
   depth: number;
-  /** 各祖先层的竖线是否延续到本行（该层祖先还有后续兄弟） */
-  lines: boolean[];
-  /** 是否为父节点的最后一个子节点（└ 形连接） */
-  last: boolean;
-  /** 是否有父节点（根节点不画连接线） */
-  hasParent: boolean;
-  /** 分叉子节点：绘制肘形连接（├ / └）；否则为同层延续（竖线） */
-  forkChild: boolean;
-  /** 位于当前激活分支上（圆点亮色） */
+  /** 引导线段：仅激活分支绘制 */
+  guides: Guide[];
+  /** 位于当前激活分支上（圆点亮色 + 引导线） */
   active: boolean;
-  /** 当前激活叶子 */
+  /** 当前激活叶子（左侧 chevron 标记） */
   leaf: boolean;
-  /** 分叉点：存在兄弟分支 */
-  branch: boolean;
 }
 
 /**
  * 展平消息树：跳过运行时内部消息（子节点挂到最近可见祖先），按先序排列。
- * 分层规则：父节点只有一个子节点时子节点延续同层（线性对话不逐层缩进）；
- * 父节点分叉（多个子节点）时，其全部子节点整体下移一层。
+ * 分层规则：父节点只有一个子节点时子节点延续同层；父节点分叉时其全部子节点下移一层。
+ * 引导线：每个分叉子节点的子树在父列上画一条竖线，首行 ┌、末行 └，仅激活分支可见。
  */
 const rows = computed<Row[]>(() => {
   const byId = new Map(chat.tree.value.map((m) => [m.id, m]));
@@ -66,37 +67,33 @@ const rows = computed<Row[]>(() => {
   const leafId = chat.messages.value[chat.messages.value.length - 1]?.id ?? null;
 
   const out: Row[] = [];
-  /** cols[col] = 该列当前最近祖先是否为其父的最后一个子节点 */
-  const walk = (
-    list: ChatMessage[],
-    depth: number,
-    parentDepth: number,
-    cols: Map<number, boolean>,
-    isRoot: boolean,
-  ) => {
-    list.forEach((m, idx) => {
-      const last = idx === list.length - 1;
-      const lines: boolean[] = [];
-      for (let l = 0; l < depth; l++) lines.push(cols.get(l) === false);
+  const walk = (list: ChatMessage[], depth: number, parentDepth: number, isRoot: boolean) => {
+    list.forEach((m) => {
+      const start = out.length;
+      const forkChild = !isRoot && depth !== parentDepth;
       out.push({
         msg: m,
         depth,
-        lines,
-        last,
-        hasParent: !isRoot,
-        forkChild: !isRoot && depth !== parentDepth,
+        guides: [],
         active: activeIds.has(m.id),
         leaf: m.id === leafId,
-        branch: list.length > 1,
       });
-      const next = new Map(cols);
-      next.set(depth, last);
-      // 父节点分叉（多个子节点）时子节点整体下移一层，否则延续同层
       const childList = kids.get(m.id) ?? [];
-      walk(childList, childList.length > 1 ? depth + 1 : depth, depth, next, false);
+      walk(childList, childList.length > 1 ? depth + 1 : depth, depth, false);
+
+      // 分叉子节点的整棵子树：在父列上绘制引导线，仅激活分支可见
+      if (forkChild) {
+        const end = out.length - 1;
+        const x = GUTTER + (depth - 1) * COL;
+        for (let j = start; j <= end; j++) {
+          if (!out[j]!.active) continue;
+          const pos = start === end ? 'single' : j === start ? 'top' : j === end ? 'bottom' : 'mid';
+          out[j]!.guides.push({ x, pos, stub: pos !== 'mid' });
+        }
+      }
     });
   };
-  walk(kids.get(null) ?? [], 0, 0, new Map(), true);
+  walk(kids.get(null) ?? [], 0, 0, true);
   return out;
 });
 
@@ -125,36 +122,26 @@ function pick(m: ChatMessage) {
         :key="r.msg.id"
         type="button"
         class="node"
-        :class="{ user: r.msg.role === 'user', active: r.active, leaf: r.leaf, off: !r.active }"
-        :style="{ paddingLeft: `${16 + r.depth * INDENT}px` }"
+        :class="{ leaf: r.leaf, off: !r.active }"
+        :style="{ paddingLeft: `${GUTTER + r.depth * COL + (r.active ? 14 : 0)}px` }"
         :disabled="chat.running.value"
         @click="pick(r.msg)"
       >
-        <template v-for="(on, li) in r.lines" :key="`v${li}`">
-          <span v-if="on" class="vline" :style="{ left: `${li * INDENT + 8.25}px` }" />
-        </template>
+        <LuChevronRight v-if="r.leaf" :size="12" class="chev" />
         <span
-          v-if="r.hasParent && !r.forkChild"
-          class="vline"
-          :style="{ left: `${r.depth * INDENT + 8.25}px` }"
+          v-for="(g, gi) in r.guides"
+          :key="gi"
+          class="gline"
+          :class="[g.pos, { stub: g.stub }]"
+          :style="{ left: `${g.x}px` }"
         />
-        <template v-if="r.forkChild">
-          <span
-            class="stem"
-            :class="{ last: r.last }"
-            :style="{ left: `${r.depth * INDENT + 8.25}px` }"
-          />
-          <span class="stub" :style="{ left: `${r.depth * INDENT + 9}px` }" />
-        </template>
         <span
-          class="dot"
-          :class="{ on: r.active }"
-          :style="{ left: `${r.depth * INDENT + 5.5}px` }"
+          v-if="r.active"
+          class="bullet"
+          :style="{ left: `${GUTTER + r.depth * COL - 3.5}px` }"
         />
-        <LuUser v-if="r.msg.role === 'user'" :size="12" class="n-icon" />
-        <LuBot v-else :size="12" class="n-icon bot" />
+        <span class="role" :class="r.msg.role">{{ r.msg.role }}:</span>
         <span class="n-text">{{ snippet(r.msg) }}</span>
-        <LuGitBranch v-if="r.branch" :size="11" class="b-icon" />
       </button>
       <p v-if="rows.length === 0" class="empty">{{ t('empty') }}</p>
     </div>
@@ -171,82 +158,94 @@ function pick(m: ChatMessage) {
 .node {
   position: relative;
   display: flex;
-  align-items: center;
-  gap: 7px;
+  align-items: baseline;
+  gap: 6px;
   width: 100%;
   border: none;
   background: transparent;
-  padding: 5px 10px 5px 0;
-  border-radius: 7px;
-  font-family: inherit;
-  font-size: 12.5px;
-  color: var(--ink);
+  padding: 3px 8px 3px 0;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
   cursor: pointer;
   text-align: left;
-  transition: background-color 0.12s ease;
+  transition:
+    background-color 0.12s ease,
+    box-shadow 0.12s ease;
 }
 .node:hover:not(:disabled) {
   background: var(--surface-hover);
-}
-.node.active {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-.node.active.leaf {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px var(--control-border);
 }
 .node.off {
-  color: var(--text-tertiary);
+  color: var(--overlay1);
 }
 .node:disabled {
   cursor: default;
   opacity: 0.55;
 }
-/* 树形连接线：祖先层竖线 + 分叉子节点肘形（├ / └），统一暗色结构 */
-.vline,
-.stem {
+/* 激活叶子：左侧 chevron 标记 */
+.chev {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1.5px;
-  background: var(--surface2);
-  pointer-events: none;
-}
-.stem.last {
-  bottom: 50%;
-}
-.stub {
-  position: absolute;
+  left: 2px;
   top: 50%;
-  width: 7px;
-  height: 1.5px;
-  margin-top: -0.75px;
-  background: var(--surface2);
-  pointer-events: none;
+  transform: translateY(-50%);
+  color: var(--peach);
 }
-/* 层级圆点：激活分支亮色，其余暗色；第一层同样有点 */
-.dot {
+/* 激活分支圆点（peach），非激活分支不显示 */
+.bullet {
   position: absolute;
   top: 50%;
   width: 7px;
   height: 7px;
   border-radius: 99px;
   transform: translateY(-50%);
+  background: var(--peach);
+  pointer-events: none;
+}
+/* 引导线：父列竖线，分支首行 ┌、末行 └，仅激活分支绘制 */
+.gline {
+  position: absolute;
+  width: 1.5px;
   background: var(--surface2);
   pointer-events: none;
-  transition:
-    background-color 0.12s ease,
-    box-shadow 0.12s ease;
 }
-.dot.on {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+.gline.top {
+  top: 50%;
+  bottom: 0;
 }
-.n-icon {
+.gline.bottom {
+  top: 0;
+  bottom: 50%;
+}
+.gline.mid,
+.gline.single {
+  top: 0;
+  bottom: 0;
+}
+.gline.stub::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 20px;
+  height: 1.5px;
+  margin-top: -0.75px;
+  background: var(--surface2);
+}
+.role {
   flex-shrink: 0;
-  color: var(--text-tertiary);
 }
-.n-icon.bot {
-  color: var(--accent);
+.role.user {
+  color: var(--lavender);
+}
+.role.assistant {
+  color: var(--green-color);
+}
+.node.off .role {
+  color: var(--overlay1);
 }
 .n-text {
   flex: 1;
@@ -254,10 +253,6 @@ function pick(m: ChatMessage) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.b-icon {
-  flex-shrink: 0;
-  color: var(--overlay0);
 }
 .empty {
   margin: 0;
