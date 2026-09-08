@@ -50,15 +50,18 @@ pub const THEME_ACCENTS: [&str; 14] = [
     "lavender",
 ];
 
-/// 前端主题设置 (Catppuccin 体系；浅色固定 Latte，深色可选 Frappé/Macchiato/Mocha)
+/// 前端主题设置 (Catppuccin 体系；浅色/深色均可选内置或自定义主题)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Theme {
     /// 显示模式: "light" | "dark" | "system"
     #[serde(default = "default_theme_mode")]
     pub mode:        String,
-    /// 深色系 flavor: "frappe" | "macchiato" | "mocha"
+    /// 深色主题 id: 内置 "frappe"|"macchiato"|"mocha"，或自定义主题 id
     #[serde(default = "default_dark_flavor")]
     pub dark_flavor: String,
+    /// 浅色主题 id: 内置 "latte"，或自定义主题 id
+    #[serde(default = "default_light_theme")]
+    pub light_theme: String,
     /// 强调色 label (THEME_ACCENTS 之一)
     #[serde(default = "default_accent")]
     pub accent:      String,
@@ -70,6 +73,9 @@ fn default_theme_mode() -> String {
 fn default_dark_flavor() -> String {
     "mocha".to_string()
 }
+fn default_light_theme() -> String {
+    "latte".to_string()
+}
 fn default_accent() -> String {
     "blue".to_string()
 }
@@ -79,22 +85,31 @@ impl Default for Theme {
         Self {
             mode:        default_theme_mode(),
             dark_flavor: default_dark_flavor(),
+            light_theme: default_light_theme(),
             accent:      default_accent(),
         }
     }
 }
 
 impl Theme {
-    /// 校验全部 label；非法值返回错误说明 (写入侧闸门)
-    pub fn validate(&self) -> Result<()> {
+    /// 校验全部 label；custom 为用户自定义主题清单 (写入侧闸门)
+    pub fn validate(&self, custom: &[CustomTheme]) -> Result<()> {
         if !matches!(self.mode.as_str(), "light" | "dark" | "system") {
             anyhow::bail!("invalid theme.mode {:?}: expect light|dark|system", self.mode);
         }
-        if !matches!(self.dark_flavor.as_str(), "frappe" | "macchiato" | "mocha") {
-            anyhow::bail!(
-                "invalid theme.dark_flavor {:?}: expect frappe|macchiato|mocha",
-                self.dark_flavor
-            );
+        let dark_ok = matches!(self.dark_flavor.as_str(), "frappe" | "macchiato" | "mocha")
+            || custom
+                .iter()
+                .any(|t| t.id == self.dark_flavor && t.mode == "dark");
+        if !dark_ok {
+            anyhow::bail!("invalid theme.dark_flavor {:?}", self.dark_flavor);
+        }
+        let light_ok = matches!(self.light_theme.as_str(), "latte")
+            || custom
+                .iter()
+                .any(|t| t.id == self.light_theme && t.mode == "light");
+        if !light_ok {
+            anyhow::bail!("invalid theme.light_theme {:?}", self.light_theme);
         }
         if !THEME_ACCENTS.contains(&self.accent.as_str()) {
             anyhow::bail!(
@@ -103,6 +118,57 @@ impl Theme {
                 THEME_ACCENTS
             );
         }
+        Ok(())
+    }
+}
+
+/// 用户自定义主题：以内置 flavor 为基底的调色板覆盖（浅色/深色均可多套）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CustomTheme {
+    /// 稳定 slug，被 theme.dark_flavor / theme.light_theme 引用
+    pub id:     String,
+    pub name:   String,
+    /// light | dark：决定该主题归属的候选组
+    pub mode:   String,
+    /// 继承的内置 flavor：light 系 latte；dark 系 frappe|macchiato|mocha
+    pub base:   String,
+    /// Catppuccin 令牌覆盖（键不含 "--"，如 base/mantle/text/surface0…）
+    #[serde(default)]
+    pub colors: BTreeMap<String, String>,
+}
+
+impl CustomTheme {
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                && !self.id.is_empty(),
+            "invalid custom theme id {:?}",
+            self.id
+        );
+        anyhow::ensure!(!self.name.trim().is_empty(), "custom theme '{}' name is empty", self.id);
+        anyhow::ensure!(
+            matches!(self.mode.as_str(), "light" | "dark"),
+            "invalid custom theme '{}' mode {:?}: expect light|dark",
+            self.id,
+            self.mode
+        );
+        let allowed = match self.mode.as_str() {
+            "light" => "latte",
+            _ => "frappe|macchiato|mocha",
+        };
+        let base_ok = match self.mode.as_str() {
+            "light" => self.base == "latte",
+            _ => matches!(self.base.as_str(), "frappe" | "macchiato" | "mocha"),
+        };
+        anyhow::ensure!(
+            base_ok,
+            "invalid custom theme '{}' base {:?}: expect {}",
+            self.id,
+            self.base,
+            allowed
+        );
         Ok(())
     }
 }
@@ -124,6 +190,8 @@ pub struct OmaConfig {
     pub providers:             BTreeMap<String, ProviderConfig>,
     #[serde(default)]
     pub mcp_servers:           BTreeMap<String, McpServerConfig>,
+    #[serde(default)]
+    pub custom_themes:         Vec<CustomTheme>,
 }
 
 fn default_model_str() -> String {
@@ -143,6 +211,7 @@ impl Default for OmaConfig {
             server:                ServerConfig::default(),
             providers:             BTreeMap::new(),
             mcp_servers:           BTreeMap::new(),
+            custom_themes:         Vec::new(),
         }
     }
 }
@@ -577,6 +646,56 @@ impl AgentLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_custom_theme_validation() {
+        let mut custom = vec![CustomTheme {
+            id:     "nord-dark".into(),
+            name:   "Nord Dark".into(),
+            mode:   "dark".into(),
+            base:   "mocha".into(),
+            colors: BTreeMap::new(),
+        }];
+
+        // 深色引用自定义主题合法；浅色引用深色主题非法
+        let dark = Theme {
+            mode: "dark".into(),
+            dark_flavor: "nord-dark".into(),
+            ..Theme::default()
+        };
+        assert!(dark.validate(&custom).is_ok());
+        let wrong_mode = Theme {
+            mode: "light".into(),
+            light_theme: "nord-dark".into(),
+            ..Theme::default()
+        };
+        assert!(wrong_mode.validate(&custom).is_err());
+
+        // 浅色自定义主题被 light_theme 引用合法
+        custom.push(CustomTheme {
+            id:     "nord-light".into(),
+            name:   "Nord Light".into(),
+            mode:   "light".into(),
+            base:   "latte".into(),
+            colors: BTreeMap::new(),
+        });
+        let light = Theme {
+            mode: "light".into(),
+            light_theme: "nord-light".into(),
+            ..Theme::default()
+        };
+        assert!(light.validate(&custom).is_ok());
+
+        // 非法 base 被拒绝
+        custom.push(CustomTheme {
+            id:     "bad".into(),
+            name:   "Bad".into(),
+            mode:   "dark".into(),
+            base:   "latte".into(),
+            colors: BTreeMap::new(),
+        });
+        assert!(custom.last().unwrap().validate().is_err());
+    }
 
     #[test]
     fn test_load_bundled_agents() {
