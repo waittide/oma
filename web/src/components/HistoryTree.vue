@@ -16,8 +16,16 @@ const INDENT = 18;
 
 interface Row {
   msg: ChatMessage;
-  /** 分叉代数：主线第一层，从第 n 层分叉出的分支为第 n+1 层 */
+  /** 层级：主线第一层，自父节点分叉出的子节点整体下移一层 */
   depth: number;
+  /** 各祖先层的竖线是否延续到本行（该层祖先还有后续兄弟） */
+  lines: boolean[];
+  /** 是否为父节点的最后一个子节点（└ 形连接） */
+  last: boolean;
+  /** 是否有父节点（根节点不画连接线） */
+  hasParent: boolean;
+  /** 分叉子节点：绘制肘形连接（├ / └）；否则为同层延续（竖线） */
+  forkChild: boolean;
   /** 位于当前激活分支上（圆点亮色） */
   active: boolean;
   /** 当前激活叶子 */
@@ -28,8 +36,8 @@ interface Row {
 
 /**
  * 展平消息树：跳过运行时内部消息（子节点挂到最近可见祖先），按先序排列。
- * 层级按分叉代数计：每个父节点的首个子节点与其同层（延续主线），
- * 更晚的兄弟节点（编辑重发产生的分支）下移一层。
+ * 分层规则：父节点只有一个子节点时子节点延续同层（线性对话不逐层缩进）；
+ * 父节点分叉（多个子节点）时，其全部子节点整体下移一层。
  */
 const rows = computed<Row[]>(() => {
   const byId = new Map(chat.tree.value.map((m) => [m.id, m]));
@@ -58,21 +66,37 @@ const rows = computed<Row[]>(() => {
   const leafId = chat.messages.value[chat.messages.value.length - 1]?.id ?? null;
 
   const out: Row[] = [];
-  const walk = (list: ChatMessage[], depth: number) => {
+  /** cols[col] = 该列当前最近祖先是否为其父的最后一个子节点 */
+  const walk = (
+    list: ChatMessage[],
+    depth: number,
+    parentDepth: number,
+    cols: Map<number, boolean>,
+    isRoot: boolean,
+  ) => {
     list.forEach((m, idx) => {
-      // 首个子节点延续父层；分叉出的兄弟分支下移一层
-      const d = idx === 0 ? depth : depth + 1;
+      const last = idx === list.length - 1;
+      const lines: boolean[] = [];
+      for (let l = 0; l < depth; l++) lines.push(cols.get(l) === false);
       out.push({
         msg: m,
-        depth: d,
+        depth,
+        lines,
+        last,
+        hasParent: !isRoot,
+        forkChild: !isRoot && depth !== parentDepth,
         active: activeIds.has(m.id),
         leaf: m.id === leafId,
         branch: list.length > 1,
       });
-      walk(kids.get(m.id) ?? [], d);
+      const next = new Map(cols);
+      next.set(depth, last);
+      // 父节点分叉（多个子节点）时子节点整体下移一层，否则延续同层
+      const childList = kids.get(m.id) ?? [];
+      walk(childList, childList.length > 1 ? depth + 1 : depth, depth, next, false);
     });
   };
-  walk(kids.get(null) ?? [], 0);
+  walk(kids.get(null) ?? [], 0, 0, new Map(), true);
   return out;
 });
 
@@ -106,12 +130,22 @@ function pick(m: ChatMessage) {
         :disabled="chat.running.value"
         @click="pick(r.msg)"
       >
+        <template v-for="(on, li) in r.lines" :key="`v${li}`">
+          <span v-if="on" class="vline" :style="{ left: `${li * INDENT + 8.25}px` }" />
+        </template>
         <span
-          v-for="li in r.depth"
-          :key="`g${li}`"
-          class="guide"
-          :style="{ left: `${(li - 1) * INDENT + 8.25}px` }"
+          v-if="r.hasParent && !r.forkChild"
+          class="vline"
+          :style="{ left: `${r.depth * INDENT + 8.25}px` }"
         />
+        <template v-if="r.forkChild">
+          <span
+            class="stem"
+            :class="{ last: r.last }"
+            :style="{ left: `${r.depth * INDENT + 8.25}px` }"
+          />
+          <span class="stub" :style="{ left: `${r.depth * INDENT + 9}px` }" />
+        </template>
         <span
           class="dot"
           :class="{ on: r.active }"
@@ -167,13 +201,25 @@ function pick(m: ChatMessage) {
   cursor: default;
   opacity: 0.55;
 }
-/* 结构连接线：仅表达层级，统一暗色 */
-.guide {
+/* 树形连接线：祖先层竖线 + 分叉子节点肘形（├ / └），统一暗色结构 */
+.vline,
+.stem {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 1.5px;
-  border-radius: 1px;
+  background: var(--surface2);
+  pointer-events: none;
+}
+.stem.last {
+  bottom: 50%;
+}
+.stub {
+  position: absolute;
+  top: 50%;
+  width: 7px;
+  height: 1.5px;
+  margin-top: -0.75px;
   background: var(--surface2);
   pointer-events: none;
 }
