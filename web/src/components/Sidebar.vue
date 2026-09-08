@@ -109,8 +109,8 @@ const deleteTarget = computed(
       </div>
 
       <section v-for="g in groups" :key="g.workspace" class="group">
-        <OTooltip :label="g.workspace" align="start" block>
-          <div class="group-head">
+        <div class="group-head">
+          <OTooltip :label="g.workspace" align="start" block>
             <button type="button" class="gh-toggle" @click="store.toggleGroup(g.workspace)">
               <LuChevronRight
                 :size="14"
@@ -121,13 +121,13 @@ const deleteTarget = computed(
               <span class="g-label">{{ g.label }}</span>
               <span class="g-count">{{ g.items.length }}</span>
             </button>
-            <OTooltip :label="t('addSessionHere')" align="end">
-              <button type="button" class="gh-add" :aria-label="t('addSessionHere')" @click="openNewFor(g.workspace)">
-                <LuPlus :size="14" />
-              </button>
-            </OTooltip>
-          </div>
-        </OTooltip>
+          </OTooltip>
+          <OTooltip :label="t('addSessionHere')" align="end">
+            <button type="button" class="gh-add" :aria-label="t('addSessionHere')" @click="openNewFor(g.workspace)">
+              <LuPlus :size="14" />
+            </button>
+          </OTooltip>
+        </div>
 
         <div v-if="!store.collapsed.value[g.workspace]" class="group-body">
           <div
@@ -407,6 +407,7 @@ const deleteTarget = computed(
 }
 .rename-input {
   flex: 1;
+  min-width: 0;
 }
 .rename-input :deep(input) {
   padding: 3px 7px;
