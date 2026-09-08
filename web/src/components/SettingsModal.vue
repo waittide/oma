@@ -1348,7 +1348,8 @@ function pickLocale(v: Locale) {
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 1;
+  flex: 0 1 auto;
+  max-width: 100%;
   min-width: 0;
   overflow-x: auto;
   padding: 2px;
