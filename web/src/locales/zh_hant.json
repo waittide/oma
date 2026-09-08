@@ -67,7 +67,7 @@
     "disconnected": "未連接"
   },
   "blocks": {
-    "thinking": "思考過程",
+    "thinking": "思考",
     "running": "執行中…",
     "failed": "失敗",
     "done": "完成"
