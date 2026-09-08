@@ -773,96 +773,106 @@ function pickLocale(v: Locale) {
       <div class="content">
         <!-- 外观 -->
         <section v-if="section === 'theme'" class="pane">
-          <div class="list">
-            <div class="srow">
-              <div class="srow-main">
-                <span class="srow-title">{{ t('mode') }}</span>
+          <header class="pane-head">
+            <h2 class="pane-title">{{ t('navTheme') }}</h2>
+          </header>
+          <div class="pane-scroll">
+            <div class="list">
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('mode') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <ORadio v-model="mode" :options="modeOptions" />
+                </div>
               </div>
-              <div class="srow-ctl">
-                <ORadio v-model="mode" :options="modeOptions" />
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('themeRowLight') }}</span>
+                  <span class="srow-desc">{{ t('themeDesc') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <ORadio v-model="themeSel.light" :options="lightThemeOptions" />
+                </div>
               </div>
-            </div>
-            <div class="srow">
-              <div class="srow-main">
-                <span class="srow-title">{{ t('themeRowLight') }}</span>
-                <span class="srow-desc">{{ t('themeDesc') }}</span>
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('themeRowDark') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <ORadio v-model="themeSel.dark" :options="darkThemeOptions" />
+                </div>
               </div>
-              <div class="srow-ctl">
-                <ORadio v-model="themeSel.light" :options="lightThemeOptions" />
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('accent') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <div class="dots">
+                    <OTooltip
+                      v-for="(a, i) in ACCENTS"
+                      :key="a"
+                      :label="t(`accentNames.${a}`)"
+                      :align="i % 7 === 0 ? 'start' : i % 7 === 6 ? 'end' : 'center'"
+                    >
+                      <button
+                        type="button"
+                        class="dot"
+                        :class="{ active: a === accent }"
+                        :style="{ '--dot': `var(--${a === 'green' ? 'green-color' : a})` }"
+                        @click="accent = a"
+                      />
+                    </OTooltip>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div class="srow">
-              <div class="srow-main">
-                <span class="srow-title">{{ t('themeRowDark') }}</span>
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('manageThemes') }}</span>
+                  <span class="srow-desc">{{ t('manageThemesDesc') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <OButton size="sm" variant="soft" @click="newTheme">{{ t('newTheme') }}</OButton>
+                </div>
               </div>
-              <div class="srow-ctl">
-                <ORadio v-model="themeSel.dark" :options="darkThemeOptions" />
-              </div>
-            </div>
-            <div class="srow">
-              <div class="srow-main">
-                <span class="srow-title">{{ t('accent') }}</span>
-              </div>
-              <div class="srow-ctl">
-                <div class="dots">
-                  <OTooltip
-                    v-for="(a, i) in ACCENTS"
-                    :key="a"
-                    :label="t(`accentNames.${a}`)"
-                    :align="i % 7 === 0 ? 'start' : i % 7 === 6 ? 'end' : 'center'"
-                  >
-                    <button
-                      type="button"
-                      class="dot"
-                      :class="{ active: a === accent }"
-                      :style="{ '--dot': `var(--${a === 'green' ? 'green-color' : a})` }"
-                      @click="accent = a"
-                    />
-                  </OTooltip>
+              <div v-for="ct in customThemes" :key="ct.id" class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ ct.name }} <span class="scope-tag">{{ ct.mode === 'light' ? t('modeLight') : t('modeDark') }}</span></span>
+                  <span class="srow-desc">{{ t('themeBaseLabel') }}: {{ ct.base }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <OButton size="sm" variant="ghost" @click="editTheme(ct)">{{ t('edit') }}</OButton>
+                  <OButton size="sm" variant="ghost" @click="removeTheme(ct.id)">{{ tc('delete') }}</OButton>
                 </div>
               </div>
             </div>
-            <div class="srow">
-              <div class="srow-main">
-                <span class="srow-title">{{ t('manageThemes') }}</span>
-                <span class="srow-desc">{{ t('manageThemesDesc') }}</span>
-              </div>
-              <div class="srow-ctl">
-                <OButton size="sm" variant="soft" @click="newTheme">{{ t('newTheme') }}</OButton>
-              </div>
-            </div>
-            <div v-for="ct in customThemes" :key="ct.id" class="srow">
-              <div class="srow-main">
-                <span class="srow-title">{{ ct.name }} <span class="scope-tag">{{ ct.mode === 'light' ? t('modeLight') : t('modeDark') }}</span></span>
-                <span class="srow-desc">{{ t('themeBaseLabel') }}: {{ ct.base }}</span>
-              </div>
-              <div class="srow-ctl">
-                <OButton size="sm" variant="ghost" @click="editTheme(ct)">{{ t('edit') }}</OButton>
-                <OButton size="sm" variant="ghost" @click="removeTheme(ct.id)">{{ tc('delete') }}</OButton>
-              </div>
-            </div>
           </div>
-          <div class="pane-actions">
+          <footer class="pane-foot">
             <OButton variant="primary" size="sm" :loading="savingTheme" @click="applyTheme">
               {{ t('saveTheme') }}
             </OButton>
-          </div>
+          </footer>
         </section>
 
         <!-- 语言 -->
         <section v-else-if="section === 'language'" class="pane">
-          <div class="list">
-            <div class="srow">
-              <div class="srow-main">
-                <span class="srow-title">{{ t('languageLabel') }}</span>
-              </div>
-              <div class="srow-ctl">
-                <OSelect
-                  :model-value="settingStore.locale"
-                  :options="localeOptions"
-                  width="160px"
-                  @update:model-value="pickLocale"
-                />
+          <header class="pane-head">
+            <h2 class="pane-title">{{ t('navLanguage') }}</h2>
+          </header>
+          <div class="pane-scroll">
+            <div class="list">
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('languageLabel') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <OSelect
+                    :model-value="settingStore.locale"
+                    :options="localeOptions"
+                    width="160px"
+                    @update:model-value="pickLocale"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -870,280 +880,296 @@ function pickLocale(v: Locale) {
 
         <!-- 默认参数 -->
         <section v-else-if="section === 'defaults' && config" class="pane">
-          <div class="list">
-            <div class="srow">
-              <div class="srow-main">
-                <span class="srow-title">{{ t('defaultModel') }}</span>
+          <header class="pane-head">
+            <h2 class="pane-title">{{ t('navDefaults') }}</h2>
+          </header>
+          <div class="pane-scroll">
+            <div class="list">
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('defaultModel') }}</span>
+                </div>
+                <div class="srow-ctl wide">
+                  <OModelSelect v-model="defaults.model" :groups="providerGroups" width="300px" />
+                </div>
               </div>
-              <div class="srow-ctl wide">
-                <OModelSelect v-model="defaults.model" :groups="providerGroups" width="300px" />
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('defaultAgent') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <OSelect v-model="defaults.agent" :options="agentOptions" width="200px" />
+                </div>
               </div>
-            </div>
-            <div class="srow">
-              <div class="srow-main">
-                <span class="srow-title">{{ t('defaultAgent') }}</span>
-              </div>
-              <div class="srow-ctl">
-                <OSelect v-model="defaults.agent" :options="agentOptions" width="200px" />
-              </div>
-            </div>
-            <div class="srow">
-              <div class="srow-main">
-                <span class="srow-title">{{ t('defaultApproval') }}</span>
-              </div>
-              <div class="srow-ctl">
-                <OSelect v-model="defaults.approval" :options="approvalOptions" width="200px" />
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('defaultApproval') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <OSelect v-model="defaults.approval" :options="approvalOptions" width="200px" />
+                </div>
               </div>
             </div>
           </div>
-          <div class="pane-actions">
+          <footer class="pane-foot">
             <OButton variant="primary" size="sm" :loading="savingDefaults" @click="saveDefaults">
               {{ t('saveDefaults') }}
             </OButton>
-          </div>
+          </footer>
         </section>
 
         <!-- 模型提供商 -->
         <section v-else-if="section === 'providers' && config" class="pane">
-          <div class="tabs-row">
-            <div class="tabs">
-              <button
-                v-for="d in providerDrafts"
-                :key="d.uid"
-                type="button"
-                class="tab"
-                :class="{ active: d.uid === activeProviderUid }"
-                @click="activeProviderUid = d.uid"
-              >
-                {{ d.name || t('providerName') }}
-              </button>
-            </div>
-            <OButton size="sm" variant="soft" @click="addProvider">
-              <template #icon><LuPlus :size="13" /></template>
-              {{ t('addProvider') }}
-            </OButton>
-          </div>
-
-          <div v-for="(d, pi) in activeDraft ? [activeDraft] : []" :key="d.uid" class="prov">
-            <div class="prov-head">
-              <OInput v-model="d.name" class="prov-name" :placeholder="t('providerName')" />
-              <OTooltip :label="tc('delete')" align="end">
-                <button type="button" class="m-del" :aria-label="tc('delete')" @click="removeDraft(providerDrafts.indexOf(d))">
-                  <LuTrash2 :size="14" />
+          <header class="pane-head">
+            <h2 class="pane-title">{{ t('navProviders') }}</h2>
+          </header>
+          <div class="pane-scroll">
+            <div class="tabs-row">
+              <div class="tabs">
+                <button
+                  v-for="d in providerDrafts"
+                  :key="d.uid"
+                  type="button"
+                  class="tab"
+                  :class="{ active: d.uid === activeProviderUid }"
+                  @click="activeProviderUid = d.uid"
+                >
+                  {{ d.name || t('providerName') }}
                 </button>
-              </OTooltip>
-            </div>
-
-            <div class="fields">
-              <div class="field">
-                <label>{{ t('fApiType') }}</label>
-                <OSelect v-model="d.api_type" :options="apiTypeOptions" />
               </div>
-              <div class="field">
-                <label>{{ t('fBaseUrl') }}</label>
-                <OInput v-model="d.base_url" />
-              </div>
-              <div class="field span2">
-                <label>{{ t('fApiKey') }}</label>
-                <div class="key-row">
-                  <OInput v-model="d.api_key" :type="keyRevealed[d.uid] ? 'text' : 'password'" />
-                  <OTooltip :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
-                    <button
-                      type="button"
-                      class="m-del"
-                      :aria-label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
-                      @click="toggleKeyVisibility(d)"
-                    >
-                      <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
-                      <LuEye v-else :size="14" />
-                    </button>
-                  </OTooltip>
-                </div>
-              </div>
-            </div>
-
-            <div class="models-head">
-              <span class="group-label">{{ t('fModels') }}</span>
-              <OButton size="sm" variant="ghost" @click="addModel(d)">
+              <OButton size="sm" variant="soft" @click="addProvider">
                 <template #icon><LuPlus :size="13" /></template>
-                {{ t('addModel') }}
+                {{ t('addProvider') }}
               </OButton>
             </div>
-            <p v-if="d.models.length === 0" class="muted">{{ t('modelsNone') }}</p>
 
-            <div v-for="(m, mi) in d.models" :key="mi" class="model">
-              <div class="m-grid">
+            <div v-for="(d, pi) in activeDraft ? [activeDraft] : []" :key="d.uid" class="prov">
+              <div class="prov-head">
+                <OInput v-model="d.name" class="prov-name" :placeholder="t('providerName')" />
+                <OTooltip :label="tc('delete')" align="end">
+                  <button type="button" class="m-del" :aria-label="tc('delete')" @click="removeDraft(providerDrafts.indexOf(d))">
+                    <LuTrash2 :size="14" />
+                  </button>
+                </OTooltip>
+              </div>
+
+              <div class="fields">
                 <div class="field">
-                  <label>{{ t('modelId') }}</label>
-                  <div class="inline-field">
-                    <OInput v-model="m.id" placeholder="model-id" />
-                    <OTooltip :label="t('removeModel')" align="end">
-                      <button type="button" class="m-del" :aria-label="t('removeModel')" @click="d.models.splice(mi, 1)">
-                        <LuTrash2 :size="14" />
+                  <label>{{ t('fApiType') }}</label>
+                  <OSelect v-model="d.api_type" :options="apiTypeOptions" />
+                </div>
+                <div class="field">
+                  <label>{{ t('fBaseUrl') }}</label>
+                  <OInput v-model="d.base_url" />
+                </div>
+                <div class="field span2">
+                  <label>{{ t('fApiKey') }}</label>
+                  <div class="key-row">
+                    <OInput v-model="d.api_key" :type="keyRevealed[d.uid] ? 'text' : 'password'" />
+                    <OTooltip :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
+                      <button
+                        type="button"
+                        class="m-del"
+                        :aria-label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
+                        @click="toggleKeyVisibility(d)"
+                      >
+                        <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
+                        <LuEye v-else :size="14" />
                       </button>
                     </OTooltip>
                   </div>
                 </div>
-                <div class="field">
-                  <label>{{ t('modelName') }}</label>
-                  <OInput v-model="m.name" />
-                </div>
-                <div class="field">
-                  <label>{{ t('contextLen') }}</label>
-                  <OInput v-model="m.context_len" />
-                </div>
-                <div class="field">
-                  <label>{{ t('maxOutput') }}</label>
-                  <OInput v-model="m.max_output" :placeholder="t('unset')" />
-                </div>
-                <div class="field">
-                  <label>{{ t('reasoningEffort') }}</label>
-                  <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
-                </div>
-                <div class="field">
-                  <label>{{ t('capabilities') }}</label>
-                  <div class="checks">
-                    <OCheckbox v-model="m.supports_thinking" :label="t('supportsThinking')" />
-                    <OCheckbox v-model="m.supports_vision" :label="t('supportsVision')" />
+              </div>
+
+              <div class="models-head">
+                <span class="group-label">{{ t('fModels') }}</span>
+                <OButton size="sm" variant="ghost" @click="addModel(d)">
+                  <template #icon><LuPlus :size="13" /></template>
+                  {{ t('addModel') }}
+                </OButton>
+              </div>
+              <p v-if="d.models.length === 0" class="muted">{{ t('modelsNone') }}</p>
+
+              <div v-for="(m, mi) in d.models" :key="mi" class="model">
+                <div class="m-grid">
+                  <div class="field">
+                    <label>{{ t('modelId') }}</label>
+                    <div class="inline-field">
+                      <OInput v-model="m.id" placeholder="model-id" />
+                      <OTooltip :label="t('removeModel')" align="end">
+                        <button type="button" class="m-del" :aria-label="t('removeModel')" @click="d.models.splice(mi, 1)">
+                          <LuTrash2 :size="14" />
+                        </button>
+                      </OTooltip>
+                    </div>
                   </div>
-                </div>
-                <div class="field span2">
-                  <label>{{ t('inputTypes') }}</label>
-                  <div class="checks">
-                    <OCheckbox
-                      v-for="ty in INPUT_TYPES"
-                      :key="ty"
-                      :model-value="m.input_types.includes(ty)"
-                      :label="inputTypeLabel(ty)"
-                      @update:model-value="toggleInputType(m, ty, $event)"
-                    />
+                  <div class="field">
+                    <label>{{ t('modelName') }}</label>
+                    <OInput v-model="m.name" />
+                  </div>
+                  <div class="field">
+                    <label>{{ t('contextLen') }}</label>
+                    <OInput v-model="m.context_len" />
+                  </div>
+                  <div class="field">
+                    <label>{{ t('maxOutput') }}</label>
+                    <OInput v-model="m.max_output" :placeholder="t('unset')" />
+                  </div>
+                  <div class="field">
+                    <label>{{ t('reasoningEffort') }}</label>
+                    <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
+                  </div>
+                  <div class="field">
+                    <label>{{ t('capabilities') }}</label>
+                    <div class="checks">
+                      <OCheckbox v-model="m.supports_thinking" :label="t('supportsThinking')" />
+                      <OCheckbox v-model="m.supports_vision" :label="t('supportsVision')" />
+                    </div>
+                  </div>
+                  <div class="field span2">
+                    <label>{{ t('inputTypes') }}</label>
+                    <div class="checks">
+                      <OCheckbox
+                        v-for="ty in INPUT_TYPES"
+                        :key="ty"
+                        :model-value="m.input_types.includes(ty)"
+                        :label="inputTypeLabel(ty)"
+                        @update:model-value="toggleInputType(m, ty, $event)"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <p v-if="providerDrafts.length === 0" class="muted">{{ t('providersEmpty') }}</p>
-          <div class="pane-actions">
+            <p v-if="providerDrafts.length === 0" class="muted">{{ t('providersEmpty') }}</p>
+          </div>
+          <footer class="pane-foot">
             <OButton variant="primary" size="sm" :loading="savingProviders" @click="saveProviders">
               {{ t('saveAll') }}
             </OButton>
-          </div>
+          </footer>
         </section>
 
         <!-- 技能 -->
         <section v-else-if="section === 'skills'" class="pane">
-          <div class="pane-head">
+          <header class="pane-head">
             <h2 class="pane-title">{{ t('navSkills') }}</h2>
-            <div class="pane-actions inline">
+            <div class="pane-head-actions">
               <ORadio v-model="skillScope" :options="skillScopeOptions" />
               <OButton size="sm" variant="soft" @click="newSkill">{{ t('add') }}</OButton>
             </div>
-          </div>
-          <p v-if="skillScope === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
-          <div class="list">
-            <div
-              v-for="s in visibleSkills"
-              :key="s.scope + '/' + s.id"
-              class="srow skill-row"
-              role="button"
-              @click="editSkill(s)"
-            >
-              <div class="srow-main">
-                <span class="srow-title">
-                  {{ s.name }}
-                  <span class="scope-tag" :class="'scope-' + s.scope">{{ scopeLabel(s.scope) }}</span>
-                </span>
-                <span class="srow-desc">{{ s.description || s.id }}</span>
+          </header>
+          <div class="pane-scroll">
+            <p v-if="skillScope === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
+            <div class="list">
+              <div
+                v-for="s in visibleSkills"
+                :key="s.scope + '/' + s.id"
+                class="srow skill-row"
+                role="button"
+                @click="editSkill(s)"
+              >
+                <div class="srow-main">
+                  <span class="srow-title">
+                    {{ s.name }}
+                    <span class="scope-tag" :class="'scope-' + s.scope">{{ scopeLabel(s.scope) }}</span>
+                  </span>
+                  <span class="srow-desc">{{ s.description || s.id }}</span>
+                </div>
               </div>
-            </div>
-            <div v-if="visibleSkills.length === 0 && !skillsLoading" class="srow">
-              <span class="srow-desc">{{ t('skillsEmpty') }}</span>
+              <div v-if="visibleSkills.length === 0 && !skillsLoading" class="srow">
+                <span class="srow-desc">{{ t('skillsEmpty') }}</span>
+              </div>
             </div>
           </div>
         </section>
 
         <!-- MCP 服务器 -->
         <section v-else-if="section === 'mcp' && config" class="pane">
-          <div class="pane-actions inline">
-            <OButton size="sm" variant="soft" @click="addMcpServer">
-              <template #icon><LuPlus :size="13" /></template>
-              {{ t('add') }}
-            </OButton>
-          </div>
-          <p class="muted">{{ t('mcpHint') }}</p>
-
-          <div class="list">
-            <div v-for="(d, i) in mcpDrafts" :key="d.origName ?? `mcp-new-${i}`">
-              <!-- 编辑中 / 新增：展开卡片表单 -->
-              <div v-if="d.origName === null || d.origName === editingMcp" class="prov card">
-                <div class="prov-head">
-                  <OInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
-                  <ORadio v-model="d.kind" :options="mcpKindOptions" />
-                  <OTooltip :label="tc('delete')" align="end">
-                    <button type="button" class="m-del" :aria-label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
-                      <LuTrash2 :size="14" />
-                    </button>
-                  </OTooltip>
+          <header class="pane-head">
+            <h2 class="pane-title">{{ t('navMcp') }}</h2>
+            <div class="pane-head-actions">
+              <OButton size="sm" variant="soft" @click="addMcpServer">
+                <template #icon><LuPlus :size="13" /></template>
+                {{ t('add') }}
+              </OButton>
+            </div>
+          </header>
+          <div class="pane-scroll">
+            <p class="muted">{{ t('mcpHint') }}</p>
+            <div class="list">
+              <div v-for="(d, i) in mcpDrafts" :key="d.origName ?? `mcp-new-${i}`">
+                <!-- 编辑中 / 新增：展开卡片表单 -->
+                <div v-if="d.origName === null || d.origName === editingMcp" class="prov card">
+                  <div class="prov-head">
+                    <OInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
+                    <ORadio v-model="d.kind" :options="mcpKindOptions" />
+                    <OTooltip :label="tc('delete')" align="end">
+                      <button type="button" class="m-del" :aria-label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
+                        <LuTrash2 :size="14" />
+                      </button>
+                    </OTooltip>
+                  </div>
+                  <div class="fields">
+                    <template v-if="d.kind === 'local'">
+                      <div class="field">
+                        <label>{{ t('mcpCommand') }}</label>
+                        <OInput v-model="d.command" />
+                      </div>
+                      <div class="field">
+                        <label>{{ t('mcpArgs') }}</label>
+                        <OInput v-model="d.argsText" />
+                      </div>
+                      <div class="field span2">
+                        <label>{{ t('mcpEnv') }}</label>
+                        <OInput v-model="d.envText" placeholder="KEY=value" />
+                      </div>
+                    </template>
+                    <template v-else>
+                      <div class="field span2">
+                        <label>{{ t('mcpUrl') }}</label>
+                        <OInput v-model="d.url" />
+                      </div>
+                      <div class="field span2">
+                        <label>{{ t('mcpHeaders') }}</label>
+                        <OInput v-model="d.headersText" placeholder="Authorization=Bearer xxx" />
+                      </div>
+                    </template>
+                  </div>
+                  <div v-if="d.origName !== null" class="card-foot">
+                    <OButton size="sm" variant="ghost" @click="cancelEditMcp">{{ tc('cancel') }}</OButton>
+                  </div>
                 </div>
-                <div class="fields">
-                  <template v-if="d.kind === 'local'">
-                    <div class="field">
-                      <label>{{ t('mcpCommand') }}</label>
-                      <OInput v-model="d.command" />
-                    </div>
-                    <div class="field">
-                      <label>{{ t('mcpArgs') }}</label>
-                      <OInput v-model="d.argsText" />
-                    </div>
-                    <div class="field span2">
-                      <label>{{ t('mcpEnv') }}</label>
-                      <OInput v-model="d.envText" placeholder="KEY=value" />
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div class="field span2">
-                      <label>{{ t('mcpUrl') }}</label>
-                      <OInput v-model="d.url" />
-                    </div>
-                    <div class="field span2">
-                      <label>{{ t('mcpHeaders') }}</label>
-                      <OInput v-model="d.headersText" placeholder="Authorization=Bearer xxx" />
-                    </div>
-                  </template>
-                </div>
-                <div v-if="d.origName !== null" class="card-foot">
-                  <OButton size="sm" variant="ghost" @click="cancelEditMcp">{{ tc('cancel') }}</OButton>
+                <!-- 未编辑：摘要行 -->
+                <div v-else class="srow">
+                  <div class="srow-main">
+                    <span class="srow-title">
+                      {{ d.name }}
+                      <span class="scope-tag">{{ d.kind === 'local' ? t('mcpKindLocal') : t('mcpKindRemote') }}</span>
+                    </span>
+                    <span class="srow-desc mono">{{ mcpSummary(d) }}</span>
+                  </div>
+                  <div class="srow-ctl">
+                    <OButton size="sm" variant="ghost" @click="editingMcp = d.origName">{{ t('edit') }}</OButton>
+                    <OButton size="sm" variant="ghost" @click="mcpDrafts.splice(i, 1)">{{ tc('delete') }}</OButton>
+                  </div>
                 </div>
               </div>
-              <!-- 未编辑：摘要行 -->
-              <div v-else class="srow">
-                <div class="srow-main">
-                  <span class="srow-title">
-                    {{ d.name }}
-                    <span class="scope-tag">{{ d.kind === 'local' ? t('mcpKindLocal') : t('mcpKindRemote') }}</span>
-                  </span>
-                  <span class="srow-desc mono">{{ mcpSummary(d) }}</span>
-                </div>
-                <div class="srow-ctl">
-                  <OButton size="sm" variant="ghost" @click="editingMcp = d.origName">{{ t('edit') }}</OButton>
-                  <OButton size="sm" variant="ghost" @click="mcpDrafts.splice(i, 1)">{{ tc('delete') }}</OButton>
-                </div>
+              <div v-if="mcpDrafts.length === 0" class="srow">
+                <span class="srow-desc">{{ t('mcpEmpty') }}</span>
               </div>
             </div>
-            <div v-if="mcpDrafts.length === 0" class="srow">
-              <span class="srow-desc">{{ t('mcpEmpty') }}</span>
-            </div>
           </div>
-
-          <div class="pane-actions">
+          <footer class="pane-foot">
             <OButton variant="primary" size="sm" :loading="savingMcp" @click="saveMcp">{{ t('saveAll') }}</OButton>
-          </div>
-
+          </footer>
         </section>
 
         <section v-else-if="section === 'defaults' || section === 'providers'" class="pane">
-          <p class="muted">{{ t('configUnavailable') }}</p>
+          <div class="pane-scroll">
+            <p class="muted">{{ t('configUnavailable') }}</p>
+          </div>
         </section>
       </div>
     </div>
@@ -1307,7 +1333,8 @@ function pickLocale(v: Locale) {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding: 6px 10px 2px;
+  padding: 12px 10px 4px;
+  border-top: 1px solid var(--line);
   font-size: 11px;
   color: var(--overlay0);
 }
@@ -1318,22 +1345,31 @@ function pickLocale(v: Locale) {
 .content {
   flex: 1;
   min-width: 0;
-  overflow-y: auto;
-  padding: 22px 28px 28px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
-/* 参照 opencode：内容栏限宽并居中（左右间距对称），扁平行 + 细分隔线 */
+/* 内容栏：标题与保存操作固定在上下两端，仅中间列表滚动 */
 .pane {
-  max-width: 640px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 720px;
   margin: 0 auto;
+  padding: 18px 28px 0;
 }
 .pane-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 4px;
+  gap: 12px;
+  flex-shrink: 0;
+  padding-bottom: 14px;
 }
 .pane-title {
-  margin: 0 0 10px;
+  margin: 0;
   font-size: 15px;
   font-weight: 600;
   color: var(--ink);
@@ -1380,17 +1416,25 @@ function pickLocale(v: Locale) {
   font-weight: 600;
   box-shadow: 0 1px 2px var(--shadow);
 }
-.pane-head .pane-title {
-  margin-bottom: 0;
+.pane-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
-.pane-actions {
+.pane-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 4px;
+}
+.pane-foot {
+  flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 14px;
-}
-.pane-actions.inline {
-  margin-top: 0;
+  padding: 12px 0 16px;
+  border-top: 1px solid var(--line);
 }
 .list {
   background: var(--surface);
@@ -1661,6 +1705,6 @@ function pickLocale(v: Locale) {
 .muted {
   font-size: 12.5px;
   color: var(--overlay0);
-  margin: 6px 0 0;
+  margin: 0 0 10px;
 }
 </style>
