@@ -173,17 +173,23 @@ function pick(m: ChatMessage) {
           class="vline"
           :style="{ left: `${CURSOR_CHARS + level * LEVEL_CHARS}ch` }"
         />
-        <!-- 本层肘形连接：border 绘制，转角圆角；├ 另加下半段竖线 -->
+        <!-- 本层连接：末位兄弟为圆角转角（└），其余为贯通竖线 + 水平分支（├） -->
         <template v-if="r.connector && !r.vlines.includes(r.indent - 1)">
           <span
+            v-if="r.last"
             class="elbow"
             :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
           />
-          <span
-            v-if="!r.last"
-            class="elbow-below"
-            :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
-          />
+          <template v-else>
+            <span
+              class="vline"
+              :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
+            />
+            <span
+              class="stub"
+              :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
+            />
+          </template>
         </template>
         <!-- 激活分支圆点：固定 2ch 槽位，保证后续文字落在字符网格上 -->
         <span v-if="r.active" class="bullet"><i /></span>
@@ -257,8 +263,7 @@ function pick(m: ChatMessage) {
 /* 引导线统一用 border 绘制：横竖同为边框宽度，粗细一致；
    上下各溢出 1px 消除行间缝隙。 */
 .vline,
-.elbow,
-.elbow-below {
+.elbow {
   position: absolute;
   width: 0;
   border-left: 1.5px solid var(--overlay0);
@@ -268,8 +273,8 @@ function pick(m: ChatMessage) {
   top: -1px;
   bottom: -1px;
 }
-/* 肘形转角盒：border-left 为上半段竖线，border-bottom 为横线，
-   border-bottom-left-radius 形成圆角（└ 的全部与 ├ 的上半段） */
+/* └ 末位转角：border-left 为上半段竖线，border-bottom 为横线，
+   border-bottom-left-radius 形成圆角 */
 .elbow {
   top: -1px;
   height: calc(50% + 0.75px);
@@ -277,10 +282,14 @@ function pick(m: ChatMessage) {
   border-bottom: 1.5px solid var(--overlay0);
   border-bottom-left-radius: 7px;
 }
-/* ├ 的下半段竖线，与转角盒在行中心接续 */
-.elbow-below {
-  top: 50%;
-  bottom: -1px;
+/* ├ 非末位：竖线整条贯通，横线在行中心分支（避免圆角使竖线偏移产生断口） */
+.stub {
+  position: absolute;
+  top: calc(50% - 0.75px);
+  width: 3ch;
+  height: 0;
+  border-bottom: 1.5px solid var(--overlay0);
+  pointer-events: none;
 }
 .role {
   flex-shrink: 0;
