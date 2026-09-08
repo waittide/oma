@@ -283,6 +283,18 @@ pub struct AgentTemplate {
     pub system_prompt_body: String,
 }
 
+/// 技能（Agent 模板）文件条目：scope = bundled | global | project
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillFile {
+    pub id:          String,
+    pub name:        String,
+    pub description: String,
+    pub tools:       Vec<String>,
+    pub scope:       String,
+    /// 完整 Markdown 原文（含 frontmatter）
+    pub content:     String,
+}
+
 /// Agent Frontmatter 头部结构
 #[derive(Debug, Deserialize)]
 struct Frontmatter {
@@ -399,6 +411,166 @@ impl AgentLoader {
             today,
             active_model
         )
+    }
+
+    /// 全局技能目录 (~/.config/oma/agents)
+    pub fn global_skills_dir() -> Option<PathBuf> {
+        dirs_config_dir().map(|d| d.join("oma").join("agents"))
+    }
+
+    /// 项目技能目录 (<workspace>/.oma/agents)
+    pub fn project_skills_dir(workspace: &Path) -> PathBuf {
+        workspace.join(".oma").join("agents")
+    }
+
+    /// 解析技能 Markdown 为条目
+    fn skill_from_raw(id: &str, scope: &str, raw: &str) -> SkillFile {
+        let tmpl = parse_markdown_template(id, raw);
+        match tmpl {
+            Ok(t) => SkillFile {
+                id:          id.to_string(),
+                name:        t.name,
+                description: t.description,
+                tools:       t.tools,
+                scope:       scope.to_string(),
+                content:     raw.to_string(),
+            },
+            Err(_) => SkillFile {
+                id:          id.to_string(),
+                name:        id.to_string(),
+                description: String::new(),
+                tools:       Vec::new(),
+                scope:       scope.to_string(),
+                content:     raw.to_string(),
+            },
+        }
+    }
+
+    fn skills_in_dir(dir: &Path, scope: &str) -> Vec<SkillFile> {
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+                let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if let Ok(raw) = std::fs::read_to_string(&path) {
+                    out.push(Self::skill_from_raw(id, scope, &raw));
+                }
+            }
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+    /// 列出全部技能：内置 + 全局 + 项目（同 id 时项目覆盖全局、全局覆盖内置）
+    pub fn list_skills(workspace: Option<&Path>) -> Vec<SkillFile> {
+        let mut by_id: std::collections::BTreeMap<String, SkillFile> = std::collections::BTreeMap::new();
+        for (id, raw) in [
+            ("task", TEMPLATE_TASK),
+            ("plan", TEMPLATE_PLAN),
+            ("explore", TEMPLATE_EXPLORE),
+            ("review", TEMPLATE_REVIEW),
+            ("build", TEMPLATE_BUILD),
+        ] {
+            by_id.insert(id.to_string(), Self::skill_from_raw(id, "bundled", raw));
+        }
+        if let Some(dir) = Self::global_skills_dir() {
+            for s in Self::skills_in_dir(&dir, "global") {
+                by_id.insert(s.id.clone(), s);
+            }
+        }
+        if let Some(ws) = workspace {
+            for s in Self::skills_in_dir(&Self::project_skills_dir(ws), "project") {
+                by_id.insert(s.id.clone(), s);
+            }
+        }
+        by_id.into_values().collect()
+    }
+
+    /// 读取单个技能
+    pub fn read_skill(workspace: Option<&Path>, id: &str) -> Result<SkillFile> {
+        Self::list_skills(workspace)
+            .into_iter()
+            .find(|s| s.id == id)
+            .with_context(|| format!("Skill '{}' not found", id))
+    }
+
+    fn render_skill_markdown(name: &str, description: &str, tools: &[String], content: &str) -> String {
+        let tools_yaml = tools
+            .iter()
+            .map(|t| format!("\n  - {}", t))
+            .collect::<String>();
+        format!(
+            "---\nname: {}\ndescription: {}\ntools:{}\n---\n\n{}",
+            name,
+            description,
+            tools_yaml,
+            content.trim()
+        )
+    }
+
+    /// 写入技能：scope = global | project；内置技能拒绝写入
+    pub fn write_skill(
+        workspace: Option<&Path>,
+        id: &str,
+        scope: &str,
+        name: &str,
+        description: &str,
+        tools: &[String],
+        content: &str,
+    ) -> Result<PathBuf> {
+        anyhow::ensure!(
+            matches!(scope, "global" | "project"),
+            "Invalid skill scope {:?}: expect global|project",
+            scope
+        );
+        anyhow::ensure!(
+            !matches!(id, "task" | "plan" | "explore" | "review" | "build"),
+            "Bundled skill '{}' is read-only",
+            id
+        );
+        anyhow::ensure!(
+            id.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                && !id.is_empty(),
+            "Invalid skill id {:?}",
+            id
+        );
+
+        let dir = match scope {
+            "global" => Self::global_skills_dir().with_context(|| "Cannot resolve global config dir for skills")?,
+            _ => {
+                let ws = workspace.with_context(|| "workspace is required for project skills")?;
+                Self::project_skills_dir(ws)
+            }
+        };
+        std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create skills dir {}", dir.display()))?;
+        let path = dir.join(format!("{}.md", id));
+        std::fs::write(&path, Self::render_skill_markdown(name, description, tools, content))
+            .with_context(|| format!("Failed to write skill {}", path.display()))?;
+        Ok(path)
+    }
+
+    /// 删除技能文件（仅限 global/project 作用域）
+    pub fn delete_skill(workspace: Option<&Path>, id: &str, scope: &str) -> Result<()> {
+        anyhow::ensure!(
+            matches!(scope, "global" | "project"),
+            "Invalid skill scope {:?}: expect global|project",
+            scope
+        );
+        let dir = match scope {
+            "global" => Self::global_skills_dir().with_context(|| "Cannot resolve global config dir for skills")?,
+            _ => {
+                let ws = workspace.with_context(|| "workspace is required for project skills")?;
+                Self::project_skills_dir(ws)
+            }
+        };
+        let path = dir.join(format!("{}.md", id));
+        anyhow::ensure!(path.exists(), "Skill file {} not found", path.display());
+        std::fs::remove_file(&path).with_context(|| format!("Failed to delete skill {}", path.display()))
     }
 }
 
@@ -520,5 +692,60 @@ api_key = "k"
         let reloaded = OmaConfig::load_from_file(&path).unwrap();
         assert_eq!(reloaded.default_model, "deepseek/deepseek-chat");
         assert!(reloaded.providers.contains_key("deepseek"));
+    }
+
+    #[test]
+    fn test_skill_crud_scopes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("proj");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        // 全局写入与列表
+        AgentLoader::write_skill(
+            Some(&ws),
+            "my-skill",
+            "global",
+            "My Skill",
+            "Does things",
+            &["read".to_string()],
+            "Do the thing.",
+        )
+        .unwrap();
+        let all = AgentLoader::list_skills(Some(&ws));
+        let g = all.iter().find(|s| s.id == "my-skill").unwrap();
+        assert_eq!(g.scope, "global");
+        assert_eq!(g.name, "My Skill");
+        assert_eq!(g.tools, vec!["read"]);
+
+        // 项目覆盖同名 id
+        AgentLoader::write_skill(
+            Some(&ws),
+            "my-skill",
+            "project",
+            "Proj Skill",
+            "Project variant",
+            &[],
+            "Project body.",
+        )
+        .unwrap();
+        let overridden = AgentLoader::read_skill(Some(&ws), "my-skill").unwrap();
+        assert_eq!(overridden.scope, "project");
+        assert_eq!(overridden.name, "Proj Skill");
+
+        // 内置技能只读
+        assert!(AgentLoader::write_skill(Some(&ws), "task", "global", "X", "", &[], "body").is_err());
+
+        // 删除：先项目后全局；未指定 scope 的删除走 global
+        AgentLoader::delete_skill(Some(&ws), "my-skill", "project").unwrap();
+        assert_eq!(
+            AgentLoader::read_skill(Some(&ws), "my-skill")
+                .unwrap()
+                .scope,
+            "global"
+        );
+        AgentLoader::delete_skill(Some(&ws), "my-skill", "global").unwrap();
+        assert!(AgentLoader::read_skill(Some(&ws), "my-skill").is_err());
+        // 内置兜底仍然可用
+        assert!(AgentLoader::read_skill(Some(&ws), "task").is_ok());
     }
 }

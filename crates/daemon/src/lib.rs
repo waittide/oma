@@ -504,6 +504,136 @@ async fn handle_workspace_file(
 }
 
 // =========================================================================
+// 技能（Agent 模板）管理 REST API
+// =========================================================================
+
+#[derive(Deserialize)]
+struct SkillQuery {
+    workspace: Option<String>,
+    /// global | project；删除时必须显式指定
+    scope:     Option<String>,
+    token:     Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SkillWriteReq {
+    name:        String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    tools:       Vec<String>,
+    content:     String,
+    /// global | project；缺省为 project（project 必须提供 workspace）
+    #[serde(default)]
+    scope:       Option<String>,
+}
+
+/// workspace 可选：global 作用域无需提供
+fn skill_workspace(query: &SkillQuery) -> Option<PathBuf> {
+    query
+        .workspace
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
+fn require_project_workspace(query: &SkillQuery) -> Result<PathBuf, (StatusCode, String)> {
+    match skill_workspace(query) {
+        Some(ws) => Ok(ws),
+        None => Err((
+            StatusCode::BAD_REQUEST,
+            "workspace is required for project skills".into(),
+        )),
+    }
+}
+
+async fn handle_list_skills(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<SkillQuery>,
+) -> Result<Json<Vec<oma_config::SkillFile>>, StatusCode> {
+    if !check_auth(&headers, query.token.as_deref(), &state.token) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(Json(AgentLoader::list_skills(skill_workspace(&query).as_deref())))
+}
+
+async fn handle_get_skill(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(skill_id): AxumPath<String>,
+    Query(query): Query<SkillQuery>,
+) -> Result<Json<oma_config::SkillFile>, (StatusCode, String)> {
+    if !check_auth(&headers, query.token.as_deref(), &state.token) {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid token".into()));
+    }
+    AgentLoader::read_skill(skill_workspace(&query).as_deref(), &skill_id)
+        .map(Json)
+        .map_err(|e| {
+            if e.to_string().contains("not found") {
+                (StatusCode::NOT_FOUND, e.to_string())
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            }
+        })
+}
+
+async fn handle_put_skill(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(skill_id): AxumPath<String>,
+    Query(query): Query<SkillQuery>,
+    Json(payload): Json<SkillWriteReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !check_auth(&headers, query.token.as_deref(), &state.token) {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid token".into()));
+    }
+    let scope = payload.scope.as_deref().unwrap_or("project");
+    let ws = match scope {
+        "project" => Some(require_project_workspace(&query)?),
+        _ => skill_workspace(&query),
+    };
+    match AgentLoader::write_skill(
+        ws.as_deref(),
+        &skill_id,
+        scope,
+        payload.name.trim(),
+        payload.description.trim(),
+        &payload.tools,
+        &payload.content,
+    ) {
+        Ok(path) => Ok(Json(
+            serde_json::json!({ "success": true, "path": path.display().to_string() }),
+        )),
+        Err(e) if e.to_string().contains("read-only") => Err((StatusCode::FORBIDDEN, e.to_string())),
+        Err(e) if e.to_string().contains("Invalid") => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn handle_delete_skill(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(skill_id): AxumPath<String>,
+    Query(query): Query<SkillQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !check_auth(&headers, query.token.as_deref(), &state.token) {
+        return Err((StatusCode::UNAUTHORIZED, "Invalid token".into()));
+    }
+    let scope = query.scope.as_deref().unwrap_or("global");
+    let ws = match scope {
+        "project" => Some(require_project_workspace(&query)?),
+        _ => skill_workspace(&query),
+    };
+
+    match AgentLoader::delete_skill(ws.as_deref(), &skill_id, scope) {
+        Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+// =========================================================================
 // 系统配置 REST API (/api/config)
 // =========================================================================
 /// 脱敏占位符：GET 下发时替换真实密钥；PUT 回传同值时保留服务端旧密钥
@@ -778,6 +908,13 @@ pub fn create_router(state: DaemonState) -> Router {
         )
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
+        .route("/api/skills", get(handle_list_skills))
+        .route(
+            "/api/skills/{skill_id}",
+            get(handle_get_skill)
+                .put(handle_put_skill)
+                .delete(handle_delete_skill),
+        )
         .route("/api/config", get(handle_get_config).put(handle_put_config))
         .route("/ws", get(handle_ws_upgrade));
 
