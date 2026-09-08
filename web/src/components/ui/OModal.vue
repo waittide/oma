@@ -59,29 +59,6 @@ const { t } = useTranslations('common');
   background: var(--overlay-scrim);
 }
 .panel {
-  max-width: calc(100vw - 48px);
-  max-height: calc(100vh - 96px);
-  display: flex;
-  flex-direction: column;
-  background: var(--surface-strong);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: 0 16px 48px var(--shadow);
-  overflow: hidden;
-}
-.head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px 10px;
-}
-.head h3 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--ink);
-}
-.panel {
   position: relative;
   max-width: calc(100vw - 48px);
   max-height: calc(100vh - 96px);
@@ -90,7 +67,33 @@ const { t } = useTranslations('common');
   background: var(--surface-strong);
   border: 1px solid var(--line);
   border-radius: 14px;
-  box-shadow: 0 16px 48px var(--shadow);
+  box-shadow: var(--shadow-overlay);
+  overflow: hidden;
+}
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.body {
+  flex: 1;
+  min-height: 0;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+/* flush：内容自行布局（如左右分栏），面板内边距交给内容 */
+.body.flush {
+  padding: 0;
   overflow: hidden;
 }
 .close-float {
@@ -122,6 +125,7 @@ const { t } = useTranslations('common');
   gap: 8px;
   padding: 12px 18px;
   border-top: 1px solid var(--line);
+  flex-shrink: 0;
 }
 .modal-enter-active,
 .modal-leave-active {
