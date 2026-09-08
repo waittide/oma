@@ -293,6 +293,10 @@ async function loadSkills() {
   }
 }
 
+/** 列表只展示用户技能；bundled 项是内置 Agent 模板，不属于技能清单 */
+const visibleSkills = computed(() => skills.value.filter((s) => s.scope !== 'bundled'));
+
+
 watch(
   () => [props.open, section.value, skillScope.value] as const,
   ([o, s]) => {
@@ -1026,7 +1030,7 @@ function pickLocale(v: Locale) {
           <p v-if="skillScope === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
           <div class="list">
             <div
-              v-for="s in skills"
+              v-for="s in visibleSkills"
               :key="s.scope + '/' + s.id"
               class="srow skill-row"
               role="button"
@@ -1040,7 +1044,7 @@ function pickLocale(v: Locale) {
                 <span class="srow-desc">{{ s.description || s.id }}</span>
               </div>
             </div>
-            <div v-if="skills.length === 0 && !skillsLoading" class="srow">
+            <div v-if="visibleSkills.length === 0 && !skillsLoading" class="srow">
               <span class="srow-desc">{{ t('skillsEmpty') }}</span>
             </div>
           </div>
