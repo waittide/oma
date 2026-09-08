@@ -160,15 +160,66 @@ function toolSubtitle(it: Item): string {
   flex-direction: column;
   gap: 8px;
 }
+.md {
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
 .md :deep(p) {
-  margin: 0 0 8px;
-  line-height: 1.7;
+  margin: 0 0 12px;
 }
 .md :deep(p:last-child) {
   margin-bottom: 0;
 }
+.md :deep(h1) {
+  margin: 28px 0 12px;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.md :deep(h2) {
+  margin: 24px 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.md :deep(h3),
+.md :deep(h4),
+.md :deep(h5),
+.md :deep(h6) {
+  margin: 20px 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+}
+.md :deep(h4),
+.md :deep(h5),
+.md :deep(h6) {
+  color: var(--text-tertiary);
+}
+.md :deep(h1:first-child),
+.md :deep(h2:first-child),
+.md :deep(h3:first-child) {
+  margin-top: 0;
+}
+.md :deep(ul),
+.md :deep(ol) {
+  margin: 0 0 12px;
+  padding-left: 22px;
+}
+.md :deep(li) {
+  margin: 3px 0;
+}
+.md :deep(li > p) {
+  margin-bottom: 4px;
+}
+.md :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 16px 0;
+}
 .md :deep(pre) {
-  margin: 8px 0;
+  margin: 8px 0 12px;
   padding: 12px 14px;
   background: var(--surface);
   border-radius: 8px;
@@ -181,7 +232,7 @@ function toolSubtitle(it: Item): string {
   font-size: 12.5px;
   background: var(--surface);
   border-radius: 4px;
-  padding: 1px 5px;
+  padding: 2px 5px;
 }
 .md :deep(pre code) {
   background: transparent;
@@ -191,7 +242,7 @@ function toolSubtitle(it: Item): string {
   color: var(--accent);
 }
 .md :deep(blockquote) {
-  margin: 8px 0;
+  margin: 8px 0 12px;
   padding: 2px 12px;
   border-left: 3px solid var(--surface2);
   color: var(--text-tertiary);
@@ -199,6 +250,7 @@ function toolSubtitle(it: Item): string {
 .md :deep(table) {
   border-collapse: collapse;
   font-size: 12.5px;
+  margin: 0 0 12px;
 }
 .md :deep(th),
 .md :deep(td) {
