@@ -751,7 +751,11 @@ impl SessionRoom {
             user_blocks.push(Block::Text { text: user_text });
         }
         for att in attachments {
-            user_blocks.push(att.into_block());
+            // 引用形态的附件在发起 Provider 请求前内联（见 inline_attachments）
+            user_blocks.push(Block::Image {
+                mime_type: "image/png".into(),
+                data:      att,
+            });
         }
 
         let is_fork = parent_id_override.is_some();
@@ -1231,20 +1235,6 @@ fn guess_mime(name: &str) -> String {
         Some(ext) if ext == "webp" => "image/webp".to_string(),
         _ => "image/png".to_string(),
     }
-}
-
-/// 附件载荷 → 消息块；`session_attachment://` 资源交由 Provider 请求前内联解析。
-impl AttachmentRef for String {
-    fn into_block(self) -> Block {
-        Block::Image {
-            mime_type: "image/png".into(),
-            data:      self,
-        }
-    }
-}
-
-trait AttachmentRef {
-    fn into_block(self) -> Block;
 }
 
 /// 标准 base64（无外部依赖，附件内联用）
