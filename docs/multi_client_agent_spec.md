@@ -1,7 +1,7 @@
 # Oma 多类型多客户端协同 Agent 技术规格书 (Technical Specification)
 
-> 版本：v2.0  
-> 状态：Implementation Confirmed & Ready  
+> 版本：v2.1  
+> 状态：Implementation Verified（文档与代码同步；差异项见文末）  
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
 
 ---
@@ -30,7 +30,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  │  - Headless API Gateway (REST APIs & WebSocket Endpoint)             │  │
 │  │  - REST APIs (/api/sessions, /api/workspace/*, /api/server/*)        │  │
 │  │  - WebSocket Upgrade & Room Routing (/ws)                            │  │
-│  │  - CORS & Dev Proxy Middleware                                       │  │
+│  │  - CORS（仅放行本机来源）& Dev Proxy Middleware                      │  │
 │  └─────────────────────────────────┬─────────────────────────────────┘  │
 │                                    │                                    │
 │  ┌─────────────────────────────────▼─────────────────────────────────┐  │
@@ -59,14 +59,14 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 |---|---|
 | `crates/contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
 | `crates/storage` | SQLite 持久化抽象，实现全局中心库 `oma.db` 与会话专属库 `session.db`，管理 WAL 模式与串行写锁。 |
-| `crates/provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Google Gemini 流式协议与 Deep Merge 请求体。 |
-| `crates/tool` | 内置 5 大工具（`read`, `write`, `edit` 原子替换补丁, `shell` 进程组管理, `task` 子任务委托），集成 Guardrails。 |
+| `crates/provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
+| `crates/tool` | 内置 5 大工具（`read`, `write`, `edit` 原子替换补丁, `shell` 进程组守卫, `task` 子任务委托），含输出截断与工具白名单。 |
 | `crates/mcp` | MCP 客户端，支持本地 stdio 子进程与远程 SSE 传输，按 `mcp__{server}__{tool}` 统一命名空间注册。 |
 | `crates/config` | 配置文件 `config.toml` 解析，内置 5 大 Agent 模板（`include_str!`）与本地/项目级覆盖、环境块动态注入。 |
 | `crates/runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、熔断器、70% 阈值两阶段上下文压缩与内存审批白名单。 |
 | `crates/daemon` | 基于 Axum 的 HTTP REST 与 WebSocket 网关、Bearer Token 鉴权中间件、静态路由与 CORS。 |
-| `crates/client` | 纯 Rust 客户端 SDK，供 CLI/TUI 或测试代码快速建立连接、订阅事件并发送指令。 |
-| `crates/tui` | 基于 Ratatui 的终端交互客户端。 |
+| `crates/client` | 纯 Rust 客户端 SDK：`OmaClient` 封装 WebSocket 握手/事件流/指令与审批，`SessionApi` 提供 REST 会话管理。 |
+| `crates/tui` | 基于 Ratatui 0.30 的终端交互客户端（流式渲染、审批弹窗、CJK 折行），由 `oma tui` 驱动。 |
 | `crates/bin` | 统一命令行可执行文件 `oma`，集成 `oma daemon`、`oma web`、`oma tui` 等子命令。 |
 | `web/` | 纯手写原生 Vue 3 + TypeScript + 手写 CSS（零外部 UI/CSS 库）的 Web 协同客户端。 |
 
@@ -79,13 +79,15 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 - **单端口统一路由**：
   - `/ws`：双向 WebSocket（承载 `ClientMessage` / `ServerMessage` JSON 协议，基于 `session_id` 自动加入对应 Room）；
   - `/api/*`：HTTP REST 接口（会话 CRUD、消息回放、状态探测、文件树、Diff 读取、附件上传）；
-  - 前端静态资源由各客户端（Web/Tauri/TUI）独立打包与托管，Daemon 专职作为纯 Headless 后台服务。
+  - Daemon 保持 Headless：不内置任何前端资产。若存在 `web/dist`（Vite 产物），
+  Daemon 会将其作为静态资源直出并提供 SPA fallback，便于单端口访问；不存在则仅暴露 API。
 
 ### 2.2 严格 Bearer Token 鉴权
 1. **传输规范**：
-   - 严格仅支持 HTTP 请求头 `Authorization: Bearer <token>`；
-   - WebSocket 握手阶段在 HTTP Upgrade Header 中附带该头部，鉴权不通过直接返回 HTTP `401 Unauthorized`；
-   - 所有 `/api/*` 接口统一通过 Axum `AuthMiddleware` 拦截。
+   - REST 接口仅接受 HTTP 请求头 `Authorization: Bearer <token>`，查询参数携带 token 一律拒绝
+     （凭证会被访问日志、浏览器历史与 Referer 留存）；
+   - WebSocket 握手因浏览器无法为 WS 请求设置自定义头，额外接受 `?token=<token>`；
+   - 鉴权失败统一返回 HTTP `401 Unauthorized`，且不建立连接。
 2. **Token 生成与存储**：
    - 启动时优先读取环境变量 `OMA_AUTH_TOKEN`、命令行 `--token` 或配置文件 `auth.token`；
    - 若未配置，首次启动在 `~/.local/share/oma/auth.token` 自动生成安全随机 Token 并持久化；
@@ -322,6 +324,7 @@ pub struct Ready {
     pub current_leaf_id:  Option<String>,
     pub providers:        std::collections::BTreeMap<String, Vec<ModelInfo>>,
     pub agents:           Vec<AgentSummary>,
+    pub mcp_servers:      Vec<McpServerSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -331,6 +334,9 @@ pub struct ModelInfo {
     pub context_len:       usize,
     pub supports_vision:   bool,
     pub supports_thinking: bool,
+    pub max_output:        Option<usize>,
+    pub reasoning_effort:  String,        // "" | low | medium | high
+    pub input_types:       Vec<String>,   // text | image | video
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -391,6 +397,12 @@ pub enum AgentEvent {
     },
     QueueCleared {},
 
+    // 2b. 服务端权威队列深度；客户端不再自行累加，避免与丢弃的指令漂移
+    QueueUpdated { pending: usize },
+
+    // 2c. 广播缓冲溢出导致历史事件缺口：客户端须整体回读持久化状态
+    SyncRequired {},
+
     // 3. 模型推理流式增量
     ThinkingDelta { 
         delta: String,
@@ -430,6 +442,8 @@ pub enum AgentEvent {
 
     // 7. 重连快照与错误提示
     ActiveTurnCatchUp(ActiveTurnCatchUp),
+    SessionRenamed { session_id: String, title: String },
+    MessagesDeleted { deleted_ids: Vec<String>, current_leaf_id: Option<String> },
     Error { message: String },
 }
 
@@ -520,7 +534,11 @@ headers = { Authorization = "Bearer secret_token" }
      </runtime_context>
      ```
 2. **Skill 动态发现**：
-   - 自动扫描 `~/.config/oma/skills/` 与 `<workspace>/.oma/skills/` 下的 `SKILL.md`，组装可用技能目录注入 System Prompt。
+   - 扫描 `~/.config/oma/agents/*.md`（global）与 `<workspace>/.oma/agents/*.md`（project），
+     文件名为技能 id，YAML frontmatter 提供 `name` / `description` / `tools`；
+   - 同名时 project 覆盖 global、global 覆盖内嵌模板；内嵌的 5 个模板为只读；
+   - 技能清单经 `GET /api/skills` 暴露，可在设置面板增删改；模板声明的 `tools`
+     同时约束下发给模型的工具清单与可执行工具集合（声明为空表示不限制）。
 
 ---
 
@@ -529,12 +547,21 @@ headers = { Authorization = "Bearer secret_token" }
 ### 6.1 Session Room 隔离与 FIFO 队列
 - 服务端内存中按 `session_id` 维护独立的 `SessionRoom` 实例；
 - 每个 Room 拥有独立的 `tokio::broadcast` 通道与命令 FIFO 队列；
-- 当前正在执行 Turn 时，新输入的 `UserInput` 进入队列排队，广播 `UserMessage { queued: true, ... }`；当前 Turn 完成后自动弹出下一条命令执行。
+- 轮次名额由 `is_running` 的 CAS 抢占，保证同会话任意时刻至多一个执行中的轮次；
+- 抢不到名额的 `UserInput` 进入 FIFO 队列，广播 `UserMessage { queued: true, ... }`
+  与 `QueueUpdated { pending }`；Turn 结束时串行交棒给下一条命令，队列排空后才释放名额。
 
 ### 6.2 主动取消 (Cancel) 级联中断与队列清空
-- **级联中断**：任意客户端发送 `ClientMessage::Cancel {}` 时，触发该 Session 的 `CancellationToken`，终止 LLM 请求并通过 `libc::killpg` 终止正在运行的 Shell 进程组；
-- **清空队列**：立即清空所有排队的命令，广播 `AgentEvent::QueueCleared`；
-- **残存消息落库**：将当前已生成的片段写入数据库，记录 `stop_reason: Cancelled`，广播 `TurnFinished`。
+- **级联中断**：任意客户端发送 `ClientMessage::Cancel {}` 时触发该 Session 的
+  `CancellationToken`。取消信号以 `select!` 短路三处等待：LLM 流式接收、
+  权限审批等待、工具执行本身，因此长命令与挂起审批都会立即返回；
+- **进程回收**：`shell` 工具以 `ProcessGroupGuard` 守卫独立进程组，在超时或
+  future 被取消（drop）时统一 `killpg(SIGKILL)`，不留孤儿进程；
+- **清空队列**：立即清空排队命令，广播 `AgentEvent::QueueCleared` 与 `QueueUpdated { pending: 0 }`；
+- **残存消息落库**：已生成的片段照常落库，未执行的 `tool_use` 补齐占位
+  `tool_result`（保持历史自洽），随后广播 `TurnFinished { stop_reason: Cancelled }`；
+- **单一轮次所有权**：轮次名额由 `is_running` 的 CAS 抢占，取消与排队交棒都
+  经过同一状态机，确保同一会话任意时刻至多一个执行中的轮次。
 
 ### 6.3 Agent 循环熔断器 (Circuit Breaker)
 - 跟踪最近工具调用签名（`tool_name:input_json`）；
@@ -548,9 +575,14 @@ headers = { Authorization = "Bearer secret_token" }
 - **`AllowSession` 作用域**：放行当前会话内该工具名称后续的所有调用，白名单保存在 `SessionRoom` 内存状态中，会话销毁或服务重启自动失效。
 
 ### 6.5 上下文预估与两阶段压缩 (Two-Stage Compaction)
-- **Token 预估机制**：以大模型最新返回的权威 `input_tokens` 为基准，后续新增消息与输出采用启发式估算（代码/中文约 1.5~2 字符/Token，英文约 4 字符/Token）；
-- **第一阶段（工具修剪）**：上下文估算达到模型最大窗口的 70% 时，将 3 轮之前的冗长 `ToolResult` 截断并保留简明摘要；
-- **第二阶段（滑动窗口）**：修剪后仍超限时，固定保留 System 提示词与最新 $K$ 轮对话。
+- **Token 预估机制**：对全部消息块按字符数启发式估算（中文/代码约 2 字符/Token），
+  阈值取模型 `context_len` 的 70%；
+- **第一阶段（工具修剪）**：把最后一条消息之外的冗长 `ToolResult`（>300 字符）内容替换为
+  占位文案。只改内容、不动消息，因此不会破坏 `tool_use` / `tool_result` 的配对；
+- **第二阶段（轮次对齐裁剪）**：仍超限时，从最旧的**完整用户轮次**开始丢弃，
+  直到落在预算内。绝不在轮次中途切断——否则会留下孤儿 `tool_result` 或让
+  assistant 消息成为首条，Anthropic 与 OpenAI 均会以 400 拒绝该请求；
+- 压缩只作用于本次请求的副本，持久化历史保持完整。
 
 ---
 
@@ -568,7 +600,7 @@ headers = { Authorization = "Bearer secret_token" }
 
 ### 7.2 5 大核心内置工具
 1. **`read`**：
-   - 参数：`{ "path": "...", "offset": 1, "limit": 100 }`
+   - 参数：`{ "path": "...", "offset": 1, "limit": 1000 }`（offset 为 1 起始行号）
    - 按行分片安全读取文件。
 2. **`write`**：
    - 参数：`{ "path": "...", "content": "..." }`
@@ -593,7 +625,7 @@ headers = { Authorization = "Bearer secret_token" }
    - 运行完成后的最终摘要文本作为该工具的 `output` 汇聚回主链路。
 
 ### 7.3 MCP 扩展机制
-- Daemon 全局单例管理本地 stdio 进程与远程 SSE 客户端；
+- Daemon 全局单例管理本地 stdio 子进程与远程 HTTP（JSON-RPC over POST）客户端；
 - 导出工具名统一加前缀 `mcp__{server}__{tool}`，避免命名冲突；
 - 参数格式与返回统一桥接至 Agent 核心工具网格。
 
@@ -608,11 +640,19 @@ headers = { Authorization = "Bearer secret_token" }
 | `GET` | `/api/server/status` | 服务端探活、版本号、活跃 Session 与连接数 |
 | `GET` | `/api/sessions?workspace=...` | 获取指定 Workspace 下的所有会话列表元数据 |
 | `POST` | `/api/sessions` | 在指定 Workspace 下创建新会话，返回 `session_id` |
-| `DELETE` | `/api/sessions/:id` | 删除会话及其 SQLite 数据与全部附件目录 |
-| `GET` | `/api/sessions/:id/messages?leaf_id=...` | 获取指定会话当前激活消息链的全部 `ChatMessage` |
-| `GET` | `/api/workspace/tree` | 获取工作区目录文件树 |
-| `GET` | `/api/workspace/file?path=...` | 安全读取工作区文件内容（供代码查看与编辑器） |
-| `POST` | `/api/session/:id/upload` | 客户端上传多模态图片/附件（Multipart），返回 `session_attachment://` 引用 |
+| `DELETE` | `/api/sessions/{id}` | 删除会话及其 SQLite 数据与全部附件目录（运行中的轮次拒绝删除） |
+| `PATCH` | `/api/sessions/{id}` | 重命名会话（广播 `SessionRenamed`） |
+| `GET` | `/api/sessions/{id}/messages?leaf_id=...` | 获取指定会话当前激活消息链的全部 `ChatMessage` |
+| `GET` | `/api/sessions/{id}/messages/tree` | 获取该会话全部消息（含兄弟分支），用于构建历史树 |
+| `DELETE` | `/api/sessions/{id}/messages/{message_id}` | 删除消息及其整棵子树，返回新的当前叶子 |
+| `POST` | `/api/sessions/{id}/attachments` | 上传多模态附件（Multipart，单请求上限 16 MiB），返回 `session_attachment://` 引用 |
+| `GET` | `/api/sessions/{id}/attachments/{name}` | 下载/预览附件 |
+| `GET` | `/api/workspace/tree?workspace=...` | 获取工作区目录文件树（深度 4、最多 2000 项） |
+| `GET` | `/api/workspace/file?workspace=...&path=...` | 读取工作区文件内容（供代码查看与编辑器） |
+| `GET` | `/api/skills?workspace=...` | 列出技能（bundled / global / project） |
+| `GET`/`PUT`/`DELETE` | `/api/skills/{skill_id}` | 读取 / 写入 / 删除技能；内置技能只读 |
+| `GET`/`PUT` | `/api/config` | 读取（默认脱敏 `api_key`，`?reveal=1` 返回明文）/ 写入服务端配置 |
+| `GET` | `/ws` | WebSocket 升级（Bearer 头或 `?token=`，承载全部实时事件与指令） |
 
 ---
 
@@ -632,3 +672,21 @@ headers = { Authorization = "Bearer secret_token" }
   4. 权限审批模态框（AllowOnce, AllowSession, Deny）；
   5. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）；
   6. 设置面板（Token 配置、Model 切换、Agent 切换、Approval Mode 切换）。
+
+---
+
+## 10. 文档与实现的一致性说明
+
+本规格书描述的是**当前实现**。以下为与早期草案不同、以代码为准的决策：
+
+| 事项 | 决策与理由 |
+|---|---|
+| 鉴权传输 | REST 仅接受 `Authorization: Bearer`；WebSocket 握手额外接受 `?token=`，因为浏览器无法为 WS 请求设置自定义头。 |
+| 前端静态资源 | Daemon 不内置资产；存在 `web/dist` 时直出并做 SPA fallback，否则纯 API 服务。 |
+| 上下文压缩 | 第一阶段只替换 `ToolResult` 内容（保持配对），第二阶段按**完整轮次**丢弃前缀；旧的「按消息条数切半」会切出孤儿回执或以 assistant 开头，长会话下必然被厂商 API 拒绝。 |
+| 工具白名单 | Agent 模板的 `tools` 声明是硬约束：既过滤下发给模型的清单，也拦截实际执行；为空表示不限制。 |
+| 会话标识 | `session_id` 会被拼接进文件系统路径，因此全局校验为 `[A-Za-z0-9_-]{1,128}`；附件名同样只允许安全字符并丢弃任何目录成分。 |
+| MCP 远程传输 | 以 JSON-RPC over HTTP POST 实现 `tools/list` 与 `tools/call`，而非 SSE。 |
+| MCP / task 工具 | 工具注册表在交给 `SessionRoom` 之前完成装配（房间持有的是快照），`TaskTool` 通过一次性槽位回填 runner 解开构造环路。 |
+| 并发写 | 会话库写路径使用 `max_connections = 1` 的连接池，读快照走独立只读池；连接池按会话缓存并提供删除前驱逐。 |
+| 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
