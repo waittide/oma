@@ -213,6 +213,8 @@ export interface ProviderConfig {
   api_type: string;
   base_url: string;
   api_key: string;
+  /** 脱敏时随 api_key="***" 下发：真实密钥的字符数，供前端渲染等长占位符 */
+  api_key_len?: number;
   headers: Record<string, string>;
   body: unknown;
   models?: ModelEntry[];

@@ -187,7 +187,7 @@ export const api = {
     return resp.blob();
   },
 
-  /** reveal=1 时服务端返回真实 api_key（默认脱敏为 "***"） */
+  /** reveal=1 时服务端返回真实 api_key（默认脱敏为 "***" 并附 api_key_len） */
   getConfig: (opts?: { reveal?: boolean }) =>
     request<OmaConfig>('/api/config' + (opts?.reveal ? '?reveal=1' : '')),
 

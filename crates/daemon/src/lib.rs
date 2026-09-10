@@ -955,13 +955,13 @@ fn mask_config(config: &OmaConfig) -> serde_json::Value {
     let mut v = serde_json::to_value(config).unwrap_or(serde_json::Value::Null);
     if let Some(providers) = v.get_mut("providers").and_then(|p| p.as_object_mut()) {
         for (_, pv) in providers.iter_mut() {
-            let masked = pv
-                .get("api_key")
-                .and_then(|k| k.as_str())
-                .map(|s| !s.is_empty() && !s.starts_with("env:"))
-                .unwrap_or(false);
-            if masked {
+            let key = pv.get("api_key").and_then(|k| k.as_str()).unwrap_or("");
+            if !key.is_empty() && !key.starts_with("env:") {
+                // 掩码位数与真实密钥等长：前端据此渲染等长占位符，
+                // 否则任何长度的密钥都只显示固定的三位。
+                let key_len = key.chars().count();
                 pv["api_key"] = serde_json::Value::String(API_KEY_MASK.to_string());
+                pv["api_key_len"] = serde_json::json!(key_len);
             }
         }
     }
@@ -1583,6 +1583,55 @@ mod tests {
         Ok(())
     }
 
+    /// 脱敏只针对字面密钥：`env:` 引用原样下发，空密钥不脱敏；
+    /// 且掩码必须携带真实长度，否则前端无法渲染等长占位符。
+    #[test]
+    fn test_mask_config_key_len() {
+        use oma_config::ProviderConfig;
+
+        let mut config = OmaConfig::default();
+        for (name, key) in [("plain", "sk-secret-123"), ("env", "env:MY_KEY"), ("empty", "")] {
+            config.providers.insert(
+                name.into(),
+                ProviderConfig {
+                    api_type: "completion".into(),
+                    base_url: "https://api.example.com/v1".into(),
+                    api_key:  key.into(),
+                    headers:  Default::default(),
+                    body:     serde_json::json!({}),
+                    models:   vec![],
+                },
+            );
+        }
+
+        let v = mask_config(&config);
+        let p = &v["providers"];
+
+        assert_eq!(p["plain"]["api_key"], "***");
+        assert_eq!(p["plain"]["api_key_len"], 13, "掩码位数 = 真实密钥字符数");
+
+        assert_eq!(p["env"]["api_key"], "env:MY_KEY", "env: 引用无需脱敏");
+        assert!(p["env"].get("api_key_len").is_none());
+
+        assert_eq!(p["empty"]["api_key"], "");
+        assert!(p["empty"].get("api_key_len").is_none());
+
+        // 多字节密钥按字符而非字节计数，掩码位数才不会虚高
+        let mut c2 = OmaConfig::default();
+        c2.providers.insert(
+            "cjk".into(),
+            ProviderConfig {
+                api_type: "completion".into(),
+                base_url: "u".into(),
+                api_key:  "密钥密钥".into(),
+                headers:  Default::default(),
+                body:     serde_json::json!({}),
+                models:   vec![],
+            },
+        );
+        assert_eq!(mask_config(&c2)["providers"]["cjk"]["api_key_len"], 4);
+    }
+
     #[tokio::test]
     async fn test_config_api_mask_and_preserve_key() -> Result<()> {
         use oma_config::ProviderConfig;
@@ -1619,6 +1668,8 @@ mod tests {
             .json()
             .await?;
         assert_eq!(got["providers"]["p1"]["api_key"], "***");
+        // 掩码位数须与真实密钥等长，供前端渲染等长占位
+        assert_eq!(got["providers"]["p1"]["api_key_len"], 13);
 
         // 2. PUT 回传掩码：沿用旧密钥并落库
         let mut payload = got.clone();

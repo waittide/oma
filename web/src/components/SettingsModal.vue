@@ -665,11 +665,19 @@ interface ProviderDraft {
   name: string;
   api_type: string;
   base_url: string;
+  /** 明文密钥；`keyMasked` 为 true 时此处为空，界面显示等长掩码占位 */
   api_key: string;
+  /** true = 服务端下发的脱敏值且用户未编辑，提交时回传掩码以保留原密钥 */
+  keyMasked: boolean;
+  /** 真实密钥字符数，供脱敏占位渲染等长掩码 */
+  keyLen: number;
   headers: Record<string, string>;
   body: unknown;
   models: ModelDraft[];
 }
+
+/** 与服务端约定的脱敏占位符：PUT 回传该值时保留服务端既有密钥 */
+const API_KEY_MASK = '***';
 
 const providerDrafts = ref<ProviderDraft[]>([]);
 const savingProviders = ref(false);
@@ -685,7 +693,9 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
     name: origId,
     api_type: p.api_type,
     base_url: p.base_url,
-    api_key: p.api_key,
+    api_key: p.api_key === API_KEY_MASK ? '' : p.api_key,
+    keyMasked: p.api_key === API_KEY_MASK,
+    keyLen: p.api_key === API_KEY_MASK ? (p.api_key_len ?? API_KEY_MASK.length) : 0,
     headers: { ...p.headers },
     body: p.body,
     models: (p.models ?? []).map((m) => ({
@@ -754,6 +764,8 @@ function rebuildDrafts(preserveView = false) {
         if (inherited.apiKey !== null) {
           // 服务端回读的是掩码值；沿用保存前的真实密钥，界面才不会闪回密码态
           draft.api_key = inherited.apiKey;
+          draft.keyMasked = false;
+          draft.keyLen = 0;
           keyRevealed.value[draft.uid] = true;
         }
         return draft;
@@ -775,19 +787,36 @@ function removeActiveProvider() {
 /** 密钥显隐：展示真实密钥需经 reveal 接口获取；隐藏时若未被编辑则回填掩码。 */
 async function toggleKeyVisibility(d: ProviderDraft) {
   const on = !keyRevealed.value[d.uid];
-  if (on && d.api_key === '***') {
-    if (!revealedReal) {
-      const real = await api.getConfig({ reveal: true });
-      revealedReal = Object.fromEntries(
-        Object.entries(real.providers).map(([id, p]) => [id, p.api_key]),
-      );
+  if (on) {
+    if (d.keyMasked) {
+      if (!revealedReal) {
+        const real = await api.getConfig({ reveal: true });
+        revealedReal = Object.fromEntries(
+          Object.entries(real.providers).map(([id, p]) => [id, p.api_key]),
+        );
+      }
+      const orig = d.origId ? revealedReal[d.origId] : undefined;
+      if (orig !== undefined) {
+        d.api_key = orig;
+        d.keyMasked = false;
+      }
     }
+  } else if (revealedReal) {
+    // 未编辑过才收回为掩码；用户改过则保留其输入
     const orig = d.origId ? revealedReal[d.origId] : undefined;
-    if (orig !== undefined) d.api_key = orig;
-  } else if (!on && d.origId && revealedReal && d.api_key === revealedReal[d.origId]) {
-    d.api_key = '***';
+    if (orig !== undefined && d.api_key === orig) {
+      d.api_key = '';
+      d.keyMasked = true;
+      d.keyLen = orig.length;
+    }
   }
   keyRevealed.value[d.uid] = on;
+}
+
+/** 用户一旦编辑密钥即离开脱敏占位态，提交时按输入的字面值发送 */
+function setApiKey(d: ProviderDraft, value: string) {
+  d.api_key = value;
+  d.keyMasked = false;
 }
 
 const INPUT_TYPES = ['text', 'image', 'video'] as const;
@@ -819,6 +848,8 @@ function addProvider() {
     api_type: 'anthropic',
     base_url: 'https://api.anthropic.com',
     api_key: '',
+    keyMasked: false,
+    keyLen: 0,
     headers: {},
     body: {},
     models: [],
@@ -889,12 +920,15 @@ async function saveProviders() {
   savingProviders.value = true;
   try {
     // 脱敏值回传前先还原真实密钥：否则重命名后服务端按新键名找不到旧值，密钥会被清空
-    if (providerDrafts.value.some((d) => d.api_key === '***')) {
+    if (providerDrafts.value.some((d) => d.keyMasked)) {
       const real = await api.getConfig({ reveal: true });
       for (const d of providerDrafts.value) {
-        if (d.api_key !== '***') continue;
+        if (!d.keyMasked) continue;
         const orig = d.origId ? real.providers[d.origId]?.api_key : undefined;
-        if (orig !== undefined) d.api_key = orig;
+        if (orig !== undefined) {
+          d.api_key = orig;
+          d.keyMasked = false;
+        }
       }
     }
 
@@ -903,7 +937,7 @@ async function saveProviders() {
       providers[d.name.trim()] = {
         api_type: d.api_type,
         base_url: d.base_url.trim(),
-        api_key: d.api_key,
+        api_key: d.keyMasked ? API_KEY_MASK : d.api_key,
         headers: d.headers,
         body: d.body,
         models: d.models
@@ -1183,7 +1217,12 @@ function pickLocale(v: Locale) {
 
                   <label class="cfg-label">{{ t('fApiKey') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="d.api_key" :type="keyRevealed[d.uid] ? 'text' : 'password'" />
+                    <OInput
+                      :model-value="d.api_key"
+                      :type="keyRevealed[d.uid] ? 'text' : 'password'"
+                      :placeholder="d.keyMasked ? '*'.repeat(d.keyLen) : ''"
+                      @update:model-value="(v) => setApiKey(d, v)"
+                    />
                     <OTooltip :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
                       <button
                         type="button"
