@@ -876,12 +876,17 @@ pub const BUNDLED_AGENTS: [(&str, &str); 5] = [
     ("build", TEMPLATE_BUILD),
 ];
 
-/// 预设/技能标识符：字母数字与 - _，非空
+/// 预设/技能标识符：字母数字与 - _，非空。
+///
+/// id 直接充当文件名（`<id>.md`、`<id>/SKILL.md`），故按字母表放行：
+/// 用 `is_alphanumeric`（Unicode 感知）而非 `is_ascii_alphanumeric`，
+/// 中文等非 ASCII 名称才能作为合法 id——用户手写的 `猫娘.md` 即属此类。
+/// 路径分隔符、`.`、空白与控制字符都不属于字母数字，天然被挡在路径外。
 fn is_valid_slug(id: &str) -> bool {
     !id.is_empty()
         && id
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Frontmatter 序列化结构；由 serde_yaml 负责转义，
@@ -1398,6 +1403,48 @@ api_key = "k"
         SkillLoader::delete_skill(Some(&ws), "with-scripts", "project").unwrap();
         assert!(!SkillLoader::project_dir(&ws).join("with-scripts").exists());
         assert!(SkillLoader::read_skill(Some(&ws), "with-scripts").is_err());
+    }
+
+    /// 非 ASCII 名称必须是合法 id：用户手写的 `猫娘.md` / `极简.md` 直接充当 id，
+    /// 此前仅放行 ASCII，保存时报 "Invalid preset id"。
+    #[test]
+    fn test_non_ascii_id_allowed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("proj");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        for id in ["猫娘", "极简", "预设-2", "café", "тест"] {
+            AgentLoader::write_agent_file(Some(&ws), id, "project", id, "", &[], "正文")
+                .unwrap_or_else(|e| panic!("id {id:?} 应当合法: {e}"));
+            let got = AgentLoader::read_agent_file(Some(&ws), id).unwrap();
+            assert_eq!(got.body, "正文");
+            // 生成的文件名就是 `<id>.md`（项目层为 <workspace>/.oma/agents）
+            assert!(
+                AgentLoader::project_agents_dir(&ws)
+                    .join(format!("{id}.md"))
+                    .exists()
+            );
+            AgentLoader::delete_agent_file(Some(&ws), id, "project")
+                .unwrap_or_else(|e| panic!("id {id:?} 应当可删: {e}"));
+        }
+
+        // 技能同理（`<id>/SKILL.md`）
+        SkillLoader::write_skill(Some(&ws), "猫娘技能", "project", "猫娘技能", "描述", "正文").unwrap();
+        assert!(
+            SkillLoader::project_dir(&ws)
+                .join("猫娘技能")
+                .join("SKILL.md")
+                .exists()
+        );
+        SkillLoader::delete_skill(Some(&ws), "猫娘技能", "project").unwrap();
+    }
+
+    /// 放行非 ASCII 不得顺带放开路径穿越：分隔符与 `.` 仍被拒。
+    #[test]
+    fn test_non_ascii_widening_keeps_paths_safe() {
+        for evil in ["../x", "a/b", "a\\b", "..", ".", "", "a b", "a\u{0}b", "x.md"] {
+            assert!(!is_valid_slug(evil), "{evil:?} 必须仍被拒绝（id 会拼进文件路径）");
+        }
     }
 
     /// 删除技能的 id 会被拼进路径：穿越型 id 必须被拒且不得删除任何东西。
