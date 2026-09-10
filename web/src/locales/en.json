@@ -215,7 +215,7 @@
     "fRequestFormat": "Request format",
     "modelIndex": "Model {index}",
     "navPresets": "Presets",
-    "presetsHint": "Presets decide which role the agent runs as and which tools it may use. Built-in presets are read-only; save a copy to customize.",
+    "presetsHint": "Presets decide which role the agent runs as and which tools it may use. Built-in presets are read-only; save a copy to customize. Rows are tagged by layer.",
     "presetsEmpty": "No custom presets yet. Click Add to create one.",
     "presetSaved": "Preset saved",
     "presetDeleted": "Preset deleted",
@@ -223,7 +223,9 @@
     "editPreset": "Edit preset",
     "presetId": "Preset ID",
     "presetReadonly": "Built-in presets are read-only. Save as a custom preset to edit.",
-    "skillsHint": "Skills are on-demand domain knowledge injected into the system prompt as a catalog; the model reads them when relevant."
+    "skillsHint": "Skills are discovered across three layers: global ~/.agents/skills, agent ~/.config/oma/skills, project <workspace>/agents/skills; project > agent > global on name clashes. Rows are tagged by layer; only a catalog is injected and the model reads the body when relevant.",
+    "scopeAgent": "Agent",
+    "newScope": "Create in"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"

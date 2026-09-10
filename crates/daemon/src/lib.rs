@@ -1710,12 +1710,20 @@ mod tests {
             .await?;
         assert_eq!(skill_task["scope"], "project");
         assert_eq!(skill_task["name"], "同名技能");
+        // 技能以 <name>/SKILL.md 落盘，并额外暴露技能目录（scripts/ 等资源的基准）
         assert!(
             skill_task["path"]
                 .as_str()
-                .is_some_and(|p| p.ends_with("task.md")),
-            "skill must expose its file path: {}",
+                .is_some_and(|p| p.ends_with("task/SKILL.md")),
+            "skill must expose its SKILL.md path: {}",
             skill_task["path"]
+        );
+        assert!(
+            skill_task["dir"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("agents/skills/task")),
+            "skill must expose its directory: {}",
+            skill_task["dir"]
         );
 
         // 内置预设只读

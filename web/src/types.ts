@@ -101,15 +101,17 @@ export interface AgentFile {
   content: string;
 }
 
-/** 技能文件条目：按需读取的领域知识；scope = global | project */
+/** 技能文件条目：按需读取的领域知识；scope = global | agent | project */
 export interface SkillFile {
   id: string;
   name: string;
   description: string;
   scope: string;
   content: string;
-  /** 磁盘绝对路径，目录注入 System Prompt 时供模型读取 */
+  /** SKILL.md 绝对路径（模型读取技能正文的入口） */
   path: string;
+  /** 技能目录绝对路径（技能自带的 scripts/ 相对此目录解析） */
+  dir: string;
 }
 
 export interface McpServerSummary {

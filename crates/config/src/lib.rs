@@ -355,6 +355,10 @@ impl OmaConfig {
     }
 }
 
+pub fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
 pub fn dirs_config_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -407,8 +411,10 @@ pub struct SkillFile {
     pub scope:       String,
     /// 完整 Markdown 原文（含 frontmatter）
     pub content:     String,
-    /// 磁盘绝对路径：目录注入 System Prompt 时供模型用 read 工具取用
+    /// SKILL.md 的绝对路径（模型读取技能正文的入口）
     pub path:        String,
+    /// 技能目录绝对路径（技能自带的 scripts/ 等资源相对此目录解析）
+    pub dir:         String,
 }
 
 /// Agent Frontmatter 头部结构
@@ -662,25 +668,57 @@ impl AgentLoader {
     }
 }
 
-/// 技能加载器：扫描 `~/.config/oma/skills` 与 `<workspace>/.oma/skills` 下的 Markdown。
+/// 技能加载器：按三层根目录发现技能，每层为 `<root>/<skill-name>/SKILL.md`。
+///
+/// ```text
+/// global   ~/.agents/skills           跨工具的用户级技能
+/// agent    ~/.config/oma/skills       oma 自身的技能
+/// project  <workspace>/agents/skills  随仓库分发的技能
+/// ```
 ///
 /// 技能是可按需取用的领域知识，与 Agent 预设（角色 + 工具白名单）是两套独立机制。
+/// 同名时更具体的一层覆盖更宽泛的一层：project > agent > global。
 pub struct SkillLoader;
 
 impl SkillLoader {
-    /// 全局技能目录 (~/.config/oma/skills)
+    /// 用户级技能根目录 (~/.agents/skills)
     pub fn global_dir() -> Option<PathBuf> {
+        dirs_home().map(|h| h.join(".agents").join("skills"))
+    }
+
+    /// oma 自身的技能目录 (~/.config/oma/skills)
+    pub fn agent_dir() -> Option<PathBuf> {
         dirs_config_dir().map(|d| d.join("oma").join("skills"))
     }
 
-    /// 项目技能目录 (<workspace>/.oma/skills)
+    /// 项目技能目录 (<workspace>/agents/skills)
     pub fn project_dir(workspace: &Path) -> PathBuf {
-        workspace.join(".oma").join("skills")
+        workspace.join("agents").join("skills")
     }
 
-    fn skill_from_path(path: &Path, scope: &str) -> Option<SkillFile> {
-        let id = path.file_stem()?.to_str()?.to_string();
-        let raw = std::fs::read_to_string(path).ok()?;
+    /// 三层根目录，按优先级从低到高排列
+    fn roots(workspace: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
+        let mut roots = Vec::new();
+        if let Some(dir) = Self::global_dir() {
+            roots.push((dir, "global"));
+        }
+        if let Some(dir) = Self::agent_dir() {
+            roots.push((dir, "agent"));
+        }
+        if let Some(ws) = workspace {
+            roots.push((Self::project_dir(ws), "project"));
+        }
+        roots
+    }
+
+    /// 解析单个技能目录（要求其中存在 SKILL.md）
+    fn skill_from_dir(dir: &Path, scope: &str) -> Option<SkillFile> {
+        let id = dir.file_name()?.to_str()?.to_string();
+        let entry = dir.join("SKILL.md");
+        if !entry.is_file() {
+            return None;
+        }
+        let raw = std::fs::read_to_string(&entry).ok()?;
         let (name, description) = match parse_markdown_template(&id, &raw) {
             Ok(t) => (t.name, t.description),
             Err(_) => (id.clone(), String::new()),
@@ -691,19 +729,20 @@ impl SkillLoader {
             description,
             scope: scope.to_string(),
             content: raw,
-            path: path.to_string_lossy().to_string(),
+            path: entry.to_string_lossy().to_string(),
+            dir: dir.to_string_lossy().to_string(),
         })
     }
 
-    fn skills_in_dir(dir: &Path, scope: &str) -> Vec<SkillFile> {
+    fn skills_in_dir(root: &Path, scope: &str) -> Vec<SkillFile> {
         let mut out = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir) {
+        if let Ok(entries) = std::fs::read_dir(root) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                if !path.is_dir() {
                     continue;
                 }
-                if let Some(skill) = Self::skill_from_path(&path, scope) {
+                if let Some(skill) = Self::skill_from_dir(&path, scope) {
                     out.push(skill);
                 }
             }
@@ -712,20 +751,20 @@ impl SkillLoader {
         out
     }
 
-    /// 列出全部技能（同 id 时项目覆盖全局）
-    pub fn list_skills(workspace: Option<&Path>) -> Vec<SkillFile> {
+    /// 按层合并技能：入参按优先级从低到高排列，同名时后一层覆盖前一层。
+    fn collect(layers: &[(PathBuf, &'static str)]) -> Vec<SkillFile> {
         let mut by_id: std::collections::BTreeMap<String, SkillFile> = std::collections::BTreeMap::new();
-        if let Some(dir) = Self::global_dir() {
-            for s in Self::skills_in_dir(&dir, "global") {
-                by_id.insert(s.id.clone(), s);
-            }
-        }
-        if let Some(ws) = workspace {
-            for s in Self::skills_in_dir(&Self::project_dir(ws), "project") {
+        for (root, scope) in layers {
+            for s in Self::skills_in_dir(root, scope) {
                 by_id.insert(s.id.clone(), s);
             }
         }
         by_id.into_values().collect()
+    }
+
+    /// 列出全部技能（同 id 时 project 覆盖 agent、agent 覆盖 global）
+    pub fn list_skills(workspace: Option<&Path>) -> Vec<SkillFile> {
+        Self::collect(&Self::roots(workspace))
     }
 
     /// 读取单个技能
@@ -736,7 +775,7 @@ impl SkillLoader {
             .with_context(|| format!("Skill '{}' not found", id))
     }
 
-    /// 写入技能：scope = global | project
+    /// 写入技能：scope = global | agent | project，落盘为 `<root>/<id>/SKILL.md`
     pub fn write_skill(
         workspace: Option<&Path>,
         id: &str,
@@ -745,40 +784,39 @@ impl SkillLoader {
         description: &str,
         content: &str,
     ) -> Result<PathBuf> {
-        anyhow::ensure!(
-            matches!(scope, "global" | "project"),
-            "Invalid skill scope {:?}: expect global|project",
-            scope
-        );
+        let root = Self::scope_root(workspace, scope)?;
         anyhow::ensure!(is_valid_slug(id), "Invalid skill id {:?}", id);
 
-        let dir = match scope {
-            "global" => Self::global_dir().with_context(|| "Cannot resolve global config dir for skills")?,
-            _ => {
-                let ws = workspace.with_context(|| "workspace is required for project skills")?;
-                Self::project_dir(ws)
-            }
-        };
-        std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create skills dir {}", dir.display()))?;
-        let path = dir.join(format!("{}.md", id));
+        let dir = root.join(id);
+        std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create skill dir {}", dir.display()))?;
+        let path = dir.join("SKILL.md");
         std::fs::write(&path, render_markdown(name, description, &[], content)?)
             .with_context(|| format!("Failed to write skill {}", path.display()))?;
         Ok(path)
     }
 
-    /// 删除技能文件（仅限 global/project 作用域）
+    /// 删除技能：移除整个技能目录（其中可能包含技能自带的 scripts/ 等资源）
     pub fn delete_skill(workspace: Option<&Path>, id: &str, scope: &str) -> Result<()> {
-        let dir = match scope {
-            "global" => Self::global_dir().with_context(|| "Cannot resolve global config dir for skills")?,
+        let root = Self::scope_root(workspace, scope)?;
+        // 严格校验 id 后再拼接：整个目录会被递归删除，绝不允许穿越
+        anyhow::ensure!(is_valid_slug(id), "Invalid skill id {:?}", id);
+
+        let dir = root.join(id);
+        anyhow::ensure!(dir.join("SKILL.md").is_file(), "Skill {} not found", dir.display());
+        std::fs::remove_dir_all(&dir).with_context(|| format!("Failed to delete skill {}", dir.display()))
+    }
+
+    /// 作用域 → 根目录
+    fn scope_root(workspace: Option<&Path>, scope: &str) -> Result<PathBuf> {
+        match scope {
+            "global" => Self::global_dir().with_context(|| "Cannot resolve home dir for global skills"),
+            "agent" => Self::agent_dir().with_context(|| "Cannot resolve config dir for agent skills"),
             "project" => {
                 let ws = workspace.with_context(|| "workspace is required for project skills")?;
-                Self::project_dir(ws)
+                Ok(Self::project_dir(ws))
             }
-            other => anyhow::bail!("Invalid skill scope {:?}: expect global|project", other),
-        };
-        let path = dir.join(format!("{}.md", id));
-        anyhow::ensure!(path.exists(), "Skill file {} not found", path.display());
-        std::fs::remove_file(&path).with_context(|| format!("Failed to delete skill {}", path.display()))
+            other => anyhow::bail!("Invalid skill scope {:?}: expect global|agent|project", other),
+        }
     }
 
     /// 组装注入 System Prompt 的技能目录；无技能时返回 None
@@ -788,7 +826,7 @@ impl SkillLoader {
             return None;
         }
         let mut out = String::from(
-            "<available_skills>\n以下技能是按需取用的领域知识。当任务与某个技能相关时，\n先用 read 工具读取其文件再照此执行；不相关时无需读取。\n",
+            "<available_skills>\n以下技能是按需取用的领域知识。当任务与某个技能相关时，\n先用 read 工具读取其 SKILL.md，再按其指引执行（技能目录内的 scripts/ 等\n资源用相对路径解析）；不相关时无需读取。\n",
         );
         for s in &skills {
             let summary = if s.description.is_empty() {
@@ -796,7 +834,7 @@ impl SkillLoader {
             } else {
                 &s.description
             };
-            out.push_str(&format!("- {}: {} (file: {})\n", s.id, summary, s.path));
+            out.push_str(&format!("- {}: {} (read: {})\n", s.id, summary, s.path));
         }
         out.push_str("</available_skills>");
         Some(out)
@@ -1090,11 +1128,11 @@ api_key = "k"
         assert_ne!(preset.name, "同名技能");
         assert!(preset.tools.contains(&"write".to_string()));
 
-        // 技能存放在独立的 skills 目录下
+        // 技能存放在独立的 skills 目录下，且为 <name>/SKILL.md 布局
         let skill_dir = SkillLoader::project_dir(&ws);
         let preset_dir = AgentLoader::project_agents_dir(&ws);
         assert_ne!(skill_dir, preset_dir);
-        assert!(skill_dir.join("task.md").exists());
+        assert!(skill_dir.join("task").join("SKILL.md").exists());
         assert!(!preset_dir.join("task.md").exists());
     }
 
@@ -1110,6 +1148,7 @@ api_key = "k"
         let skill = SkillLoader::read_skill(Some(&ws), "tricky").unwrap();
         assert_eq!(skill.name, "Tricky: 名称");
         assert_eq!(skill.description, tricky);
+        assert!(skill.path.ends_with("tricky/SKILL.md"));
 
         AgentLoader::write_agent_file(
             Some(&ws),
@@ -1153,13 +1192,150 @@ api_key = "k"
         assert!(with_skills.contains("<runtime_context>"));
     }
 
+    /// 三层技能根目录各自解析到约定路径，且与预设目录分离。
     #[test]
     fn test_skill_dirs_resolve() {
-        // 两个作用域目录都应可解析，且与预设目录分离
-        assert!(SkillLoader::global_dir().is_some());
         let ws = std::path::Path::new("/tmp/ws");
-        assert!(SkillLoader::project_dir(ws).ends_with(".oma/skills"));
+        assert!(
+            SkillLoader::global_dir()
+                .unwrap()
+                .ends_with(".agents/skills"),
+            "global layer is the cross-tool ~/.agents/skills"
+        );
+        assert!(SkillLoader::agent_dir().unwrap().ends_with("oma/skills"));
+        assert!(SkillLoader::project_dir(ws).ends_with("agents/skills"));
         assert!(AgentLoader::project_agents_dir(ws).ends_with(".oma/agents"));
+    }
+
+    /// 三层优先级：同名技能只保留最具体的一层（project > agent > global）。
+    ///
+    /// 用合成目录验证合并逻辑，不读写真实用户目录。
+    #[test]
+    fn test_skill_layer_precedence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mk = |layer: &str, id: &str, name: &str| {
+            let dir = tmp.path().join(layer).join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {}\ndescription: from {}\n---\n\nbody", name, layer),
+            )
+            .unwrap();
+            dir
+        };
+
+        mk("global", "shared", "from-global");
+        mk("agent", "shared", "from-agent");
+        mk("project", "shared", "from-project");
+        mk("global", "only-global", "g");
+
+        // 三层同名 → 只留 project
+        let layers = vec![
+            (tmp.path().join("global"), "global"),
+            (tmp.path().join("agent"), "agent"),
+            (tmp.path().join("project"), "project"),
+        ];
+        let merged = SkillLoader::collect(&layers);
+        let shared: Vec<&SkillFile> = merged.iter().filter(|s| s.id == "shared").collect();
+        assert_eq!(shared.len(), 1, "same id must collapse to one entry");
+        assert_eq!(shared[0].scope, "project");
+        assert_eq!(shared[0].name, "from-project");
+        assert!(merged.iter().any(|s| s.id == "only-global"));
+
+        // 缺少更具体的一层时回落到 agent
+        let two = vec![
+            (tmp.path().join("global"), "global"),
+            (tmp.path().join("agent"), "agent"),
+        ];
+        let merged = SkillLoader::collect(&two);
+        assert_eq!(merged.iter().find(|s| s.id == "shared").unwrap().scope, "agent");
+
+        // 只有 global 时用 global
+        let one = vec![(tmp.path().join("global"), "global")];
+        assert_eq!(
+            SkillLoader::collect(&one)
+                .iter()
+                .find(|s| s.id == "shared")
+                .unwrap()
+                .scope,
+            "global"
+        );
+
+        // 缺少 SKILL.md 的目录不算技能
+        std::fs::create_dir_all(tmp.path().join("project").join("not-a-skill")).unwrap();
+        assert!(
+            SkillLoader::collect(&layers)
+                .iter()
+                .all(|s| s.id != "not-a-skill")
+        );
+    }
+
+    /// 技能以 `<name>/SKILL.md` 落盘，且技能目录内的资源随目录一并删除。
+    #[test]
+    fn test_skill_dir_layout_and_scripts_cleanup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("proj");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        let path = SkillLoader::write_skill(Some(&ws), "with-scripts", "project", "S", "d", "body").unwrap();
+        assert!(
+            path.ends_with("with-scripts/SKILL.md"),
+            "unexpected layout: {}",
+            path.display()
+        );
+
+        // 技能自带资源
+        let scripts = SkillLoader::project_dir(&ws)
+            .join("with-scripts")
+            .join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("run.py"), "print(1)").unwrap();
+
+        let skill = SkillLoader::read_skill(Some(&ws), "with-scripts").unwrap();
+        assert!(skill.path.ends_with("with-scripts/SKILL.md"));
+        assert!(
+            skill.dir.ends_with("with-scripts"),
+            "dir must expose the skill root: {}",
+            skill.dir
+        );
+
+        // 删除技能应连同其资源目录一起移除
+        SkillLoader::delete_skill(Some(&ws), "with-scripts", "project").unwrap();
+        assert!(!SkillLoader::project_dir(&ws).join("with-scripts").exists());
+        assert!(SkillLoader::read_skill(Some(&ws), "with-scripts").is_err());
+    }
+
+    /// 删除技能的 id 会被拼进路径：穿越型 id 必须被拒且不得删除任何东西。
+    #[test]
+    fn test_skill_id_traversal_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("proj");
+        let target = SkillLoader::project_dir(&ws).join("victim");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("SKILL.md"), "---\nname: v\n---\n").unwrap();
+        std::fs::write(tmp.path().join("keep.txt"), "keep").unwrap();
+
+        for evil in ["../../etc", "..", "a/b", "", "a b"] {
+            assert!(
+                SkillLoader::delete_skill(Some(&ws), evil, "project").is_err(),
+                "delete_skill must reject {:?}",
+                evil
+            );
+        }
+        assert!(target.exists(), "victim skill dir must be untouched");
+        assert!(tmp.path().join("keep.txt").exists());
+    }
+
+    /// 作用域取值必须受限，避免把技能写到意料之外的路径。
+    #[test]
+    fn test_skill_scope_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("proj");
+        std::fs::create_dir_all(&ws).unwrap();
+        assert!(SkillLoader::write_skill(Some(&ws), "x", "bundled", "n", "", "b").is_err());
+        assert!(SkillLoader::write_skill(Some(&ws), "x", "../escape", "n", "", "b").is_err());
+        // project 作用域缺 workspace 必须报错
+        assert!(SkillLoader::write_skill(None, "x", "project", "n", "", "b").is_err());
     }
 
     /// 配置键拼错必须报错，而不是被静默忽略。

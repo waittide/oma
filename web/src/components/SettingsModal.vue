@@ -274,8 +274,16 @@ const agentOptions = computed<{ value: string; label: string }[]>(() => {
 });
 
 function scopeLabel(scope: string): string {
-  if (scope === 'bundled') return t('scopeBundled');
-  return scope === 'project' ? t('scopeProject') : t('scopeGlobal');
+  switch (scope) {
+    case 'bundled':
+      return t('scopeBundled');
+    case 'project':
+      return t('scopeProject');
+    case 'agent':
+      return t('scopeAgent');
+    default:
+      return t('scopeGlobal');
+  }
 }
 
 const mcpKindOptions = [
@@ -284,13 +292,24 @@ const mcpKindOptions = [
 ];
 
 // ---------- Agent 预设（决定角色与可用工具） ----------
+/** 预设作用域：oma 全局配置 + 项目 */
 type EditScope = 'global' | 'project';
+/** 技能作用域：跨工具全局 + oma 自身 + 项目（越靠后越具体） */
+type SkillScopeName = 'global' | 'agent' | 'project';
+
 const scopeSel = ref<EditScope>('global');
+const skillScopeSel = ref<SkillScopeName>('global');
 const skillWorkspace = computed(() => activeSession.value?.workspace ?? '');
 
 const scopeOptions = computed(() => [
   { value: 'global' as EditScope, label: t('scopeGlobal') },
   { value: 'project' as EditScope, label: t('scopeProject') },
+]);
+
+const skillScopeOptions = computed(() => [
+  { value: 'global' as SkillScopeName, label: t('scopeGlobal') },
+  { value: 'agent' as SkillScopeName, label: t('scopeAgent') },
+  { value: 'project' as SkillScopeName, label: t('scopeProject') },
 ]);
 
 const presets = ref<AgentFile[]>([]);
@@ -299,8 +318,8 @@ const presetsLoading = ref(false);
 async function loadPresets() {
   presetsLoading.value = true;
   try {
-    const ws = scopeSel.value === 'project' ? skillWorkspace.value : '';
-    presets.value = await api.presets(ws);
+    // 始终带上工作区：项目层才能一并取回，各层在列表中按标签区分
+    presets.value = await api.presets(skillWorkspace.value || undefined);
   } catch (e) {
     toast.error(t('saveFailed', { message: (e as Error).message }));
   } finally {
@@ -392,8 +411,8 @@ const skillsLoading = ref(false);
 async function loadSkills() {
   skillsLoading.value = true;
   try {
-    const ws = scopeSel.value === 'project' ? skillWorkspace.value : '';
-    skills.value = await api.skills(ws);
+    // 始终带上工作区：三层技能一并取回（同名时后端已按 project > agent > global 合并）
+    skills.value = await api.skills(skillWorkspace.value || undefined);
   } catch (e) {
     toast.error(t('saveFailed', { message: (e as Error).message }));
   } finally {
@@ -409,7 +428,7 @@ const skillEdit = reactive({
   name: '',
   description: '',
   content: '',
-  scope: 'global' as EditScope,
+  scope: 'global' as SkillScopeName,
 });
 
 function editSkill(s: SkillFile) {
@@ -420,7 +439,7 @@ function editSkill(s: SkillFile) {
   skillEdit.name = s.name;
   skillEdit.description = s.description;
   skillEdit.content = s.content;
-  skillEdit.scope = s.scope as EditScope;
+  skillEdit.scope = s.scope as SkillScopeName;
 }
 
 function newSkill() {
@@ -431,7 +450,7 @@ function newSkill() {
   skillEdit.name = '';
   skillEdit.description = '';
   skillEdit.content = '';
-  skillEdit.scope = scopeSel.value;
+  skillEdit.scope = skillScopeSel.value;
 }
 
 async function saveSkill() {
@@ -475,7 +494,7 @@ async function removeSkill() {
 }
 
 watch(
-  () => [props.open, section.value, scopeSel.value] as const,
+  () => [props.open, section.value, scopeSel.value, skillScopeSel.value] as const,
   ([o, s]) => {
     if (!o) return;
     if (s === 'presets') void loadPresets();
@@ -1230,6 +1249,7 @@ function pickLocale(v: Locale) {
           <header class="pane-head">
             <h2 class="pane-title">{{ t('navPresets') }}</h2>
             <div class="pane-head-actions">
+              <span class="ctl-label">{{ t('newScope') }}</span>
               <ORadio v-model="scopeSel" :options="scopeOptions" />
               <OButton size="sm" variant="soft" @click="newPreset">{{ t('add') }}</OButton>
             </div>
@@ -1268,13 +1288,14 @@ function pickLocale(v: Locale) {
           <header class="pane-head">
             <h2 class="pane-title">{{ t('navSkills') }}</h2>
             <div class="pane-head-actions">
-              <ORadio v-model="scopeSel" :options="scopeOptions" />
+              <span class="ctl-label">{{ t('newScope') }}</span>
+              <ORadio v-model="skillScopeSel" :options="skillScopeOptions" />
               <OButton size="sm" variant="soft" @click="newSkill">{{ t('add') }}</OButton>
             </div>
           </header>
           <div class="pane-scroll">
             <p class="muted">{{ t('skillsHint') }}</p>
-            <p v-if="scopeSel === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
+            <p v-if="skillScopeSel === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
             <div class="list">
               <div
                 v-for="s in skills"
@@ -1459,11 +1480,7 @@ function pickLocale(v: Locale) {
         </div>
         <div class="field">
           <label>{{ t('scopeLabel') }}</label>
-          <OSelect
-            v-model="skillEdit.scope"
-            :options="[{ value: 'global', label: t('scopeGlobal') }, { value: 'project', label: t('scopeProject') }]"
-            :disabled="!skillEdit.isNew"
-          />
+          <OSelect v-model="skillEdit.scope" :options="skillScopeOptions" :disabled="!skillEdit.isNew" />
         </div>
       </div>
       <div class="field">
@@ -1697,6 +1714,12 @@ function pickLocale(v: Locale) {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+/* 作用域选择器的语义标签：说明它决定的是新建位置，而非列表过滤 */
+.ctl-label {
+  font-size: 11.5px;
+  color: var(--overlay1);
+  white-space: nowrap;
 }
 .pane-scroll {
   flex: 1;
