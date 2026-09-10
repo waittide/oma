@@ -223,11 +223,12 @@
     "editPreset": "Edit preset",
     "presetId": "Preset ID",
     "presetReadonly": "Built-in presets are read-only. Save as a custom preset to edit.",
-    "skillsHint": "Skills are discovered across three layers: global ~/.agents/skills, agent ~/.config/oma/skills, project <workspace>/agents/skills; project > agent > global on name clashes. Rows are tagged by layer; only a catalog is injected and the model reads the body when relevant.",
+    "skillsHint": "Skills are discovered across three layers: global ~/.agents/skills, agent ~/.config/oma/skills, project <workspace>/.agents/skills; project > agent > global on name clashes. Rows are tagged by layer; only a catalog is injected and the model reads the body when relevant.",
     "scopeAgent": "Agent",
     "newScope": "Create in",
     "skillToolsAny": "Inherit all tools",
-    "skillToolsHint": "Leave empty to allow every tool the agent has."
+    "skillToolsHint": "Leave empty to allow every tool the agent has.",
+    "navPresetsSkills": "Presets & Skills"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"

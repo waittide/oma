@@ -223,11 +223,12 @@
     "editPreset": "编辑预设",
     "presetId": "预设标识符",
     "presetReadonly": "内置预设只读，可另存为自定义预设。",
-    "skillsHint": "技能按三层目录发现：全局 ~/.agents/skills、代理 ~/.config/oma/skills、工作区 <workspace>/agents/skills；同名时项目 > 代理 > 全局。列表按层打标签，只注入目录，模型在相关时读取正文。",
+    "skillsHint": "技能按三层目录发现：全局 ~/.agents/skills、代理 ~/.config/oma/skills、工作区 <workspace>/.agents/skills；同名时项目 > 代理 > 全局。列表按层打标签，只注入目录，模型在相关时读取正文。",
     "scopeAgent": "代理",
     "newScope": "新建位置",
     "skillToolsAny": "不限制（全部工具）",
-    "skillToolsHint": "留空表示允许该 Agent 的全部工具。"
+    "skillToolsHint": "留空表示允许该 Agent 的全部工具。",
+    "navPresetsSkills": "预设与技能"
   },
   "app": {
     "title": "Oma - 多端协同 AI Agent 工作台"

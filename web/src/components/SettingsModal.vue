@@ -36,7 +36,9 @@ const emit = defineEmits<{ close: [] }>();
 const { t } = useTranslations('settings');
 const { t: tc } = useTranslations('common');
 
-type SectionId = 'theme' | 'language' | 'defaults' | 'providers' | 'presets' | 'skills' | 'mcp';
+type SectionId = 'theme' | 'language' | 'defaults' | 'providers' | 'presets' | 'mcp';
+/** 预设与技能共用同一个设置入口，由标签切换 */
+type AgentTab = 'presets' | 'skills';
 const section = ref<SectionId>('theme');
 
 /** 参照 opencode 设置弹窗：导航按分组小标题聚类，底部展示应用版本。 */
@@ -53,8 +55,7 @@ const navGroups = computed(() => [
     items: [
       { id: 'defaults' as SectionId, label: t('navDefaults'), icon: LuSquareUserRound },
       { id: 'providers' as SectionId, label: t('navProviders'), icon: LuServer },
-      { id: 'presets' as SectionId, label: t('navPresets'), icon: LuSquareUserRound },
-      { id: 'skills' as SectionId, label: t('navSkills'), icon: LuSparkles },
+      { id: 'presets' as SectionId, label: t('navPresetsSkills'), icon: LuSparkles },
       { id: 'mcp' as SectionId, label: t('navMcp'), icon: LuPlug },
     ],
   },
@@ -298,6 +299,7 @@ type EditScope = 'global' | 'project';
 /** 技能作用域：跨工具全局 + oma 自身 + 项目（越靠后越具体） */
 type SkillScopeName = 'global' | 'agent' | 'project';
 
+const agentTab = ref<AgentTab>('presets');
 const scopeSel = ref<EditScope>('global');
 const skillScopeSel = ref<SkillScopeName>('global');
 const skillWorkspace = computed(() => activeSession.value?.workspace ?? '');
@@ -435,6 +437,12 @@ async function removePreset() {
 const skills = ref<SkillFile[]>([]);
 const skillsLoading = ref(false);
 
+/** 按当前标签分发「新增」：预设与技能各自的编辑器不同 */
+function newAgentItem() {
+  if (agentTab.value === 'presets') newPreset();
+  else newSkill();
+}
+
 async function loadSkills() {
   skillsLoading.value = true;
   try {
@@ -521,11 +529,11 @@ async function removeSkill() {
 }
 
 watch(
-  () => [props.open, section.value, scopeSel.value, skillScopeSel.value] as const,
+  () => [props.open, section.value, agentTab.value, scopeSel.value, skillScopeSel.value] as const,
   ([o, s]) => {
-    if (!o) return;
-    if (s === 'presets') void loadPresets();
-    if (s === 'skills') void loadSkills();
+    if (!o || s !== 'presets') return;
+    if (agentTab.value === 'presets') void loadPresets();
+    else void loadSkills();
   },
 );
 
@@ -1269,78 +1277,87 @@ function pickLocale(v: Locale) {
           </footer>
         </section>
 
-        <!-- Agent 预设 -->
+        <!-- Agent 预设与技能：同一入口，用标签切换 -->
         <section v-else-if="section === 'presets'" class="pane">
           <header class="pane-head">
-            <h2 class="pane-title">{{ t('navPresets') }}</h2>
+            <div class="tabs">
+              <button
+                type="button"
+                class="tab"
+                :class="{ active: agentTab === 'presets' }"
+                @click="agentTab = 'presets'"
+              >
+                {{ t('navPresets') }}
+              </button>
+              <button
+                type="button"
+                class="tab"
+                :class="{ active: agentTab === 'skills' }"
+                @click="agentTab = 'skills'"
+              >
+                {{ t('navSkills') }}
+              </button>
+            </div>
             <div class="pane-head-actions">
               <span class="ctl-label">{{ t('newScope') }}</span>
-              <ORadio v-model="scopeSel" :options="scopeOptions" />
-              <OButton size="sm" variant="soft" @click="newPreset">{{ t('add') }}</OButton>
+              <ORadio v-if="agentTab === 'presets'" v-model="scopeSel" :options="scopeOptions" />
+              <ORadio v-else v-model="skillScopeSel" :options="skillScopeOptions" />
+              <OButton size="sm" variant="soft" @click="newAgentItem">{{ t('add') }}</OButton>
             </div>
           </header>
           <div class="pane-scroll">
-            <p class="muted">{{ t('presetsHint') }}</p>
-            <p v-if="scopeSel === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
-            <div class="list">
-              <div
-                v-for="a in presets"
-                :key="a.scope + '/' + a.id"
-                class="srow skill-row"
-                role="button"
-                @click="editPreset(a)"
-              >
-                <div class="srow-main">
-                  <span class="srow-title">
-                    {{ a.name }}
-                    <span class="scope-tag" :class="'scope-' + a.scope">{{ scopeLabel(a.scope) }}</span>
-                  </span>
-                  <span class="srow-desc">{{ a.description || a.id }}</span>
+            <template v-if="agentTab === 'presets'">
+              <p class="muted">{{ t('presetsHint') }}</p>
+              <p v-if="scopeSel === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
+              <div class="list">
+                <div
+                  v-for="a in presets"
+                  :key="a.scope + '/' + a.id"
+                  class="srow skill-row"
+                  role="button"
+                  @click="editPreset(a)"
+                >
+                  <div class="srow-main">
+                    <span class="srow-title">
+                      {{ a.name }}
+                      <span class="scope-tag" :class="'scope-' + a.scope">{{ scopeLabel(a.scope) }}</span>
+                    </span>
+                    <span class="srow-desc">{{ a.description || a.id }}</span>
+                  </div>
+                  <div class="srow-ctl">
+                    <span class="srow-desc mono">{{ a.tools.join(', ') }}</span>
+                  </div>
                 </div>
-                <div class="srow-ctl">
-                  <span class="srow-desc mono">{{ a.tools.join(', ') }}</span>
+                <div v-if="presets.length === 0 && !presetsLoading" class="srow">
+                  <span class="srow-desc">{{ t('presetsEmpty') }}</span>
                 </div>
               </div>
-              <div v-if="presets.length === 0 && !presetsLoading" class="srow">
-                <span class="srow-desc">{{ t('presetsEmpty') }}</span>
-              </div>
-            </div>
-          </div>
-        </section>
+            </template>
 
-        <!-- 技能 -->
-        <section v-else-if="section === 'skills'" class="pane">
-          <header class="pane-head">
-            <h2 class="pane-title">{{ t('navSkills') }}</h2>
-            <div class="pane-head-actions">
-              <span class="ctl-label">{{ t('newScope') }}</span>
-              <ORadio v-model="skillScopeSel" :options="skillScopeOptions" />
-              <OButton size="sm" variant="soft" @click="newSkill">{{ t('add') }}</OButton>
-            </div>
-          </header>
-          <div class="pane-scroll">
-            <p class="muted">{{ t('skillsHint') }}</p>
-            <p v-if="skillScopeSel === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
-            <div class="list">
-              <div
-                v-for="s in skills"
-                :key="s.scope + '/' + s.id"
-                class="srow skill-row"
-                role="button"
-                @click="editSkill(s)"
-              >
-                <div class="srow-main">
-                  <span class="srow-title">
-                    {{ s.name }}
-                    <span class="scope-tag" :class="'scope-' + s.scope">{{ scopeLabel(s.scope) }}</span>
-                  </span>
-                  <span class="srow-desc">{{ s.description || s.id }}</span>
+            <template v-else>
+              <p class="muted">{{ t('skillsHint') }}</p>
+              <p v-if="skillScopeSel === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
+              <div class="list">
+                <div
+                  v-for="sk in skills"
+                  :key="sk.scope + '/' + sk.id"
+                  class="srow skill-row"
+                  role="button"
+                  @click="editSkill(sk)"
+                >
+                  <div class="srow-main">
+                    <span class="srow-title">
+                      {{ sk.name }}
+                      <span class="scope-tag" :class="'scope-' + sk.scope">{{ scopeLabel(sk.scope) }}</span>
+                    </span>
+                    <span class="srow-desc">{{ sk.description || sk.id }}</span>
+                  </div>
+                </div>
+                <div v-if="skills.length === 0 && !skillsLoading" class="srow">
+                  <span class="srow-desc">{{ t('skillsEmpty') }}</span>
                 </div>
               </div>
-              <div v-if="skills.length === 0 && !skillsLoading" class="srow">
-                <span class="srow-desc">{{ t('skillsEmpty') }}</span>
-              </div>
-            </div>
+            </template>
           </div>
         </section>
 
@@ -1685,6 +1702,9 @@ function pickLocale(v: Locale) {
   font-size: 15px;
   font-weight: 600;
   color: var(--ink);
+}
+.pane-head > .tabs {
+  margin-bottom: 0;
 }
 .tabs-row {
   display: flex;

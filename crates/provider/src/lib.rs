@@ -1093,6 +1093,28 @@ where
 }
 
 /// OpenAI / DeepSeek SSE 解析
+/// 从 completion 流的 `delta` 中提取思维链增量。
+///
+/// 字段名随上游而异：DeepSeek 官方用 `reasoning_content`，OpenRouter 及多数
+/// 聚合网关用 `reasoning`，另有上游只在 `reasoning_details[]` 里给文本。
+/// 同一段内容常被上述字段同时携带（内容一致），故按优先级取其一，避免重复拼接。
+fn extract_reasoning_delta(delta: &serde_json::Value) -> Option<String> {
+    for key in ["reasoning_content", "reasoning"] {
+        if let Some(t) = delta.get(key).and_then(|v| v.as_str()) {
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    let parts: Vec<&str> = delta
+        .get("reasoning_details")?
+        .as_array()?
+        .iter()
+        .filter_map(|d| d.get("text").and_then(|v| v.as_str()))
+        .collect();
+    if parts.is_empty() { None } else { Some(parts.concat()) }
+}
+
 pub async fn parse_openai_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>)
 where
     S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
@@ -1187,13 +1209,9 @@ where
 
                 if let Some(choice) = val.get("choices").and_then(|c| c.get(0)) {
                     if let Some(delta) = choice.get("delta") {
-                        // 1. 深度求索思维链 reasoning_content
-                        if let Some(thinking) = delta.get("reasoning_content").and_then(|v| v.as_str()) {
-                            if !thinking.is_empty() {
-                                let _ = tx
-                                    .send(ProviderStreamEvent::ThinkingDelta(thinking.to_string()))
-                                    .await;
-                            }
+                        // 1. 思维链增量
+                        if let Some(thinking) = extract_reasoning_delta(delta) {
+                            let _ = tx.send(ProviderStreamEvent::ThinkingDelta(thinking)).await;
                         }
 
                         // 2. 普通文本内容 content
@@ -1313,8 +1331,8 @@ where
                                 .await;
                         }
                     }
-                    // 思维链摘要增量
-                    "response.reasoning_summary_text.delta" => {
+                    // 思维链增量（摘要与全文两种事件形态）
+                    "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
                         if let Some(th) = val.get("delta").and_then(|v| v.as_str()) {
                             let _ = tx
                                 .send(ProviderStreamEvent::ThinkingDelta(th.to_string()))
@@ -1737,6 +1755,56 @@ mod tests {
             ProviderStreamEvent::Done {
                 stop_reason: StopReason::ToolUse,
             }
+        );
+    }
+
+    /// 多数聚合网关（OpenRouter 形态）把思维链放在 `reasoning` 而非
+    /// `reasoning_content`；两者必须都能进入 ThinkingDelta。
+    #[tokio::test]
+    async fn test_parse_openai_sse_reasoning_field_variants() {
+        let sse_data = "data: {\"choices\":[{\"delta\":{\"reasoning\":\"第一段\"}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"reasoning\":\"第二段\"}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"content\":\"答复\"}}]}\n\n\
+data: [DONE]\n\n";
+
+        let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
+        let (tx, mut rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            parse_openai_sse(stream, tx).await;
+        });
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            events.push(ev);
+        }
+        assert_eq!(events[0], ProviderStreamEvent::ThinkingDelta("第一段".into()));
+        assert_eq!(events[1], ProviderStreamEvent::ThinkingDelta("第二段".into()));
+        assert_eq!(events[2], ProviderStreamEvent::TextDelta("答复".into()));
+    }
+
+    /// 同一段内容同时出现在 `reasoning` 与 `reasoning_details` 时不得重复拼接；
+    /// 仅有 `reasoning_details` 时须能取到文本。
+    #[tokio::test]
+    async fn test_parse_openai_sse_reasoning_details_fallback() {
+        let sse_data = "data: {\"choices\":[{\"delta\":{\"reasoning\":\"一次\",\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"一次\",\"index\":0}]}}]}\n\n\
+data: {\"choices\":[{\"delta\":{\"reasoning_details\":[{\"type\":\"reasoning.text\",\"text\":\"仅详情\",\"index\":0}]}}]}\n\n\
+data: [DONE]\n\n";
+
+        let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
+        let (tx, mut rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            parse_openai_sse(stream, tx).await;
+        });
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            events.push(ev);
+        }
+        assert_eq!(events[0], ProviderStreamEvent::ThinkingDelta("一次".into()), "不得重复");
+        assert_eq!(
+            events[1],
+            ProviderStreamEvent::ThinkingDelta("仅详情".into()),
+            "无 reasoning 时回退到 reasoning_details"
         );
     }
 
