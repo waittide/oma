@@ -388,6 +388,50 @@ struct ShellInput {
     command: String,
 }
 
+/// 进程组守卫：无论正常返回、超时还是调用方取消（future 被 drop），
+/// 都会向整个进程组发送 SIGKILL。仅设置 `kill_on_drop` 只能杀掉直接子进程，
+/// 命令派生的孙进程会残留。
+struct ProcessGroupGuard {
+    #[cfg(unix)]
+    pid: Option<i32>,
+}
+
+impl ProcessGroupGuard {
+    fn new(pid: Option<u32>) -> Self {
+        #[cfg(unix)]
+        {
+            Self {
+                pid: pid.map(|p| p as i32),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            Self {}
+        }
+    }
+
+    /// 进程已正常回收，解除守卫
+    fn disarm(&mut self) {
+        #[cfg(unix)]
+        {
+            self.pid = None;
+        }
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.pid {
+            #[allow(unsafe_code)]
+            unsafe {
+                libc::killpg(pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl Tool for ShellTool {
     fn name(&self) -> &'static str {
@@ -422,6 +466,8 @@ impl Tool for ShellTool {
         cmd.current_dir(workspace);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // 直接子进程随 future 释放被杀，配合进程组守卫覆盖孙进程
+        cmd.kill_on_drop(true);
 
         // 进程组隔离 (Unix 下设置独立 process group)
         #[cfg(unix)]
@@ -438,42 +484,36 @@ impl Tool for ShellTool {
             Err(e) => return ToolOutput::error(format!("Failed to spawn shell command: {}", e)),
         };
 
-        let pid = child.id();
+        // 守卫覆盖超时与取消两条路径；正常回收后解除
+        let mut guard = ProcessGroupGuard::new(child.id());
 
         let timeout_duration = std::time::Duration::from_secs(self.timeout_secs);
         let run_result = tokio::time::timeout(timeout_duration, child.wait_with_output()).await;
 
         match run_result {
             Ok(Ok(output)) => {
+                guard.disarm();
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let combined = format!("{}{}", stdout, stderr);
-                let is_error = !output.status.success();
                 let truncated = truncate_output(&combined);
-                if is_error {
+                if output.status.success() {
+                    ToolOutput::success(truncated)
+                } else {
                     ToolOutput {
                         output:   format!("Command exited with code {:?}:\n{}", output.status.code(), truncated),
                         is_error: true,
                     }
-                } else {
-                    ToolOutput::success(truncated)
                 }
             }
-            Ok(Err(e)) => ToolOutput::error(format!("Failed to wait for process: {}", e)),
-            Err(_) => {
-                // 超时，强制 kill 进程组
-                #[cfg(unix)]
-                if let Some(pid) = pid {
-                    #[allow(unsafe_code)]
-                    unsafe {
-                        libc::killpg(pid as i32, libc::SIGKILL);
-                    }
-                }
-                ToolOutput::error(format!(
-                    "Command timed out after {} seconds and was killed.",
-                    self.timeout_secs
-                ))
+            Ok(Err(e)) => {
+                guard.disarm();
+                ToolOutput::error(format!("Failed to wait for process: {}", e))
             }
+            Err(_) => ToolOutput::error(format!(
+                "Command timed out after {} seconds and was killed.",
+                self.timeout_secs
+            )),
         }
     }
 }
@@ -706,6 +746,59 @@ mod tests {
         let final_content = tokio::fs::read_to_string(&file_path).await?;
         assert_eq!(final_content, "pub fn foo() { 1; }\nfn bar() {}\npub fn baz() { 3; }\n");
 
+        Ok(())
+    }
+
+    /// 超时必须杀掉整个进程组：`sh -c "sleep & wait"` 会派生孙进程，
+    /// 仅杀直接子进程会让后台命令变成孤儿继续运行。
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_shell_timeout_kills_process_group() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let marker = tmp.path().join("leaked.txt");
+        // 子进程在超时之后才写入标记文件：若进程组未被杀死，文件就会出现
+        let command = format!("(sleep 2; echo leaked > {}) & sleep 30", marker.display());
+
+        let shell = ShellTool::new(1);
+        let out = shell
+            .execute(tmp.path(), serde_json::json!({ "command": command }))
+            .await;
+        assert!(out.is_error, "timeout must be reported as an error: {}", out.output);
+        assert!(out.output.contains("timed out"), "{}", out.output);
+
+        // 等待超过后台子进程的计划写入时间，确认它已随进程组一并终止
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        assert!(
+            !marker.exists(),
+            "background child survived the timeout: it was not killed with the process group"
+        );
+        Ok(())
+    }
+
+    /// 取消（future 被 drop）同样必须回收进程组。
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_shell_cancel_kills_process_group() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let marker = tmp.path().join("cancelled.txt");
+        let command = format!("(sleep 2; echo leaked > {}) & sleep 30", marker.display());
+
+        let shell = ShellTool::new(60);
+        let workspace = tmp.path().to_path_buf();
+        let task = tokio::spawn(async move {
+            shell
+                .execute(&workspace, serde_json::json!({ "command": command }))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        task.abort();
+        let _ = task.await;
+
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        assert!(
+            !marker.exists(),
+            "background child survived cancellation: process group was not killed on drop"
+        );
         Ok(())
     }
 
