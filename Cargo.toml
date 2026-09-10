@@ -37,6 +37,7 @@ url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 
 # --- 内部 crate ---
+oma-client = { path = "crates/client", version = "0.1.0" }
 oma-config = { path = "crates/config", version = "0.1.0" }
 oma-contract = { path = "crates/contract", version = "0.1.0" }
 oma-daemon = { path = "crates/daemon", version = "0.1.0" }
@@ -45,6 +46,7 @@ oma-provider = { path = "crates/provider", version = "0.1.0" }
 oma-runtime = { path = "crates/runtime", version = "0.1.0" }
 oma-storage = { path = "crates/storage", version = "0.1.0" }
 oma-tool = { path = "crates/tool", version = "0.1.0" }
+oma-tui = { path = "crates/tui", version = "0.1.0" }
 
 [workspace.lints.clippy]
 collapsible_else_if = "allow"

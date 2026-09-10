@@ -43,9 +43,12 @@ enum Commands {
     /// 连接 Daemon 启动 TUI 终端客户端
     Tui {
         #[arg(long, default_value = "127.0.0.1:17431")]
-        addr:  String,
+        addr:      String,
         #[arg(long)]
-        token: Option<String>,
+        token:     Option<String>,
+        /// 目标工作区；缺省为当前目录
+        #[arg(long)]
+        workspace: Option<String>,
     },
     /// 查看 Daemon 服务端运行状态
     Status {
@@ -231,9 +234,14 @@ async fn main() -> Result<()> {
         Some(Commands::Web { addr, token, dev, port }) => {
             run_web(&addr, token.as_deref(), dev, port).await?;
         }
-        Some(Commands::Tui { addr, token }) => {
-            println!("Oma TUI mode connecting to http://{} (token: {:?})", addr, token);
-            println!("💡 TUI 模块将在第一期 Web 端完成后全面打通交互。");
+        Some(Commands::Tui { addr, token, workspace }) => {
+            let data_dir = get_data_dir();
+            let token = resolve_or_create_token(token.as_deref(), &data_dir)?;
+            let workspace = match workspace {
+                Some(w) => w,
+                None => std::env::current_dir()?.to_string_lossy().to_string(),
+            };
+            oma_tui::run(&addr, &token, &workspace).await?;
         }
         Some(Commands::Status { addr, token }) => {
             run_status(&addr, token.as_deref()).await?;
