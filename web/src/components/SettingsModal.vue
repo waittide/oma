@@ -297,11 +297,12 @@ const mcpKindOptions = [
 type EditScope = 'global' | 'project';
 /** 技能作用域：跨工具全局 + oma 自身 + 项目（越靠后越具体） */
 type SkillScopeName = 'global' | 'agent' | 'project';
+/** 预设的来源层：内置（只读）+ 可写的全局与项目 */
+type PresetLayer = 'bundled' | EditScope;
 
-const scopeSel = ref<EditScope>('global');
-const skillScopeSel = ref<SkillScopeName>('global');
 const skillWorkspace = computed(() => activeSession.value?.workspace ?? '');
 
+/** 新建位置候选（内置层不可写，故不含在内） */
 const scopeOptions = computed(() => [
   { value: 'global' as EditScope, label: t('scopeGlobal') },
   { value: 'project' as EditScope, label: t('scopeProject') },
@@ -312,6 +313,29 @@ const skillScopeOptions = computed(() => [
   { value: 'agent' as SkillScopeName, label: t('scopeAgent') },
   { value: 'project' as SkillScopeName, label: t('scopeProject') },
 ]);
+
+/** 当前查看的来源层：兼作新建位置，上方标签页即为此切换 */
+const presetLayer = ref<PresetLayer>('bundled');
+const skillLayer = ref<SkillScopeName>('global');
+
+/** 预设的来源层多一层只读的内置；技能三层皆可写 */
+const presetLayers = computed(() => [
+  { value: 'bundled' as PresetLayer, label: t('scopeBundled') },
+  { value: 'global' as PresetLayer, label: t('scopeGlobal') },
+  { value: 'project' as PresetLayer, label: t('scopeProject') },
+]);
+
+/** 内置预设只读：不可新建 */
+const presetLayerReadonly = computed(() => presetLayer.value === 'bundled');
+
+/** 仅当前层的条目（各层列表一次性取回，切层纯前端过滤） */
+const visiblePresets = computed(() => presets.value.filter((a) => a.scope === presetLayer.value));
+const visibleSkills = computed(() => skills.value.filter((sk) => sk.scope === skillLayer.value));
+
+/** 新建预设的落点：内置层不可写，回落到全局 */
+function presetWriteScope(): EditScope {
+  return presetLayer.value === 'bundled' ? 'global' : presetLayer.value;
+}
 
 const presets = ref<AgentFile[]>([]);
 const presetsLoading = ref(false);
@@ -375,7 +399,7 @@ function editPreset(a: AgentFile) {
   presetEdit.description = a.description;
   presetEdit.tools = [...a.tools];
   presetEdit.body = a.body;
-  presetEdit.scope = a.scope === 'bundled' ? scopeSel.value : (a.scope as EditScope);
+  presetEdit.scope = a.scope === 'bundled' ? presetWriteScope() : (a.scope as EditScope);
 }
 
 function newPreset() {
@@ -387,7 +411,7 @@ function newPreset() {
   presetEdit.description = '';
   presetEdit.tools = [];
   presetEdit.body = '';
-  presetEdit.scope = scopeSel.value;
+  presetEdit.scope = presetWriteScope();
 }
 
 async function savePreset() {
@@ -409,6 +433,8 @@ async function savePreset() {
       presetEdit.scope === 'project' ? skillWorkspace.value : '',
     );
     presetEdit.open = false;
+    // 落点可能与当前层不同（编辑器内可改），切过去以免列表里找不到
+    presetLayer.value = presetEdit.scope;
     toast.success(t('presetSaved'));
     await loadPresets();
   } catch (e) {
@@ -477,7 +503,7 @@ function newSkill() {
   skillEdit.name = '';
   skillEdit.description = '';
   skillEdit.body = '';
-  skillEdit.scope = skillScopeSel.value;
+  skillEdit.scope = skillLayer.value;
 }
 
 async function saveSkill() {
@@ -498,6 +524,7 @@ async function saveSkill() {
       skillEdit.scope === 'project' ? skillWorkspace.value : '',
     );
     skillEdit.open = false;
+    skillLayer.value = skillEdit.scope;
     toast.success(t('skillSaved'));
     await loadSkills();
   } catch (e) {
@@ -521,7 +548,7 @@ async function removeSkill() {
 }
 
 watch(
-  () => [props.open, section.value, scopeSel.value, skillScopeSel.value] as const,
+  () => [props.open, section.value] as const,
   ([o, s]) => {
     if (!o) return;
     if (s === 'presets') void loadPresets();
@@ -1308,22 +1335,33 @@ function pickLocale(v: Locale) {
           </footer>
         </section>
 
-        <!-- Agent 预设 -->
+        <!-- Agent 预设（按来源层分标签页） -->
         <section v-else-if="section === 'presets'" class="pane">
           <header class="pane-head">
-            <h2 class="pane-title">{{ t('navPresets') }}</h2>
+            <div class="tabs">
+              <button
+                v-for="l in presetLayers"
+                :key="l.value"
+                type="button"
+                class="tab"
+                :class="{ active: presetLayer === l.value }"
+                @click="presetLayer = l.value"
+              >
+                {{ l.label }}
+              </button>
+            </div>
             <div class="pane-head-actions">
-              <span class="ctl-label">{{ t('newScope') }}</span>
-              <ORadio v-model="scopeSel" :options="scopeOptions" />
-              <OButton size="sm" variant="soft" @click="newPreset">{{ t('add') }}</OButton>
+              <OButton size="sm" variant="soft" :disabled="presetLayerReadonly" @click="newPreset">
+                {{ t('add') }}
+              </OButton>
             </div>
           </header>
           <div class="pane-scroll">
             <p class="muted">{{ t('presetsHint') }}</p>
-            <p v-if="scopeSel === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
+            <p v-if="presetLayer === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
             <div class="list">
               <div
-                v-for="a in presets"
+                v-for="a in visiblePresets"
                 :key="a.scope + '/' + a.id"
                 class="srow skill-row"
                 role="button"
@@ -1340,43 +1378,52 @@ function pickLocale(v: Locale) {
                   <span class="srow-desc mono">{{ a.tools.join(', ') }}</span>
                 </div>
               </div>
-              <div v-if="presets.length === 0 && !presetsLoading" class="srow">
+              <div v-if="visiblePresets.length === 0 && !presetsLoading" class="srow">
                 <span class="srow-desc">{{ t('presetsEmpty') }}</span>
               </div>
             </div>
           </div>
         </section>
 
-        <!-- 技能 -->
+        <!-- 技能（按来源层分标签页） -->
         <section v-else-if="section === 'skills'" class="pane">
           <header class="pane-head">
-            <h2 class="pane-title">{{ t('navSkills') }}</h2>
+            <div class="tabs">
+              <button
+                v-for="l in skillScopeOptions"
+                :key="l.value"
+                type="button"
+                class="tab"
+                :class="{ active: skillLayer === l.value }"
+                @click="skillLayer = l.value"
+              >
+                {{ l.label }}
+              </button>
+            </div>
             <div class="pane-head-actions">
-              <span class="ctl-label">{{ t('newScope') }}</span>
-              <ORadio v-model="skillScopeSel" :options="skillScopeOptions" />
               <OButton size="sm" variant="soft" @click="newSkill">{{ t('add') }}</OButton>
             </div>
           </header>
           <div class="pane-scroll">
             <p class="muted">{{ t('skillsHint') }}</p>
-            <p v-if="skillScopeSel === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
+            <p v-if="skillLayer === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
             <div class="list">
               <div
-                v-for="s in skills"
-                :key="s.scope + '/' + s.id"
+                v-for="sk in visibleSkills"
+                :key="sk.scope + '/' + sk.id"
                 class="srow skill-row"
                 role="button"
-                @click="editSkill(s)"
+                @click="editSkill(sk)"
               >
                 <div class="srow-main">
                   <span class="srow-title">
-                    {{ s.name }}
-                    <span class="scope-tag" :class="'scope-' + s.scope">{{ scopeLabel(s.scope) }}</span>
+                    {{ sk.name }}
+                    <span class="scope-tag" :class="'scope-' + sk.scope">{{ scopeLabel(sk.scope) }}</span>
                   </span>
-                  <span class="srow-desc">{{ s.description || s.id }}</span>
+                  <span class="srow-desc">{{ sk.description || sk.id }}</span>
                 </div>
               </div>
-              <div v-if="skills.length === 0 && !skillsLoading" class="srow">
+              <div v-if="visibleSkills.length === 0 && !skillsLoading" class="srow">
                 <span class="srow-desc">{{ t('skillsEmpty') }}</span>
               </div>
             </div>
@@ -1782,12 +1829,6 @@ function pickLocale(v: Locale) {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-}
-/* 作用域选择器的语义标签：说明它决定的是新建位置，而非列表过滤 */
-.ctl-label {
-  font-size: 11.5px;
-  color: var(--overlay1);
-  white-space: nowrap;
 }
 .pane-scroll {
   flex: 1;
