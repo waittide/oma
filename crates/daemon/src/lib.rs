@@ -9,23 +9,29 @@ use anyhow::Result;
 use axum::{
     Router,
     extract::{
-        Path as AxumPath, Query, State,
+        DefaultBodyLimit, Multipart, Path as AxumPath, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json, Response},
-    routing::{delete, get},
+    routing::{delete, get, post},
 };
 use futures_util::{SinkExt, StreamExt};
 use oma_config::{AgentLoader, OmaConfig};
 use oma_contract::{AgentEvent, ApprovalMode, ChatMessage, ClientMessage, McpServerSummary, Ready, ServerMessage};
 use oma_mcp::McpManager;
-use oma_runtime::{RoomSubagentRunner, SessionRoom};
-use oma_storage::{SessionRecord, StorageManager};
-use oma_tool::{ToolRegistry, resolve_path};
+use oma_runtime::{RoomError, RoomSubagentRunner, SessionRoom};
+use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachment_name};
+use oma_tool::{RunnerSlot, ShellTool, TaskTool, ToolRegistry, resolve_path};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
+
+/// 附件上传体积上限（单请求）
+const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
+/// 工作区文件树最大深度与总条目上限（避免大仓库阻塞/撑爆响应）
+const TREE_MAX_DEPTH: usize = 4;
+const TREE_MAX_ENTRIES: usize = 2000;
 
 /// 解析或自动生成安全随机 Token
 pub fn resolve_or_create_token(custom_token: Option<&str>, base_dir: &Path) -> Result<String> {
@@ -117,33 +123,38 @@ impl DaemonState {
             record = Some(new_rec);
         }
 
-        let record = record.unwrap();
+        let record = record.expect("session record present after create");
 
+        // 先装配完整工具注册表（含 task 与 MCP），再交给房间：
+        // 房间持有的是注册表快照，注册必须发生在构造之前。
         let mut reg = ToolRegistry::new();
         reg.register(Arc::new(oma_tool::ReadTool));
         reg.register(Arc::new(oma_tool::WriteTool));
         reg.register(Arc::new(oma_tool::EditTool));
-        reg.register(Arc::new(oma_tool::ShellTool::default()));
+        reg.register(Arc::new(ShellTool::default()));
+        let runner_slot = Arc::new(RunnerSlot::new());
+        reg.register(Arc::new(TaskTool::new(runner_slot.clone())));
+        for mcp_tool in self.mcp.create_all_tools().await {
+            reg.register(mcp_tool);
+        }
 
         let room = SessionRoom::new(
             session_id,
             workspace,
             self.storage.clone(),
             self.config.clone(),
-            reg.clone(),
-            self.mcp.clone(),
+            reg,
             &record.active_model,
             &record.active_agent,
             record.approval_mode,
         );
 
-        // 挂载 subagent runner
+        // 回填 subagent runner：TaskTool 需要房间，房间持有注册表，一次性槽位解环
         let subagent_runner = Arc::new(RoomSubagentRunner::new(room.clone()));
-        reg.register(Arc::new(oma_tool::TaskTool::new(Some(subagent_runner))));
-
-        // 挂载 MCP 工具
-        for mcp_tool in self.mcp.create_all_tools().await {
-            reg.register(mcp_tool);
+        if let Err(e) = runner_slot.set(subagent_runner) {
+            room.broadcast(AgentEvent::Error {
+                message: format!("Failed to bind subagent runner: {}", e),
+            });
         }
 
         self.rooms
@@ -151,25 +162,72 @@ impl DaemonState {
             .insert(session_id.to_string(), room.clone());
         Ok(room)
     }
+
+    /// 移除房间句柄（删除会话时调用）
+    pub fn drop_room(&self, session_id: &str) -> Option<Arc<SessionRoom>> {
+        self.rooms.write().remove(session_id)
+    }
 }
 
-/// 鉴权校验助手函数
-fn check_auth(headers: &HeaderMap, query_token: Option<&str>, expected_token: &str) -> bool {
-    if let Some(q) = query_token {
-        if q == expected_token {
-            return true;
-        }
-    }
+/// 鉴权来源：HTTP 头优先，其次查询参数（仅 WebSocket 握手需要，浏览器无法自定义 WS 头）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthSource {
+    Header,
+    Query,
+}
 
+/// 校验 Bearer Token。`allow_query` 仅对 WebSocket 握手开放：
+/// REST 走查询参数会把长期凭证写进 URL、访问日志与 Referer。
+fn check_auth(
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+    expected_token: &str,
+    allow_query: bool,
+) -> Option<AuthSource> {
     if let Some(auth_val) = headers.get("authorization") {
         if let Ok(s) = auth_val.to_str() {
             if let Some(token) = s.strip_prefix("Bearer ") {
-                return token.trim() == expected_token;
+                if token.trim() == expected_token {
+                    return Some(AuthSource::Header);
+                }
+                return None;
             }
         }
     }
 
-    false
+    if allow_query {
+        if let Some(q) = query_token {
+            if q == expected_token {
+                return Some(AuthSource::Query);
+            }
+        }
+    }
+
+    None
+}
+
+/// 鉴权失败统一响应
+fn unauthorized() -> (StatusCode, String) {
+    (StatusCode::UNAUTHORIZED, "Invalid or missing bearer token".into())
+}
+
+/// 存储错误 → HTTP 响应
+fn storage_error(e: StorageError) -> (StatusCode, String) {
+    match e {
+        StorageError::InvalidId(m) => (StatusCode::BAD_REQUEST, m),
+        StorageError::NotFound(m) => (StatusCode::NOT_FOUND, m),
+        StorageError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// 房间错误 → HTTP 响应
+fn room_error(e: RoomError) -> (StatusCode, String) {
+    match e {
+        RoomError::Busy(m) => (StatusCode::CONFLICT, m),
+        RoomError::Invalid(m) => (StatusCode::BAD_REQUEST, m),
+        RoomError::NotFound(m) => (StatusCode::NOT_FOUND, m),
+        RoomError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 // =========================================================================
@@ -183,18 +241,12 @@ struct ServerStatus {
     uptime_secs:     u64,
 }
 
-#[derive(Deserialize)]
-struct AuthQuery {
-    token: Option<String>,
-}
-
 async fn handle_server_status(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
-) -> Result<Json<ServerStatus>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<ServerStatus>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
     Ok(Json(ServerStatus {
@@ -207,26 +259,23 @@ async fn handle_server_status(
 #[derive(Deserialize)]
 struct ListSessionsQuery {
     workspace: Option<String>,
-    token:     Option<String>,
 }
 
 async fn handle_list_sessions(
     State(state): State<DaemonState>,
     headers: HeaderMap,
     Query(query): Query<ListSessionsQuery>,
-) -> Result<Json<Vec<SessionRecord>>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<Vec<SessionRecord>>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
-    match state
+    state
         .storage
         .list_sessions(query.workspace.as_deref())
         .await
-    {
-        Ok(list) => Ok(Json(list)),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+        .map(Json)
+        .map_err(storage_error)
 }
 
 #[derive(Deserialize)]
@@ -247,59 +296,68 @@ struct CreateSessionResp {
 async fn handle_create_session(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
     Json(payload): Json<CreateSessionReq>,
-) -> Result<Json<CreateSessionResp>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<CreateSessionResp>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
     let session_id = format!("sess_{}", uuid::Uuid::new_v4().simple());
     let title = payload.title.unwrap_or_else(|| "New Session".into());
-    let model = payload
-        .model
-        .unwrap_or_else(|| state.config.read().default_model.clone());
-    let agent = payload
-        .agent
-        .unwrap_or_else(|| state.config.read().default_agent.clone());
-    let approval_mode = payload
-        .approval_mode
-        .unwrap_or(state.config.read().default_approval_mode);
+    let (default_model, default_agent, default_approval) = {
+        let cfg = state.config.read();
+        (
+            cfg.default_model.clone(),
+            cfg.default_agent.clone(),
+            cfg.default_approval_mode,
+        )
+    };
+    let model = payload.model.unwrap_or(default_model);
+    let agent = payload.agent.unwrap_or(default_agent);
+    let approval_mode = payload.approval_mode.unwrap_or(default_approval);
 
-    match state
+    let rec = state
         .storage
         .create_session(&session_id, &payload.workspace, &title, &model, &agent, approval_mode)
         .await
-    {
-        Ok(rec) => Ok(Json(CreateSessionResp {
-            session_id,
-            session: rec,
-        })),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+        .map_err(storage_error)?;
+
+    Ok(Json(CreateSessionResp {
+        session_id,
+        session: rec,
+    }))
 }
 
 async fn handle_delete_session(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
     AxumPath(session_id): AxumPath<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
-    state.rooms.write().remove(&session_id);
-    match state.storage.delete_session(&session_id).await {
-        Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    // 运行中的会话不允许删除，否则轮次会往已删除的库继续写入
+    if let Some(room) = state.rooms.read().get(&session_id) {
+        if room.is_busy() {
+            return Err((
+                StatusCode::CONFLICT,
+                "Cannot delete a session while a turn is running".into(),
+            ));
+        }
     }
+    state.drop_room(&session_id);
+    state
+        .storage
+        .delete_session(&session_id)
+        .await
+        .map_err(storage_error)?;
+    Ok(Json(serde_json::json!({ "success": true })))
 }
 
 #[derive(Deserialize)]
 struct GetMessagesQuery {
     leaf_id: Option<String>,
-    token:   Option<String>,
 }
 
 async fn handle_get_messages(
@@ -307,68 +365,62 @@ async fn handle_get_messages(
     headers: HeaderMap,
     AxumPath(session_id): AxumPath<String>,
     Query(query): Query<GetMessagesQuery>,
-) -> Result<Json<Vec<ChatMessage>>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<Vec<ChatMessage>>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
-    match state
+    state
         .storage
         .get_linear_messages(&session_id, query.leaf_id.as_deref())
         .await
-    {
-        Ok(msgs) => Ok(Json(msgs)),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+        .map(Json)
+        .map_err(storage_error)
 }
 
 async fn handle_get_message_tree(
     State(state): State<DaemonState>,
     headers: HeaderMap,
     AxumPath(session_id): AxumPath<String>,
-    Query(query): Query<AuthQuery>,
-) -> Result<Json<Vec<ChatMessage>>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<Vec<ChatMessage>>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
-    match state.storage.get_all_messages(&session_id).await {
-        Ok(msgs) => Ok(Json(msgs)),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-    }
+    state
+        .storage
+        .get_all_messages(&session_id)
+        .await
+        .map(Json)
+        .map_err(storage_error)
 }
 
 async fn handle_delete_message(
     State(state): State<DaemonState>,
     headers: HeaderMap,
     AxumPath((session_id, message_id)): AxumPath<(String, String)>,
-    Query(query): Query<AuthQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid token".into()));
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
-    // 有活跃房间时走房间（广播事件并拒绝运行中删除），否则直接操作存储
+    // 有活跃房间时走房间（校验运行状态并广播事件），否则直接操作存储
     let room = state.rooms.read().get(&session_id).cloned();
-    let result = if let Some(room) = room {
-        room.delete_message(&message_id).await
-    } else {
-        state
+    let result = match room {
+        Some(room) => room.delete_message(&message_id).await.map_err(room_error),
+        None => state
             .storage
             .delete_message_subtree(&session_id, &message_id)
             .await
-    };
+            .map_err(storage_error),
+    }?;
 
-    match result {
-        Ok((deleted, leaf)) => Ok(Json(serde_json::json!({
-            "success": true,
-            "deleted": deleted,
-            "current_leaf_id": leaf,
-        }))),
-        Err(e) if e.to_string().contains("not found") => Err((StatusCode::NOT_FOUND, e.to_string())),
-        Err(e) if e.to_string().contains("while a turn is running") => Err((StatusCode::CONFLICT, e.to_string())),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-    }
+    let (deleted, leaf) = result;
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "deleted": deleted,
+        "current_leaf_id": leaf,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -379,36 +431,31 @@ struct RenameSessionReq {
 async fn handle_rename_session(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
     AxumPath(session_id): AxumPath<String>,
     Json(payload): Json<RenameSessionReq>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
-    match state
+    state
         .storage
         .rename_session(&session_id, &payload.title)
         .await
-    {
-        Ok(_) => {
-            if let Some(room) = state.rooms.read().get(&session_id) {
-                room.broadcast(AgentEvent::SessionRenamed {
-                    session_id: session_id.clone(),
-                    title:      payload.title,
-                });
-            }
-            Ok(Json(serde_json::json!({ "success": true })))
-        }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        .map_err(storage_error)?;
+
+    if let Some(room) = state.rooms.read().get(&session_id) {
+        room.broadcast(AgentEvent::SessionRenamed {
+            session_id: session_id.clone(),
+            title:      payload.title,
+        });
     }
+    Ok(Json(serde_json::json!({ "success": true })))
 }
 
 #[derive(Deserialize)]
 struct WorkspaceTreeQuery {
     workspace: String,
-    token:     Option<String>,
 }
 
 #[derive(Serialize)]
@@ -420,86 +467,233 @@ struct FileNode {
     children: Vec<FileNode>,
 }
 
+/// 目录遍历的重活（阻塞 IO）放专用线程池，避免卡住 tokio worker。
 async fn handle_workspace_tree(
     State(state): State<DaemonState>,
     headers: HeaderMap,
     Query(query): Query<WorkspaceTreeQuery>,
-) -> Result<Json<FileNode>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<FileNode>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
-    let ws_path = Path::new(&query.workspace);
-    if !ws_path.exists() {
-        return Err(StatusCode::NOT_FOUND);
+    let ws_path = PathBuf::from(&query.workspace);
+    if !ws_path.is_dir() {
+        return Err((StatusCode::NOT_FOUND, "Workspace not found".into()));
     }
 
-    fn build_tree(path: &Path, rel_root: &Path, max_depth: usize) -> FileNode {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let rel_path = path
-            .strip_prefix(rel_root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let is_dir = path.is_dir();
+    let tree = tokio::task::spawn_blocking(move || {
+        let mut budget = TREE_MAX_ENTRIES;
+        build_tree(&ws_path, &ws_path, TREE_MAX_DEPTH, &mut budget)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        let mut children = Vec::new();
-        if is_dir && max_depth > 0 {
-            if let Ok(entries) = std::fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    let f_name = p
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    if f_name.starts_with('.') || f_name == "target" || f_name == "node_modules" {
-                        continue;
-                    }
-                    children.push(build_tree(&p, rel_root, max_depth - 1));
+    Ok(Json(tree))
+}
+
+/// 递归构建文件树；跳过大目录与点文件，受深度与总条目预算约束。
+fn build_tree(path: &Path, rel_root: &Path, max_depth: usize, budget: &mut usize) -> FileNode {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let rel_path = path
+        .strip_prefix(rel_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string();
+    let is_dir = path.is_dir();
+
+    let mut children = Vec::new();
+    if is_dir && max_depth > 0 && *budget > 0 {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                if *budget == 0 {
+                    break;
                 }
+                let p = entry.path();
+                let f_name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if f_name.starts_with('.') || f_name == "target" || f_name == "node_modules" {
+                    continue;
+                }
+                *budget -= 1;
+                children.push(build_tree(&p, rel_root, max_depth - 1, budget));
             }
         }
-        children.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
-
-        FileNode {
-            name,
-            path: rel_path,
-            is_dir,
-            children,
-        }
     }
+    children.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
 
-    let tree = build_tree(ws_path, ws_path, 4);
-    Ok(Json(tree))
+    FileNode {
+        name,
+        path: rel_path,
+        is_dir,
+        children,
+    }
 }
 
 #[derive(Deserialize)]
 struct WorkspaceFileQuery {
     workspace: String,
     path:      String,
-    token:     Option<String>,
 }
 
 async fn handle_workspace_file(
     State(state): State<DaemonState>,
     headers: HeaderMap,
     Query(query): Query<WorkspaceFileQuery>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
     let target = resolve_path(Path::new(&query.workspace), &query.path);
-    if !target.exists() {
-        return Err(StatusCode::NOT_FOUND);
+    tokio::fs::read_to_string(&target)
+        .await
+        .map(|c| Json(serde_json::json!({ "content": c })))
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Failed to read file: {}", e)))
+}
+
+// =========================================================================
+// 附件上传 / 下载 REST API (/api/sessions/{id}/attachments)
+// =========================================================================
+
+/// 上传附件：保存到会话附件目录并返回 `session_attachment://` 引用，
+/// 该引用可直接放进 `AgentCommand::UserInput.attachments`。
+async fn handle_upload_attachment(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+    mut multipart: Multipart,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
-    match std::fs::read_to_string(&target) {
-        Ok(c) => Ok(Json(serde_json::json!({ "content": c }))),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    // 会话必须存在，避免在任意路径下创建附件目录
+    if state
+        .storage
+        .get_session(&session_id)
+        .await
+        .map_err(storage_error)?
+        .is_none()
+    {
+        return Err((StatusCode::NOT_FOUND, format!("Session {} not found", session_id)));
+    }
+
+    let mut saved: Vec<String> = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid multipart body: {}", e)))?
+    {
+        let Some(file_name) = field.file_name().map(str::to_string) else {
+            continue;
+        };
+        let name = format!("{}-{}", uuid::Uuid::new_v4().simple(), sanitize_file_name(&file_name));
+        let path = state
+            .storage
+            .attachment_path(&session_id, &name)
+            .map_err(storage_error)?;
+
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Failed to read upload: {}", e)))?;
+        if bytes.len() > MAX_UPLOAD_BYTES {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("Attachment exceeds {} bytes", MAX_UPLOAD_BYTES),
+            ));
+        }
+
+        tokio::fs::write(&path, &bytes).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to store attachment: {}", e),
+            )
+        })?;
+        saved.push(format!("session_attachment://{}", name));
+    }
+
+    if saved.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "No file field in upload".into()));
+    }
+    Ok(Json(serde_json::json!({ "success": true, "attachments": saved })))
+}
+
+/// 下载/预览附件
+async fn handle_get_attachment(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath((session_id, name)): AxumPath<(String, String)>,
+) -> Result<Response, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    validate_attachment_name(&name).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let path = state
+        .storage
+        .attachment_path(&session_id, &name)
+        .map_err(storage_error)?;
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Attachment not found: {}", e)))?;
+
+    Ok(([(axum::http::header::CONTENT_TYPE, mime_for(&name))], bytes).into_response())
+}
+
+/// 文件名清洗：先取路径最后一段（丢弃任何目录成分），再收敛为安全字符集，
+/// 并消除 `.`/`..` 这类目录语义，确保拼进路径后无法逃逸出附件目录。
+fn sanitize_file_name(raw: &str) -> String {
+    let base = raw
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(raw)
+        .trim_start_matches(['.', ' ']);
+    // 连续点收敛为单个点，避免残留 `..` 片段
+    let mut cleaned = String::with_capacity(base.len());
+    let mut last_dot = false;
+    for c in base.chars() {
+        let c = if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+            c
+        } else {
+            '_'
+        };
+        if c == '.' {
+            if last_dot {
+                continue;
+            }
+            last_dot = true;
+        } else {
+            last_dot = false;
+        }
+        cleaned.push(c);
+    }
+
+    let cleaned = cleaned.trim_matches('.');
+    let name = if cleaned.is_empty() { "file" } else { cleaned };
+    name.chars().take(48).collect()
+}
+
+fn mime_for(name: &str) -> &'static str {
+    match name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("txt") | Some("md") => "text/plain; charset=utf-8",
+        Some("json") => "application/json",
+        _ => "application/octet-stream",
     }
 }
 
@@ -512,7 +706,6 @@ struct SkillQuery {
     workspace: Option<String>,
     /// global | project；删除时必须显式指定
     scope:     Option<String>,
-    token:     Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -552,9 +745,9 @@ async fn handle_list_skills(
     State(state): State<DaemonState>,
     headers: HeaderMap,
     Query(query): Query<SkillQuery>,
-) -> Result<Json<Vec<oma_config::SkillFile>>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<Vec<oma_config::SkillFile>>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
     Ok(Json(AgentLoader::list_skills(skill_workspace(&query).as_deref())))
 }
@@ -565,18 +758,12 @@ async fn handle_get_skill(
     AxumPath(skill_id): AxumPath<String>,
     Query(query): Query<SkillQuery>,
 ) -> Result<Json<oma_config::SkillFile>, (StatusCode, String)> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid token".into()));
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
     AgentLoader::read_skill(skill_workspace(&query).as_deref(), &skill_id)
         .map(Json)
-        .map_err(|e| {
-            if e.to_string().contains("not found") {
-                (StatusCode::NOT_FOUND, e.to_string())
-            } else {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-            }
-        })
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
 }
 
 async fn handle_put_skill(
@@ -586,8 +773,8 @@ async fn handle_put_skill(
     Query(query): Query<SkillQuery>,
     Json(payload): Json<SkillWriteReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid token".into()));
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
     let scope = payload.scope.as_deref().unwrap_or("project");
     let ws = match scope {
@@ -618,8 +805,8 @@ async fn handle_delete_skill(
     AxumPath(skill_id): AxumPath<String>,
     Query(query): Query<SkillQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid token".into()));
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
     let scope = query.scope.as_deref().unwrap_or("global");
     let ws = match scope {
@@ -629,6 +816,7 @@ async fn handle_delete_skill(
 
     match AgentLoader::delete_skill(ws.as_deref(), &skill_id, scope) {
         Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
+        Err(e) if e.to_string().contains("not found") => Err((StatusCode::NOT_FOUND, e.to_string())),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
@@ -658,7 +846,6 @@ fn mask_config(config: &OmaConfig) -> serde_json::Value {
 
 #[derive(Deserialize)]
 struct GetConfigQuery {
-    token:  Option<String>,
     /// 1 = 返回真实密钥（供设置页「显示密钥」使用）；默认脱敏
     reveal: Option<String>,
 }
@@ -667,9 +854,9 @@ async fn handle_get_config(
     State(state): State<DaemonState>,
     headers: HeaderMap,
     Query(query): Query<GetConfigQuery>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err(StatusCode::UNAUTHORIZED);
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
     let cfg = state.config.read();
@@ -682,11 +869,10 @@ async fn handle_get_config(
 async fn handle_put_config(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return Err((StatusCode::UNAUTHORIZED, "Invalid token".into()));
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
     }
 
     let mut cfg: OmaConfig = serde_json::from_value(payload)
@@ -711,7 +897,8 @@ async fn handle_put_config(
         .validate(&cfg.custom_themes)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid theme config: {e}")))?;
 
-    cfg.save_to_file(&state.config_path).map_err(|e| {
+    // 原子落盘：先写同目录临时文件再 rename，避免半截配置
+    cfg.save_to_file_atomic(&state.config_path).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to persist config: {e}"),
@@ -738,11 +925,24 @@ async fn handle_ws_upgrade(
     Query(query): Query<WsQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if !check_auth(&headers, query.token.as_deref(), &state.token) {
-        return StatusCode::UNAUTHORIZED.into_response();
+    // 浏览器 WebSocket 无法自定义请求头，握手阶段允许查询参数携带 token
+    if check_auth(&headers, query.token.as_deref(), &state.token, true).is_none() {
+        return unauthorized().into_response();
     }
 
     ws.on_upgrade(move |socket| handle_ws_client(socket, state))
+}
+
+/// 向 socket 发送一条服务端消息
+async fn send_server_message(
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    msg: &ServerMessage,
+) -> Result<(), axum::Error> {
+    let json = match serde_json::to_string(msg) {
+        Ok(j) => j,
+        Err(_) => return Ok(()),
+    };
+    sender.send(Message::text(json)).await
 }
 
 async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
@@ -755,12 +955,14 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     let client_msg: ClientMessage = match serde_json::from_str(&first_msg) {
         Ok(m) => m,
         Err(_) => {
-            let err = ServerMessage::Error {
-                message: "Expected ClientMessage::Connect as first packet".into(),
-            };
-            let _ = socket
-                .send(Message::text(serde_json::to_string(&err).unwrap()))
-                .await;
+            let (mut sink, _) = socket.split();
+            let _ = send_server_message(
+                &mut sink,
+                &ServerMessage::Error {
+                    message: "Expected ClientMessage::Connect as first packet".into(),
+                },
+            )
+            .await;
             return;
         }
     };
@@ -771,12 +973,14 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     };
 
     if params.session_id.trim().is_empty() {
-        let err = ServerMessage::Error {
-            message: "session_id is required".into(),
-        };
-        let _ = socket
-            .send(Message::text(serde_json::to_string(&err).unwrap()))
-            .await;
+        let (mut sink, _) = socket.split();
+        let _ = send_server_message(
+            &mut sink,
+            &ServerMessage::Error {
+                message: "session_id is required".into(),
+            },
+        )
+        .await;
         return;
     }
 
@@ -787,80 +991,103 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     {
         Ok(r) => r,
         Err(e) => {
-            let err = ServerMessage::Error {
-                message: format!("Failed to access session room: {}", e),
-            };
-            let _ = socket
-                .send(Message::text(serde_json::to_string(&err).unwrap()))
-                .await;
+            let (mut sink, _) = socket.split();
+            let _ = send_server_message(
+                &mut sink,
+                &ServerMessage::Error {
+                    message: format!("Failed to access session room: {}", e),
+                },
+            )
+            .await;
             return;
         }
     };
 
     // 3. 发送 Ready 握手确认（providers 携带配置的真实模型清单）
-    let providers_map = state.config.read().model_catalog();
-
-    let agents = AgentLoader::list_agents(&room.workspace);
-
-    let current_leaf_id = state
-        .storage
-        .get_session(&room.session_id)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|rec| rec.current_leaf_id);
-
-    let mcp_servers = state
-        .mcp
-        .server_tool_counts()
-        .await
-        .into_iter()
-        .map(|(name, tool_count)| McpServerSummary { name, tool_count })
-        .collect();
-
+    let (providers, active_model, active_agent, approval_mode) = {
+        let cfg = state.config.read();
+        (
+            cfg.model_catalog(),
+            room.active_model.read().clone(),
+            room.active_agent.read().clone(),
+            *room.approval_mode.read(),
+        )
+    };
     let ready = Ready {
         version: "0.1.0".into(),
         session_id: room.session_id.clone(),
         workspace: room.workspace.to_string_lossy().to_string(),
-        active_model: room.active_model.read().clone(),
-        active_agent: room.active_agent.read().clone(),
-        approval_mode: *room.approval_mode.read(),
-        current_leaf_id,
-        providers: providers_map,
-        agents,
-        mcp_servers,
+        active_model,
+        active_agent,
+        approval_mode,
+        current_leaf_id: room
+            .storage
+            .get_session(&room.session_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|rec| rec.current_leaf_id),
+        providers,
+        agents: AgentLoader::list_agents(&room.workspace),
+        mcp_servers: state
+            .mcp
+            .server_tool_counts()
+            .await
+            .into_iter()
+            .map(|(name, tool_count)| McpServerSummary { name, tool_count })
+            .collect(),
     };
 
-    let _ = socket
-        .send(Message::text(
-            serde_json::to_string(&ServerMessage::Ready { ready }).unwrap(),
-        ))
-        .await;
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+    if send_server_message(&mut ws_sender, &ServerMessage::Ready { ready })
+        .await
+        .is_err()
+    {
+        return;
+    }
 
     // 4. 若后台正处于活跃 Turn，发送追赶快照 ActiveTurnCatchUp
     if let Some(catch_up) = room.get_catch_up() {
-        let _ = socket
-            .send(Message::text(
-                serde_json::to_string(&ServerMessage::Event {
-                    event: AgentEvent::ActiveTurnCatchUp(catch_up),
-                })
-                .unwrap(),
-            ))
-            .await;
+        let _ = send_server_message(
+            &mut ws_sender,
+            &ServerMessage::Event {
+                event: AgentEvent::ActiveTurnCatchUp(catch_up),
+            },
+        )
+        .await;
     }
 
     // 5. 双向管道拆分
-    let (mut ws_sender, mut ws_receiver) = socket.split();
     let mut broadcast_rx = room.subscribe();
 
-    // 任务 A: Room 广播转发给 WebSocket
+    // 任务 A: Room 广播转发给 WebSocket。
+    // 广播缓冲溢出（慢客户端）不能直接断连：通知客户端整体回读后继续转发。
     let mut send_task = tokio::spawn(async move {
-        while let Ok(event) = broadcast_rx.recv().await {
-            let s_msg = ServerMessage::Event { event };
-            if let Ok(json) = serde_json::to_string(&s_msg) {
-                if ws_sender.send(Message::text(json)).await.is_err() {
-                    break;
+        loop {
+            let event = match broadcast_rx.recv().await {
+                Ok(event) => event,
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "websocket client lagged; requesting resync");
+                    if send_server_message(
+                        &mut ws_sender,
+                        &ServerMessage::Event {
+                            event: AgentEvent::SyncRequired {},
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
+                    continue;
                 }
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
+            if send_server_message(&mut ws_sender, &ServerMessage::Event { event })
+                .await
+                .is_err()
+            {
+                break;
             }
         }
     });
@@ -874,30 +1101,33 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = ws_receiver.next().await {
             if let Message::Text(txt) = msg {
-                let parsed: Result<ClientMessage, _> = serde_json::from_str(&txt);
-                if let Ok(c_msg) = parsed {
-                    match c_msg {
-                        ClientMessage::Command { command } => {
-                            room_clone
-                                .submit_command(&client_id, &client_name, client_type, command)
-                                .await;
-                        }
-                        ClientMessage::Approval { response } => {
-                            room_clone
-                                .arbiter
-                                .resolve(&response.request_id, response.decision)
-                                .await;
+                let Ok(c_msg) = serde_json::from_str::<ClientMessage>(&txt) else {
+                    continue;
+                };
+                match c_msg {
+                    ClientMessage::Command { command } => {
+                        room_clone
+                            .submit_command(&client_id, &client_name, client_type, command)
+                            .await;
+                    }
+                    ClientMessage::Approval { response } => {
+                        let resolved = room_clone
+                            .arbiter
+                            .resolve(&response.request_id, response.decision)
+                            .await;
+                        // 先到先得：仅首个响应广播，避免多客户端重复提示
+                        if resolved {
                             room_clone.broadcast(AgentEvent::PermissionResolved {
                                 request_id:  response.request_id,
                                 decision:    response.decision,
                                 resolved_by: client_name.clone(),
                             });
                         }
-                        ClientMessage::Cancel {} => {
-                            room_clone.cancel().await;
-                        }
-                        _ => {}
                     }
+                    ClientMessage::Cancel {} => {
+                        room_clone.cancel().await;
+                    }
+                    ClientMessage::Connect { .. } => {}
                 }
             }
         }
@@ -909,6 +1139,8 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         _ = (&mut recv_task) => send_task.abort(),
     }
 }
+
+use tokio::sync::broadcast;
 
 /// 组装 Axum 路由
 pub fn create_router(state: DaemonState) -> Router {
@@ -925,6 +1157,11 @@ pub fn create_router(state: DaemonState) -> Router {
             "/api/sessions/{id}/messages/{message_id}",
             delete(handle_delete_message),
         )
+        .route(
+            "/api/sessions/{id}/attachments",
+            post(handle_upload_attachment).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
+        .route("/api/sessions/{id}/attachments/{name}", get(handle_get_attachment))
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
         .route("/api/skills", get(handle_list_skills))
@@ -944,44 +1181,103 @@ pub fn create_router(state: DaemonState) -> Router {
         router = router.fallback_service(serve_dir);
     }
 
-    router.layer(CorsLayer::permissive()).with_state(state)
+    // 同源前端由本服务直出，跨源仅放行本地开发端口，避免任意站点携带 token 调用
+    router
+        .layer(CorsLayer::new())
+        .layer(axum::middleware::from_fn(dev_cors))
+        .with_state(state)
+}
+
+/// 开发期 CORS：仅放行本机来源（localhost / 127.0.0.1 任意端口）
+async fn dev_cors(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let origin = req
+        .headers()
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let mut resp = next.run(req).await;
+
+    if let Some(origin) = origin.filter(|o| is_local_origin(o)) {
+        let headers = resp.headers_mut();
+        headers.insert(
+            axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            origin
+                .parse()
+                .unwrap_or_else(|_| axum::http::HeaderValue::from_static("null")),
+        );
+        headers.insert(
+            axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
+            axum::http::HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE, OPTIONS"),
+        );
+        headers.insert(
+            axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
+            axum::http::HeaderValue::from_static("authorization, content-type"),
+        );
+    }
+    resp
+}
+
+fn is_local_origin(origin: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let host = rest.split('/').next().unwrap_or("");
+    let host = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    async fn spawn_app(state: DaemonState) -> Result<String> {
+        let app = create_router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Ok(format!("http://{}", addr))
+    }
+
+    async fn test_state(tmp: &Path) -> Result<DaemonState> {
+        let storage = StorageManager::new(tmp).await?;
+        Ok(DaemonState::new(
+            "test_secret_token".to_string(),
+            storage,
+            OmaConfig::default(),
+            tmp.join("config.toml"),
+            Arc::new(McpManager::new()),
+        ))
+    }
+
     #[tokio::test]
     async fn test_daemon_rest_routes() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let storage = StorageManager::new(tmp.path()).await?;
-        let config = OmaConfig::default();
-        let mcp = Arc::new(McpManager::new());
         let token = "test_secret_token".to_string();
-
-        let state = DaemonState::new(token.clone(), storage, config, tmp.path().join("config.toml"), mcp);
-        let app = create_router(state);
-
-        // 使用 tokio 监听随机端口测试服务
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-
+        let base = spawn_app(test_state(tmp.path()).await?).await?;
         let client = reqwest::Client::new();
 
         // 1. 未鉴权请求测试 (401)
         let resp_unauth = client
-            .get(format!("http://{}/api/server/status", addr))
+            .get(format!("{}/api/server/status", base))
             .send()
             .await?;
         assert_eq!(resp_unauth.status(), StatusCode::UNAUTHORIZED);
 
+        // 1b. 查询参数 token 不再接受（仅 WebSocket 握手允许）
+        let resp_query_token = client
+            .get(format!("{}/api/server/status?token={}", base, token))
+            .send()
+            .await?;
+        assert_eq!(resp_query_token.status(), StatusCode::UNAUTHORIZED);
+
         // 2. 带 Bearer 鉴权请求测试 (200)
         let resp_auth = client
-            .get(format!("http://{}/api/server/status", addr))
+            .get(format!("{}/api/server/status", base))
             .header("Authorization", format!("Bearer {}", token))
             .send()
             .await?;
@@ -989,7 +1285,7 @@ mod tests {
 
         // 3. 创建会话测试
         let resp_create = client
-            .post(format!("http://{}/api/sessions", addr))
+            .post(format!("{}/api/sessions", base))
             .header("Authorization", format!("Bearer {}", token))
             .json(&serde_json::json!({
                 "workspace": tmp.path().to_string_lossy().to_string(),
@@ -1003,13 +1299,154 @@ mod tests {
 
         // 4. 会话列表测试
         let resp_list = client
-            .get(format!("http://{}/api/sessions", addr))
+            .get(format!("{}/api/sessions", base))
             .header("Authorization", format!("Bearer {}", token))
             .send()
             .await?;
         assert_eq!(resp_list.status(), StatusCode::OK);
         let list_data: Vec<SessionRecord> = resp_list.json().await?;
         assert_eq!(list_data.len(), 1);
+
+        Ok(())
+    }
+
+    /// session_id 参与文件系统路径拼接：穿越型 id 必须被拒且不得触碰目标目录。
+    #[tokio::test]
+    async fn test_session_id_traversal_is_rejected() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let victim = tmp.path().join("victim");
+        std::fs::create_dir_all(&victim)?;
+        std::fs::write(victim.join("keep.txt"), b"keep")?;
+
+        let token = "test_secret_token".to_string();
+        let base = spawn_app(test_state(tmp.path()).await?).await?;
+        let client = reqwest::Client::new();
+        let auth = format!("Bearer {}", token);
+
+        let resp = client
+            .delete(format!("{}/api/sessions/..%2Fvictim", base))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(victim.join("keep.txt").exists(), "victim must be untouched");
+
+        let resp = client
+            .get(format!("{}/api/sessions/..%2Fescaped/messages", base))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            !tmp.path().join("escaped").exists(),
+            "no dir may be created outside sessions/"
+        );
+
+        Ok(())
+    }
+
+    /// 房间必须暴露完整的工具集（含 task 与 MCP）：注册表在交给房间前就绪。
+    #[tokio::test]
+    async fn test_room_exposes_task_tool() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let state = test_state(tmp.path()).await?;
+        let room = state.get_or_create_room("sess_tools", "/tmp").await?;
+
+        let names: Vec<&str> = room.tools.list().iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"task"), "task tool missing: {:?}", names);
+        assert!(room.tools.get("task").is_some());
+
+        let defs = room.tools.to_definitions(&[]);
+        assert!(
+            defs.iter().any(|d| d["name"] == "task"),
+            "task must be advertised to the model"
+        );
+        Ok(())
+    }
+
+    /// Agent 模板白名单必须同时约束「下发给模型的工具」与「实际可执行的工具」。
+    #[tokio::test]
+    async fn test_agent_tool_whitelist_filters_definitions() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let state = test_state(tmp.path()).await?;
+        let room = state.get_or_create_room("sess_wl", "/tmp").await?;
+
+        let template = AgentLoader::load_agent("explore", &room.workspace)?;
+        assert!(!template.tools.is_empty(), "explore template declares tools");
+        let defs = room.tools.to_definitions(&template.tools);
+        let names: Vec<&str> = defs.iter().filter_map(|d| d["name"].as_str()).collect();
+        assert!(names.contains(&"read"));
+        assert!(!names.contains(&"write"), "write must not be advertised: {:?}", names);
+        assert!(!names.contains(&"edit"));
+        Ok(())
+    }
+
+    /// 上传的附件必须落在会话附件目录内，且文件名不可越权。
+    #[tokio::test]
+    async fn test_attachment_upload_and_fetch() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let token = "test_secret_token".to_string();
+        let state = test_state(tmp.path()).await?;
+        state
+            .storage
+            .create_session("sess_att", "/w", "T", "m", "task", ApprovalMode::Normal)
+            .await?;
+        let base = spawn_app(state).await?;
+        let client = reqwest::Client::new();
+        let auth = format!("Bearer {}", token);
+
+        // 会话不存在 → 404（不得凭空创建目录）
+        let missing = client
+            .post(format!("{}/api/sessions/nope/attachments", base))
+            .header("Authorization", &auth)
+            .multipart(reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(vec![1, 2, 3]).file_name("a.png"),
+            ))
+            .send()
+            .await?;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let resp = client
+            .post(format!("{}/api/sessions/sess_att/attachments", base))
+            .header("Authorization", &auth)
+            .multipart(reqwest::multipart::Form::new().part(
+                "file",
+                reqwest::multipart::Part::bytes(vec![0x89, 0x50, 0x4E, 0x47]).file_name("../../escape.png"),
+            ))
+            .send()
+            .await?;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = resp.json().await?;
+        let reference = body["attachments"][0]
+            .as_str()
+            .expect("attachment reference")
+            .to_string();
+        assert!(reference.starts_with("session_attachment://"));
+
+        // 文件名中的路径穿越片段必须被清洗掉
+        let name = reference.trim_start_matches("session_attachment://");
+        assert!(
+            !name.contains('/') && !name.contains(".."),
+            "name not sanitized: {}",
+            name
+        );
+
+        let fetched = client
+            .get(format!("{}/api/sessions/sess_att/attachments/{}", base, name))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+        assert_eq!(fetched.status(), StatusCode::OK);
+        assert_eq!(fetched.bytes().await?.len(), 4);
+
+        // 下载侧同样拒绝穿越型名称
+        let evil = client
+            .get(format!("{}/api/sessions/sess_att/attachments/..%2F..%2Foma.db", base))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+        assert_eq!(evil.status(), StatusCode::BAD_REQUEST);
 
         Ok(())
     }
@@ -1037,19 +1474,13 @@ mod tests {
         let token = "test_secret_token".to_string();
 
         let state = DaemonState::new(token.clone(), storage, config, config_file.clone(), mcp);
-        let app = create_router(state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let addr = listener.local_addr()?;
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-
+        let base = spawn_app(state).await?;
         let client = reqwest::Client::new();
         let auth = format!("Bearer {}", token);
 
         // 1. GET 下发时密钥被脱敏
         let got: serde_json::Value = client
-            .get(format!("http://{}/api/config", addr))
+            .get(format!("{}/api/config", base))
             .header("Authorization", &auth)
             .send()
             .await?
@@ -1061,7 +1492,7 @@ mod tests {
         let mut payload = got.clone();
         payload["default_model"] = serde_json::json!("p1/gpt-x");
         let put_resp = client
-            .put(format!("http://{}/api/config", addr))
+            .put(format!("{}/api/config", base))
             .header("Authorization", &auth)
             .json(&payload)
             .send()
@@ -1073,5 +1504,28 @@ mod tests {
         assert_eq!(reloaded.providers["p1"].api_key, "sk-secret-123");
 
         Ok(())
+    }
+
+    #[test]
+    fn test_origin_allowlist() {
+        assert!(is_local_origin("http://localhost:5173"));
+        assert!(is_local_origin("http://127.0.0.1:5173"));
+        assert!(is_local_origin("https://localhost"));
+        assert!(!is_local_origin("https://evil.example.com"));
+        assert!(!is_local_origin("http://localhost.evil.com"));
+        assert!(!is_local_origin("null"));
+    }
+
+    #[test]
+    fn test_sanitize_file_name() {
+        // 目录成分被丢弃，穿越片段无法存活
+        assert_eq!(sanitize_file_name("../../escape.png"), "escape.png");
+        assert_eq!(sanitize_file_name("a b/c.png"), "c.png");
+        assert_eq!(sanitize_file_name(".hidden"), "hidden");
+        assert_eq!(sanitize_file_name(".."), "file");
+        assert_eq!(sanitize_file_name(""), "file");
+        assert_eq!(sanitize_file_name("a b.png"), "a_b.png");
+        assert!(!sanitize_file_name("x/../../y.png").contains(".."));
+        assert!(sanitize_file_name(&"x".repeat(200)).len() <= 48);
     }
 }

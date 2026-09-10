@@ -253,6 +253,33 @@ impl OmaConfig {
         Ok(())
     }
 
+    /// 原子回写：先落同目录临时文件并 fsync，再 rename 覆盖。
+    /// 避免进程中断留下半截配置，导致下次启动解析失败。
+    pub fn save_to_file_atomic(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config dir {}", parent.display()))?;
+        }
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
+
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "config.toml".to_string());
+        let tmp = path.with_file_name(format!(".{}.tmp", file_name));
+        {
+            let mut file = std::fs::File::create(&tmp)
+                .with_context(|| format!("Failed to create temp config {}", tmp.display()))?;
+            std::io::Write::write_all(&mut file, content.as_bytes())
+                .with_context(|| format!("Failed to write temp config {}", tmp.display()))?;
+            file.sync_all()
+                .with_context(|| format!("Failed to sync temp config {}", tmp.display()))?;
+        }
+        std::fs::rename(&tmp, path).with_context(|| format!("Failed to replace config {}", path.display()))?;
+        Ok(())
+    }
+
     /// 根据 "provider/model" 字符串定位 Provider 与 Model 配置
     pub fn find_model(&self, selector: &str) -> Option<(&ProviderConfig, ModelConfig)> {
         let mut parts = selector.splitn(2, '/');

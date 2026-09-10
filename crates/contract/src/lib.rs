@@ -106,6 +106,26 @@ pub enum ApprovalMode {
     Auto,
 }
 
+impl ApprovalMode {
+    /// 数据库列存形态（与 serde rename_all 保持一致）
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApprovalMode::Normal => "normal",
+            ApprovalMode::Strict => "strict",
+            ApprovalMode::Auto => "auto",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "normal" => Some(ApprovalMode::Normal),
+            "strict" => Some(ApprovalMode::Strict),
+            "auto" => Some(ApprovalMode::Auto),
+            _ => None,
+        }
+    }
+}
+
 /// 审批响应
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalResponse {
@@ -277,6 +297,12 @@ pub enum AgentEvent {
         queued:      bool,
     },
     QueueCleared {},
+    /// 队列深度变化（服务端权威计数，客户端不再自行累加）
+    QueueUpdated {
+        pending: usize,
+    },
+    /// 客户端落后的历史事件已溢出广播缓冲，必须整体回读持久化状态
+    SyncRequired {},
     ThinkingDelta {
         delta:       String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

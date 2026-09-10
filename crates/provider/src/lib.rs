@@ -20,6 +20,270 @@ pub fn deep_merge_json(target: &mut serde_json::Value, source: &serde_json::Valu
     }
 }
 
+/// 组装 Gemini streamGenerateContent 请求体
+/// （工具声明、图片内联、tool_use/tool_result 往返映射均在此完成）
+fn build_gemini_body(
+    messages: &[ChatMessage],
+    system_prompt: Option<&str>,
+    tools: &[serde_json::Value],
+    model: &ModelConfig,
+) -> serde_json::Value {
+    // tool_use_id → 函数名：functionResponse 需要名称而非 id
+    let mut tool_names: BTreeMap<String, String> = BTreeMap::new();
+    for msg in messages {
+        for b in &msg.content {
+            if let Block::ToolUse { id, name, .. } = b {
+                tool_names.insert(id.clone(), name.clone());
+            }
+        }
+    }
+
+    let mut contents = Vec::new();
+    let mut pending_parts: Vec<serde_json::Value> = Vec::new();
+    let mut pending_role = "user";
+
+    // Gemini 要求同一轮次的 parts 合并进单个 content；连续同角色消息需合并
+    for msg in messages {
+        let role = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "model",
+            // System 通过 systemInstruction 下发
+            Role::System => continue,
+        };
+
+        let mut parts = Vec::new();
+        for b in &msg.content {
+            match b {
+                Block::Text { text } => {
+                    if !text.is_empty() {
+                        parts.push(serde_json::json!({ "text": text }));
+                    }
+                }
+                Block::Thinking { .. } => {} // Gemini 不回传思维链
+                Block::Image { mime_type, data } => {
+                    // 内联 base64 → inlineData；远程/已编码 URL 交由上层内联处理
+                    let (mime, payload) = match data.strip_prefix("data:") {
+                        Some(rest) => match rest.split_once(";base64,") {
+                            Some((m, p)) => (m.to_string(), p.to_string()),
+                            None => (mime_type.clone(), data.clone()),
+                        },
+                        None => (mime_type.clone(), data.clone()),
+                    };
+                    parts.push(serde_json::json!({
+                        "inlineData": { "mimeType": mime, "data": payload }
+                    }));
+                }
+                Block::ToolUse { name, input, .. } => {
+                    parts.push(serde_json::json!({
+                        "functionCall": { "name": name, "args": input }
+                    }));
+                }
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => {
+                    let name = tool_names
+                        .get(tool_use_id)
+                        .cloned()
+                        .unwrap_or_else(|| tool_use_id.clone());
+                    let response = if *is_error {
+                        serde_json::json!({ "error": content })
+                    } else {
+                        serde_json::json!({ "result": content })
+                    };
+                    parts.push(serde_json::json!({
+                        "functionResponse": { "name": name, "response": response }
+                    }));
+                }
+            }
+        }
+
+        if parts.is_empty() {
+            continue;
+        }
+        if !pending_parts.is_empty() && role == pending_role {
+            pending_parts.extend(parts);
+        } else {
+            if !pending_parts.is_empty() {
+                contents.push(serde_json::json!({
+                    "role": pending_role,
+                    "parts": std::mem::take(&mut pending_parts)
+                }));
+            }
+            pending_parts = parts;
+            pending_role = role;
+        }
+    }
+    if !pending_parts.is_empty() {
+        contents.push(serde_json::json!({
+            "role": pending_role,
+            "parts": pending_parts
+        }));
+    }
+
+    let mut body = serde_json::json!({
+        "contents": contents
+    });
+    if let Some(n) = model.max_output {
+        body["generationConfig"] = serde_json::json!({ "maxOutputTokens": n });
+    }
+
+    // 工具声明（Gemini 的 functionDeclarations 形态）
+    if !tools.is_empty() {
+        let declarations: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["parameters"]
+                })
+            })
+            .collect();
+        body["tools"] = serde_json::json!([{ "functionDeclarations": declarations }]);
+    }
+
+    if let Some(sys) = system_prompt {
+        body["systemInstruction"] = serde_json::json!({
+            "parts": [{ "text": sys }]
+        });
+    }
+
+    body
+}
+
+/// 组装 OpenAI / DeepSeek Chat Completions 的 messages 数组
+/// （ToolResult 解构为独立 role: "tool" 消息，带图消息使用 parts 数组形态）
+fn build_openai_messages(messages: &[ChatMessage], system_prompt: Option<&str>) -> Vec<serde_json::Value> {
+    let mut openai_messages = Vec::new();
+    // 组装 OpenAI 格式的 messages（解构 ToolResult 为 role: "tool"）
+    if let Some(sys) = system_prompt {
+        openai_messages.push(serde_json::json!({
+            "role": "system",
+            "content": sys
+        }));
+    }
+
+    for msg in messages {
+        match msg.role {
+            Role::System => {
+                let text = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                openai_messages.push(serde_json::json!({
+                    "role": "system",
+                    "content": text
+                }));
+            }
+            Role::Assistant => {
+                let mut text_parts = Vec::new();
+                let mut tool_calls = Vec::new();
+                for b in &msg.content {
+                    match b {
+                        Block::Text { text } => text_parts.push(text.clone()),
+                        Block::Thinking { .. } => {}
+                        Block::ToolUse { id, name, input } => {
+                            tool_calls.push(serde_json::json!({
+                                "id": id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": input.to_string()
+                                }
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+
+                let mut obj = serde_json::json!({
+                    "role": "assistant",
+                });
+                if !text_parts.is_empty() {
+                    obj["content"] = serde_json::Value::String(text_parts.join("\n"));
+                }
+                if !tool_calls.is_empty() {
+                    obj["tool_calls"] = serde_json::Value::Array(tool_calls);
+                }
+                openai_messages.push(obj);
+            }
+            Role::User => {
+                // 若 User 消息全为 ToolResult，则解构为独立的 role: "tool" 消息
+                let tool_results: Vec<&Block> = msg
+                    .content
+                    .iter()
+                    .filter(|b| matches!(b, Block::ToolResult { .. }))
+                    .collect();
+                if !tool_results.is_empty() && tool_results.len() == msg.content.len() {
+                    for b in tool_results {
+                        if let Block::ToolResult {
+                            tool_use_id, content, ..
+                        } = b
+                        {
+                            openai_messages.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": tool_use_id,
+                                "content": content
+                            }));
+                        }
+                    }
+                } else {
+                    // 带图消息使用 parts 数组形态，纯文本仍走字符串形态
+                    let mut parts = Vec::new();
+                    for b in &msg.content {
+                        match b {
+                            Block::Text { text } => parts.push(serde_json::json!({
+                                "type": "text",
+                                "text": text
+                            })),
+                            Block::Image { mime_type, data } => parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": image_data_url(mime_type, data) }
+                            })),
+                            _ => {}
+                        }
+                    }
+                    let has_image = msg.content.iter().any(|b| matches!(b, Block::Image { .. }));
+                    if has_image {
+                        openai_messages.push(serde_json::json!({
+                            "role": "user",
+                            "content": parts
+                        }));
+                    } else {
+                        let text = parts
+                            .iter()
+                            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        openai_messages.push(serde_json::json!({
+                            "role": "user",
+                            "content": text
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    openai_messages
+}
+
+/// 图片块 → 可直接投递的 data URL（已是 URL/data URI 时原样透传）
+fn image_data_url(mime_type: &str, data: &str) -> String {
+    if data.starts_with("http://") || data.starts_with("https://") || data.starts_with("data:") {
+        data.to_string()
+    } else {
+        format!("data:{};base64,{}", mime_type, data)
+    }
+}
+
 /// 统一 Provider 流式事件
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderStreamEvent {
@@ -150,10 +414,25 @@ pub struct UniversalProvider {
     config: ProviderConfig,
 }
 
+/// 进程级共享 HTTP 客户端：连接池与 TLS 会话在多次请求间复用。
+/// 每次 `UniversalProvider::new` 都新建客户端会让 agent loop 的每一轮
+/// 都重新建连、重新握手 TLS。
+fn shared_http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .pool_idle_timeout(std::time::Duration::from_secs(90))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
+        })
+        .clone()
+}
+
 impl UniversalProvider {
     pub fn new(config: ProviderConfig) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: shared_http_client(),
             config,
         }
     }
@@ -357,102 +636,7 @@ impl UniversalProvider {
         let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
         let api_key = self.config.resolved_api_key();
 
-        // 组装 OpenAI 格式的 messages（解构 ToolResult 为 role: "tool"）
-        let mut openai_messages = Vec::new();
-        if let Some(sys) = system_prompt {
-            openai_messages.push(serde_json::json!({
-                "role": "system",
-                "content": sys
-            }));
-        }
-
-        for msg in messages {
-            match msg.role {
-                Role::System => {
-                    let text = msg
-                        .content
-                        .iter()
-                        .filter_map(|b| match b {
-                            Block::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    openai_messages.push(serde_json::json!({
-                        "role": "system",
-                        "content": text
-                    }));
-                }
-                Role::Assistant => {
-                    let mut text_parts = Vec::new();
-                    let mut tool_calls = Vec::new();
-                    for b in &msg.content {
-                        match b {
-                            Block::Text { text } => text_parts.push(text.clone()),
-                            Block::Thinking { .. } => {}
-                            Block::ToolUse { id, name, input } => {
-                                tool_calls.push(serde_json::json!({
-                                    "id": id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": name,
-                                        "arguments": input.to_string()
-                                    }
-                                }));
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    let mut obj = serde_json::json!({
-                        "role": "assistant",
-                    });
-                    if !text_parts.is_empty() {
-                        obj["content"] = serde_json::Value::String(text_parts.join("\n"));
-                    }
-                    if !tool_calls.is_empty() {
-                        obj["tool_calls"] = serde_json::Value::Array(tool_calls);
-                    }
-                    openai_messages.push(obj);
-                }
-                Role::User => {
-                    // 若 User 消息全为 ToolResult，则解构为独立的 role: "tool" 消息
-                    let tool_results: Vec<&Block> = msg
-                        .content
-                        .iter()
-                        .filter(|b| matches!(b, Block::ToolResult { .. }))
-                        .collect();
-                    if !tool_results.is_empty() && tool_results.len() == msg.content.len() {
-                        for b in tool_results {
-                            if let Block::ToolResult {
-                                tool_use_id, content, ..
-                            } = b
-                            {
-                                openai_messages.push(serde_json::json!({
-                                    "role": "tool",
-                                    "tool_call_id": tool_use_id,
-                                    "content": content
-                                }));
-                            }
-                        }
-                    } else {
-                        let text = msg
-                            .content
-                            .iter()
-                            .filter_map(|b| match b {
-                                Block::Text { text } => Some(text.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        openai_messages.push(serde_json::json!({
-                            "role": "user",
-                            "content": text
-                        }));
-                    }
-                }
-            }
-        }
+        let openai_messages = build_openai_messages(messages, system_prompt);
 
         let mut body = serde_json::json!({
             "model": model.id,
@@ -530,7 +714,7 @@ impl UniversalProvider {
         &self,
         messages: &[ChatMessage],
         system_prompt: Option<&str>,
-        _tools: &[serde_json::Value],
+        tools: &[serde_json::Value],
         model: &ModelConfig,
         tx: mpsc::Sender<ProviderStreamEvent>,
     ) -> Result<()> {
@@ -542,41 +726,7 @@ impl UniversalProvider {
             api_key
         );
 
-        let mut contents = Vec::new();
-        for msg in messages {
-            let role = match msg.role {
-                Role::User => "user",
-                Role::Assistant => "model",
-                Role::System => continue,
-            };
-            let text = msg
-                .content
-                .iter()
-                .filter_map(|b| match b {
-                    Block::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            contents.push(serde_json::json!({
-                "role": role,
-                "parts": [{ "text": text }]
-            }));
-        }
-
-        let mut body = serde_json::json!({
-            "contents": contents
-        });
-        if let Some(n) = model.max_output {
-            body["generationConfig"] = serde_json::json!({ "maxOutputTokens": n });
-        }
-
-        if let Some(sys) = system_prompt {
-            body["systemInstruction"] = serde_json::json!({
-                "parts": [{ "text": sys }]
-            });
-        }
+        let mut body = build_gemini_body(messages, system_prompt, tools, model);
 
         deep_merge_json(&mut body, &self.config.body);
         deep_merge_json(&mut body, &model.body);
@@ -695,17 +845,9 @@ impl UniversalProvider {
                                     "text": text
                                 })),
                                 Block::Image { mime_type, data } => {
-                                    let data_url = if data.starts_with("http://")
-                                        || data.starts_with("https://")
-                                        || data.starts_with("data:")
-                                    {
-                                        data.clone()
-                                    } else {
-                                        format!("data:{};base64,{}", mime_type, data)
-                                    };
                                     content_parts.push(serde_json::json!({
                                         "type": "input_image",
-                                        "image_url": data_url
+                                        "image_url": image_data_url(mime_type, data)
                                     }));
                                 }
                                 _ => {}
@@ -1295,6 +1437,9 @@ where
     E: std::fmt::Display,
 {
     let mut buffer = String::new();
+    // Gemini 的 functionCall 不携带调用 ID，自行合成稳定标识供回传时配对
+    let mut call_seq = 0usize;
+    let mut tool_calls = 0usize;
 
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
@@ -1329,8 +1474,34 @@ where
                         {
                             for part in parts {
                                 if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                                    if !text.is_empty() {
+                                        let _ = tx
+                                            .send(ProviderStreamEvent::TextDelta(text.to_string()))
+                                            .await;
+                                    }
+                                }
+                                // 函数调用：Gemini 以完整对象下发，直接转换为统一事件
+                                if let Some(call) = part.get("functionCall") {
+                                    let name = call
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    if name.is_empty() {
+                                        continue;
+                                    }
+                                    let args = call
+                                        .get("args")
+                                        .cloned()
+                                        .unwrap_or_else(|| serde_json::json!({}));
+                                    call_seq += 1;
+                                    tool_calls += 1;
                                     let _ = tx
-                                        .send(ProviderStreamEvent::TextDelta(text.to_string()))
+                                        .send(ProviderStreamEvent::ToolCall {
+                                            id: format!("gemini_call_{}", call_seq),
+                                            name,
+                                            input: args,
+                                        })
                                         .await;
                                 }
                             }
@@ -1360,7 +1531,11 @@ where
 
     let _ = tx
         .send(ProviderStreamEvent::Done {
-            stop_reason: StopReason::EndTurn,
+            stop_reason: if tool_calls > 0 {
+                StopReason::ToolUse
+            } else {
+                StopReason::EndTurn
+            },
         })
         .await;
 }
@@ -1418,6 +1593,151 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rich.body["temperature"], 0.7);
+    }
+
+    #[test]
+    fn test_image_data_url() {
+        assert_eq!(image_data_url("image/png", "AAAA"), "data:image/png;base64,AAAA");
+        assert_eq!(image_data_url("image/png", "https://x/y.png"), "https://x/y.png");
+        assert_eq!(
+            image_data_url("image/png", "data:image/png;base64,AAAA"),
+            "data:image/png;base64,AAAA"
+        );
+    }
+
+    fn user_with_image() -> ChatMessage {
+        ChatMessage {
+            id:         "m1".into(),
+            parent_id:  None,
+            role:       Role::User,
+            content:    vec![
+                Block::Text { text: "look".into() },
+                Block::Image {
+                    mime_type: "image/png".into(),
+                    data:      "QUJD".into(),
+                },
+            ],
+            created_at: 0,
+        }
+    }
+
+    /// OpenAI 兼容路径此前只 join 文本块，图片被静默丢弃。
+    #[test]
+    fn test_openai_messages_keep_images() {
+        let msgs = build_openai_messages(&[user_with_image()], None);
+        let content = &msgs[0]["content"];
+        assert!(content.is_array(), "image messages must use parts form: {}", content);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+    }
+
+    /// Gemini 此前完全忽略工具声明与图片，且不解析 functionCall。
+    #[test]
+    fn test_gemini_body_maps_tools_images_and_calls() {
+        let assistant_call = ChatMessage {
+            id:         "a1".into(),
+            parent_id:  Some("m1".into()),
+            role:       Role::Assistant,
+            content:    vec![Block::ToolUse {
+                id:    "call_1".into(),
+                name:  "read".into(),
+                input: serde_json::json!({ "path": "x.rs" }),
+            }],
+            created_at: 0,
+        };
+        let tool_result = ChatMessage {
+            id:         "r1".into(),
+            parent_id:  Some("a1".into()),
+            role:       Role::User,
+            content:    vec![Block::ToolResult {
+                tool_use_id: "call_1".into(),
+                content:     "file body".into(),
+                is_error:    false,
+            }],
+            created_at: 0,
+        };
+        let tools = vec![serde_json::json!({
+            "name": "read",
+            "description": "Read a file",
+            "parameters": { "type": "object" }
+        })];
+
+        let body = build_gemini_body(
+            &[user_with_image(), assistant_call, tool_result],
+            Some("sys"),
+            &tools,
+            &ModelConfig {
+                id:                "gemini-pro".into(),
+                name:              "gemini-pro".into(),
+                context_len:       1000,
+                supports_vision:   true,
+                supports_thinking: true,
+                max_output:        Some(256),
+                reasoning_effort:  String::new(),
+                headers:           BTreeMap::new(),
+                body:              serde_json::json!({}),
+            },
+        );
+
+        // 工具声明必须下发
+        assert_eq!(body["tools"][0]["functionDeclarations"][0]["name"], "read");
+        // 图片 → inlineData（剥离 data URI 前缀）
+        assert_eq!(body["contents"][0]["parts"][1]["inlineData"]["data"], "QUJD");
+        // assistant 工具调用 → functionCall
+        assert_eq!(body["contents"][1]["parts"][0]["functionCall"]["name"], "read");
+        // 工具回执 → functionResponse，且使用函数名而非 id
+        assert_eq!(body["contents"][2]["parts"][0]["functionResponse"]["name"], "read");
+        assert_eq!(
+            body["contents"][2]["parts"][0]["functionResponse"]["response"]["result"],
+            "file body"
+        );
+        assert_eq!(body["systemInstruction"]["parts"][0]["text"], "sys");
+    }
+
+    /// Gemini 的 functionCall 必须转换为统一 ToolCall，并把 stop_reason 提升为 ToolUse，
+    /// 否则 agent loop 会跳过工具执行退化成纯聊天。
+    #[tokio::test]
+    async fn test_parse_gemini_sse_function_call() {
+        let sse_data = concat!(
+            r#"data: {"candidates":[{"content":{"parts":[{"text":"calling"}]}}]}"#,
+            "\n\n",
+            r#"data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read","args":{"path":"a.rs"}}}]}}]}"#,
+            "\n\n",
+            r#"data: {"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}}"#,
+            "\n\n",
+        );
+
+        let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
+        let (tx, mut rx) = mpsc::channel(16);
+        parse_gemini_sse(stream, tx).await;
+
+        let mut events = Vec::new();
+        while let Some(ev) = rx.recv().await {
+            events.push(ev);
+        }
+        assert_eq!(events[0], ProviderStreamEvent::TextDelta("calling".into()));
+        assert_eq!(
+            events[1],
+            ProviderStreamEvent::ToolCall {
+                id:    "gemini_call_1".into(),
+                name:  "read".into(),
+                input: serde_json::json!({ "path": "a.rs" }),
+            }
+        );
+        assert_eq!(
+            events[2],
+            ProviderStreamEvent::Usage {
+                input_tokens:  7,
+                output_tokens: 3,
+            }
+        );
+        assert_eq!(
+            events[3],
+            ProviderStreamEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            }
+        );
     }
 
     #[tokio::test]

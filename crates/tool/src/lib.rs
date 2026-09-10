@@ -481,12 +481,34 @@ impl Tool for ShellTool {
 // ==========================================
 // 5. Task Tool (Subagent Delegation)
 // ==========================================
+
+/// 延迟绑定槽：SessionRoom 需要持有工具注册表，而 subagent runner 又需要持有 SessionRoom，
+/// 构成构造期环路；用一次性槽位在房间建成后回填 runner 解环。
+#[derive(Default)]
+pub struct RunnerSlot(std::sync::OnceLock<Arc<dyn SubagentRunner>>);
+
+impl RunnerSlot {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set(&self, runner: Arc<dyn SubagentRunner>) -> Result<()> {
+        self.0
+            .set(runner)
+            .map_err(|_| anyhow::anyhow!("Subagent runner is already bound"))
+    }
+
+    pub fn get(&self) -> Option<&Arc<dyn SubagentRunner>> {
+        self.0.get()
+    }
+}
+
 pub struct TaskTool {
-    runner: Option<Arc<dyn SubagentRunner>>,
+    runner: Arc<RunnerSlot>,
 }
 
 impl TaskTool {
-    pub fn new(runner: Option<Arc<dyn SubagentRunner>>) -> Self {
+    pub fn new(runner: Arc<RunnerSlot>) -> Self {
         Self { runner }
     }
 }
@@ -530,7 +552,7 @@ impl Tool for TaskTool {
             Err(e) => return ToolOutput::error(format!("Invalid arguments for task: {}", e)),
         };
 
-        let Some(runner) = &self.runner else {
+        let Some(runner) = self.runner.get() else {
             return ToolOutput::error("Subagent runner is not configured in this runtime.");
         };
 
@@ -554,16 +576,6 @@ impl ToolRegistry {
         Self { tools: Vec::new() }
     }
 
-    pub fn with_defaults(subagent_runner: Option<Arc<dyn SubagentRunner>>) -> Self {
-        let mut reg = Self::new();
-        reg.register(Arc::new(ReadTool));
-        reg.register(Arc::new(WriteTool));
-        reg.register(Arc::new(EditTool));
-        reg.register(Arc::new(ShellTool::default()));
-        reg.register(Arc::new(TaskTool::new(subagent_runner)));
-        reg
-    }
-
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
         self.tools.push(tool);
     }
@@ -577,9 +589,12 @@ impl ToolRegistry {
     }
 
     /// 导出为大模型工具调用定义 (OpenAI / Anthropic 兼容)
-    pub fn to_definitions(&self) -> Vec<serde_json::Value> {
+    ///
+    /// `allowed` 为空表示不限制；否则仅导出白名单内的工具（Agent 模板的 tools 声明）。
+    pub fn to_definitions(&self, allowed: &[String]) -> Vec<serde_json::Value> {
         self.tools
             .iter()
+            .filter(|t| allowed.is_empty() || allowed.iter().any(|a| a == t.name()))
             .map(|t| {
                 serde_json::json!({
                     "name": t.name(),
