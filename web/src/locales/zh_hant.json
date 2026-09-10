@@ -212,7 +212,11 @@
     "themeNameRequired": "主題名稱不能為空",
     "themeDeleted": "主題已刪除",
     "edit": "編輯",
-    "addProvider": "新增提供者"
+    "addProvider": "新增提供者",
+    "providerConfig": "提供商設定",
+    "modelConfig": "模型設定",
+    "fRequestFormat": "請求格式",
+    "modelIndex": "模型 {index}"
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"

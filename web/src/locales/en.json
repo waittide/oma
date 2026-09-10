@@ -212,7 +212,11 @@
     "themeNameRequired": "Theme name is required",
     "themeDeleted": "Theme deleted",
     "edit": "Edit",
-    "addProvider": "Add provider"
+    "addProvider": "Add provider",
+    "providerConfig": "Provider",
+    "modelConfig": "Models",
+    "fRequestFormat": "Request format",
+    "modelIndex": "Model {index}"
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"
