@@ -533,12 +533,26 @@ headers = { Authorization = "Bearer secret_token" }
      - Active Model: my_anthropic/claude-3-7-sonnet
      </runtime_context>
      ```
-2. **Skill 动态发现**：
+2. **Agent 预设（Preset）动态发现**：
    - 扫描 `~/.config/oma/agents/*.md`（global）与 `<workspace>/.oma/agents/*.md`（project），
-     文件名为技能 id，YAML frontmatter 提供 `name` / `description` / `tools`；
+     文件名为预设 id，YAML frontmatter 提供 `name` / `description` / `tools`；
    - 同名时 project 覆盖 global、global 覆盖内嵌模板；内嵌的 5 个模板为只读；
-   - 技能清单经 `GET /api/skills` 暴露，可在设置面板增删改；模板声明的 `tools`
-     同时约束下发给模型的工具清单与可执行工具集合（声明为空表示不限制）。
+   - 清单经 `GET /api/presets` 暴露，可在设置面板「预设」页增删改；
+     预设声明的 `tools` 同时约束下发给模型的工具清单与可执行工具集合
+     （声明为空表示不限制）。
+
+3. **技能（Skill）是按需取用的领域知识，与 Agent 预设相互独立**：
+   - 扫描 `~/.config/oma/skills/*.md`（global）与 `<workspace>/.oma/skills/*.md`（project）；
+   - 两者存储、端点（`/api/skills` vs `/api/presets`）、语义均不重叠：
+     预设决定「以什么角色、能用哪些工具运行」，技能只是一段知识文档，
+     同名也不会互相覆盖；
+   - 技能**不**常驻 System Prompt，而是以目录形式注入（仅 id、描述与磁盘绝对路径）：
+     ```text
+     <available_skills>
+     - cargo-conventions: Rust 构建约定 (file: /home/me/.config/oma/skills/cargo-conventions.md)
+     </available_skills>
+     ```
+     模型在任务相关时用 `read` 工具读取；无关轮次不占用上下文。
 
 ---
 
@@ -657,8 +671,10 @@ headers = { Authorization = "Bearer secret_token" }
 | `GET` | `/api/sessions/{id}/attachments/{name}` | 下载/预览附件 |
 | `GET` | `/api/workspace/tree?workspace=...` | 获取工作区目录文件树（深度 4、最多 2000 项） |
 | `GET` | `/api/workspace/file?workspace=...&path=...` | 读取工作区文件内容（供代码查看与编辑器） |
-| `GET` | `/api/skills?workspace=...` | 列出技能（bundled / global / project） |
-| `GET`/`PUT`/`DELETE` | `/api/skills/{skill_id}` | 读取 / 写入 / 删除技能；内置技能只读 |
+| `GET` | `/api/presets?workspace=...` | 列出 Agent 预设（bundled / global / project） |
+| `GET`/`PUT`/`DELETE` | `/api/presets/{preset_id}` | 读取 / 写入 / 删除预设；内置预设只读 |
+| `GET` | `/api/skills?workspace=...` | 列出技能（global / project） |
+| `GET`/`PUT`/`DELETE` | `/api/skills/{skill_id}` | 读取 / 写入 / 删除技能 |
 | `GET`/`PUT` | `/api/config` | 读取（默认脱敏 `api_key`，`?reveal=1` 返回明文）/ 写入服务端配置 |
 | `GET` | `/ws` | WebSocket 升级（Bearer 头或 `?token=`，承载全部实时事件与指令） |
 
@@ -698,3 +714,5 @@ headers = { Authorization = "Bearer secret_token" }
 | MCP / task 工具 | 工具注册表在交给 `SessionRoom` 之前完成装配（房间持有的是快照），`TaskTool` 通过一次性槽位回填 runner 解开构造环路。 |
 | 并发写 | 会话库写路径使用 `max_connections = 1` 的连接池，读快照走独立只读池；连接池按会话缓存并提供删除前驱逐。 |
 | 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
+| 配置校验 | `OmaConfig` 启用 `deny_unknown_fields`：拼错的键名（或前端字段映射错误）在 `PUT /api/config` 直接 400，不再「保存成功但配置没变」；启动时配置文件解析失败即报错退出，而非静默回退默认值。 |
+| 预设与技能 | 两者是独立机制：预设 = 角色 + 工具白名单；技能 = 按需读取的知识。分属 `/api/presets` 与 `/api/skills`，同名互不覆盖。 |

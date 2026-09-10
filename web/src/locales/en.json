@@ -213,7 +213,17 @@
     "providerConfig": "Provider",
     "modelConfig": "Models",
     "fRequestFormat": "Request format",
-    "modelIndex": "Model {index}"
+    "modelIndex": "Model {index}",
+    "navPresets": "Presets",
+    "presetsHint": "Presets decide which role the agent runs as and which tools it may use. Built-in presets are read-only; save a copy to customize.",
+    "presetsEmpty": "No custom presets yet. Click Add to create one.",
+    "presetSaved": "Preset saved",
+    "presetDeleted": "Preset deleted",
+    "newPreset": "New preset",
+    "editPreset": "Edit preset",
+    "presetId": "Preset ID",
+    "presetReadonly": "Built-in presets are read-only. Save as a custom preset to edit.",
+    "skillsHint": "Skills are on-demand domain knowledge injected into the system prompt as a catalog; the model reads them when relevant."
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"

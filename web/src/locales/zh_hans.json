@@ -213,7 +213,17 @@
     "providerConfig": "提供商配置",
     "modelConfig": "模型配置",
     "fRequestFormat": "请求格式",
-    "modelIndex": "模型 {index}"
+    "modelIndex": "模型 {index}",
+    "navPresets": "预设",
+    "presetsHint": "预设决定 Agent 以什么角色运行、可以使用哪些工具。内置预设只读，可复制为自定义预设。",
+    "presetsEmpty": "暂无自定义预设，点击「添加」创建。",
+    "presetSaved": "预设已保存",
+    "presetDeleted": "预设已删除",
+    "newPreset": "新建预设",
+    "editPreset": "编辑预设",
+    "presetId": "预设标识符",
+    "presetReadonly": "内置预设只读，可另存为自定义预设。",
+    "skillsHint": "技能是按需读取的领域知识，会以目录形式注入 System Prompt，由模型在需要时读取。"
   },
   "app": {
     "title": "Oma - 多端协同 AI Agent 工作台"

@@ -17,7 +17,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use futures_util::{SinkExt, StreamExt};
-use oma_config::{AgentLoader, OmaConfig};
+use oma_config::{AgentLoader, OmaConfig, SkillLoader};
 use oma_contract::{AgentEvent, ApprovalMode, ChatMessage, ClientMessage, McpServerSummary, Ready, ServerMessage};
 use oma_mcp::McpManager;
 use oma_runtime::{RoomError, RoomSubagentRunner, SessionRoom};
@@ -698,18 +698,18 @@ fn mime_for(name: &str) -> &'static str {
 }
 
 // =========================================================================
-// 技能（Agent 模板）管理 REST API
+// Agent 预设 REST API (/api/presets)
 // =========================================================================
 
 #[derive(Deserialize)]
-struct SkillQuery {
+struct ScopeQuery {
     workspace: Option<String>,
     /// global | project；删除时必须显式指定
     scope:     Option<String>,
 }
 
 #[derive(Deserialize)]
-struct SkillWriteReq {
+struct PresetWriteReq {
     name:        String,
     #[serde(default)]
     description: String,
@@ -722,7 +722,7 @@ struct SkillWriteReq {
 }
 
 /// workspace 可选：global 作用域无需提供
-fn skill_workspace(query: &SkillQuery) -> Option<PathBuf> {
+fn scoped_workspace(query: &ScopeQuery) -> Option<PathBuf> {
     query
         .workspace
         .as_deref()
@@ -731,59 +731,75 @@ fn skill_workspace(query: &SkillQuery) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn require_project_workspace(query: &SkillQuery) -> Result<PathBuf, (StatusCode, String)> {
-    match skill_workspace(query) {
+fn require_project_workspace(query: &ScopeQuery) -> Result<PathBuf, (StatusCode, String)> {
+    match scoped_workspace(query) {
         Some(ws) => Ok(ws),
         None => Err((
             StatusCode::BAD_REQUEST,
-            "workspace is required for project skills".into(),
+            "workspace is required for project scope".into(),
         )),
     }
 }
 
-async fn handle_list_skills(
-    State(state): State<DaemonState>,
-    headers: HeaderMap,
-    Query(query): Query<SkillQuery>,
-) -> Result<Json<Vec<oma_config::SkillFile>>, (StatusCode, String)> {
-    if check_auth(&headers, None, &state.token, false).is_none() {
-        return Err(unauthorized());
+/// 解析写入作用域对应的 workspace 参数
+fn resolve_scope_workspace(query: &ScopeQuery, scope: &str) -> Result<Option<PathBuf>, (StatusCode, String)> {
+    match scope {
+        "project" => Ok(Some(require_project_workspace(query)?)),
+        _ => Ok(scoped_workspace(query)),
     }
-    Ok(Json(AgentLoader::list_skills(skill_workspace(&query).as_deref())))
 }
 
-async fn handle_get_skill(
+/// 技能写入请求（无工具白名单：技能是按需读取的知识，不限定工具）
+#[derive(Deserialize)]
+struct SkillWriteReq {
+    name:        String,
+    #[serde(default)]
+    description: String,
+    content:     String,
+    #[serde(default)]
+    scope:       Option<String>,
+}
+
+async fn handle_list_presets(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    AxumPath(skill_id): AxumPath<String>,
-    Query(query): Query<SkillQuery>,
-) -> Result<Json<oma_config::SkillFile>, (StatusCode, String)> {
+    Query(query): Query<ScopeQuery>,
+) -> Result<Json<Vec<oma_config::AgentFile>>, (StatusCode, String)> {
     if check_auth(&headers, None, &state.token, false).is_none() {
         return Err(unauthorized());
     }
-    AgentLoader::read_skill(skill_workspace(&query).as_deref(), &skill_id)
+    Ok(Json(AgentLoader::list_agent_files(scoped_workspace(&query).as_deref())))
+}
+
+async fn handle_get_preset(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(preset_id): AxumPath<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Result<Json<oma_config::AgentFile>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    AgentLoader::read_agent_file(scoped_workspace(&query).as_deref(), &preset_id)
         .map(Json)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
 }
 
-async fn handle_put_skill(
+async fn handle_put_preset(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    AxumPath(skill_id): AxumPath<String>,
-    Query(query): Query<SkillQuery>,
-    Json(payload): Json<SkillWriteReq>,
+    AxumPath(preset_id): AxumPath<String>,
+    Query(query): Query<ScopeQuery>,
+    Json(payload): Json<PresetWriteReq>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if check_auth(&headers, None, &state.token, false).is_none() {
         return Err(unauthorized());
     }
     let scope = payload.scope.as_deref().unwrap_or("project");
-    let ws = match scope {
-        "project" => Some(require_project_workspace(&query)?),
-        _ => skill_workspace(&query),
-    };
-    match AgentLoader::write_skill(
+    let ws = resolve_scope_workspace(&query, scope)?;
+    match AgentLoader::write_agent_file(
         ws.as_deref(),
-        &skill_id,
+        &preset_id,
         scope,
         payload.name.trim(),
         payload.description.trim(),
@@ -799,24 +815,100 @@ async fn handle_put_skill(
     }
 }
 
+async fn handle_delete_preset(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(preset_id): AxumPath<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    // 删除必须显式指定作用域：内置预设不可删
+    let scope = query.scope.as_deref().unwrap_or("global");
+    let ws = resolve_scope_workspace(&query, scope)?;
+
+    match AgentLoader::delete_agent_file(ws.as_deref(), &preset_id, scope) {
+        Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
+        Err(e) if e.to_string().contains("not found") => Err((StatusCode::NOT_FOUND, e.to_string())),
+        Err(e) if e.to_string().contains("Invalid") => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+// =========================================================================
+// 技能 REST API (/api/skills)
+// =========================================================================
+
+async fn handle_list_skills(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<ScopeQuery>,
+) -> Result<Json<Vec<oma_config::SkillFile>>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    Ok(Json(SkillLoader::list_skills(scoped_workspace(&query).as_deref())))
+}
+
+async fn handle_get_skill(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(skill_id): AxumPath<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Result<Json<oma_config::SkillFile>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    SkillLoader::read_skill(scoped_workspace(&query).as_deref(), &skill_id)
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+}
+
+async fn handle_put_skill(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(skill_id): AxumPath<String>,
+    Query(query): Query<ScopeQuery>,
+    Json(payload): Json<SkillWriteReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    let scope = payload.scope.as_deref().unwrap_or("project");
+    let ws = resolve_scope_workspace(&query, scope)?;
+    match SkillLoader::write_skill(
+        ws.as_deref(),
+        &skill_id,
+        scope,
+        payload.name.trim(),
+        payload.description.trim(),
+        &payload.content,
+    ) {
+        Ok(path) => Ok(Json(
+            serde_json::json!({ "success": true, "path": path.display().to_string() }),
+        )),
+        Err(e) if e.to_string().contains("Invalid") => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
 async fn handle_delete_skill(
     State(state): State<DaemonState>,
     headers: HeaderMap,
     AxumPath(skill_id): AxumPath<String>,
-    Query(query): Query<SkillQuery>,
+    Query(query): Query<ScopeQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if check_auth(&headers, None, &state.token, false).is_none() {
         return Err(unauthorized());
     }
     let scope = query.scope.as_deref().unwrap_or("global");
-    let ws = match scope {
-        "project" => Some(require_project_workspace(&query)?),
-        _ => skill_workspace(&query),
-    };
+    let ws = resolve_scope_workspace(&query, scope)?;
 
-    match AgentLoader::delete_skill(ws.as_deref(), &skill_id, scope) {
+    match SkillLoader::delete_skill(ws.as_deref(), &skill_id, scope) {
         Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
         Err(e) if e.to_string().contains("not found") => Err((StatusCode::NOT_FOUND, e.to_string())),
+        Err(e) if e.to_string().contains("Invalid") => Err((StatusCode::BAD_REQUEST, e.to_string())),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
@@ -1164,6 +1256,13 @@ pub fn create_router(state: DaemonState) -> Router {
         .route("/api/sessions/{id}/attachments/{name}", get(handle_get_attachment))
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
+        .route("/api/presets", get(handle_list_presets))
+        .route(
+            "/api/presets/{preset_id}",
+            get(handle_get_preset)
+                .put(handle_put_preset)
+                .delete(handle_delete_preset),
+        )
         .route("/api/skills", get(handle_list_skills))
         .route(
             "/api/skills/{skill_id}",
@@ -1503,6 +1602,166 @@ mod tests {
         assert_eq!(reloaded.default_model, "p1/gpt-x");
         assert_eq!(reloaded.providers["p1"].api_key, "sk-secret-123");
 
+        // 3. 未知字段必须被拒绝：否则前端字段名写错会「保存成功但配置没变」
+        let mut bogus = got.clone();
+        bogus["model"] = serde_json::json!("p1/typo");
+        let bad = client
+            .put(format!("{}/api/config", base))
+            .header("Authorization", &auth)
+            .json(&bogus)
+            .send()
+            .await?;
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        // 且不得污染已落盘的配置
+        let untouched = OmaConfig::load_from_file(&config_file)?;
+        assert_eq!(untouched.default_model, "p1/gpt-x");
+
+        Ok(())
+    }
+
+    /// 预设与技能是两套独立端点与存储：同名互不影响。
+    #[tokio::test]
+    async fn test_presets_and_skills_are_separate() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path().join("proj");
+        std::fs::create_dir_all(&ws)?;
+        let token = "test_secret_token".to_string();
+        let base = spawn_app(test_state(tmp.path()).await?).await?;
+        let client = reqwest::Client::new();
+        let auth = format!("Bearer {}", token);
+        let ws_param = format!("workspace={}", ws.to_string_lossy());
+
+        // 预设端点：内置 5 个模板始终可见
+        let presets: Vec<serde_json::Value> = client
+            .get(format!("{}/api/presets?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .send()
+            .await?
+            .json()
+            .await?;
+        let ids: Vec<&str> = presets.iter().filter_map(|p| p["id"].as_str()).collect();
+        for expected in ["task", "plan", "explore", "review", "build"] {
+            assert!(
+                ids.contains(&expected),
+                "bundled preset {} missing: {:?}",
+                expected,
+                ids
+            );
+        }
+        assert!(
+            presets
+                .iter()
+                .any(|p| p["scope"] == "bundled" && p["tools"].is_array())
+        );
+
+        // 技能端点：项目内初始为空（不把预设当作技能）
+        let skills: Vec<serde_json::Value> = client
+            .get(format!("{}/api/skills?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert!(
+            skills.iter().all(|s| s["scope"] != "project"),
+            "no project skill should exist yet: {:?}",
+            skills
+        );
+
+        // 写入同名技能与预设
+        let put_skill = client
+            .put(format!("{}/api/skills/task?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .json(&serde_json::json!({
+                "name": "同名技能", "description": "与预设同名", "content": "正文", "scope": "project"
+            }))
+            .send()
+            .await?;
+        assert_eq!(put_skill.status(), StatusCode::OK);
+
+        let put_preset = client
+            .put(format!("{}/api/presets/my-preset?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .json(&serde_json::json!({
+                "name": "My Preset", "description": "自定义", "tools": ["read"], "content": "body", "scope": "project"
+            }))
+            .send()
+            .await?;
+        assert_eq!(put_preset.status(), StatusCode::OK);
+
+        // 技能写入不影响预设
+        let preset_task: serde_json::Value = client
+            .get(format!("{}/api/presets/task?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(preset_task["scope"], "bundled");
+        assert_ne!(preset_task["name"], "同名技能");
+
+        // 技能带磁盘路径（供 System Prompt 目录注入）
+        let skill_task: serde_json::Value = client
+            .get(format!("{}/api/skills/task?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(skill_task["scope"], "project");
+        assert_eq!(skill_task["name"], "同名技能");
+        assert!(
+            skill_task["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("task.md")),
+            "skill must expose its file path: {}",
+            skill_task["path"]
+        );
+
+        // 内置预设只读
+        let bundled_write = client
+            .put(format!("{}/api/presets/task?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .json(&serde_json::json!({
+                "name": "X", "description": "", "tools": [], "content": "b", "scope": "project"
+            }))
+            .send()
+            .await?;
+        assert_eq!(bundled_write.status(), StatusCode::FORBIDDEN);
+
+        // 两个端点各自删除互不影响
+        let del = client
+            .delete(format!(
+                "{}/api/skills/task?scope=project&workspace={}",
+                base,
+                ws.to_string_lossy()
+            ))
+            .header("Authorization", &auth)
+            .send()
+            .await?;
+        assert_eq!(del.status(), StatusCode::OK);
+        let remaining: Vec<serde_json::Value> = client
+            .get(format!("{}/api/skills?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert!(
+            remaining
+                .iter()
+                .all(|s| s["id"] != "task" || s["scope"] != "project")
+        );
+        // 预设仍在
+        assert!(
+            client
+                .get(format!("{}/api/presets/my-preset?{}", base, ws_param))
+                .header("Authorization", &auth)
+                .send()
+                .await?
+                .status()
+                .is_success()
+        );
         Ok(())
     }
 

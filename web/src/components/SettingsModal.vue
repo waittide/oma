@@ -26,7 +26,7 @@ import { ACCENTS, PALETTES, config, customThemes, loadConfig, saveConfig, saveTh
 import { agents } from '../stores/chat';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
 import { activeSession } from '../stores/sessions';
-import type { AgentSummary, CustomTheme, McpServerConfig, ModelInfo, OmaConfig, ProviderConfig, SkillFile, Theme } from '../types';
+import type { AgentFile, AgentSummary, CustomTheme, McpServerConfig, ModelInfo, OmaConfig, ProviderConfig, SkillFile, Theme } from '../types';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ open: boolean }>();
@@ -35,7 +35,7 @@ const emit = defineEmits<{ close: [] }>();
 const { t } = useTranslations('settings');
 const { t: tc } = useTranslations('common');
 
-type SectionId = 'theme' | 'language' | 'defaults' | 'providers' | 'skills' | 'mcp';
+type SectionId = 'theme' | 'language' | 'defaults' | 'providers' | 'presets' | 'skills' | 'mcp';
 const section = ref<SectionId>('theme');
 
 /** 参照 opencode 设置弹窗：导航按分组小标题聚类，底部展示应用版本。 */
@@ -52,6 +52,7 @@ const navGroups = computed(() => [
     items: [
       { id: 'defaults' as SectionId, label: t('navDefaults'), icon: LuSquareUserRound },
       { id: 'providers' as SectionId, label: t('navProviders'), icon: LuServer },
+      { id: 'presets' as SectionId, label: t('navPresets'), icon: LuSquareUserRound },
       { id: 'skills' as SectionId, label: t('navSkills'), icon: LuSparkles },
       { id: 'mcp' as SectionId, label: t('navMcp'), icon: LuPlug },
     ],
@@ -239,7 +240,15 @@ async function saveDefaults() {
   if (!config.value) return;
   savingDefaults.value = true;
   try {
-    await saveConfig({ ...config.value, ...defaults });
+    // 必须映射到 OmaConfig 的真实字段名：直接展开 defaults 会写入
+    // model/agent/approval 这三个无效键，服务端忽略后配置纹丝不动，
+    // 但请求本身成功 —— 表现为「提示保存成功，实际没生效」。
+    await saveConfig({
+      ...config.value,
+      default_model: defaults.model,
+      default_agent: defaults.agent,
+      default_approval_mode: defaults.approval,
+    });
     toast.success(t('defaultsSaved'));
   } catch (e) {
     toast.error(t('saveFailed', { message: (e as Error).message }));
@@ -264,47 +273,42 @@ const agentOptions = computed<{ value: string; label: string }[]>(() => {
   return list.map((a) => ({ value: a.id, label: a.name }));
 });
 
-// ---------- 技能（多工作区：全局作用域 + 当前会话工作区作用域） ----------
-type SkillScope = 'global' | 'project';
-const skillScope = ref<SkillScope>('global');
-const skills = ref<SkillFile[]>([]);
-const skillsLoading = ref(false);
-const skillWorkspace = computed(() => activeSession.value?.workspace ?? '');
+function scopeLabel(scope: string): string {
+  if (scope === 'bundled') return t('scopeBundled');
+  return scope === 'project' ? t('scopeProject') : t('scopeGlobal');
+}
 
 const mcpKindOptions = [
   { value: 'local' as const, label: t('mcpKindLocal') },
   { value: 'remote' as const, label: t('mcpKindRemote') },
 ];
 
-const skillScopeOptions = computed(() => [
-  { value: 'global' as SkillScope, label: t('scopeGlobal') },
-  { value: 'project' as SkillScope, label: t('scopeProject') },
+// ---------- Agent 预设（决定角色与可用工具） ----------
+type EditScope = 'global' | 'project';
+const scopeSel = ref<EditScope>('global');
+const skillWorkspace = computed(() => activeSession.value?.workspace ?? '');
+
+const scopeOptions = computed(() => [
+  { value: 'global' as EditScope, label: t('scopeGlobal') },
+  { value: 'project' as EditScope, label: t('scopeProject') },
 ]);
 
-async function loadSkills() {
-  skillsLoading.value = true;
+const presets = ref<AgentFile[]>([]);
+const presetsLoading = ref(false);
+
+async function loadPresets() {
+  presetsLoading.value = true;
   try {
-    const ws = skillScope.value === 'project' ? skillWorkspace.value : '';
-    skills.value = await api.skills(ws);
+    const ws = scopeSel.value === 'project' ? skillWorkspace.value : '';
+    presets.value = await api.presets(ws);
   } catch (e) {
     toast.error(t('saveFailed', { message: (e as Error).message }));
   } finally {
-    skillsLoading.value = false;
+    presetsLoading.value = false;
   }
 }
 
-/** 列表只展示用户技能；bundled 项是内置 Agent 模板，不属于技能清单 */
-const visibleSkills = computed(() => skills.value.filter((s) => s.scope !== 'bundled'));
-
-
-watch(
-  () => [props.open, section.value, skillScope.value] as const,
-  ([o, s]) => {
-    if (o && s === 'skills') void loadSkills();
-  },
-);
-
-const skillEdit = reactive({
+const presetEdit = reactive({
   open: false,
   isNew: false,
   readonly: false,
@@ -313,24 +317,110 @@ const skillEdit = reactive({
   description: '',
   toolsText: '',
   content: '',
-  scope: 'global' as SkillScope,
+  scope: 'global' as EditScope,
 });
 
-function scopeLabel(scope: string): string {
-  if (scope === 'bundled') return t('scopeBundled');
-  return scope === 'project' ? t('scopeProject') : t('scopeGlobal');
+function editPreset(a: AgentFile) {
+  presetEdit.open = true;
+  presetEdit.isNew = false;
+  presetEdit.readonly = a.scope === 'bundled';
+  presetEdit.id = a.id;
+  presetEdit.name = a.name;
+  presetEdit.description = a.description;
+  presetEdit.toolsText = a.tools.join(', ');
+  presetEdit.content = a.content;
+  presetEdit.scope = a.scope === 'bundled' ? scopeSel.value : (a.scope as EditScope);
 }
+
+function newPreset() {
+  presetEdit.open = true;
+  presetEdit.isNew = true;
+  presetEdit.readonly = false;
+  presetEdit.id = '';
+  presetEdit.name = '';
+  presetEdit.description = '';
+  presetEdit.toolsText = '';
+  presetEdit.content = '';
+  presetEdit.scope = scopeSel.value;
+}
+
+async function savePreset() {
+  const id = presetEdit.id.trim();
+  if (presetEdit.scope === 'project' && !skillWorkspace.value) {
+    toast.error(t('skillNoWorkspace'));
+    return;
+  }
+  try {
+    await api.putPreset(
+      id,
+      {
+        name: presetEdit.name.trim() || id,
+        description: presetEdit.description.trim(),
+        tools: presetEdit.toolsText.split(',').map((x) => x.trim()).filter(Boolean),
+        content: presetEdit.content,
+        scope: presetEdit.scope,
+      },
+      presetEdit.scope === 'project' ? skillWorkspace.value : '',
+    );
+    presetEdit.open = false;
+    toast.success(t('presetSaved'));
+    await loadPresets();
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  }
+}
+
+async function removePreset() {
+  try {
+    await api.deletePreset(
+      presetEdit.id,
+      presetEdit.scope,
+      presetEdit.scope === 'project' ? skillWorkspace.value : '',
+    );
+    presetEdit.open = false;
+    toast.success(t('presetDeleted'));
+    await loadPresets();
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  }
+}
+
+// ---------- 技能（按需取用的领域知识，与预设相互独立） ----------
+const skills = ref<SkillFile[]>([]);
+const skillsLoading = ref(false);
+
+async function loadSkills() {
+  skillsLoading.value = true;
+  try {
+    const ws = scopeSel.value === 'project' ? skillWorkspace.value : '';
+    skills.value = await api.skills(ws);
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  } finally {
+    skillsLoading.value = false;
+  }
+}
+
+const skillEdit = reactive({
+  open: false,
+  isNew: false,
+  readonly: false,
+  id: '',
+  name: '',
+  description: '',
+  content: '',
+  scope: 'global' as EditScope,
+});
 
 function editSkill(s: SkillFile) {
   skillEdit.open = true;
   skillEdit.isNew = false;
-  skillEdit.readonly = s.scope === 'bundled';
+  skillEdit.readonly = false;
   skillEdit.id = s.id;
   skillEdit.name = s.name;
   skillEdit.description = s.description;
-  skillEdit.toolsText = s.tools.join(', ');
   skillEdit.content = s.content;
-  skillEdit.scope = s.scope === 'bundled' ? skillScope.value : (s.scope as SkillScope);
+  skillEdit.scope = s.scope as EditScope;
 }
 
 function newSkill() {
@@ -340,9 +430,8 @@ function newSkill() {
   skillEdit.id = '';
   skillEdit.name = '';
   skillEdit.description = '';
-  skillEdit.toolsText = '';
   skillEdit.content = '';
-  skillEdit.scope = skillScope.value;
+  skillEdit.scope = scopeSel.value;
 }
 
 async function saveSkill() {
@@ -357,7 +446,6 @@ async function saveSkill() {
       {
         name: skillEdit.name.trim() || id,
         description: skillEdit.description.trim(),
-        tools: skillEdit.toolsText.split(',').map((x) => x.trim()).filter(Boolean),
         content: skillEdit.content,
         scope: skillEdit.scope,
       },
@@ -385,6 +473,15 @@ async function removeSkill() {
     toast.error(t('saveFailed', { message: (e as Error).message }));
   }
 }
+
+watch(
+  () => [props.open, section.value, scopeSel.value] as const,
+  ([o, s]) => {
+    if (!o) return;
+    if (s === 'presets') void loadPresets();
+    if (s === 'skills') void loadSkills();
+  },
+);
 
 // ---------- MCP 服务器（全局配置，保存后 daemon 自动重连） ----------
 interface McpDraft {
@@ -1128,20 +1225,59 @@ function pickLocale(v: Locale) {
           </footer>
         </section>
 
+        <!-- Agent 预设 -->
+        <section v-else-if="section === 'presets'" class="pane">
+          <header class="pane-head">
+            <h2 class="pane-title">{{ t('navPresets') }}</h2>
+            <div class="pane-head-actions">
+              <ORadio v-model="scopeSel" :options="scopeOptions" />
+              <OButton size="sm" variant="soft" @click="newPreset">{{ t('add') }}</OButton>
+            </div>
+          </header>
+          <div class="pane-scroll">
+            <p class="muted">{{ t('presetsHint') }}</p>
+            <p v-if="scopeSel === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
+            <div class="list">
+              <div
+                v-for="a in presets"
+                :key="a.scope + '/' + a.id"
+                class="srow skill-row"
+                role="button"
+                @click="editPreset(a)"
+              >
+                <div class="srow-main">
+                  <span class="srow-title">
+                    {{ a.name }}
+                    <span class="scope-tag" :class="'scope-' + a.scope">{{ scopeLabel(a.scope) }}</span>
+                  </span>
+                  <span class="srow-desc">{{ a.description || a.id }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <span class="srow-desc mono">{{ a.tools.join(', ') }}</span>
+                </div>
+              </div>
+              <div v-if="presets.length === 0 && !presetsLoading" class="srow">
+                <span class="srow-desc">{{ t('presetsEmpty') }}</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- 技能 -->
         <section v-else-if="section === 'skills'" class="pane">
           <header class="pane-head">
             <h2 class="pane-title">{{ t('navSkills') }}</h2>
             <div class="pane-head-actions">
-              <ORadio v-model="skillScope" :options="skillScopeOptions" />
+              <ORadio v-model="scopeSel" :options="scopeOptions" />
               <OButton size="sm" variant="soft" @click="newSkill">{{ t('add') }}</OButton>
             </div>
           </header>
           <div class="pane-scroll">
-            <p v-if="skillScope === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
+            <p class="muted">{{ t('skillsHint') }}</p>
+            <p v-if="scopeSel === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
             <div class="list">
               <div
-                v-for="s in visibleSkills"
+                v-for="s in skills"
                 :key="s.scope + '/' + s.id"
                 class="srow skill-row"
                 role="button"
@@ -1155,7 +1291,7 @@ function pickLocale(v: Locale) {
                   <span class="srow-desc">{{ s.description || s.id }}</span>
                 </div>
               </div>
-              <div v-if="visibleSkills.length === 0 && !skillsLoading" class="srow">
+              <div v-if="skills.length === 0 && !skillsLoading" class="srow">
                 <span class="srow-desc">{{ t('skillsEmpty') }}</span>
               </div>
             </div>
@@ -1253,6 +1389,63 @@ function pickLocale(v: Locale) {
   </OModal>
 
   <OModal
+    :open="presetEdit.open"
+    :title="presetEdit.isNew ? t('newPreset') : t('editPreset')"
+    width="640px"
+    @close="presetEdit.open = false"
+  >
+    <div class="skill-form">
+      <div class="sk-grid">
+        <div class="field">
+          <label>{{ t('presetId') }}</label>
+          <OInput v-model="presetEdit.id" :disabled="!presetEdit.isNew" placeholder="my-preset" />
+        </div>
+        <div class="field">
+          <label>{{ t('scopeLabel') }}</label>
+          <OSelect
+            v-model="presetEdit.scope"
+            :options="[{ value: 'global', label: t('scopeGlobal') }, { value: 'project', label: t('scopeProject') }]"
+            :disabled="!presetEdit.isNew"
+          />
+        </div>
+      </div>
+      <div class="field">
+        <label>{{ t('modelName') }}</label>
+        <OInput v-model="presetEdit.name" />
+      </div>
+      <div class="field">
+        <label>{{ t('skillDesc') }}</label>
+        <OInput v-model="presetEdit.description" />
+      </div>
+      <div class="field">
+        <label>{{ t('skillTools') }}</label>
+        <OInput v-model="presetEdit.toolsText" placeholder="read, write, shell" />
+      </div>
+      <div class="field">
+        <label>{{ t('skillContent') }}</label>
+        <div class="skill-content-box">
+          <textarea v-model="presetEdit.content" rows="12" spellcheck="false" :disabled="presetEdit.readonly" />
+        </div>
+        <p v-if="presetEdit.readonly" class="muted">{{ t('presetReadonly') }}</p>
+      </div>
+    </div>
+    <template #footer>
+      <OButton
+        v-if="!presetEdit.isNew && !presetEdit.readonly"
+        variant="danger"
+        size="sm"
+        @click="removePreset"
+      >
+        {{ tc('delete') }}
+      </OButton>
+      <OButton variant="ghost" size="sm" @click="presetEdit.open = false">{{ tc('cancel') }}</OButton>
+      <OButton variant="primary" size="sm" :disabled="presetEdit.readonly || !presetEdit.id.trim() || (presetEdit.scope === 'project' && !skillWorkspace)" @click="savePreset">
+        {{ tc('save') }}
+      </OButton>
+    </template>
+  </OModal>
+
+  <OModal
     :open="skillEdit.open"
     :title="skillEdit.isNew ? t('newSkill') : t('editSkill')"
     width="640px"
@@ -1280,10 +1473,6 @@ function pickLocale(v: Locale) {
       <div class="field">
         <label>{{ t('skillDesc') }}</label>
         <OInput v-model="skillEdit.description" />
-      </div>
-      <div class="field">
-        <label>{{ t('skillTools') }}</label>
-        <OInput v-model="skillEdit.toolsText" placeholder="read, write, shell" />
       </div>
       <div class="field">
         <label>{{ t('skillContent') }}</label>
@@ -1457,6 +1646,8 @@ function pickLocale(v: Locale) {
   gap: 8px;
   margin-bottom: 12px;
 }
+/* 与「外观 / 技能」所用的 ORadio 分段控件保持同一视觉语言：
+   同一容器底色与描边，选中项为强调色实底 + base 文字 */
 .tabs {
   display: flex;
   align-items: center;
@@ -1465,9 +1656,10 @@ function pickLocale(v: Locale) {
   max-width: 100%;
   min-width: 0;
   overflow-x: auto;
-  padding: 2px;
+  padding: 3px;
   background: var(--surface);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
 }
 /* 新增/删除操作固定在最右侧，不随标签数量移动 */
 .tabs-actions {
@@ -1479,27 +1671,26 @@ function pickLocale(v: Locale) {
 }
 .tab {
   flex-shrink: 0;
-  padding: 5px 11px;
+  padding: 5px 12px;
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
   transition:
-    background-color 0.12s ease,
-    color 0.12s ease;
+    background-color 0.15s ease,
+    color 0.15s ease;
 }
 .tab:hover {
   color: var(--ink);
 }
-/* 与侧栏 .nav-item.active 保持同一强调色体系，避免灰色高亮与全局不一致 */
 .tab.active {
-  background: var(--surface-active);
-  color: var(--accent);
-  font-weight: 600;
+  background: var(--accent);
+  color: var(--base);
 }
 .pane-head-actions {
   display: flex;

@@ -1,4 +1,5 @@
 import type {
+  AgentFile,
   ChatMessage,
   OmaConfig,
   ServerStatus,
@@ -82,6 +83,34 @@ export const api = {
       `/api/sessions/${id}/messages/${messageId}`,
       { method: 'DELETE' },
     ),
+  presets: (workspace?: string) =>
+    request<AgentFile[]>(
+      `/api/presets${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,
+    ),
+
+  getPreset: (id: string, workspace?: string) =>
+    request<AgentFile>(
+      `/api/presets/${id}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,
+    ),
+
+  putPreset: (
+    id: string,
+    body: { name: string; description: string; tools: string[]; content: string; scope: string },
+    workspace?: string,
+  ) =>
+    request<{ success: boolean; path: string }>(
+      `/api/presets/${id}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+
+  deletePreset: (id: string, scope: string, workspace?: string) => {
+    const qs = new URLSearchParams({ scope });
+    if (workspace) qs.set('workspace', workspace);
+    return request<{ success: boolean }>(`/api/presets/${id}?${qs.toString()}`, {
+      method: 'DELETE',
+    });
+  },
+
   skills: (workspace?: string) =>
     request<SkillFile[]>(
       `/api/skills${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,
@@ -94,7 +123,7 @@ export const api = {
 
   putSkill: (
     id: string,
-    body: { name: string; description: string; tools: string[]; content: string; scope: string },
+    body: { name: string; description: string; content: string; scope: string },
     workspace?: string,
   ) =>
     request<{ success: boolean; path: string }>(

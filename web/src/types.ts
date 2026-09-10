@@ -91,14 +91,25 @@ export type McpServerConfig =
   | { type: 'local'; command: string; args?: string[]; env?: Record<string, string> }
   | { type: 'remote'; url: string; headers?: Record<string, string> };
 
-/** 技能（Agent 模板）文件条目；scope = bundled | global | project */
-export interface SkillFile {
+/** Agent 预设文件条目：决定以什么角色、能用哪些工具运行；scope = bundled | global | project */
+export interface AgentFile {
   id: string;
   name: string;
   description: string;
   tools: string[];
   scope: string;
   content: string;
+}
+
+/** 技能文件条目：按需读取的领域知识；scope = global | project */
+export interface SkillFile {
+  id: string;
+  name: string;
+  description: string;
+  scope: string;
+  content: string;
+  /** 磁盘绝对路径，目录注入 System Prompt 时供模型读取 */
+  path: string;
 }
 
 export interface McpServerSummary {

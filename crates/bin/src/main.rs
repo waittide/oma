@@ -78,8 +78,11 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
         .or_else(OmaConfig::config_path)
         .unwrap_or_else(|| data_dir.join("config.toml"));
 
+    // 配置文件存在但解析失败时必须报错退出：静默回退到默认配置会丢掉
+    // 全部 provider 与模型设置，比直接启动失败更难排查
     let config = if config_path.exists() {
-        OmaConfig::load_from_file(&config_path).unwrap_or_else(|_| OmaConfig::default())
+        OmaConfig::load_from_file(&config_path)
+            .with_context(|| format!("Invalid config file {}", config_path.display()))?
     } else {
         OmaConfig::default()
     };
