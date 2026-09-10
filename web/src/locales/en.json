@@ -227,8 +227,7 @@
     "scopeAgent": "Agent",
     "newScope": "Create in",
     "skillToolsAny": "Inherit all tools",
-    "skillToolsHint": "Leave empty to allow every tool the agent has.",
-    "navPresetsSkills": "Presets & Skills"
+    "skillToolsHint": "Leave empty to allow every tool the agent has."
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"

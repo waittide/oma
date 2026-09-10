@@ -227,8 +227,7 @@
     "scopeAgent": "代理",
     "newScope": "新增位置",
     "skillToolsAny": "不限制（全部工具）",
-    "skillToolsHint": "留空表示允許該 Agent 的全部工具。",
-    "navPresetsSkills": "預設與技能"
+    "skillToolsHint": "留空表示允許該 Agent 的全部工具。"
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"
