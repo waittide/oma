@@ -147,6 +147,44 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
     total_chars / 2
 }
 
+/// 权威上下文锚点。
+///
+/// 厂商每次响应都会上报该次请求的真实 `input_tokens`，其中已包含 system prompt 与
+/// 工具声明等固定开销。把它记下来，只需对锚点之后**新增**的消息做启发式增量，
+/// 就能得到远比纯字符折算准确的占用估计——纯折算对英文与代码会高估约一倍。
+///
+/// 锚点以「历史列表的前 `covered` 条」为基准；历史在轮次内只追加、不重排，
+/// 因此前缀被裁剪（压缩）后锚点自动失效并回退启发式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenAnchor {
+    /// 记录时刻的请求所覆盖的条数（即当次请求发出时的历史长度）
+    covered: usize,
+    /// 该前缀对应的权威输入 token 数（含固定开销）
+    tokens:  usize,
+}
+
+impl TokenAnchor {
+    /// 记录一次真实请求的结果。`covered` 为该请求发出时的历史长度。
+    /// `input_tokens` 为 0 表示厂商未上报用量，返回 None 以保留既有锚点。
+    pub fn record(covered: usize, input_tokens: usize) -> Option<Self> {
+        (input_tokens > 0).then_some(Self {
+            covered,
+            tokens: input_tokens,
+        })
+    }
+
+    /// 估算当前消息列表的上下文占用。
+    ///
+    /// 列表必须以锚点覆盖的前缀开头；前缀已被裁剪（压缩）时锚点不再适用，
+    /// 返回 None 由调用方回退到纯启发式（偏保守）。
+    pub fn estimate(&self, messages: &[ChatMessage]) -> Option<usize> {
+        if messages.len() < self.covered {
+            return None;
+        }
+        Some(self.tokens + estimate_tokens(&messages[self.covered..]))
+    }
+}
+
 /// 真实用户轮次起点：role=user 且含非 tool_result 内容块。
 /// tool_result 回执同为 role=user，但它必须紧跟其 tool_use，不能作为裁剪边界。
 fn is_turn_start(message: &ChatMessage) -> bool {
@@ -157,16 +195,29 @@ fn is_turn_start(message: &ChatMessage) -> bool {
             .any(|b| !matches!(b, Block::ToolResult { .. }))
 }
 
-/// 执行两阶段压缩策略：达到 70% 阈值时修剪旧 ToolResult
-pub fn compact_messages(messages: &mut Vec<ChatMessage>, context_len: usize) {
+/// 执行两阶段压缩策略：达到 70% 阈值时修剪旧 ToolResult 并按整轮裁剪前缀。
+///
+/// `anchor` 为最近一次请求的权威输入 token 锚点；命中时以其为基准（并只对新增
+/// 消息做启发式增量），未命中时回退纯字符折算。
+pub fn compact_messages(messages: &mut Vec<ChatMessage>, context_len: usize, anchor: Option<TokenAnchor>) {
     let threshold = (context_len as f64 * 0.7) as usize;
-    if estimate_tokens(messages) <= threshold {
+
+    // 权威锚点只适用于「以历史前缀开头的完整列表」——即尚未裁剪的当前历史。
+    // 一旦开始丢弃消息，被保留段的权威占比无从得知，只能回退字符折算（偏保守，
+    // 宁可多裁一点也不会低估后超窗）。锚点未命中时同样回退。
+    let anchored = |list: &[ChatMessage]| -> usize {
+        anchor
+            .and_then(|a| a.estimate(list))
+            .unwrap_or_else(|| estimate_tokens(list))
+    };
+
+    if anchored(messages) <= threshold {
         return;
     }
 
     // 第一阶段：把冗长 ToolResult 的内容替换为占位。
     // 始终保留最后一条消息（模型当前要处理的输出）；替换内容不改变
-    // tool_use / tool_result 的配对关系，因此跨轮次与轮内都可安全执行。
+    // tool_use / tool_result 的配对关系，且不改变条数，故锚点仍然适用。
     if messages.len() > 1 {
         let tail = messages.len() - 1;
         for m in messages[..tail].iter_mut() {
@@ -180,7 +231,7 @@ pub fn compact_messages(messages: &mut Vec<ChatMessage>, context_len: usize) {
         }
     }
 
-    if estimate_tokens(messages) <= threshold {
+    if anchored(messages) <= threshold {
         return;
     }
 
@@ -196,6 +247,7 @@ pub fn compact_messages(messages: &mut Vec<ChatMessage>, context_len: usize) {
         return; // 只剩单轮，无法再丢弃消息
     }
     for &start in &turn_starts[1..] {
+        // 候选是历史的尾部切片，锚点前缀已不完整：用字符折算评估保留量
         if estimate_tokens(&messages[start..]) <= threshold {
             messages.drain(..start);
             return;
@@ -844,6 +896,10 @@ impl SessionRoom {
         cancel_token: &CancellationToken,
         turn_usage: &mut TokenUsage,
     ) -> TurnOutcome {
+        // 最近一次请求的权威输入 token 锚点：让后续轮次的预算检查以厂商上报的
+        // 真实占用为基准，只对新增消息做启发式增量（见 TokenAnchor）。
+        let mut anchor: Option<TokenAnchor> = None;
+
         loop {
             if cancel_token.is_cancelled() {
                 return TurnOutcome::Finished(StopReason::Cancelled);
@@ -875,9 +931,12 @@ impl SessionRoom {
                 }
             };
 
+            // 本次请求覆盖的历史前缀长度（用于回填权威锚点）
+            let covered = history.len();
+
             // 上下文压缩（只作用于本次请求的副本，持久化历史保持不变）
             let mut messages = history.clone();
-            compact_messages(&mut messages, model_cfg.context_len);
+            compact_messages(&mut messages, model_cfg.context_len, anchor);
             // session_attachment:// 引用在此内联为 data URI，各厂商协议拿到的都是完整载荷
             self.inline_attachments(&mut messages).await;
 
@@ -906,6 +965,8 @@ impl SessionRoom {
             let mut assistant_tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
             let mut stop_reason = StopReason::EndTurn;
             let mut cancelled = false;
+            // 本次请求的权威输入占用（Anthropic 在 message_start 上报，OpenAI 等在收尾）
+            let mut request_input_tokens = 0usize;
 
             // 监听流式事件（可被取消信号立即打断，无需等待下一个增量）
             loop {
@@ -951,6 +1012,9 @@ impl SessionRoom {
                     } => {
                         turn_usage.input_tokens += input_tokens;
                         turn_usage.output_tokens += output_tokens;
+                        if input_tokens > 0 {
+                            request_input_tokens = input_tokens;
+                        }
                     }
                     ProviderStreamEvent::Done { stop_reason: reason } => {
                         stop_reason = reason;
@@ -960,6 +1024,12 @@ impl SessionRoom {
                         stop_reason = StopReason::Error;
                     }
                 }
+            }
+
+            // 回填权威锚点：本次请求的真实输入占用对应 history[..covered]。
+            // 厂商未上报用量时保留旧锚点，绝不写入 0 覆盖。
+            if let Some(recorded) = TokenAnchor::record(covered, request_input_tokens) {
+                anchor = Some(recorded);
             }
 
             // 保存 Assistant 消息
@@ -1302,15 +1372,22 @@ impl RoomSubagentRunner {
             created_at: chrono::Utc::now().timestamp_millis(),
         }];
         let mut last_text = String::new();
+        // 子 Agent 会连续多轮调用工具，上下文同样需要受窗口约束
+        let mut anchor: Option<TokenAnchor> = None;
 
         for _round in 0..MAX_SUBAGENT_ROUNDS {
             if cancel.is_cancelled() {
                 return Err("Subagent cancelled.".into());
             }
 
+            let covered = messages.len();
+            // 压缩只作用于本次请求的副本，子 Agent 的内存历史保持完整
+            let mut request = messages.clone();
+            compact_messages(&mut request, model_cfg.context_len, anchor);
+
             let provider = UniversalProvider::new(provider_cfg.clone());
             let mut stream_rx = provider
-                .send_stream(&messages, Some(&system_prompt), &tools_defs, &model_cfg)
+                .send_stream(&request, Some(&system_prompt), &tools_defs, &model_cfg)
                 .await
                 .map_err(|e| format!("Subagent provider error: {}", e))?;
 
@@ -1318,6 +1395,7 @@ impl RoomSubagentRunner {
             let mut text = String::new();
             let mut calls: Vec<(String, String, serde_json::Value)> = Vec::new();
             let mut stop_reason = StopReason::EndTurn;
+            let mut request_input_tokens = 0usize;
 
             loop {
                 let event = tokio::select! {
@@ -1344,10 +1422,18 @@ impl RoomSubagentRunner {
                         });
                     }
                     ProviderStreamEvent::ToolCall { id, name, input } => calls.push((id, name, input)),
-                    ProviderStreamEvent::Usage { .. } => {}
+                    ProviderStreamEvent::Usage { input_tokens, .. } => {
+                        if input_tokens > 0 {
+                            request_input_tokens = input_tokens;
+                        }
+                    }
                     ProviderStreamEvent::Done { stop_reason: reason } => stop_reason = reason,
                     ProviderStreamEvent::Error(err) => return Err(format!("Subagent stream error: {}", err)),
                 }
+            }
+
+            if let Some(recorded) = TokenAnchor::record(covered, request_input_tokens) {
+                anchor = Some(recorded);
             }
 
             let mut blocks = Vec::new();
@@ -1614,7 +1700,7 @@ mod tests {
         }
 
         let before = messages.len();
-        compact_messages(&mut messages, 4000); // 极小窗口，强制两阶段压缩都生效
+        compact_messages(&mut messages, 4000, None); // 极小窗口，强制两阶段压缩都生效
 
         assert!(messages.len() < before, "compaction should drop old turns");
         assert_well_formed(&messages);
@@ -1632,7 +1718,7 @@ mod tests {
             text(Role::Assistant, "a1", Some("u1"), "hi"),
         ];
         let original = messages.clone();
-        compact_messages(&mut messages, 128_000);
+        compact_messages(&mut messages, 128_000, None);
         assert_eq!(messages, original);
     }
 
@@ -1645,7 +1731,7 @@ mod tests {
             tool_use_msg("a1", "u1", "call1"),
             tool_result_msg("r1", "a1", "call1", &"答".repeat(8000)),
         ];
-        compact_messages(&mut messages, 2000);
+        compact_messages(&mut messages, 2000, None);
         assert_well_formed(&messages);
         // 一条都不许丢：轮次内部不允许按条数切窗
         assert_eq!(
@@ -1672,7 +1758,7 @@ mod tests {
             parent = result_id;
         }
 
-        compact_messages(&mut messages, 4000);
+        compact_messages(&mut messages, 4000, None);
         assert_well_formed(&messages);
 
         let pruned = messages
@@ -1689,6 +1775,106 @@ mod tests {
             matches!(&last.content[0], Block::ToolResult { content, .. } if content.chars().count() == 4000),
             "the newest message must survive intact"
         );
+    }
+
+    /// 锚点必须用权威值替代启发式：估算 = 权威输入 + 新增消息的启发式增量。
+    #[test]
+    fn test_token_anchor_prefers_authoritative_count() {
+        let messages = vec![
+            text(Role::User, "u1", None, "hello"),
+            text(Role::Assistant, "a1", Some("u1"), "world"),
+            text(Role::User, "u2", Some("a1"), &"新".repeat(100)),
+        ];
+        // 权威值远大于纯字符折算：估算必须以权威值为基准
+        let anchor = TokenAnchor::record(2, 50_000).unwrap();
+        let estimated = anchor.estimate(&messages).unwrap();
+        assert_eq!(estimated, 50_000 + estimate_tokens(&messages[2..]));
+        assert!(estimated > estimate_tokens(&messages), "锚点应覆盖启发式的低估");
+
+        // 厂商未上报用量（0）时不得生成锚点，避免用 0 覆盖既有基准
+        assert!(TokenAnchor::record(2, 0).is_none());
+    }
+
+    /// 前缀被裁剪后锚点失效：必须回退启发式，而不是给出错误的低估值。
+    #[test]
+    fn test_token_anchor_invalidated_after_prefix_trim() {
+        let anchor = TokenAnchor::record(5, 10_000).unwrap();
+        let trimmed = vec![text(Role::User, "u9", None, "only one left")];
+        assert!(
+            anchor.estimate(&trimmed).is_none(),
+            "list shorter than the anchored prefix must invalidate the anchor"
+        );
+    }
+
+    /// 关键行为：纯启发式会高估英文/代码，导致过早压缩；
+    /// 有了权威锚点，实际占用未超阈值时不得裁剪历史。
+    #[test]
+    fn test_anchor_prevents_unnecessary_compaction() {
+        // 构造多轮英文历史，字符折算会明显超过阈值
+        let build = |chars: usize| {
+            let mut messages = Vec::new();
+            let mut parent: Option<String> = None;
+            for i in 0..6 {
+                let user_id = format!("u{}", i);
+                messages.push(text(Role::User, &user_id, parent.as_deref(), &"a".repeat(chars)));
+                let assistant_id = format!("a{}", i);
+                messages.push(text(Role::Assistant, &assistant_id, Some(&user_id), &"b".repeat(chars)));
+                parent = Some(assistant_id);
+            }
+            messages
+        };
+        let context_len = 30_000;
+        let threshold = (context_len as f64 * 0.7) as usize; // 21_000
+
+        // 纯启发式：12 × 4000 字符按 2 字符/Token 折算 = 24_000 → 触发裁剪
+        let mut heuristic_only = build(4_000);
+        assert!(estimate_tokens(&heuristic_only) > threshold);
+        let before = heuristic_only.len();
+        compact_messages(&mut heuristic_only, context_len, None);
+        assert!(heuristic_only.len() < before, "heuristic path must compact");
+
+        // 同一份历史，厂商按英文约 4 字符/Token 上报：锚点覆盖 10 条 = 10_000，
+        // 加上新增 2 条的启发式增量 4_000 → 14_000，未超阈值，不得裁剪
+        let mut anchored = build(4_000);
+        let anchor = TokenAnchor::record(10, 10_000).unwrap();
+        assert!(anchor.estimate(&anchored).unwrap() <= threshold);
+        compact_messages(&mut anchored, context_len, Some(anchor));
+        assert_eq!(
+            anchored.len(),
+            build(4_000).len(),
+            "authoritative anchor must suppress unnecessary compaction"
+        );
+        assert_well_formed(&anchored);
+    }
+
+    /// 锚点存在但真实占用确实超阈值时，压缩仍须生效并按整轮裁剪。
+    #[test]
+    fn test_anchor_still_compacts_when_authority_exceeds_budget() {
+        let mut messages = Vec::new();
+        let mut parent: Option<String> = None;
+        for i in 0..6 {
+            let user_id = format!("u{}", i);
+            messages.push(text(Role::User, &user_id, parent.as_deref(), &"问".repeat(200)));
+            let assistant_id = format!("a{}", i);
+            messages.push(tool_use_msg(&assistant_id, &user_id, &format!("call{}", i)));
+            let result_id = format!("r{}", i);
+            messages.push(tool_result_msg(
+                &result_id,
+                &assistant_id,
+                &format!("call{}", i),
+                &"答".repeat(2_000),
+            ));
+            parent = Some(result_id);
+        }
+        let context_len = 4_000;
+        let anchor = TokenAnchor::record(2, context_len).expect("authoritative count recorded"); // 权威值本身已超阈值
+        let before = messages.len();
+        compact_messages(&mut messages, context_len, Some(anchor));
+        assert!(
+            messages.len() < before,
+            "over-budget anchored history must still compact"
+        );
+        assert_well_formed(&messages);
     }
 
     #[test]

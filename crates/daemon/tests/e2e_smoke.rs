@@ -30,6 +30,8 @@ struct Observed {
     tool_names:    Vec<String>,
     has_image:     bool,
     role_sequence: Vec<String>,
+    /// 请求中 role=tool 的消息内容（用于观察压缩是否把旧回执替换为占位）
+    tool_contents: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -63,15 +65,27 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
             .as_array()
             .is_some_and(|parts| parts.iter().any(|p| p["type"] == "image_url"))
     });
-    let has_tool_result = role_sequence.iter().any(|r| r == "tool");
+    let tool_contents: Vec<String> = messages
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["content"].as_str().unwrap_or("").to_string())
+        .collect();
 
     state.observed.lock().push(Observed {
         tool_names: tool_names.clone(),
         has_image,
-        role_sequence,
+        role_sequence: role_sequence.clone(),
+        tool_contents,
     });
 
-    let chunks: Vec<String> = if has_tool_result {
+    // 每次响应都上报用量：agent loop 会据此回填权威上下文锚点
+    let usage = format!(
+        r#"{{"choices":[{{"delta":{{}}}}],"usage":{{"prompt_tokens":{},"completion_tokens":5}}}}"#,
+        messages.len() * 100 + 50
+    );
+
+    let tool_rounds = role_sequence.iter().filter(|r| *r == "tool").count();
+    let mut chunks: Vec<String> = if tool_rounds >= 2 {
         // 已有回执：产出最终文本并收尾
         vec![
             sse(r#"{"choices":[{"delta":{"content":"done"}}]}"#),
@@ -100,6 +114,8 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
         ]
     };
 
+    chunks.push(sse(&usage));
+
     let mut payload = String::new();
     for chunk in chunks {
         payload.push_str(&chunk);
@@ -123,6 +139,10 @@ struct Harness {
 }
 
 async fn start_harness() -> Result<Harness> {
+    start_harness_with_context(100_000).await
+}
+
+async fn start_harness_with_context(context_len: usize) -> Result<Harness> {
     let tmp = tempfile::tempdir()?;
     // 测试进程存活期间保留目录（data dir 需要跨请求稳定）
     let data_dir = tmp.keep();
@@ -153,7 +173,7 @@ api_key = "test-key"
 [[providers.mock.models]]
 id = "model-x"
 name = "Mock Model"
-context_len = 100000
+context_len = {context_len}
 "#
     );
     let config_path = data_dir.join("config.toml");
@@ -427,6 +447,71 @@ async fn test_queued_inputs_are_all_executed() -> Result<()> {
             texts
         );
     }
+    Ok(())
+}
+
+/// 权威锚点必须真正接入 agent loop：多轮工具循环中，厂商上报的真实占用
+/// 未超预算时，不得因为字符折算偏高而把旧工具回执替换成占位。
+///
+/// 场景：小上下文窗口（2000）下连做两轮 `read`。仅按字符折算，第三轮请求
+/// 已超阈值、第一份回执会被修剪；而锚点（第二轮权威 input_tokens）表明实际
+/// 占用仍有余量，回执应原样送达模型。
+#[tokio::test]
+async fn test_authoritative_anchor_suppresses_premature_compaction() -> Result<()> {
+    let h = start_harness_with_context(2_000).await?;
+    let session = h.api.create_session(&h.workspace, Some("anchor")).await?;
+
+    // mock 固定读取 note.txt：换成长内容，让字符折算明显推高估算
+    let marker = "ANCHOR-FIXTURE-MARKER";
+    let body = format!("{}\n{}", marker, "x".repeat(1_500));
+    std::fs::write(std::path::Path::new(&h.workspace).join("note.txt"), body)?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "smoke".into(),
+    })
+    .await?;
+
+    // 切到 explore（只读，无 task）：让主 Agent 自己连做两轮 read
+    client
+        .send_command(AgentCommand::SetAgent {
+            agent: "explore".into(),
+        })
+        .await?;
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "读取 note.txt".into(),
+            attachments: vec![],
+        })
+        .await?;
+    let events = drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    let reads: Vec<_> = tool_calls(&events)
+        .into_iter()
+        .filter(|(name, _, sub)| name == "read" && sub.is_none())
+        .collect();
+    assert!(
+        reads.len() >= 2,
+        "the turn must run at least two read rounds, got {:?}",
+        reads
+    );
+
+    // 找到携带两份回执的请求（即第三轮），第一份回执必须仍是完整内容
+    let observed = h.mock.observed.lock().clone();
+    let multi = observed
+        .iter()
+        .find(|o| o.tool_contents.len() >= 2)
+        .expect("a request carrying two tool results was observed");
+    assert!(
+        multi.tool_contents[0].contains(marker),
+        "the authoritative anchor must keep the earlier tool result intact \
+         (premature compaction replaced it): {:?}",
+        multi.tool_contents[0].chars().take(80).collect::<String>()
+    );
     Ok(())
 }
 
