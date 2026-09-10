@@ -529,7 +529,7 @@ let revealedReal: Record<string, string> | null = null;
 
 function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
   return {
-    uid: ++uidSeq,
+    uid: 0,
     origId,
     name: origId,
     api_type: p.api_type,
@@ -566,12 +566,59 @@ const effortOptions = computed(() => [
   { value: 'high', label: 'high' },
 ]);
 
-function rebuildDrafts() {
+/**
+ * 重建草稿列表。
+ *
+ * 默认清空全部局部状态（打开面板时以服务端为准）。`preserveView` 供保存后原地
+ * 刷新使用：按提供商名称继承 uid 与密钥显隐，并恢复选中项，否则保存后密钥输入框
+ * 会闪回密码态、标签页会跳回第一个。
+ */
+function rebuildDrafts(preserveView = false) {
+  const previous = providerDrafts.value;
+  const activeName = preserveView
+    ? previous.find((d) => d.uid === activeProviderUid.value)?.name.trim()
+    : undefined;
+  // 名称是保存后唯一可跨重建对应的身份（此时它已成为服务端键名）
+  const carried = new Map<string, { uid: number; apiKey: string | null }>();
+  if (preserveView) {
+    for (const d of previous) {
+      carried.set(d.name.trim(), {
+        uid: d.uid,
+        apiKey: keyRevealed.value[d.uid] ? d.api_key : null,
+      });
+    }
+  }
+
   keyRevealed.value = {};
   revealedReal = null;
   providerDrafts.value = config.value
-    ? Object.entries(config.value.providers).map(([id, p]) => toDraft(id, p))
+    ? Object.entries(config.value.providers).map(([id, p]) => {
+        const draft = toDraft(id, p);
+        const inherited = carried.get(id);
+        if (!inherited) {
+          draft.uid = ++uidSeq;
+          return draft;
+        }
+        draft.uid = inherited.uid;
+        if (inherited.apiKey !== null) {
+          // 服务端回读的是掩码值；沿用保存前的真实密钥，界面才不会闪回密码态
+          draft.api_key = inherited.apiKey;
+          keyRevealed.value[draft.uid] = true;
+        }
+        return draft;
+      })
     : [];
+
+  if (activeName !== undefined) {
+    const next = providerDrafts.value.find((d) => d.name === activeName);
+    if (next) activeProviderUid.value = next.uid;
+  }
+}
+
+/** 删除当前选中的提供商草稿（保存后才会真正移除） */
+function removeActiveProvider() {
+  const index = providerDrafts.value.findIndex((d) => d.uid === activeProviderUid.value);
+  if (index >= 0) removeDraft(index);
 }
 
 /** 密钥显隐：展示真实密钥需经 reveal 接口获取；隐藏时若未被编辑则回填掩码。 */
@@ -630,7 +677,14 @@ function addProvider() {
 }
 
 function removeDraft(index: number) {
-  providerDrafts.value.splice(index, 1);
+  const [removed] = providerDrafts.value.splice(index, 1);
+  if (removed) delete keyRevealed.value[removed.uid];
+  // splice 原地修改数组，ref 的浅层 watch 不会触发；删除选中项时须显式改选相邻项，
+  // 否则 activeProviderUid 悬空、配置区变为空白
+  if (removed && removed.uid === activeProviderUid.value) {
+    const next = providerDrafts.value[index] ?? providerDrafts.value[index - 1];
+    activeProviderUid.value = next?.uid ?? null;
+  }
 }
 
 function addModel(d: ProviderDraft) {
@@ -720,7 +774,7 @@ async function saveProviders() {
       };
     }
     await saveConfig({ ...config.value, providers, default_model });
-    rebuildDrafts();
+    rebuildDrafts(true);
     toast.success(t('providersSaved'));
   } catch (e) {
     toast.error(t('saveFailed', { message: (e as Error).message }));
@@ -937,122 +991,132 @@ function pickLocale(v: Locale) {
                   {{ d.name || t('providerName') }}
                 </button>
               </div>
-              <OButton size="sm" variant="soft" @click="addProvider">
-                <template #icon><LuPlus :size="13" /></template>
-                {{ t('addProvider') }}
-              </OButton>
+              <div class="tabs-actions">
+                <OButton size="sm" variant="soft" @click="addProvider">
+                  <template #icon><LuPlus :size="13" /></template>
+                  {{ t('add') }}
+                </OButton>
+                <OButton
+                  size="sm"
+                  variant="ghost"
+                  :disabled="!activeDraft"
+                  @click="removeActiveProvider"
+                >
+                  <template #icon><LuTrash2 :size="13" /></template>
+                  {{ tc('delete') }}
+                </OButton>
+              </div>
             </div>
 
             <div v-for="(d, pi) in activeDraft ? [activeDraft] : []" :key="d.uid" class="prov">
-              <!-- 提供商配置：左侧配置项名称，右侧对应控件 -->
-              <div class="cfg-head">
-                <span class="cfg-title">{{ t('providerConfig') }}</span>
-                <OTooltip :label="tc('delete')" align="end">
-                  <button type="button" class="m-del" :aria-label="tc('delete')" @click="removeDraft(providerDrafts.indexOf(d))">
-                    <LuTrash2 :size="14" />
-                  </button>
-                </OTooltip>
-              </div>
-              <div class="cfg-rows">
-                <label class="cfg-label">{{ t('providerName') }}</label>
-                <div class="cfg-ctl">
-                  <OInput v-model="d.name" class="mono" :placeholder="t('providerName')" />
-                </div>
-
-                <label class="cfg-label">{{ t('fRequestFormat') }}</label>
-                <div class="cfg-ctl">
-                  <OSelect v-model="d.api_type" :options="apiTypeOptions" />
-                </div>
-
-                <label class="cfg-label">{{ t('fBaseUrl') }}</label>
-                <div class="cfg-ctl">
-                  <OInput v-model="d.base_url" />
-                </div>
-
-                <label class="cfg-label">{{ t('fApiKey') }}</label>
-                <div class="cfg-ctl">
-                  <OInput v-model="d.api_key" :type="keyRevealed[d.uid] ? 'text' : 'password'" />
-                  <OTooltip :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
-                    <button
-                      type="button"
-                      class="m-del"
-                      :aria-label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
-                      @click="toggleKeyVisibility(d)"
-                    >
-                      <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
-                      <LuEye v-else :size="14" />
-                    </button>
-                  </OTooltip>
-                </div>
-              </div>
-
-              <!-- 模型配置：与提供商配置分组呈现 -->
-              <div class="cfg-head">
-                <span class="cfg-title">{{ t('modelConfig') }}</span>
-                <OButton size="sm" variant="ghost" @click="addModel(d)">
-                  <template #icon><LuPlus :size="13" /></template>
-                  {{ t('addModel') }}
-                </OButton>
-              </div>
-              <p v-if="d.models.length === 0" class="muted">{{ t('modelsNone') }}</p>
-
-              <div v-for="(m, mi) in d.models" :key="mi" class="model">
-                <div class="model-head">
-                  <span class="model-title">{{ m.name || m.id || t('modelIndex', { index: mi + 1 }) }}</span>
-                  <OTooltip :label="t('removeModel')" align="end">
-                    <button type="button" class="m-del" :aria-label="t('removeModel')" @click="d.models.splice(mi, 1)">
-                      <LuTrash2 :size="14" />
-                    </button>
-                  </OTooltip>
-                </div>
+              <!-- 提供商配置：标题与配置项同处一个区块 -->
+              <section class="cfg-group">
+                <header class="cfg-head">
+                  <span class="cfg-title">{{ t('providerConfig') }}</span>
+                </header>
                 <div class="cfg-rows">
-                  <label class="cfg-label">{{ t('modelId') }}</label>
+                  <label class="cfg-label">{{ t('providerName') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="m.id" class="mono" placeholder="model-id" />
+                    <OInput v-model="d.name" class="mono" :placeholder="t('providerName')" />
                   </div>
 
-                  <label class="cfg-label">{{ t('modelName') }}</label>
+                  <label class="cfg-label">{{ t('fRequestFormat') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="m.name" />
+                    <OSelect v-model="d.api_type" :options="apiTypeOptions" />
                   </div>
 
-                  <label class="cfg-label">{{ t('contextLen') }}</label>
+                  <label class="cfg-label">{{ t('fBaseUrl') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="m.context_len" />
+                    <OInput v-model="d.base_url" />
                   </div>
 
-                  <label class="cfg-label">{{ t('maxOutput') }}</label>
+                  <label class="cfg-label">{{ t('fApiKey') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="m.max_output" :placeholder="t('unset')" />
+                    <OInput v-model="d.api_key" :type="keyRevealed[d.uid] ? 'text' : 'password'" />
+                    <OTooltip :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
+                      <button
+                        type="button"
+                        class="m-del"
+                        :aria-label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
+                        @click="toggleKeyVisibility(d)"
+                      >
+                        <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
+                        <LuEye v-else :size="14" />
+                      </button>
+                    </OTooltip>
                   </div>
+                </div>
+              </section>
 
-                  <label class="cfg-label">{{ t('reasoningEffort') }}</label>
-                  <div class="cfg-ctl">
-                    <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
+              <!-- 模型配置：标题与模型列表同处一个区块 -->
+              <section class="cfg-group">
+                <header class="cfg-head">
+                  <span class="cfg-title">{{ t('modelConfig') }}</span>
+                  <OButton size="sm" variant="ghost" @click="addModel(d)">
+                    <template #icon><LuPlus :size="13" /></template>
+                    {{ t('add') }}
+                  </OButton>
+                </header>
+                <p v-if="d.models.length === 0" class="muted">{{ t('modelsNone') }}</p>
+
+                <div v-for="(m, mi) in d.models" :key="mi" class="model">
+                  <div class="model-head">
+                    <span class="model-title">{{ m.name || m.id || t('modelIndex', { index: mi + 1 }) }}</span>
+                    <OTooltip :label="t('removeModel')" align="end">
+                      <button type="button" class="m-del" :aria-label="t('removeModel')" @click="d.models.splice(mi, 1)">
+                        <LuTrash2 :size="14" />
+                      </button>
+                    </OTooltip>
                   </div>
-
-                  <label class="cfg-label">{{ t('capabilities') }}</label>
-                  <div class="cfg-ctl">
-                    <div class="checks">
-                      <OCheckbox v-model="m.supports_thinking" :label="t('supportsThinking')" />
-                      <OCheckbox v-model="m.supports_vision" :label="t('supportsVision')" />
+                  <div class="cfg-rows">
+                    <label class="cfg-label">{{ t('modelId') }}</label>
+                    <div class="cfg-ctl">
+                      <OInput v-model="m.id" class="mono" placeholder="model-id" />
                     </div>
-                  </div>
 
-                  <label class="cfg-label">{{ t('inputTypes') }}</label>
-                  <div class="cfg-ctl">
-                    <div class="checks">
-                      <OCheckbox
-                        v-for="ty in INPUT_TYPES"
-                        :key="ty"
-                        :model-value="m.input_types.includes(ty)"
-                        :label="inputTypeLabel(ty)"
-                        @update:model-value="toggleInputType(m, ty, $event)"
-                      />
+                    <label class="cfg-label">{{ t('modelName') }}</label>
+                    <div class="cfg-ctl">
+                      <OInput v-model="m.name" />
+                    </div>
+
+                    <label class="cfg-label">{{ t('contextLen') }}</label>
+                    <div class="cfg-ctl">
+                      <OInput v-model="m.context_len" />
+                    </div>
+
+                    <label class="cfg-label">{{ t('maxOutput') }}</label>
+                    <div class="cfg-ctl">
+                      <OInput v-model="m.max_output" :placeholder="t('unset')" />
+                    </div>
+
+                    <label class="cfg-label">{{ t('reasoningEffort') }}</label>
+                    <div class="cfg-ctl">
+                      <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
+                    </div>
+
+                    <label class="cfg-label">{{ t('capabilities') }}</label>
+                    <div class="cfg-ctl">
+                      <div class="checks">
+                        <OCheckbox v-model="m.supports_thinking" :label="t('supportsThinking')" />
+                        <OCheckbox v-model="m.supports_vision" :label="t('supportsVision')" />
+                      </div>
+                    </div>
+
+                    <label class="cfg-label">{{ t('inputTypes') }}</label>
+                    <div class="cfg-ctl">
+                      <div class="checks">
+                        <OCheckbox
+                          v-for="ty in INPUT_TYPES"
+                          :key="ty"
+                          :model-value="m.input_types.includes(ty)"
+                          :label="inputTypeLabel(ty)"
+                          @update:model-value="toggleInputType(m, ty, $event)"
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
+              </section>
             </div>
 
             <p v-if="providerDrafts.length === 0" class="muted">{{ t('providersEmpty') }}</p>
@@ -1405,9 +1469,13 @@ function pickLocale(v: Locale) {
   background: var(--surface);
   border-radius: 8px;
 }
-/* 新增按钮固定在最右侧，不随标签数量移动 */
-.tabs-row > :last-child {
+/* 新增/删除操作固定在最右侧，不随标签数量移动 */
+.tabs-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-left: auto;
+  flex-shrink: 0;
 }
 .tab {
   flex-shrink: 0;
@@ -1610,13 +1678,6 @@ function pickLocale(v: Locale) {
   color: var(--overlay0);
   font-family: var(--font-mono);
 }
-/* 提供商/MCP 编辑卡片：底色卡片，与摘要行区分 */
-.prov {
-  background: var(--surface);
-  border-radius: 10px;
-  padding: 12px 14px;
-  margin-bottom: 10px;
-}
 .card-foot {
   display: flex;
   justify-content: flex-end;
@@ -1661,18 +1722,32 @@ function pickLocale(v: Locale) {
   gap: 10px 14px;
   margin-top: 10px;
 }
-/* 提供商/模型配置：左侧配置项名称，右侧对应控件 */
+/* 提供商/MCP 编辑卡片：仅作为区块容器，视觉边界交给 .cfg-group */
+.prov {
+  margin-bottom: 10px;
+}
+/* MCP 编辑卡片底色（提供商卡片已改用 .cfg-group 分组） */
+.card {
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+/* 配置区块：标题与配置项同处一个带底色的区域，避免标题浮在区域之上 */
+.cfg-group {
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.cfg-group:last-child {
+  margin-bottom: 0;
+}
 .cfg-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 14px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--line);
-}
-.cfg-head:first-child {
-  margin-top: 0;
+  min-height: 24px;
 }
 .cfg-title {
   font-size: 11.5px;
@@ -1686,7 +1761,7 @@ function pickLocale(v: Locale) {
   grid-template-columns: 120px minmax(0, 1fr);
   align-items: center;
   gap: 8px 12px;
-  padding: 10px 0 2px;
+  padding-top: 8px;
 }
 .cfg-label {
   font-size: 12.5px;

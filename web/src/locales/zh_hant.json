@@ -144,7 +144,6 @@
       "blue": "藍色",
       "lavender": "薰衣草"
     },
-    "addModel": "新增模型",
     "removeModel": "刪除模型",
     "modelName": "顯示名稱",
     "contextLen": "上下文大小",
@@ -163,7 +162,6 @@
     "fApiType": "API 類型",
     "fBaseUrl": "服務地址",
     "fApiKey": "API 密鑰",
-    "fModels": "模型清單",
     "navSectionPersonal": "個人化",
     "navSectionService": "服務",
     "themeDesc": "淺色固定 Latte，深色可選風味",
@@ -212,7 +210,6 @@
     "themeNameRequired": "主題名稱不能為空",
     "themeDeleted": "主題已刪除",
     "edit": "編輯",
-    "addProvider": "新增提供者",
     "providerConfig": "提供商設定",
     "modelConfig": "模型設定",
     "fRequestFormat": "請求格式",

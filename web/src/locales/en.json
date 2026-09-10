@@ -144,7 +144,6 @@
       "blue": "Blue",
       "lavender": "Lavender"
     },
-    "addModel": "Add Model",
     "removeModel": "Remove model",
     "modelName": "Display Name",
     "contextLen": "Context Size",
@@ -163,7 +162,6 @@
     "fApiType": "API Type",
     "fBaseUrl": "Base URL",
     "fApiKey": "API Key",
-    "fModels": "Models",
     "navSectionPersonal": "Personal",
     "navSectionService": "Service",
     "themeDesc": "Light uses Latte; dark flavors selectable",
@@ -212,7 +210,6 @@
     "themeNameRequired": "Theme name is required",
     "themeDeleted": "Theme deleted",
     "edit": "Edit",
-    "addProvider": "Add provider",
     "providerConfig": "Provider",
     "modelConfig": "Models",
     "fRequestFormat": "Request format",
