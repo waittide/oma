@@ -616,6 +616,21 @@ impl ToolRegistry {
         Self { tools: Vec::new() }
     }
 
+    /// 内置工具集（不含 MCP）。
+    ///
+    /// 「有哪些内置工具」只在此处定义，房间装配与工具清单接口共用，
+    /// 避免两处各列一份而悄悄漂移。`runner_slot` 由调用方注入：
+    /// 房间需要自己的槽位以便回填 subagent runner。
+    pub fn with_builtins(runner_slot: Arc<RunnerSlot>) -> Self {
+        let mut reg = Self::new();
+        reg.register(Arc::new(ReadTool));
+        reg.register(Arc::new(WriteTool));
+        reg.register(Arc::new(EditTool));
+        reg.register(Arc::new(ShellTool::default()));
+        reg.register(Arc::new(TaskTool::new(runner_slot)));
+        reg
+    }
+
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
         self.tools.push(tool);
     }

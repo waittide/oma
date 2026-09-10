@@ -22,7 +22,7 @@ use oma_contract::{AgentEvent, ApprovalMode, ChatMessage, ClientMessage, McpServ
 use oma_mcp::McpManager;
 use oma_runtime::{RoomError, RoomSubagentRunner, SessionRoom};
 use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachment_name};
-use oma_tool::{RunnerSlot, ShellTool, TaskTool, ToolRegistry, resolve_path};
+use oma_tool::{RunnerSlot, ToolRegistry, resolve_path};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
@@ -127,13 +127,8 @@ impl DaemonState {
 
         // 先装配完整工具注册表（含 task 与 MCP），再交给房间：
         // 房间持有的是注册表快照，注册必须发生在构造之前。
-        let mut reg = ToolRegistry::new();
-        reg.register(Arc::new(oma_tool::ReadTool));
-        reg.register(Arc::new(oma_tool::WriteTool));
-        reg.register(Arc::new(oma_tool::EditTool));
-        reg.register(Arc::new(ShellTool::default()));
         let runner_slot = Arc::new(RunnerSlot::new());
-        reg.register(Arc::new(TaskTool::new(runner_slot.clone())));
+        let mut reg = ToolRegistry::with_builtins(runner_slot.clone());
         for mcp_tool in self.mcp.create_all_tools().await {
             reg.register(mcp_tool);
         }
@@ -698,6 +693,43 @@ fn mime_for(name: &str) -> &'static str {
 }
 
 // =========================================================================
+// 工具清单 REST API (/api/tools)
+// =========================================================================
+
+/// 预设编辑器可勾选的工具：内置工具 + 已发现的 MCP 工具（命名空间化）
+async fn handle_list_tools(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+
+    let builtin = ToolRegistry::with_builtins(Arc::new(RunnerSlot::new()));
+    let mut out: Vec<serde_json::Value> = builtin
+        .list()
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t.name(),
+                "description": t.description(),
+                "kind": "builtin",
+            })
+        })
+        .collect();
+
+    for (name, description) in state.mcp.cached_tool_names().await {
+        out.push(serde_json::json!({
+            "name": name,
+            "description": description,
+            "kind": "mcp",
+        }));
+    }
+
+    Ok(Json(out))
+}
+
+// =========================================================================
 // Agent 预设 REST API (/api/presets)
 // =========================================================================
 
@@ -1256,6 +1288,7 @@ pub fn create_router(state: DaemonState) -> Router {
         .route("/api/sessions/{id}/attachments/{name}", get(handle_get_attachment))
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
+        .route("/api/tools", get(handle_list_tools))
         .route("/api/presets", get(handle_list_presets))
         .route(
             "/api/presets/{preset_id}",

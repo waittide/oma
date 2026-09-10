@@ -22,11 +22,12 @@ import ORadio from './ui/ORadio.vue';
 import OSelect from './ui/OSelect.vue';
 import OTooltip from './ui/OTooltip.vue';
 import OModelSelect from './ui/OModelSelect.vue';
+import OMultiSelect from './ui/OMultiSelect.vue';
 import { ACCENTS, PALETTES, config, customThemes, loadConfig, saveConfig, saveTheme, theme, type Flavor } from '../stores/theme';
 import { agents } from '../stores/chat';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
 import { activeSession } from '../stores/sessions';
-import type { AgentFile, AgentSummary, CustomTheme, McpServerConfig, ModelInfo, OmaConfig, ProviderConfig, SkillFile, Theme } from '../types';
+import type { AgentFile, AgentSummary, ToolInfo, CustomTheme, McpServerConfig, ModelInfo, OmaConfig, ProviderConfig, SkillFile, Theme } from '../types';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ open: boolean }>();
@@ -314,10 +315,36 @@ const skillScopeOptions = computed(() => [
 
 const presets = ref<AgentFile[]>([]);
 const presetsLoading = ref(false);
+/** 可勾选工具清单（内置 + 已发现的 MCP），进入预设页时拉取一次 */
+const availableTools = ref<ToolInfo[]>([]);
+const toolOptions = computed(() => [
+  ...availableTools.value
+    .filter((t) => t.kind === 'builtin')
+    .map((t) => ({ value: t.name, label: t.name, hint: shortHint(t.description) })),
+  ...availableTools.value
+    .filter((t) => t.kind !== 'builtin')
+    .map((t) => ({ value: t.name, label: t.name, hint: t.description ? shortHint(t.description) : 'MCP' })),
+]);
+
+/** 工具描述在选项里只作提示，过长会撑爆弹层 */
+function shortHint(desc: string): string {
+  const flat = desc.replace(/\s+/g, ' ').trim();
+  return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
+}
+
+async function loadTools() {
+  try {
+    availableTools.value = await api.tools();
+  } catch {
+    // 工具清单不可用时退化为空列表，预设编辑仍可保存已声明的工具名
+    availableTools.value = [];
+  }
+}
 
 async function loadPresets() {
   presetsLoading.value = true;
   try {
+    if (availableTools.value.length === 0) await loadTools();
     // 始终带上工作区：项目层才能一并取回，各层在列表中按标签区分
     presets.value = await api.presets(skillWorkspace.value || undefined);
   } catch (e) {
@@ -334,8 +361,8 @@ const presetEdit = reactive({
   id: '',
   name: '',
   description: '',
-  toolsText: '',
-  content: '',
+  tools: [] as string[],
+  body: '',
   scope: 'global' as EditScope,
 });
 
@@ -346,8 +373,8 @@ function editPreset(a: AgentFile) {
   presetEdit.id = a.id;
   presetEdit.name = a.name;
   presetEdit.description = a.description;
-  presetEdit.toolsText = a.tools.join(', ');
-  presetEdit.content = a.content;
+  presetEdit.tools = [...a.tools];
+  presetEdit.body = a.body;
   presetEdit.scope = a.scope === 'bundled' ? scopeSel.value : (a.scope as EditScope);
 }
 
@@ -358,8 +385,8 @@ function newPreset() {
   presetEdit.id = '';
   presetEdit.name = '';
   presetEdit.description = '';
-  presetEdit.toolsText = '';
-  presetEdit.content = '';
+  presetEdit.tools = [];
+  presetEdit.body = '';
   presetEdit.scope = scopeSel.value;
 }
 
@@ -375,8 +402,8 @@ async function savePreset() {
       {
         name: presetEdit.name.trim() || id,
         description: presetEdit.description.trim(),
-        tools: presetEdit.toolsText.split(',').map((x) => x.trim()).filter(Boolean),
-        content: presetEdit.content,
+        tools: presetEdit.tools,
+        content: presetEdit.body,
         scope: presetEdit.scope,
       },
       presetEdit.scope === 'project' ? skillWorkspace.value : '',
@@ -427,7 +454,7 @@ const skillEdit = reactive({
   id: '',
   name: '',
   description: '',
-  content: '',
+  body: '',
   scope: 'global' as SkillScopeName,
 });
 
@@ -438,7 +465,7 @@ function editSkill(s: SkillFile) {
   skillEdit.id = s.id;
   skillEdit.name = s.name;
   skillEdit.description = s.description;
-  skillEdit.content = s.content;
+  skillEdit.body = s.body;
   skillEdit.scope = s.scope as SkillScopeName;
 }
 
@@ -449,7 +476,7 @@ function newSkill() {
   skillEdit.id = '';
   skillEdit.name = '';
   skillEdit.description = '';
-  skillEdit.content = '';
+  skillEdit.body = '';
   skillEdit.scope = skillScopeSel.value;
 }
 
@@ -465,7 +492,7 @@ async function saveSkill() {
       {
         name: skillEdit.name.trim() || id,
         description: skillEdit.description.trim(),
-        content: skillEdit.content,
+        content: skillEdit.body,
         scope: skillEdit.scope,
       },
       skillEdit.scope === 'project' ? skillWorkspace.value : '',
@@ -1125,10 +1152,10 @@ function pickLocale(v: Locale) {
             </div>
 
             <div v-for="(d, pi) in activeDraft ? [activeDraft] : []" :key="d.uid" class="prov">
-              <!-- 提供商配置：标题与配置项同处一个区块 -->
-              <section class="cfg-group">
-                <header class="cfg-head">
-                  <span class="cfg-title">{{ t('providerConfig') }}</span>
+              <!-- 提供商配置：单个容器，标题与配置项同在其中 -->
+              <section class="card cfg-block">
+                <header class="blk-head">
+                  <span class="blk-title">{{ t('providerConfig') }}</span>
                 </header>
                 <div class="cfg-rows">
                   <label class="cfg-label">{{ t('providerName') }}</label>
@@ -1164,71 +1191,69 @@ function pickLocale(v: Locale) {
                 </div>
               </section>
 
-              <!-- 模型配置：标题与模型列表同处一个区块 -->
-              <section class="cfg-group">
-                <header class="cfg-head">
-                  <span class="cfg-title">{{ t('modelConfig') }}</span>
-                  <OButton size="sm" variant="ghost" @click="addModel(d)">
-                    <template #icon><LuPlus :size="13" /></template>
-                    {{ t('add') }}
-                  </OButton>
+              <!-- 模型配置：标题独占一行，每个模型各自一个区域 -->
+              <header class="sec-head">
+                <span class="blk-title">{{ t('modelConfig') }}</span>
+                <OButton size="sm" variant="ghost" @click="addModel(d)">
+                  <template #icon><LuPlus :size="13" /></template>
+                  {{ t('add') }}
+                </OButton>
+              </header>
+              <p v-if="d.models.length === 0" class="muted">{{ t('modelsNone') }}</p>
+
+              <section v-for="(m, mi) in d.models" :key="mi" class="card cfg-block model-block">
+                <header class="blk-head">
+                  <span class="blk-sub">{{ m.name || m.id || t('modelIndex', { index: mi + 1 }) }}</span>
+                  <OTooltip :label="t('removeModel')" align="end">
+                    <button type="button" class="m-del" :aria-label="t('removeModel')" @click="d.models.splice(mi, 1)">
+                      <LuTrash2 :size="14" />
+                    </button>
+                  </OTooltip>
                 </header>
-                <p v-if="d.models.length === 0" class="muted">{{ t('modelsNone') }}</p>
-
-                <div v-for="(m, mi) in d.models" :key="mi" class="model">
-                  <div class="model-head">
-                    <span class="model-title">{{ m.name || m.id || t('modelIndex', { index: mi + 1 }) }}</span>
-                    <OTooltip :label="t('removeModel')" align="end">
-                      <button type="button" class="m-del" :aria-label="t('removeModel')" @click="d.models.splice(mi, 1)">
-                        <LuTrash2 :size="14" />
-                      </button>
-                    </OTooltip>
+                <div class="cfg-rows">
+                  <label class="cfg-label">{{ t('modelId') }}</label>
+                  <div class="cfg-ctl">
+                    <OInput v-model="m.id" class="mono" placeholder="model-id" />
                   </div>
-                  <div class="cfg-rows">
-                    <label class="cfg-label">{{ t('modelId') }}</label>
-                    <div class="cfg-ctl">
-                      <OInput v-model="m.id" class="mono" placeholder="model-id" />
-                    </div>
 
-                    <label class="cfg-label">{{ t('modelName') }}</label>
-                    <div class="cfg-ctl">
-                      <OInput v-model="m.name" />
-                    </div>
+                  <label class="cfg-label">{{ t('modelName') }}</label>
+                  <div class="cfg-ctl">
+                    <OInput v-model="m.name" />
+                  </div>
 
-                    <label class="cfg-label">{{ t('contextLen') }}</label>
-                    <div class="cfg-ctl">
-                      <OInput v-model="m.context_len" />
-                    </div>
+                  <label class="cfg-label">{{ t('contextLen') }}</label>
+                  <div class="cfg-ctl">
+                    <OInput v-model="m.context_len" />
+                  </div>
 
-                    <label class="cfg-label">{{ t('maxOutput') }}</label>
-                    <div class="cfg-ctl">
-                      <OInput v-model="m.max_output" :placeholder="t('unset')" />
-                    </div>
+                  <label class="cfg-label">{{ t('maxOutput') }}</label>
+                  <div class="cfg-ctl">
+                    <OInput v-model="m.max_output" :placeholder="t('unset')" />
+                  </div>
 
-                    <label class="cfg-label">{{ t('reasoningEffort') }}</label>
-                    <div class="cfg-ctl">
-                      <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
-                    </div>
+                  <label class="cfg-label">{{ t('reasoningEffort') }}</label>
+                  <div class="cfg-ctl">
+                    <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
+                  </div>
 
-                    <label class="cfg-label">{{ t('capabilities') }}</label>
-                    <div class="cfg-ctl">
-                      <div class="checks">
-                        <OCheckbox v-model="m.supports_thinking" :label="t('supportsThinking')" />
-                        <OCheckbox v-model="m.supports_vision" :label="t('supportsVision')" />
-                      </div>
+                  <label class="cfg-label">{{ t('capabilities') }}</label>
+                  <div class="cfg-ctl">
+                    <div class="checks">
+                      <OCheckbox v-model="m.supports_thinking" :label="t('supportsThinking')" />
+                      <OCheckbox v-model="m.supports_vision" :label="t('supportsVision')" />
                     </div>
+                  </div>
 
-                    <label class="cfg-label">{{ t('inputTypes') }}</label>
-                    <div class="cfg-ctl">
-                      <div class="checks">
-                        <OCheckbox
-                          v-for="ty in INPUT_TYPES"
-                          :key="ty"
-                          :model-value="m.input_types.includes(ty)"
-                          :label="inputTypeLabel(ty)"
-                          @update:model-value="toggleInputType(m, ty, $event)"
-                        />
-                      </div>
+                  <label class="cfg-label">{{ t('inputTypes') }}</label>
+                  <div class="cfg-ctl">
+                    <div class="checks">
+                      <OCheckbox
+                        v-for="ty in INPUT_TYPES"
+                        :key="ty"
+                        :model-value="m.input_types.includes(ty)"
+                        :label="inputTypeLabel(ty)"
+                        @update:model-value="toggleInputType(m, ty, $event)"
+                      />
                     </div>
                   </div>
                 </div>
@@ -1440,12 +1465,16 @@ function pickLocale(v: Locale) {
       </div>
       <div class="field">
         <label>{{ t('skillTools') }}</label>
-        <OInput v-model="presetEdit.toolsText" placeholder="read, write, shell" />
+        <OMultiSelect
+          v-model="presetEdit.tools"
+          :options="toolOptions"
+          :placeholder="t('skillToolsAny')"
+        />
       </div>
       <div class="field">
         <label>{{ t('skillContent') }}</label>
         <div class="skill-content-box">
-          <textarea v-model="presetEdit.content" rows="12" spellcheck="false" :disabled="presetEdit.readonly" />
+          <textarea v-model="presetEdit.body" rows="12" spellcheck="false" :disabled="presetEdit.readonly" />
         </div>
         <p v-if="presetEdit.readonly" class="muted">{{ t('presetReadonly') }}</p>
       </div>
@@ -1494,7 +1523,7 @@ function pickLocale(v: Locale) {
       <div class="field">
         <label>{{ t('skillContent') }}</label>
         <div class="skill-content-box">
-          <textarea v-model="skillEdit.content" rows="12" spellcheck="false" :disabled="skillEdit.readonly" />
+          <textarea v-model="skillEdit.body" rows="12" spellcheck="false" :disabled="skillEdit.readonly" />
         </div>
         <p v-if="skillEdit.readonly" class="muted">{{ t('skillReadonly') }}</p>
       </div>
@@ -1936,39 +1965,52 @@ function pickLocale(v: Locale) {
   gap: 10px 14px;
   margin-top: 10px;
 }
-/* 提供商/MCP 编辑卡片：仅作为区块容器，视觉边界交给 .cfg-group */
+/* 提供商卡片：仅作容器，具体区块由 .cfg-block 承担底色 */
 .prov {
   margin-bottom: 10px;
 }
-/* MCP 编辑卡片底色（提供商卡片已改用 .cfg-group 分组） */
+/* 带底色的区块（提供商配置 / 每个模型）与 MCP 编辑卡片共用 */
 .card {
   background: var(--surface);
   border-radius: 10px;
   padding: 12px 14px;
 }
-/* 配置区块：标题与配置项同处一个带底色的区域，避免标题浮在区域之上 */
-.cfg-group {
-  background: var(--surface);
-  border-radius: 10px;
-  padding: 12px 14px;
+.cfg-block {
   margin-bottom: 10px;
 }
-.cfg-group:last-child {
+.cfg-block:last-child {
   margin-bottom: 0;
 }
-.cfg-head {
+/* 区块标题：与配置项同处一个容器内 */
+.blk-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   min-height: 24px;
 }
-.cfg-title {
+.blk-title {
   font-size: 11.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--overlay0);
+}
+.blk-sub {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 分区标题（模型配置）在容器之外，统领其下的各个模型区块 */
+.sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 16px 0 8px;
 }
 .cfg-rows {
   display: grid;
@@ -2001,28 +2043,6 @@ function pickLocale(v: Locale) {
 /* 标识符类输入（提供商名、模型 id）用等宽字体 */
 .mono :deep(input) {
   font-family: var(--font-mono);
-}
-.model {
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--line);
-}
-.model:last-of-type {
-  border-bottom: none;
-}
-.model-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 0 0;
-}
-.model-title {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .m-del {
   display: inline-flex;

@@ -182,7 +182,7 @@
     "skillReadonly": "Built-in skills are read-only; save as a new skill instead.",
     "skillSaved": "Skill saved",
     "skillDeleted": "Skill deleted",
-    "navMcp": "MCP Servers",
+    "navMcp": "MCP",
     "mcpHint": "Configured MCP servers reconnect on save; their tools are injected into sessions.",
     "mcpKindLocal": "Local command",
     "mcpKindRemote": "Remote server",
@@ -225,7 +225,9 @@
     "presetReadonly": "Built-in presets are read-only. Save as a custom preset to edit.",
     "skillsHint": "Skills are discovered across three layers: global ~/.agents/skills, agent ~/.config/oma/skills, project <workspace>/agents/skills; project > agent > global on name clashes. Rows are tagged by layer; only a catalog is injected and the model reads the body when relevant.",
     "scopeAgent": "Agent",
-    "newScope": "Create in"
+    "newScope": "Create in",
+    "skillToolsAny": "Inherit all tools",
+    "skillToolsHint": "Leave empty to allow every tool the agent has."
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"

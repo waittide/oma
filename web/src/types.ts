@@ -98,7 +98,10 @@ export interface AgentFile {
   description: string;
   tools: string[];
   scope: string;
+  /** 完整 Markdown（含 frontmatter） */
   content: string;
+  /** 仅正文：编辑器只展示/回写正文，元信息由服务端按字段重新渲染 */
+  body: string;
 }
 
 /** 技能文件条目：按需读取的领域知识；scope = global | agent | project */
@@ -107,7 +110,10 @@ export interface SkillFile {
   name: string;
   description: string;
   scope: string;
+  /** 完整 Markdown（含 frontmatter） */
   content: string;
+  /** 仅正文 */
+  body: string;
   /** SKILL.md 绝对路径（模型读取技能正文的入口） */
   path: string;
   /** 技能目录绝对路径（技能自带的 scripts/ 相对此目录解析） */
@@ -235,6 +241,14 @@ export interface ServerStatus {
   version: string;
   active_sessions: number;
   uptime_secs: number;
+}
+
+/** 可授权工具条目（GET /api/tools） */
+export interface ToolInfo {
+  name: string;
+  description: string;
+  /** builtin | mcp */
+  kind: string;
 }
 
 /** POST /api/sessions/{id}/attachments 的响应 */

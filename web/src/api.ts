@@ -5,6 +5,7 @@ import type {
   ServerStatus,
   SessionRecord,
   SkillFile,
+  ToolInfo,
   UploadAttachmentResp,
 } from './types';
 
@@ -83,6 +84,9 @@ export const api = {
       `/api/sessions/${id}/messages/${messageId}`,
       { method: 'DELETE' },
     ),
+  /** 预设编辑器可勾选的工具（内置 + 已发现的 MCP） */
+  tools: () => request<ToolInfo[]>('/api/tools'),
+
   presets: (workspace?: string) =>
     request<AgentFile[]>(
       `/api/presets${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,

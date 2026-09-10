@@ -397,6 +397,9 @@ pub struct AgentFile {
     pub scope:       String,
     /// 完整 Markdown 原文（含 frontmatter）
     pub content:     String,
+    /// 仅正文（不含 frontmatter）：编辑器只应展示/回写正文，
+    /// 否则保存时会把元信息当成提示词内容再次嵌入
+    pub body:        String,
 }
 
 /// 技能文件条目：scope = global | project
@@ -411,49 +414,82 @@ pub struct SkillFile {
     pub scope:       String,
     /// 完整 Markdown 原文（含 frontmatter）
     pub content:     String,
+    /// 仅正文（不含 frontmatter）
+    pub body:        String,
     /// SKILL.md 的绝对路径（模型读取技能正文的入口）
     pub path:        String,
     /// 技能目录绝对路径（技能自带的 scripts/ 等资源相对此目录解析）
     pub dir:         String,
 }
 
-/// Agent Frontmatter 头部结构
+/// Markdown Frontmatter 头部结构。
+///
+/// 全部字段可缺省：文件名为权威 id，`name` 仅是展示名（缺省回退为 id）；
+/// 且**不校验未知字段**——用户目录里既有 `role: all` 这类自有约定，
+/// 也可能出现未来新增的键，都不应让预设无法加载。
 #[derive(Debug, Deserialize)]
 struct Frontmatter {
-    name:        String,
+    #[serde(default)]
+    name:        Option<String>,
     #[serde(default)]
     description: String,
     #[serde(default)]
     tools:       Vec<String>,
 }
 
+/// 解析后的 Frontmatter 与正文
+struct ParsedTemplate {
+    name:        String,
+    description: String,
+    tools:       Vec<String>,
+    body:        String,
+}
+
+/// 解析 Markdown 的 Frontmatter 与正文；无 frontmatter 时整篇作为正文。
+///
+/// 解析失败（YAML 损坏）不在此处报错：调用方据 id 兜底，避免一个格式有瑕的
+/// 文件让整个预设/技能不可用。
+fn parse_template_parts(id: &str, raw: &str) -> ParsedTemplate {
+    let fallback = ParsedTemplate {
+        name:        id.to_string(),
+        description: String::new(),
+        tools:       Vec::new(),
+        body:        raw.trim().to_string(),
+    };
+
+    let trimmed = raw.trim();
+    let Some(rest) = trimmed.strip_prefix("---") else {
+        return fallback;
+    };
+    let Some(end_pos) = rest.find("\n---") else {
+        return fallback;
+    };
+    let yaml_str = &rest[..end_pos];
+    let body = rest[end_pos + 4..].trim();
+
+    match serde_yaml::from_str::<Frontmatter>(yaml_str) {
+        Ok(fm) => ParsedTemplate {
+            name:        fm
+                .name
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| id.to_string()),
+            description: fm.description,
+            tools:       fm.tools,
+            body:        body.to_string(),
+        },
+        Err(_) => fallback,
+    }
+}
+
 /// 解析 Markdown 的 Frontmatter 与正文
 pub fn parse_markdown_template(id: &str, raw: &str) -> Result<AgentTemplate> {
-    let trimmed = raw.trim();
-    if let Some(rest) = trimmed.strip_prefix("---") {
-        if let Some(end_pos) = rest.find("---") {
-            let yaml_str = &rest[..end_pos];
-            let body = rest[end_pos + 3..].trim();
-
-            let fm: Frontmatter = serde_yaml::from_str(yaml_str)
-                .with_context(|| format!("Failed to parse YAML frontmatter for {}", id))?;
-
-            return Ok(AgentTemplate {
-                id:                 id.to_string(),
-                name:               fm.name,
-                description:        fm.description,
-                tools:              fm.tools,
-                system_prompt_body: body.to_string(),
-            });
-        }
-    }
-
+    let parts = parse_template_parts(id, raw);
     Ok(AgentTemplate {
         id:                 id.to_string(),
-        name:               id.to_string(),
-        description:        format!("Agent {}", id),
-        tools:              Vec::new(),
-        system_prompt_body: raw.to_string(),
+        name:               parts.name,
+        description:        parts.description,
+        tools:              parts.tools,
+        system_prompt_body: parts.body,
     })
 }
 
@@ -549,23 +585,15 @@ impl AgentLoader {
 
     /// 解析预设 Markdown 为条目；frontmatter 损坏时退化为「id 即名称」仍可见
     fn agent_file_from_raw(id: &str, scope: &str, raw: &str) -> AgentFile {
-        match parse_markdown_template(id, raw) {
-            Ok(t) => AgentFile {
-                id:          id.to_string(),
-                name:        t.name,
-                description: t.description,
-                tools:       t.tools,
-                scope:       scope.to_string(),
-                content:     raw.to_string(),
-            },
-            Err(_) => AgentFile {
-                id:          id.to_string(),
-                name:        id.to_string(),
-                description: String::new(),
-                tools:       Vec::new(),
-                scope:       scope.to_string(),
-                content:     raw.to_string(),
-            },
+        let parts = parse_template_parts(id, raw);
+        AgentFile {
+            id:          id.to_string(),
+            name:        parts.name,
+            description: parts.description,
+            tools:       parts.tools,
+            scope:       scope.to_string(),
+            content:     raw.to_string(),
+            body:        parts.body,
         }
     }
 
@@ -673,7 +701,7 @@ impl AgentLoader {
 /// ```text
 /// global   ~/.agents/skills           跨工具的用户级技能
 /// agent    ~/.config/oma/skills       oma 自身的技能
-/// project  <workspace>/agents/skills  随仓库分发的技能
+/// project  <workspace>/.agents/skills 随仓库分发的技能
 /// ```
 ///
 /// 技能是可按需取用的领域知识，与 Agent 预设（角色 + 工具白名单）是两套独立机制。
@@ -691,9 +719,9 @@ impl SkillLoader {
         dirs_config_dir().map(|d| d.join("oma").join("skills"))
     }
 
-    /// 项目技能目录 (<workspace>/agents/skills)
+    /// 项目技能目录 (<workspace>/.agents/skills)
     pub fn project_dir(workspace: &Path) -> PathBuf {
-        workspace.join("agents").join("skills")
+        workspace.join(".agents").join("skills")
     }
 
     /// 三层根目录，按优先级从低到高排列
@@ -719,16 +747,14 @@ impl SkillLoader {
             return None;
         }
         let raw = std::fs::read_to_string(&entry).ok()?;
-        let (name, description) = match parse_markdown_template(&id, &raw) {
-            Ok(t) => (t.name, t.description),
-            Err(_) => (id.clone(), String::new()),
-        };
+        let parts = parse_template_parts(&id, &raw);
         Some(SkillFile {
             id,
-            name,
-            description,
+            name: parts.name,
+            description: parts.description,
             scope: scope.to_string(),
             content: raw,
+            body: parts.body,
             path: entry.to_string_lossy().to_string(),
             dir: dir.to_string_lossy().to_string(),
         })
@@ -1203,8 +1229,77 @@ api_key = "k"
             "global layer is the cross-tool ~/.agents/skills"
         );
         assert!(SkillLoader::agent_dir().unwrap().ends_with("oma/skills"));
-        assert!(SkillLoader::project_dir(ws).ends_with("agents/skills"));
+        assert!(
+            SkillLoader::project_dir(ws).ends_with(".agents/skills"),
+            "project layer is <workspace>/.agents/skills"
+        );
         assert!(AgentLoader::project_agents_dir(ws).ends_with(".oma/agents"));
+    }
+
+    /// 预设/技能文件缺 `name`、或带有未知 frontmatter 键时仍须可用。
+    ///
+    /// 用户目录里存在这类文件（如 `description` + `role: all`，名称即文件名），
+    /// 此前会因 name 必填 + YAML 严格解析而整条报错。
+    #[test]
+    fn test_frontmatter_tolerates_missing_name_and_extra_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("proj");
+        let dir = AgentLoader::project_agents_dir(&ws);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 缺 name，且带未知键 role
+        std::fs::write(
+            dir.join("minimal.md"),
+            "---\ndescription: 极简的软件工程助手\nrole: all\n---\n你是一位乐于助人的软件工程师助手。",
+        )
+        .unwrap();
+        // 完全没有 frontmatter
+        std::fs::write(dir.join("bare.md"), "纯正文，没有元信息。").unwrap();
+
+        let minimal = AgentLoader::read_agent_file(Some(&ws), "minimal").unwrap();
+        assert_eq!(minimal.name, "minimal", "name 缺省时回退为文件名");
+        assert_eq!(minimal.description, "极简的软件工程助手");
+        assert_eq!(minimal.body, "你是一位乐于助人的软件工程师助手。");
+        assert!(minimal.tools.is_empty());
+
+        let bare = AgentLoader::read_agent_file(Some(&ws), "bare").unwrap();
+        assert_eq!(bare.name, "bare");
+        assert_eq!(bare.body, "纯正文，没有元信息。");
+
+        // 且能真正加载为可用模板（此前这里会报 missing field `name`）
+        let template = AgentLoader::load_agent("minimal", &ws).unwrap();
+        assert_eq!(template.system_prompt_body, "你是一位乐于助人的软件工程师助手。");
+    }
+
+    /// `body` 只含正文：编辑器回写正文，元信息由服务端按字段重新渲染，
+    /// 因此保存后 frontmatter 不会作为提示词内容被二次嵌入。
+    #[test]
+    fn test_body_excludes_frontmatter_and_roundtrips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("proj");
+        std::fs::create_dir_all(&ws).unwrap();
+
+        let body = "正文第一行\n\n正文第二行";
+        AgentLoader::write_agent_file(
+            Some(&ws),
+            "p",
+            "project",
+            "Name",
+            "Desc: 含冒号",
+            &["read".to_string()],
+            body,
+        )
+        .unwrap();
+        let read = AgentLoader::read_agent_file(Some(&ws), "p").unwrap();
+        assert_eq!(read.body, body, "body 必须是纯正文");
+        assert!(read.content.starts_with("---"), "content 保留完整原文");
+        assert!(!read.body.contains("---"), "正文不得包含 frontmatter 分隔符");
+
+        // 以 body 作为新内容再次保存，frontmatter 不应累积
+        AgentLoader::write_agent_file(Some(&ws), "p", "project", "Name", "Desc: 含冒号", &[], &read.body).unwrap();
+        let again = AgentLoader::read_agent_file(Some(&ws), "p").unwrap();
+        assert_eq!(again.body, body);
+        assert_eq!(again.content.matches("---").count(), 2, "frontmatter 只应出现一对");
     }
 
     /// 三层优先级：同名技能只保留最具体的一层（project > agent > global）。

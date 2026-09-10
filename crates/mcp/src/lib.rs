@@ -455,6 +455,23 @@ impl McpManager {
         out
     }
 
+    /// 已发现工具的（命名空间化）清单，仅读缓存、不触发连接。
+    /// 供预设编辑器列出可授权工具，避免因某个 MCP 服务不可达而卡住请求。
+    pub async fn cached_tool_names(&self) -> Vec<(String, String)> {
+        let clients: Vec<Arc<McpClient>> = self.clients.read().values().cloned().collect();
+        let mut out = Vec::new();
+        for client in clients {
+            for tool in client.tools_cache.read().iter() {
+                out.push((
+                    format!("mcp__{}__{}", client.name, tool.name),
+                    tool.description.clone().unwrap_or_default(),
+                ));
+            }
+        }
+        out.sort();
+        out
+    }
+
     pub async fn create_all_tools(&self) -> Vec<Arc<dyn Tool>> {
         let clients: Vec<Arc<McpClient>> = self.clients.read().values().cloned().collect();
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();

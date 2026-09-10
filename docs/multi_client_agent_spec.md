@@ -535,7 +535,11 @@ headers = { Authorization = "Bearer secret_token" }
      ```
 2. **Agent 预设（Preset）动态发现**：
    - 扫描 `~/.config/oma/agents/*.md`（global）与 `<workspace>/.oma/agents/*.md`（project），
-     文件名为预设 id，YAML frontmatter 提供 `name` / `description` / `tools`；
+     文件名为权威 id，YAML frontmatter 提供可选的 `name` / `description` / `tools`；
+   - frontmatter 全部字段可缺省：`name` 缺省时回退为文件名，未知键（如 `role`）
+     予以忽略而非报错，YAML 损坏时整篇退化为正文——单个文件的格式瑕疵不应让预设不可用；
+   - 列表同时下发 `body`（仅正文）与 `content`（完整原文）：编辑器只展示/回写 `body`，
+     元信息由服务端按字段重新渲染，避免保存时把 frontmatter 当作提示词内容二次嵌入；
    - 同名时 project 覆盖 global、global 覆盖内嵌模板；内嵌的 5 个模板为只读；
    - 清单经 `GET /api/presets` 暴露，可在设置面板「预设」页增删改；
      预设声明的 `tools` 同时约束下发给模型的工具清单与可执行工具集合
@@ -548,7 +552,7 @@ headers = { Authorization = "Bearer secret_token" }
      |---|---|
      | global | `~/.agents/skills`（跨工具共享的用户级技能） |
      | agent | `~/.config/oma/skills`（oma 自身的技能） |
-     | project | `<workspace>/agents/skills`（随仓库分发的技能） |
+     | project | `<workspace>/.agents/skills`（随仓库分发的技能） |
    - 同名时更具体的一层覆盖更宽泛的一层：project > agent > global；
    - 两者存储、端点（`/api/skills` vs `/api/presets`）、语义均不重叠：
      预设决定「以什么角色、能用哪些工具运行」，技能只是一段知识文档，
@@ -678,6 +682,7 @@ headers = { Authorization = "Bearer secret_token" }
 | `GET` | `/api/sessions/{id}/attachments/{name}` | 下载/预览附件 |
 | `GET` | `/api/workspace/tree?workspace=...` | 获取工作区目录文件树（深度 4、最多 2000 项） |
 | `GET` | `/api/workspace/file?workspace=...&path=...` | 读取工作区文件内容（供代码查看与编辑器） |
+| `GET` | `/api/tools` | 列出可授权工具（内置 + 已发现的 MCP，命名空间化），供预设编辑器勾选 |
 | `GET` | `/api/presets?workspace=...` | 列出 Agent 预设（bundled / global / project） |
 | `GET`/`PUT`/`DELETE` | `/api/presets/{preset_id}` | 读取 / 写入 / 删除预设；内置预设只读 |
 | `GET` | `/api/skills?workspace=...` | 列出技能（global / agent / project） |
@@ -723,3 +728,5 @@ headers = { Authorization = "Bearer secret_token" }
 | 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
 | 配置校验 | `OmaConfig` 启用 `deny_unknown_fields`：拼错的键名（或前端字段映射错误）在 `PUT /api/config` 直接 400，不再「保存成功但配置没变」；启动时配置文件解析失败即报错退出，而非静默回退默认值。 |
 | 预设与技能 | 两者是独立机制：预设 = 角色 + 工具白名单；技能 = 按需读取的知识。分属 `/api/presets` 与 `/api/skills`，同名互不覆盖。技能按 `<root>/<name>/SKILL.md` 三层发现（global/agent/project），删除技能会连同其目录内的 `scripts/` 等资源一并移除（id 经严格校验，不可穿越）。 |
+| frontmatter 容错 | 预设/技能的 YAML 字段全部可选且忽略未知键：用户目录里存在只有 `description` 与自有键（如 `role`）的文件，名称即文件名，不应因严格解析而整条不可用。 |
+| 设置面板结构 | 提供商页：提供商配置为单个带底色容器（标题在其内），模型配置为容器外分区标题，其下每个模型各自一个容器。预设的工具授权使用多选下拉（标签可逐个移除），选项来自 `GET /api/tools`。 |
