@@ -27,6 +27,9 @@ export interface ModelInfo {
   context_len: number;
   supports_vision: boolean;
   supports_thinking: boolean;
+  max_output?: number;
+  reasoning_effort?: string;
+  input_types?: string[];
 }
 
 export interface AgentSummary {
@@ -66,6 +69,8 @@ export type AgentEvent =
   | { type: 'turn_finished'; data?: { turn_id: string; stop_reason: StopReason; usage: TokenUsage; subagent_id?: string | null } }
   | { type: 'user_message'; data?: { client_id: string; client_name: string; client_type: ClientType; content: string; queued: boolean } }
   | { type: 'queue_cleared'; data?: Record<string, never> }
+  | { type: 'queue_updated'; data?: { pending: number } }
+  | { type: 'sync_required'; data?: Record<string, never> }
   | { type: 'thinking_delta'; data?: { delta: string; subagent_id?: string | null } }
   | { type: 'text_delta'; data?: { delta: string; subagent_id?: string | null } }
   | { type: 'tool_call_started'; data?: ToolCallStartedData }
@@ -217,4 +222,10 @@ export interface ServerStatus {
   version: string;
   active_sessions: number;
   uptime_secs: number;
+}
+
+/** POST /api/sessions/{id}/attachments 的响应 */
+export interface UploadAttachmentResp {
+  success: boolean;
+  attachments: string[];
 }

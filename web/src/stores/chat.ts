@@ -19,6 +19,7 @@ import type {
 } from '../types';
 import { tr } from '../composables/i18n';
 import { activeSessionId, applyRemoteRename } from './sessions';
+import { releaseAll } from '../lib/attachments';
 
 /** 流式轮次缓冲：按到达顺序排列的实时段（thinking/text/tool 交错）。 */
 export interface LiveTool {
@@ -75,18 +76,23 @@ export const modelList = computed(() => {
 
 let ws: WebSocket | null = null;
 let sessionId = '';
+/** 当前会话 ID（供附件解析等需要鉴权路径的场景使用） */
+export const currentSessionId = () => sessionId;
 let workspacePath = '';
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let disposed = false;
 
 const clientId = `web_${crypto.randomUUID()}`;
 
-function send(msg: ClientMessage) {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+/** 发送一帧；未连接时返回 false，调用方据此提示而不是静默丢弃。 */
+function send(msg: ClientMessage): boolean {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  ws.send(JSON.stringify(msg));
+  return true;
 }
 
-export function command(cmd: AgentCommand) {
-  send({ kind: 'command', command: cmd });
+export function command(cmd: AgentCommand): boolean {
+  return send({ kind: 'command', command: cmd });
 }
 
 async function reload() {
@@ -147,11 +153,18 @@ function handleEvent(ev: AgentEvent) {
           content: [{ type: 'text', text: ev.data.content }],
           created_at: Date.now(),
         });
-        if (ev.data.queued) queued.value += 1;
       }
       break;
     case 'queue_cleared':
       queued.value = 0;
+      break;
+    case 'queue_updated':
+      // 服务端权威队列深度，客户端不再自行累加（避免与丢弃的指令漂移）
+      queued.value = ev.data?.pending ?? 0;
+      break;
+    case 'sync_required':
+      // 事件流出现缺口：整体回读持久化状态，避免局部状态永久失真
+      void reload();
       break;
     case 'turn_finished': {
       running.value = false;
@@ -273,6 +286,7 @@ function connect() {
 export async function open(id: string, workspace: string) {
   if (sessionId === id && connected.value) return;
   close();
+  releaseAll();
   disposed = false;
   sessionId = id;
   workspacePath = workspace;
@@ -296,20 +310,34 @@ export function close() {
   connected.value = false;
 }
 
-export function submit(content: string, attachments: string[] = []) {
-  if (!content.trim() && attachments.length === 0) return;
-  command({ type: 'user_input', data: { content, attachments } });
+/**
+ * 提交用户输入。返回是否已送达服务端；未连接时不做乐观插入，
+ * 避免界面出现一条永远不会执行的消息。
+ */
+export function submit(content: string, attachments: string[] = []): boolean {
+  if (!content.trim() && attachments.length === 0) return false;
+  if (!command({ type: 'user_input', data: { content, attachments } })) return false;
+  const blocks: Block[] = [];
+  if (content) blocks.push({ type: 'text', text: content });
+  for (const ref of attachments) blocks.push({ type: 'image', mime_type: '', data: ref });
   messages.value.push({
     id: `local_${crypto.randomUUID()}`,
     parent_id: currentLeafId.value,
     role: 'user',
-    content: [{ type: 'text', text: content }],
+    content: blocks,
     created_at: Date.now(),
   });
+  return true;
 }
 
-export function cancel() {
-  send({ kind: 'cancel' });
+/** 上传附件并返回可提交的引用列表。 */
+export async function upload(files: File[]): Promise<string[]> {
+  if (!sessionId) return [];
+  return api.uploadAttachments(sessionId, files);
+}
+
+export function cancel(): boolean {
+  return send({ kind: 'cancel' });
 }
 
 export function respond(decision: ApprovalDecision) {
@@ -348,9 +376,9 @@ export function switchBranch(leafId: string) {
   command({ type: 'switch_branch', data: { leaf_message_id: leafId } });
 }
 
-/** 从某条消息处分叉重跑（编辑重发）。 */
-export function forkAndRun(parentMessageId: string, newContent: string) {
-  command({
+/** 从某条消息处分叉重跑（编辑重发）。返回是否已送达服务端。 */
+export function forkAndRun(parentMessageId: string, newContent: string): boolean {
+  return command({
     type: 'fork_and_run',
     data: { parent_message_id: parentMessageId, new_content: newContent },
   });

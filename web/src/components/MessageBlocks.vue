@@ -13,6 +13,8 @@ import {
 } from 'vue-icons-plus/lu';
 import type { Block } from '../types';
 import { prettyJson, renderMarkdown } from '../lib/format';
+import { imageSrc } from '../lib/attachments';
+import { currentSessionId } from '../stores/chat';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{
@@ -39,11 +41,6 @@ interface Item {
   resultDone?: boolean;
 }
 
-function imageSrc(data: string): string | undefined {
-  if (data.startsWith('data:') || data.startsWith('http')) return data;
-  return undefined;
-}
-
 /** 把 tool_use 与其 tool_result 合并成单个条目；tool_result 不单独渲染。 */
 const items = computed<Item[]>(() => {
   const out: Item[] = [];
@@ -57,7 +54,8 @@ const items = computed<Item[]>(() => {
       it.active = live && i === props.blocks.length - 1;
       out.push(it);
     }
-    else if (b.type === 'image') out.push({ kind: 'image', key: `i${i}`, imageSrc: imageSrc(b.data) });
+    else if (b.type === 'image')
+      out.push({ kind: 'image', key: `i${i}`, imageSrc: imageSrc(currentSessionId(), b.data) });
     else if (b.type === 'tool_use') {
       toolIndex[b.id] = out.length;
       const carried = props.results?.[b.id];

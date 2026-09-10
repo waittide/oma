@@ -4,15 +4,21 @@ import type {
   ServerStatus,
   SessionRecord,
   SkillFile,
+  UploadAttachmentResp,
 } from './types';
 
 /** 鉴权 Token：优先 URL ?token=，其次 localStorage。 */
 const TOKEN_KEY = 'oma.token';
 
 export function getToken(): string {
-  const fromUrl = new URLSearchParams(location.search).get('token');
+  const url = new URL(location.href);
+  const fromUrl = url.searchParams.get('token');
   if (fromUrl) {
     localStorage.setItem(TOKEN_KEY, fromUrl);
+    // 凭证不应长期停留在地址栏（会被历史记录、Referer 与日志留存）
+    url.searchParams.delete('token');
+    const query = url.searchParams.toString();
+    history.replaceState(null, '', url.pathname + (query ? `?${query}` : '') + url.hash);
     return fromUrl;
   }
   return localStorage.getItem(TOKEN_KEY) ?? '';
@@ -118,6 +124,35 @@ export const api = {
     request<{ content: string }>(
       `/api/workspace/file?workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}`,
     ),
+
+  /** 上传附件，返回可直接放进 user_input.attachments 的 session_attachment:// 引用。 */
+  uploadAttachments: async (sessionId: string, files: File[]): Promise<string[]> => {
+    const form = new FormData();
+    for (const file of files) form.append('file', file, file.name);
+    const resp = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/attachments`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${getToken()}` },
+        body: form,
+      },
+    );
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(detail || `HTTP ${resp.status}`);
+    }
+    return ((await resp.json()) as UploadAttachmentResp).attachments;
+  },
+
+  /** 取附件字节（需鉴权，故不能直接用 <img src>）。 */
+  fetchAttachment: async (sessionId: string, name: string): Promise<Blob> => {
+    const resp = await fetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(name)}`,
+      { headers: { Authorization: `Bearer ${getToken()}` } },
+    );
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return resp.blob();
+  },
 
   /** reveal=1 时服务端返回真实 api_key（默认脱敏为 "***"） */
   getConfig: (opts?: { reveal?: boolean }) =>

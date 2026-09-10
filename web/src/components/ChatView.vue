@@ -10,6 +10,7 @@ import {
   LuListTree,
   LuPlus,
   LuLoader,
+  LuPaperclip,
   LuPencil,
   LuPlug,
   LuSquare,
@@ -39,6 +40,10 @@ const treeOpen = ref(false);
 const draft = ref('');
 /** 非空表示下一条发送将从该消息处分叉重跑（编辑重发）。 */
 const forkFrom = ref<string | null>(null);
+/** 已上传待发送的附件：ref 为 session_attachment:// 引用 */
+const pendingUploads = ref<{ ref: string; name: string }[]>([]);
+const fileInput = ref<HTMLInputElement | null>(null);
+const uploading = ref(false);
 const scrollEl = ref<HTMLElement | null>(null);
 const stickBottom = ref(true);
 
@@ -69,16 +74,43 @@ function onScroll() {
   stickBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
 }
 
+async function pickFiles(ev: Event) {
+  const input = ev.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  if (files.length === 0) return;
+  uploading.value = true;
+  try {
+    const refs = await chat.upload(files);
+    refs.forEach((r, i) => pendingUploads.value.push({ ref: r, name: files[i]?.name ?? r }));
+  } catch (e) {
+    toast.error(t('uploadFailed', { message: (e as Error).message }));
+  } finally {
+    uploading.value = false;
+  }
+}
+
 function send() {
   const text = draft.value;
-  if (!text.trim()) return;
-  if (forkFrom.value !== null) {
-    chat.forkAndRun(forkFrom.value, text);
-    forkFrom.value = null;
-  } else {
-    chat.submit(text);
+  const attachments = pendingUploads.value.map((p) => p.ref);
+  if (!text.trim() && attachments.length === 0) return;
+  if (forkFrom.value !== null && attachments.length > 0) {
+    toast.error(t('forkAttachmentUnsupported'));
+    return;
   }
+
+  const delivered =
+    forkFrom.value !== null
+      ? chat.forkAndRun(forkFrom.value, text)
+      : chat.submit(text, attachments);
+  if (!delivered) {
+    // 未送达时保留草稿与附件，避免内容凭空消失
+    toast.error(t('notConnected'));
+    return;
+  }
+  if (forkFrom.value !== null) forkFrom.value = null;
   draft.value = '';
+  pendingUploads.value = [];
   stickBottom.value = true;
 }
 
@@ -93,7 +125,10 @@ function cancelFork() {
 }
 
 function cancel() {
-  chat.cancel();
+  if (!chat.cancel()) {
+    toast.error(t('notConnected'));
+    return;
+  }
   toast.info(t('cancelRequested'));
 }
 
@@ -121,6 +156,8 @@ const approvalOptions = computed<{ value: ApprovalMode; label: string }[]>(() =>
 ]);
 
 const isEmpty = computed(() => chat.messages.value.length === 0 && !chat.running.value);
+/** 会话已建立且 WebSocket 在线时才允许提交指令 */
+const ready = computed(() => !!activeSessionId.value && props.online && chat.connected.value);
 
 const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0);
 </script>
@@ -252,21 +289,51 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
     </Transition>
 
     <footer class="composer">
+      <div v-if="pendingUploads.length > 0" class="attach-row">
+        <span v-for="(a, i) in pendingUploads" :key="a.ref" class="attach-chip">
+          <LuPaperclip :size="11" />
+          <span class="attach-name">{{ a.name }}</span>
+          <button type="button" :aria-label="t('removeAttachment')" @click="pendingUploads.splice(i, 1)">
+            <LuX :size="11" />
+          </button>
+        </span>
+      </div>
       <div v-if="forkFrom !== null" class="fork-banner">
         <LuGitBranch :size="12" />
         <span>{{ t('editResendBanner') }}</span>
         <button type="button" class="fork-cancel" @click="cancelFork">{{ tc('cancel') }}</button>
       </div>
-      <div class="box" :class="{ disabled: !activeSessionId || !props.online }">
+      <div class="box" :class="{ disabled: !ready }">
         <textarea
           v-model="draft"
           rows="2"
           :placeholder="activeSessionId ? t('placeholder') : t('placeholderNoSession')"
-          :disabled="!activeSessionId || !props.online"
+          :disabled="!ready"
           @keydown.enter.exact.prevent="send"
+        />
+        <input
+          ref="fileInput"
+          type="file"
+          multiple
+          class="file-input"
+          @change="pickFiles"
         />
         <div class="c-toolbar">
           <div class="c-controls">
+            <OTooltip :label="t('attach')">
+              <button
+                type="button"
+                class="icon-btn"
+                :aria-label="t('attach')"
+                :disabled="!ready || uploading"
+                @click="fileInput?.click()"
+              >
+                <LuPaperclip :size="13" />
+              </button>
+            </OTooltip>
+            <span v-if="chat.queued.value > 0" class="queued-chip">
+              {{ t('queuedCount', { count: chat.queued.value }) }}
+            </span>
             <OSelect
               v-model="chat.approvalMode.value"
               :options="approvalOptions"
@@ -297,7 +364,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
                 type="button"
                 class="icon-btn send"
                 :aria-label="t('sendHint')"
-                :disabled="!draft.trim() || !activeSessionId || !props.online"
+                :disabled="(!draft.trim() && pendingUploads.length === 0) || !ready"
                 @click="send"
               >
                 <LuArrowUp :size="15" />
@@ -549,6 +616,53 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   font-size: 11.5px;
   cursor: pointer;
   text-decoration: underline;
+}
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  padding: 3px 6px 3px 8px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+.attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-chip button {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 0;
+}
+.attach-chip button:hover {
+  color: var(--danger);
+}
+/* 原生文件选择器仅作触发入口，不参与布局 */
+.file-input {
+  display: none;
+}
+.queued-chip {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: var(--surface);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
 }
 .box {
   display: flex;

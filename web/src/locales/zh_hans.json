@@ -65,7 +65,13 @@
     "deleteFailed": "删除失败：{message}",
     "newSession": "新建工作区",
     "connected": "已连接",
-    "disconnected": "未连接"
+    "disconnected": "未连接",
+    "attach": "添加附件",
+    "removeAttachment": "移除附件",
+    "uploadFailed": "附件上传失败：{message}",
+    "notConnected": "未连接到 Daemon，消息未发送",
+    "forkAttachmentUnsupported": "编辑重发暂不支持附件，请先移除附件",
+    "queuedCount": "排队 {count} 条"
   },
   "blocks": {
     "thinking": "思考",
