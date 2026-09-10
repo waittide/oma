@@ -115,6 +115,8 @@ async function reload() {
 function handleEvent(ev: AgentEvent) {
   switch (ev.type) {
     case 'turn_started':
+      // 子代理轮次沿用同一事件类型：不能据此清空主流式缓冲或结束轮次状态
+      if (ev.data?.subagent_id) break;
       running.value = true;
       live.value = emptyLive();
       break;
@@ -167,6 +169,8 @@ function handleEvent(ev: AgentEvent) {
       void reload();
       break;
     case 'turn_finished': {
+      // 子代理结束时主流式轮次仍在继续，忽略其生命周期事件
+      if (ev.data?.subagent_id) break;
       running.value = false;
       finalizing.value = true;
       if (ev.data) {

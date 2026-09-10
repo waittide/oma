@@ -25,6 +25,7 @@ parking_lot = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+oma-client = { workspace = true }
 reqwest = { workspace = true }
 tokio-tungstenite = { workspace = true }
 

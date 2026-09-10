@@ -1,0 +1,590 @@
+//! 端到端冒烟测试：真实 Daemon + Mock Provider + oma-client
+//!
+//! 覆盖此前实测复现的缺陷：会话标识路径穿越、排队指令丢失、`task` 与 MCP
+//! 工具未注册、Agent 模板白名单失效、附件未贯通到 Provider 请求。
+
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use anyhow::Result;
+use axum::{
+    Router,
+    body::Bytes,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::post,
+};
+use oma_client::{ConnectOptions, OmaClient, SessionApi};
+use oma_contract::{AgentCommand, AgentEvent, ApprovalMode, ClientType, StopReason};
+use oma_daemon::{DaemonState, create_router};
+use oma_mcp::McpManager;
+use oma_storage::StorageManager;
+use parking_lot::Mutex;
+
+/// Mock Provider 观测到的每次请求
+#[derive(Debug, Clone)]
+struct Observed {
+    tool_names:    Vec<String>,
+    has_image:     bool,
+    role_sequence: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+struct MockState {
+    observed: Arc<Mutex<Vec<Observed>>>,
+}
+
+/// 以 OpenAI SSE 形态回放：主 Agent 请求（工具含 task）→ 调用 task；
+/// 子 Agent 请求（只读工具集）→ 调用 read；已有工具回执 → 直接收尾。
+async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Response {
+    let req: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, "bad json").into_response(),
+    };
+
+    let tool_names: Vec<String> = req["tools"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let messages = req["messages"].as_array().cloned().unwrap_or_default();
+    let role_sequence: Vec<String> = messages
+        .iter()
+        .map(|m| m["role"].as_str().unwrap_or("").to_string())
+        .collect();
+    let has_image = messages.iter().any(|m| {
+        m["content"]
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|p| p["type"] == "image_url"))
+    });
+    let has_tool_result = role_sequence.iter().any(|r| r == "tool");
+
+    state.observed.lock().push(Observed {
+        tool_names: tool_names.clone(),
+        has_image,
+        role_sequence,
+    });
+
+    let chunks: Vec<String> = if has_tool_result {
+        // 已有回执：产出最终文本并收尾
+        vec![
+            sse(r#"{"choices":[{"delta":{"content":"done"}}]}"#),
+            sse(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#),
+        ]
+    } else if tool_names.iter().any(|t| t == "task") {
+        // 主 Agent：委托子代理（工具白名单不含 task 的角色不会走到这里）
+        vec![
+            sse(
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_task","function":{"name":"task","arguments":"{\"agent\":\"explore\",\"prompt\":\"scan\"}"}}]}}]}"#,
+            ),
+            sse(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
+        ]
+    } else if tool_names.iter().any(|t| t == "read") {
+        // 子 Agent：读取文件
+        vec![
+            sse(
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read","arguments":"{\"path\":\"note.txt\"}"}}]}}]}"#,
+            ),
+            sse(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
+        ]
+    } else {
+        vec![
+            sse(r#"{"choices":[{"delta":{"content":"no tools"}}]}"#),
+            sse(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#),
+        ]
+    };
+
+    let mut payload = String::new();
+    for chunk in chunks {
+        payload.push_str(&chunk);
+    }
+    payload.push_str("data: [DONE]\n\n");
+
+    ([(axum::http::header::CONTENT_TYPE, "text/event-stream")], payload).into_response()
+}
+
+fn sse(json: &str) -> String {
+    format!("data: {}\n\n", json)
+}
+
+struct Harness {
+    base:      String,
+    api:       SessionApi,
+    token:     String,
+    mock:      MockState,
+    /// 会话工作区（含 fixture 文件 `note.txt`，供 read 工具真实读取）
+    workspace: String,
+}
+
+async fn start_harness() -> Result<Harness> {
+    let tmp = tempfile::tempdir()?;
+    // 测试进程存活期间保留目录（data dir 需要跨请求稳定）
+    let data_dir = tmp.keep();
+
+    // 1. Mock Provider
+    let mock = MockState::default();
+    let mock_app = Router::new()
+        .route("/v1/chat/completions", post(chat_completions))
+        .with_state(mock.clone());
+    let mock_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let mock_addr = mock_listener.local_addr()?;
+    tokio::spawn(async move {
+        let _ = axum::serve(mock_listener, mock_app).await;
+    });
+
+    // 2. Daemon（指向 mock provider）
+    let config_toml = format!(
+        r#"
+default_model = "mock/model-x"
+default_agent = "task"
+default_approval_mode = "auto"
+
+[providers.mock]
+api_type = "completion"
+base_url = "http://{mock_addr}/v1"
+api_key = "test-key"
+
+[[providers.mock.models]]
+id = "model-x"
+name = "Mock Model"
+context_len = 100000
+"#
+    );
+    let config_path = data_dir.join("config.toml");
+    std::fs::write(&config_path, config_toml)?;
+    let config = oma_config::OmaConfig::load_from_file(&config_path)?;
+
+    let workspace = data_dir.join("ws");
+    std::fs::create_dir_all(&workspace)?;
+    std::fs::write(workspace.join("note.txt"), "hello from note\n")?;
+
+    let storage = StorageManager::new(&data_dir).await?;
+    let token = "smoke-token".to_string();
+    let state = DaemonState::new(token.clone(), storage, config, config_path, Arc::new(McpManager::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, create_router(state)).await;
+    });
+
+    let base = format!("127.0.0.1:{}", addr.port());
+    let workspace = workspace.to_string_lossy().to_string();
+    Ok(Harness {
+        api: SessionApi::new(&base, &token),
+        base,
+        token,
+        mock,
+        workspace,
+    })
+}
+
+/// 收集事件直到**主**轮次结束。
+///
+/// 子代理复用 `TurnStarted` / `TurnFinished`，但携带 `subagent_id`；客户端必须
+/// 忽略这些事件，否则子代理收尾会被误判为整体轮次结束（进而清空流式缓冲）。
+async fn drive_turn(client: &mut OmaClient, timeout: Duration) -> Result<Vec<AgentEvent>> {
+    let deadline = Instant::now() + timeout;
+    let mut events = Vec::new();
+    while Instant::now() < deadline {
+        let Some(event) = tokio::time::timeout(Duration::from_secs(5), client.next_event())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
+        let main_finished = matches!(
+            &event,
+            AgentEvent::TurnFinished { subagent_id, .. } if subagent_id.is_none()
+        );
+        events.push(event);
+        if main_finished {
+            break;
+        }
+    }
+    Ok(events)
+}
+
+/// 收集事件并在收到审批请求时按 `decision` 自动放行，直到主轮次结束。
+async fn drive_turn_approving(
+    client: &mut OmaClient,
+    timeout: Duration,
+    decision: oma_contract::ApprovalDecision,
+) -> Result<Vec<AgentEvent>> {
+    let deadline = Instant::now() + timeout;
+    let mut events = Vec::new();
+    while Instant::now() < deadline {
+        let Some(event) = tokio::time::timeout(Duration::from_secs(5), client.next_event())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
+        if let AgentEvent::PermissionRequested(data) = &event {
+            client.respond_approval(&data.request_id, decision).await?;
+        }
+        let main_finished = matches!(
+            &event,
+            AgentEvent::TurnFinished { subagent_id, .. } if subagent_id.is_none()
+        );
+        events.push(event);
+        if main_finished {
+            break;
+        }
+    }
+    Ok(events)
+}
+
+fn tool_calls(events: &[AgentEvent]) -> Vec<(String, bool, Option<String>)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallFinished {
+                name,
+                is_error,
+                subagent_id,
+                ..
+            } => Some((name.clone(), *is_error, subagent_id.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 完整链路：用户输入 → 主 Agent 调用 task → 子 Agent 调用 read → 双双收敛。
+#[tokio::test]
+async fn test_end_to_end_turn_with_task_tool() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("e2e")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "smoke".into(),
+    })
+    .await?;
+
+    // 就绪载荷必须携带模型目录
+    assert!(
+        client.ready().providers.contains_key("mock"),
+        "ready providers should list the configured provider"
+    );
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "please explore".into(),
+            attachments: vec![],
+        })
+        .await?;
+
+    let events = drive_turn(&mut client, Duration::from_secs(30)).await?;
+    assert!(
+        matches!(
+            events.last(),
+            Some(AgentEvent::TurnFinished {
+                stop_reason: StopReason::EndTurn,
+                ..
+            })
+        ),
+        "turn should end normally, got {:?}",
+        events.last()
+    );
+
+    let calls = tool_calls(&events);
+    assert!(
+        calls
+            .iter()
+            .any(|(name, is_error, _)| name == "task" && !is_error),
+        "task tool must be registered and executable: {:?}",
+        calls
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|(name, is_error, sub)| name == "read" && !is_error && sub.is_some()),
+        "the subagent must run its own tool loop successfully: {:?}",
+        calls
+    );
+
+    // Mock 侧观测：主 Agent 的清单含 task，子 Agent 的清单不含写工具（explore 模板）
+    let observed = h.mock.observed.lock().clone();
+    let main = observed
+        .iter()
+        .find(|o| o.tool_names.iter().any(|t| t == "task"))
+        .expect("main agent request observed");
+    assert!(
+        main.tool_names.iter().any(|t| t == "write"),
+        "task agent declares write: {:?}",
+        main.tool_names
+    );
+    let sub = observed
+        .iter()
+        .find(|o| !o.tool_names.iter().any(|t| t == "task"))
+        .expect("subagent request observed");
+    // 回执轮次必须呈 assistant → tool 相邻形态，否则 OpenAI 兼容端点会拒绝
+    let with_results = observed
+        .iter()
+        .find(|o| o.role_sequence.iter().any(|r| r == "tool"))
+        .expect("a request carrying tool results was observed");
+    assert!(
+        with_results
+            .role_sequence
+            .windows(2)
+            .any(|w| w[0] == "assistant" && w[1] == "tool"),
+        "tool results must immediately follow the assistant tool_calls message: {:?}",
+        with_results.role_sequence
+    );
+    assert!(
+        !sub.tool_names.iter().any(|t| t == "write" || t == "edit"),
+        "explore whitelist must hide write/edit: {:?}",
+        sub.tool_names
+    );
+
+    assert_eq!(session.session_id, client.ready().session_id);
+    Ok(())
+}
+
+/// 排队指令必须被完整排空：三条连发 → 三轮都真正执行。
+#[tokio::test]
+async fn test_queued_inputs_are_all_executed() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("queue")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "smoke".into(),
+    })
+    .await?;
+
+    let mut events = Vec::new();
+    // 不等待第一条跑完就继续投递，触发排队路径
+    for text in ["one", "two", "three"] {
+        client
+            .send_command(AgentCommand::UserInput {
+                content:     text.into(),
+                attachments: vec![],
+            })
+            .await?;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut finished = 0;
+    while finished < 3 && Instant::now() < deadline {
+        let Some(event) = tokio::time::timeout(Duration::from_secs(5), client.next_event())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
+        if matches!(event, AgentEvent::TurnFinished { .. }) {
+            finished += 1;
+        }
+        events.push(event);
+    }
+    assert_eq!(finished, 3, "every queued input must run its own turn");
+
+    // 持久化层面同样必须三条俱全（旧实现会丢中间与末尾的排队项）
+    let all = h.api.list_sessions(Some(&h.workspace)).await?;
+    assert!(all.iter().any(|s| s.session_id == session.session_id));
+
+    let tree: Vec<serde_json::Value> = reqwest::Client::new()
+        .get(format!(
+            "http://{}/api/sessions/{}/messages/tree",
+            h.base, session.session_id
+        ))
+        .bearer_auth(&h.token)
+        .send()
+        .await?
+        .json()
+        .await?;
+    let texts: Vec<String> = tree
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .flat_map(|m| m["content"].as_array().cloned().unwrap_or_default())
+        .filter(|b| b["type"] == "text")
+        .filter_map(|b| b["text"].as_str().map(str::to_string))
+        .collect();
+    for expected in ["one", "two", "three"] {
+        assert!(
+            texts.contains(&expected.to_string()),
+            "queued input {} missing from persisted history: {:?}",
+            expected,
+            texts
+        );
+    }
+    Ok(())
+}
+
+/// session_id 参与文件系统路径拼接，穿越型标识必须被拒且不触碰目标目录。
+#[tokio::test]
+async fn test_session_id_traversal_blocked_over_http() -> Result<()> {
+    let h = start_harness().await?;
+    let victim = std::path::PathBuf::from("/tmp/oma-e2e-victim");
+    let _ = std::fs::remove_dir_all(&victim);
+    std::fs::create_dir_all(&victim)?;
+    std::fs::write(victim.join("precious.txt"), b"keep")?;
+
+    let http = reqwest::Client::new();
+
+    // 删除穿越路径：必须 400 且 victim 完好
+    let resp = http
+        .delete(format!("http://{}/api/sessions/..%2F..%2Foma-e2e-victim", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        victim.join("precious.txt").exists(),
+        "traversal delete must not touch the target directory"
+    );
+
+    // 查询穿越路径：必须 400 且不得在 sessions/ 之外建库
+    let resp = http
+        .get(format!("http://{}/api/sessions/..%2Fescaped/messages", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let _ = std::fs::remove_dir_all(&victim);
+    Ok(())
+}
+
+/// 附件必须贯通到 Provider 请求：上传 → 引用随输入提交 → mock 观测到图片 part。
+#[tokio::test]
+async fn test_attachment_reaches_provider() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("attach")).await?;
+
+    let http = reqwest::Client::new();
+    let upload = http
+        .post(format!(
+            "http://{}/api/sessions/{}/attachments",
+            h.base, session.session_id
+        ))
+        .bearer_auth(&h.token)
+        .multipart(reqwest::multipart::Form::new().part(
+            "file",
+            reqwest::multipart::Part::bytes(vec![0x89, 0x50, 0x4E, 0x47]).file_name("shot.png"),
+        ))
+        .send()
+        .await?;
+    assert_eq!(upload.status(), StatusCode::OK);
+    let body: serde_json::Value = upload.json().await?;
+    let reference = body["attachments"][0].as_str().unwrap().to_string();
+    assert!(reference.starts_with("session_attachment://"));
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "smoke".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "look at this".into(),
+            attachments: vec![reference],
+        })
+        .await?;
+    let _ = drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    let observed = h.mock.observed.lock().clone();
+    assert!(
+        observed.iter().any(|o| o.has_image),
+        "provider request must carry the uploaded image: {:?}",
+        observed
+    );
+    Ok(())
+}
+
+/// 审批模式为 strict 时，工具调用必须先取得人工放行。
+#[tokio::test]
+async fn test_strict_approval_blocks_until_allowed() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("approval")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "smoke".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::SetApprovalMode {
+            mode: ApprovalMode::Strict,
+        })
+        .await?;
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "explore".into(),
+            attachments: vec![],
+        })
+        .await?;
+
+    // 等到审批请求出现，再放行
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut request_id = None;
+    while request_id.is_none() && Instant::now() < deadline {
+        let Some(event) = tokio::time::timeout(Duration::from_secs(5), client.next_event())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
+        if let AgentEvent::PermissionRequested(data) = event {
+            request_id = Some(data.request_id);
+        }
+    }
+    let request_id = request_id.expect("strict mode must request approval before running a tool");
+
+    client
+        .respond_approval(&request_id, oma_contract::ApprovalDecision::AllowOnce)
+        .await?;
+    // 子代理的工具调用同样受审批约束，继续按同一策略放行
+    let events = drive_turn_approving(
+        &mut client,
+        Duration::from_secs(30),
+        oma_contract::ApprovalDecision::AllowOnce,
+    )
+    .await?;
+    let calls = tool_calls(&events);
+    assert!(
+        calls
+            .iter()
+            .any(|(name, is_error, _)| name == "task" && !is_error),
+        "approved main-agent tool must actually run: {:?}",
+        calls
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|(name, is_error, _)| name == "read" && !is_error),
+        "approved subagent tool must actually run: {:?}",
+        calls
+    );
+    Ok(())
+}

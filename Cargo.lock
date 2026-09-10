@@ -1823,6 +1823,7 @@ dependencies = [
  "anyhow",
  "axum",
  "futures-util",
+ "oma-client",
  "oma-config",
  "oma-contract",
  "oma-mcp",
