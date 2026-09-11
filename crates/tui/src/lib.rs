@@ -37,8 +37,8 @@ struct Entry {
 /// 待响应的审批请求
 struct PendingApproval {
     request_id: String,
-    name:       String,
-    summary:    String,
+    tool_name:  String,
+    input:      String,
 }
 
 /// 待作答的提问（ask 工具）。终端里用数字键选择，`o` 进入自定义输入。
@@ -385,7 +385,7 @@ async fn handle_ask_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) ->
                 .respond_ask(AskResponse {
                     request_id,
                     answers: Vec::new(),
-                    cancelled: true,
+                    is_cancelled: true,
                 })
                 .await?;
             app.push("·", "已取消提问", Style::default().fg(Color::Yellow));
@@ -398,7 +398,7 @@ async fn handle_ask_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) ->
                 .respond_ask(AskResponse {
                     request_id,
                     answers,
-                    cancelled: false,
+                    is_cancelled: false,
                 })
                 .await?;
             app.push("·", "已回答提问", Style::default().fg(Color::Green));
@@ -428,7 +428,7 @@ async fn handle_ask_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) ->
             if idx >= q.options.len() {
                 return Ok(());
             }
-            let multi = q.multi;
+            let multi = q.is_multi;
             let picked = &mut ask.picked[qi];
             if multi {
                 if !picked.remove(&idx) {
@@ -461,12 +461,12 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
         };
         if let Some(decision) = decision {
             let request_id = pending.request_id.clone();
-            let name = pending.name.clone();
+            let tool_name = pending.tool_name.clone();
             app.approval = None;
             client.respond_approval(&request_id, decision).await?;
             app.push(
                 "·",
-                format!("审批 {} → {}", name, decision_label(decision)),
+                format!("审批 {} → {}", tool_name, decision_label(decision)),
                 Style::default().fg(Color::Yellow),
             );
         }
@@ -584,11 +584,14 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         }
         AgentEvent::ToolCallStarted(data) => app.push(
             if data.subagent_id.is_some() { "↳⚙" } else { "⚙" },
-            format!("{} {}", data.name, summarize_tool_input(&data.input)),
+            format!("{} {}", data.tool_name, summarize_tool_input(&data.input)),
             Style::default().fg(Color::Yellow),
         ),
         AgentEvent::ToolCallFinished {
-            name, output, is_error, ..
+            tool_name,
+            output,
+            is_error,
+            ..
         } => {
             let style = if is_error {
                 Style::default().fg(Color::Red)
@@ -597,7 +600,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             };
             let head: String = output.lines().take(6).collect::<Vec<_>>().join("\n");
             let suffix = if output.lines().count() > 6 { "\n…" } else { "" };
-            app.push("  ", format!("{}: {}{}", name, head, suffix), style);
+            app.push("  ", format!("{}: {}{}", tool_name, head, suffix), style);
         }
         AgentEvent::AskRequested(data) => {
             app.ask = Some(PendingAsk::new(data.request_id, data.questions));
@@ -615,8 +618,8 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::PermissionRequested(data) => {
             app.approval = Some(PendingApproval {
                 request_id: data.request_id,
-                name:       data.name,
-                summary:    data.summary,
+                tool_name:  data.tool_name,
+                input:      data.input,
             });
         }
         AgentEvent::PermissionResolved {
@@ -649,14 +652,14 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             if let Some(call) = snapshot.active_tool_call {
                 app.push(
                     "⚙",
-                    format!("{} {}", call.name, summarize_tool_input(&call.input)),
+                    format!("{} {}", call.tool_name, summarize_tool_input(&call.input)),
                     Style::default().fg(Color::Yellow),
                 );
             }
             app.approval = snapshot.pending_approval.map(|p| PendingApproval {
                 request_id: p.request_id,
-                name:       p.name,
-                summary:    p.summary,
+                tool_name:  p.tool_name,
+                input:      p.input,
             });
             // 追问接入时也要恢复未作答的提问
             app.ask = snapshot
@@ -820,11 +823,11 @@ fn draw_approval(frame: &mut Frame, pending: &PendingApproval, area: Rect) {
     let body = Text::from(vec![
         Line::from(vec![
             Span::styled("工具 ", Style::default().fg(Color::DarkGray)),
-            Span::styled(pending.name.clone(), Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(pending.tool_name.clone(), Style::default().add_modifier(Modifier::BOLD)),
         ]),
         Line::raw(""),
         Line::styled(
-            truncate(&pending.summary, width.saturating_sub(4) as usize),
+            truncate(&pending.input, width.saturating_sub(4) as usize),
             Style::default().fg(Color::Gray),
         ),
         Line::raw(""),
@@ -849,7 +852,7 @@ fn draw_ask(frame: &mut Frame, pending: &PendingAsk, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     if let Some(q) = pending.questions.get(pending.index) {
-        let mode = if q.multi { "多选" } else { "单选" };
+        let mode = if q.is_multi { "多选" } else { "单选" };
         lines.push(Line::from(vec![
             Span::styled(
                 format!("问题 {}/{} ", pending.index + 1, pending.questions.len()),
@@ -874,7 +877,7 @@ fn draw_ask(frame: &mut Frame, pending: &PendingAsk, area: Rect) {
         lines.push(Line::raw(""));
         for (oi, opt) in q.options.iter().enumerate() {
             let checked = pending.picked[pending.index].contains(&oi);
-            let mark = if q.multi {
+            let mark = if q.is_multi {
                 if checked { "[x]" } else { "[ ]" }
             } else if checked {
                 "(x)"

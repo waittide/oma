@@ -21,7 +21,7 @@ const customInput = ref<HTMLInputElement | null>(null);
 
 const questions = computed(() => req.value?.questions ?? []);
 const current = computed(() => questions.value[index.value] ?? null);
-const isMulti = computed(() => !!current.value?.multi);
+const isMulti = computed(() => !!current.value?.is_multi);
 
 // 新提问到达时重置本地作答状态
 watch(
@@ -49,7 +49,7 @@ function goTo(i: number) {
 
 function toggle(label: string) {
   const i = index.value;
-  const multi = !!questions.value[i]?.multi;
+  const multi = !!questions.value[i]?.is_multi;
   const list = picked.value[i] ?? [];
   if (multi) {
     picked.value[i] = list.includes(label) ? list.filter((x) => x !== label) : [...list, label];

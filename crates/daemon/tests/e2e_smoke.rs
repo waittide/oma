@@ -306,7 +306,7 @@ async fn drive_turn_answering(client: &mut OmaClient, timeout: Duration, answer:
                 .respond_ask(oma_contract::AskResponse {
                     request_id: data.request_id.clone(),
                     answers,
-                    cancelled: false,
+                    is_cancelled: false,
                 })
                 .await?;
         }
@@ -382,11 +382,11 @@ fn tool_calls(events: &[AgentEvent]) -> Vec<(String, bool, Option<String>)> {
         .iter()
         .filter_map(|e| match e {
             AgentEvent::ToolCallFinished {
-                name,
+                tool_name,
                 is_error,
                 subagent_id,
                 ..
-            } => Some((name.clone(), *is_error, subagent_id.clone())),
+            } => Some((tool_name.clone(), *is_error, subagent_id.clone())),
             _ => None,
         })
         .collect()
@@ -823,9 +823,13 @@ async fn test_end_to_end_ask_tool_round_trip() -> Result<()> {
     assert_eq!(requested.questions[0].options.len(), 2);
 
     assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::AskResolved { cancelled: false, .. })),
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::AskResolved {
+                is_cancelled: false,
+                ..
+            }
+        )),
         "answering must broadcast ask_resolved: {:?}",
         events
     );

@@ -742,8 +742,8 @@ impl SessionRoom {
         let request_id = uuid::Uuid::new_v4().to_string();
         let request = PermissionRequestedData {
             request_id: request_id.clone(),
-            name:       tool_name.to_string(),
-            summary:    tool_input.to_string(),
+            tool_name:  tool_name.to_string(),
+            input:      tool_input.to_string(),
         };
         if let Some(turn) = self.active_turn.write().as_mut() {
             turn.pending_approval = Some(request.clone());
@@ -795,7 +795,7 @@ impl SessionRoom {
     ) -> (ToolOutput, bool) {
         let started = ToolCallStartedData {
             call_id:     call_id.to_string(),
-            name:        tool_name.to_string(),
+            tool_name:   tool_name.to_string(),
             input:       tool_input.clone(),
             subagent_id: subagent_id.map(str::to_string),
         };
@@ -905,7 +905,7 @@ impl SessionRoom {
         }
         self.broadcast(AgentEvent::ToolCallFinished {
             call_id:     call_id.to_string(),
-            name:        tool_name.to_string(),
+            tool_name:   tool_name.to_string(),
             output:      output.output.clone(),
             is_error:    output.is_error,
             subagent_id: subagent_id.map(str::to_string),
@@ -1846,7 +1846,7 @@ impl AskRunner for RoomSubagentRunner {
         };
         room.broadcast(AgentEvent::AskResolved {
             request_id,
-            cancelled,
+            is_cancelled: cancelled,
             resolved_by: if cancelled {
                 "system (timeout)".into()
             } else {
@@ -1856,7 +1856,7 @@ impl AskRunner for RoomSubagentRunner {
 
         match response {
             // 用户主动取消：不当作成功回答，让模型知道提问被拒
-            Some(r) if r.cancelled => Err("User cancelled the question without answering.".into()),
+            Some(r) if r.is_cancelled => Err("User cancelled the question without answering.".into()),
             Some(r) => Ok(format_answers(&questions, &r.answers)),
             None => Err("No answer received (the user did not respond in time). Proceed using your best judgement and clearly state the assumption you made.".into()),
         }

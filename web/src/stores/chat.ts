@@ -26,7 +26,8 @@ import { releaseAll } from '../lib/attachments';
 /** 流式轮次缓冲：按到达顺序排列的实时段（thinking/text/tool 交错）。 */
 export interface LiveTool {
   call_id: string;
-  name: string;
+  /** 被调用的工具名 */
+  tool_name: string;
   input: unknown;
   output?: string;
   is_error?: boolean;
@@ -405,13 +406,13 @@ export function respond(decision: ApprovalDecision) {
   });
 }
 
-/** 回答 ask 提问；cancelled = true 表示跳过作答。 */
-export function respondAsk(answers: AskAnswer[], cancelled = false) {
+/** 回答 ask 提问；is_cancelled = true 表示跳过作答。 */
+export function respondAsk(answers: AskAnswer[], is_cancelled = false) {
   const pending = pendingAsk.value;
   if (!pending) return;
   send({
     kind: 'ask',
-    response: { request_id: pending.request_id, answers, cancelled },
+    response: { request_id: pending.request_id, answers, is_cancelled },
   });
 }
 
@@ -484,7 +485,7 @@ export const renderBlocks = computed<Block[]>(() => {
     if (seg.kind === 'thinking') out.push({ type: 'thinking', thinking: seg.text });
     else if (seg.kind === 'text') out.push({ type: 'text', text: seg.text });
     else {
-      out.push({ type: 'tool_use', id: seg.tool.call_id, name: seg.tool.name, input: seg.tool.input });
+      out.push({ type: 'tool_use', id: seg.tool.call_id, name: seg.tool.tool_name, input: seg.tool.input });
       if (seg.tool.done) {
         out.push({
           type: 'tool_result',

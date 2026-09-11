@@ -1308,12 +1308,12 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
                     }
                     ClientMessage::Ask { response } => {
                         let request_id = response.request_id.clone();
-                        let cancelled = response.cancelled;
+                        let is_cancelled = response.is_cancelled;
                         let resolved = room_clone.ask_arbiter.resolve(&request_id, response).await;
                         if resolved {
                             room_clone.broadcast(AgentEvent::AskResolved {
                                 request_id,
-                                cancelled,
+                                is_cancelled,
                                 resolved_by: client_name.clone(),
                             });
                         }

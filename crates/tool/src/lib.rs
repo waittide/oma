@@ -575,7 +575,7 @@ impl Tool for AskTool {
 
     fn description(&self) -> &'static str {
         "Ask the user to choose among options when the right course of action is ambiguous. \
-         Use `multi: true` to allow multiple selections; the UI always adds an \"Other\" free-form \
+         Use `is_multi: true` to allow multiple selections; the UI always adds an \"Other\" free-form \
          entry, so never add one yourself. Prefer resolving ambiguity from the repository first."
     }
 
@@ -604,7 +604,7 @@ impl Tool for AskTool {
                                     "required": ["label"]
                                 }
                             },
-                            "multi": { "type": "boolean", "description": "Allow multiple selections" },
+                            "is_multi": { "type": "boolean", "description": "Allow multiple selections" },
                             "recommended": { "type": "integer", "description": "Zero-based recommended option index" }
                         },
                         "required": ["id", "question", "options"]

@@ -36,7 +36,8 @@ interface Item {
   imageSrc?: string;
   toolName?: string;
   toolInput?: unknown;
-  resultContent?: string;
+  /** 工具结果文本；命名与后端 ToolOutput.output / ToolCallFinished.output 对齐 */
+  output?: string;
   resultError?: boolean;
   resultDone?: boolean;
 }
@@ -64,7 +65,7 @@ const items = computed<Item[]>(() => {
         key: b.id,
         toolName: b.name,
         toolInput: b.input,
-        resultContent: carried?.content,
+        output: carried?.content,
         resultError: carried?.is_error,
         resultDone: carried !== undefined,
       });
@@ -72,7 +73,7 @@ const items = computed<Item[]>(() => {
       const idx = toolIndex[b.tool_use_id];
       if (idx !== undefined) {
         const target = out[idx]!;
-        target.resultContent = b.content;
+        target.output = b.content;
         target.resultError = b.is_error;
         target.resultDone = true;
       }
@@ -199,7 +200,7 @@ function toolSubtitle(it: Item): string {
         </button>
         <div v-show="isOpen(it)" class="fold-body-wrap">
           <pre class="fold-body">{{ prettyJson(it.toolInput) }}</pre>
-          <pre v-if="it.resultDone" class="fold-body result" :class="{ err: it.resultError }">{{ it.resultContent }}</pre>
+          <pre v-if="it.resultDone" class="fold-body result" :class="{ err: it.resultError }">{{ it.output }}</pre>
         </div>
       </div>
     </template>

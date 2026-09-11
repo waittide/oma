@@ -41,15 +41,18 @@ export interface AgentSummary {
 
 export interface ToolCallStartedData {
   call_id: string;
-  name: string;
+  /** 被调用的工具名 */
+  tool_name: string;
   input: unknown;
   subagent_id?: string | null;
 }
 
 export interface PermissionRequestedData {
   request_id: string;
-  name: string;
-  summary: string;
+  /** 待执行的工具名 */
+  tool_name: string;
+  /** 工具入参的 JSON 原文 */
+  input: string;
 }
 
 /** ask 工具：单个选项 */
@@ -64,7 +67,7 @@ export interface AskQuestion {
   question: string;
   options: AskOption[];
   /** true = 多选 */
-  multi?: boolean;
+  is_multi?: boolean;
   /** 推荐选项下标 */
   recommended?: number | null;
 }
@@ -85,7 +88,7 @@ export interface AskRequestedData {
 export interface AskResponse {
   request_id: string;
   answers: AskAnswer[];
-  cancelled: boolean;
+  is_cancelled: boolean;
 }
 
 export interface ActiveTurnCatchUp {
@@ -113,11 +116,11 @@ export type AgentEvent =
   | { type: 'thinking_delta'; data?: { delta: string; subagent_id?: string | null } }
   | { type: 'text_delta'; data?: { delta: string; subagent_id?: string | null } }
   | { type: 'tool_call_started'; data?: ToolCallStartedData }
-  | { type: 'tool_call_finished'; data?: { call_id: string; name: string; output: string; is_error: boolean; subagent_id?: string | null } }
+  | { type: 'tool_call_finished'; data?: { call_id: string; tool_name: string; output: string; is_error: boolean; subagent_id?: string | null } }
   | { type: 'permission_requested'; data?: PermissionRequestedData }
   | { type: 'permission_resolved'; data?: { request_id: string; decision: ApprovalDecision; resolved_by: string } }
   | { type: 'ask_requested'; data?: AskRequestedData }
-  | { type: 'ask_resolved'; data?: { request_id: string; cancelled: boolean; resolved_by: string } }
+  | { type: 'ask_resolved'; data?: { request_id: string; is_cancelled: boolean; resolved_by: string } }
   | { type: 'active_branch_changed'; data?: { current_leaf_id: string } }
   | { type: 'model_changed'; data?: { active_model: string } }
   | { type: 'agent_changed'; data?: { active_agent: string } }

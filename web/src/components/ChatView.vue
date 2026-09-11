@@ -341,8 +341,8 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
         <div class="approval">
           <LuAlertTriangle :size="15" class="warn" />
           <div class="ap-text">
-            <strong>{{ chat.pendingApproval.value.name }}</strong>
-            {{ t('approvalRequest') }}<code>{{ chat.pendingApproval.value.summary }}</code>
+            <strong>{{ chat.pendingApproval.value.tool_name }}</strong>
+            {{ t('approvalRequest') }}<code>{{ chat.pendingApproval.value.input }}</code>
           </div>
           <div class="ap-actions">
             <OButton variant="primary" size="sm" @click="chat.respond('allow_once')">

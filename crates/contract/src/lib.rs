@@ -271,7 +271,8 @@ pub struct TokenUsage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallStartedData {
     pub call_id:     String,
-    pub name:        String,
+    /// 被调用的工具名
+    pub tool_name:   String,
     pub input:       serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_id: Option<String>,
@@ -294,7 +295,7 @@ pub struct AskQuestion {
     pub options:     Vec<AskOption>,
     /// true = 多选（复选），false = 单选
     #[serde(default)]
-    pub multi:       bool,
+    pub is_multi:    bool,
     /// 推荐选项下标，供界面标注默认值；越界则忽略
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recommended: Option<usize>,
@@ -321,21 +322,23 @@ pub struct AskRequestedData {
 /// 提问回答（客户端上行）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AskResponse {
-    pub request_id: String,
+    pub request_id:   String,
     /// 与请求 questions 一一对应；为空数组表示用户取消
     #[serde(default)]
-    pub answers:    Vec<AskAnswer>,
+    pub answers:      Vec<AskAnswer>,
     /// true = 用户取消/拒绝作答
     #[serde(default)]
-    pub cancelled:  bool,
+    pub is_cancelled: bool,
 }
 
 /// 权限审批请求数据
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRequestedData {
     pub request_id: String,
-    pub name:       String,
-    pub summary:    String,
+    /// 待执行的工具名
+    pub tool_name:  String,
+    /// 工具入参的 JSON 原文（非摘要，由客户端按需展示）
+    pub input:      String,
 }
 
 /// 活跃轮次重连追赶快照
@@ -401,7 +404,8 @@ pub enum AgentEvent {
     ToolCallStarted(ToolCallStartedData),
     ToolCallFinished {
         call_id:     String,
-        name:        String,
+        /// 被调用的工具名
+        tool_name:   String,
         output:      String,
         is_error:    bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -417,10 +421,10 @@ pub enum AgentEvent {
     AskRequested(AskRequestedData),
     /// 提问已被回答或取消
     AskResolved {
-        request_id:  String,
+        request_id:   String,
         #[serde(default)]
-        cancelled:   bool,
-        resolved_by: String,
+        is_cancelled: bool,
+        resolved_by:  String,
     },
     ActiveBranchChanged {
         current_leaf_id: String,
@@ -508,7 +512,7 @@ mod tests {
     fn test_agent_event_serde() {
         let event = AgentEvent::ToolCallStarted(ToolCallStartedData {
             call_id:     "call_1".into(),
-            name:        "read".into(),
+            tool_name:   "read".into(),
             input:       serde_json::json!({ "path": "src/lib.rs" }),
             subagent_id: Some("sub_1".into()),
         });
@@ -526,8 +530,8 @@ mod tests {
             active_tool_call:     None,
             pending_approval:     Some(PermissionRequestedData {
                 request_id: "req_1".into(),
-                name:       "shell".into(),
-                summary:    "cargo test".into(),
+                tool_name:  "shell".into(),
+                input:      "cargo test".into(),
             }),
             pending_ask:          None,
         };
