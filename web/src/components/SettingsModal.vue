@@ -14,7 +14,6 @@ import {
   LuTrash2,
 } from 'vue-icons-plus/lu';
 import OButton from './ui/OButton.vue';
-import OCheckbox from './ui/OCheckbox.vue';
 import OInput from './ui/OInput.vue';
 import { api } from '../api';
 import OModal from './ui/OModal.vue';
@@ -850,6 +849,24 @@ const inputTypeOptions = computed(() =>
   INPUT_TYPES.map((v) => ({ value: v, label: t(INPUT_TYPE_LABELS[v]!) })),
 );
 
+const capabilityOptions = computed(() => [
+  { value: 'thinking', label: t('supportsThinking') },
+  { value: 'vision', label: t('supportsVision') },
+]);
+
+/** 能力在草稿中以两个布尔字段保存，这里与多选下拉的 string[] 互转。 */
+function capabilityKeys(m: ModelDraft): string[] {
+  const out: string[] = [];
+  if (m.supports_thinking) out.push('thinking');
+  if (m.supports_vision) out.push('vision');
+  return out;
+}
+
+function setCapabilities(m: ModelDraft, keys: string[]) {
+  m.supports_thinking = keys.includes('thinking');
+  m.supports_vision = keys.includes('vision');
+}
+
 /** 当前展示的提供商 tab；草稿列表变化时兜底选中第一个 */
 const activeProviderUid = ref<number | null>(null);
 const activeDraft = computed(() => providerDrafts.value.find((d) => d.uid === activeProviderUid.value) ?? null);
@@ -1298,10 +1315,11 @@ function pickLocale(v: Locale) {
 
                   <label class="cfg-label">{{ t('capabilities') }}</label>
                   <div class="cfg-ctl">
-                    <div class="checks">
-                      <OCheckbox v-model="m.supports_thinking" :label="t('supportsThinking')" />
-                      <OCheckbox v-model="m.supports_vision" :label="t('supportsVision')" />
-                    </div>
+                    <OMultiSelect
+                      :model-value="capabilityKeys(m)"
+                      :options="capabilityOptions"
+                      @update:model-value="(v) => setCapabilities(m, v)"
+                    />
                   </div>
 
                   <label class="cfg-label">{{ t('inputTypes') }}</label>
@@ -2104,9 +2122,6 @@ function pickLocale(v: Locale) {
   flex: 1;
   min-width: 0;
 }
-.cfg-ctl .checks {
-  min-height: 0;
-}
 /* 标识符类输入（提供商名、模型 id）用等宽字体 */
 .mono :deep(input) {
   font-family: var(--font-mono);
@@ -2130,13 +2145,6 @@ function pickLocale(v: Locale) {
 .m-del:hover {
   background: var(--danger-soft);
   color: var(--danger);
-}
-.checks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  min-height: 30px;
-  align-items: center;
 }
 .muted {
   font-size: 12.5px;
