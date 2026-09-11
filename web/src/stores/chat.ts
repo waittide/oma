@@ -80,6 +80,8 @@ let sessionId = '';
 export const currentSessionId = () => sessionId;
 let workspacePath = '';
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+/** 重连代次：每次 open/close 自增，旧 socket 与本代次不符时一律不再自我恢复 */
+let epoch = 0;
 let disposed = false;
 
 const clientId = `web_${crypto.randomUUID()}`;
@@ -133,15 +135,25 @@ function handleEvent(ev: AgentEvent) {
       else live.value.segments.push({ kind: 'text', key: `tx${liveSeq++}`, text: ev.data?.delta ?? '' });
       break;
     }
-    case 'tool_call_started':
-      if (ev.data) live.value.segments.push({ kind: 'tool', key: ev.data.call_id, tool: { ...ev.data, done: false } });
+    case 'tool_call_started': {
+      // 同一 call_id 只保留一个段：重复事件会让单个工具渲染出多张卡片，
+      // 而完成事件只能命中第一张，其余永远停在「执行中」
+      const d = ev.data;
+      if (d && !live.value.segments.some((s) => s.kind === 'tool' && s.tool.call_id === d.call_id)) {
+        live.value.segments.push({ kind: 'tool', key: d.call_id, tool: { ...d, done: false } });
+      }
       break;
+    }
     case 'tool_call_finished': {
-      const seg = live.value.segments.find((s) => s.kind === 'tool' && s.tool.call_id === ev.data?.call_id);
-      if (seg && seg.kind === 'tool' && ev.data) {
-        seg.tool.output = ev.data.output;
-        seg.tool.is_error = ev.data.is_error;
-        seg.tool.done = true;
+      const d = ev.data;
+      if (!d) break;
+      // 完成事件作用于全部同 id 段，已存在的重复段不会残留为「执行中」
+      for (const seg of live.value.segments) {
+        if (seg.kind === 'tool' && seg.tool.call_id === d.call_id) {
+          seg.tool.output = d.output;
+          seg.tool.is_error = d.is_error;
+          seg.tool.done = true;
+        }
       }
       break;
     }
@@ -239,9 +251,16 @@ function applyCatchUp(c: ActiveTurnCatchUp | null) {
 
 function connect() {
   if (disposed || !sessionId) return;
-  ws = new WebSocket(wsUrl({}));
+  const myEpoch = epoch;
+  const socket = new WebSocket(wsUrl({}));
+  ws = socket;
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    // 旧连接若晚于新连接完成握手，会把自己当成当前连接覆盖全局状态
+    if (myEpoch !== epoch) {
+      socket.close();
+      return;
+    }
     connected.value = true;
     send({
       kind: 'connect',
@@ -254,7 +273,9 @@ function connect() {
     });
   };
 
-  ws.onmessage = (ev) => {
+  socket.onmessage = (ev) => {
+    // 已过期的连接不得再写入 store，否则旧会话的事件会污染当前会话视图
+    if (myEpoch !== epoch) return;
     let msg: ServerMessage;
     try {
       msg = JSON.parse(ev.data as string) as ServerMessage;
@@ -278,7 +299,10 @@ function connect() {
     }
   };
 
-  ws.onclose = () => {
+  socket.onclose = () => {
+    // 过期连接（含被 open() 主动关闭的）不得清空全局状态或另起重连，
+    // 否则会在新连接之外再拉起第二条连接，同一事件被处理多次
+    if (myEpoch !== epoch) return;
     connected.value = false;
     ws = null;
     if (!disposed && getToken()) {
@@ -289,6 +313,7 @@ function connect() {
 
 export async function open(id: string, workspace: string) {
   if (sessionId === id && connected.value) return;
+  // close() 已让代次自增，旧连接及其重连定时器全部作废
   close();
   releaseAll();
   disposed = false;
@@ -307,6 +332,8 @@ export async function open(id: string, workspace: string) {
 
 export function close() {
   disposed = true;
+  // 代次自增让在途 socket 的 open/close/重连回调全部失效
+  epoch += 1;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
   ws?.close();
