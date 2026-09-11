@@ -77,7 +77,8 @@
     "uploadFailed": "附件上傳失敗：{message}",
     "notConnected": "未連線至 Daemon，訊息未送出",
     "forkAttachmentUnsupported": "編輯重送暫不支援附件，請先移除附件",
-    "queuedCount": "排隊 {count} 條"
+    "queuedCount": "排隊 {count} 條",
+    "reasoningDefault": "模型預設"
   },
   "blocks": {
     "thinking": "思考",
@@ -156,7 +157,7 @@
     "maxOutput": "最大輸出",
     "unset": "未設定（使用內建預設）",
     "reasoningEffort": "推理等級",
-    "effortOff": "關閉",
+    "effortOff": "未設定（回退模型預設）",
     "capabilities": "能力",
     "supportsThinking": "支援思考",
     "supportsVision": "支援視覺",
@@ -233,7 +234,11 @@
     "scopeAgent": "代理",
     "newScope": "新增位置",
     "skillToolsAny": "不限制（全部工具）",
-    "skillToolsHint": "留空表示允許該 Agent 的全部工具。"
+    "skillToolsHint": "留空表示允許該 Agent 的全部工具。",
+    "reasoningMap": "推理等級對應",
+    "reasoningMapHint": "把推理等級對應為廠商自訂字串；留空則直接使用等級名稱。",
+    "defaultReasoning": "預設推理等級",
+    "defaultReasoningDesc": "新建會話的初始推理等級，可在對話中調整。"
   },
   "app": {
     "title": "Oma - 多端協作 AI Agent 工作台"

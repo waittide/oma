@@ -27,11 +27,13 @@ use parking_lot::Mutex;
 /// Mock Provider 观测到的每次请求
 #[derive(Debug, Clone)]
 struct Observed {
-    tool_names:    Vec<String>,
-    has_image:     bool,
-    role_sequence: Vec<String>,
+    tool_names:       Vec<String>,
+    has_image:        bool,
+    role_sequence:    Vec<String>,
     /// 请求中 role=tool 的消息内容（用于观察压缩是否把旧回执替换为占位）
-    tool_contents: Vec<String>,
+    tool_contents:    Vec<String>,
+    /// 请求体里下发的 reasoning_effort（未下发为 None）
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -76,6 +78,7 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
         has_image,
         role_sequence: role_sequence.clone(),
         tool_contents,
+        reasoning_effort: req["reasoning_effort"].as_str().map(str::to_string),
     });
 
     // 每次响应都上报用量：agent loop 会据此回填权威上下文锚点
@@ -217,6 +220,10 @@ api_key = "test-key"
 id = "model-x"
 name = "Mock Model"
 context_len = {context_len}
+
+[providers.mock.models.reasoning_map]
+low = "think-low"
+ultra = "think-ultra"
 "#
     );
     let config_path = data_dir.join("config.toml");
@@ -948,5 +955,98 @@ async fn test_user_title_is_not_overwritten() -> Result<()> {
         .find(|s| s.session_id == session.session_id)
         .unwrap();
     assert_eq!(rec.title, "我的会话");
+    Ok(())
+}
+
+/// 推理等级映射：会话选中的等级经模型映射表转换后才发给厂商。
+#[tokio::test]
+async fn test_reasoning_level_is_mapped_before_request() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("level")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "leveler".into(),
+    })
+    .await?;
+
+    // 握手默认不带等级（配置未设 default_reasoning_level）
+    assert_eq!(client.ready().reasoning_level, "");
+
+    // 选中被映射的等级：ultra -> think-ultra
+    client
+        .send_command(AgentCommand::SetReasoningLevel { level: "ultra".into() })
+        .await?;
+    let changed = drain_for_event(&mut client, Duration::from_secs(10), |e| {
+        matches!(e, AgentEvent::ReasoningLevelChanged { .. })
+    })
+    .await?;
+    assert!(
+        changed
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ReasoningLevelChanged { level } if level == "ultra")),
+        "level change must be broadcast: {:?}",
+        changed
+    );
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "hello".into(),
+            attachments: vec![],
+        })
+        .await?;
+    drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    let observed = h.mock.observed.lock().clone();
+    let last = observed.last().expect("a request was sent");
+    assert_eq!(
+        last.reasoning_effort.as_deref(),
+        Some("think-ultra"),
+        "mapped string must be sent, got {:?}",
+        last.reasoning_effort
+    );
+    Ok(())
+}
+
+/// 未配置映射的等级按等级名原样下发。
+#[tokio::test]
+async fn test_reasoning_level_passthrough_for_unmapped() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("level2")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "leveler".into(),
+    })
+    .await?;
+
+    // medium 不在映射表中：应原样下发
+    client
+        .send_command(AgentCommand::SetReasoningLevel { level: "medium".into() })
+        .await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "hello".into(),
+            attachments: vec![],
+        })
+        .await?;
+    drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    let observed = h.mock.observed.lock().clone();
+    assert_eq!(
+        observed.last().and_then(|o| o.reasoning_effort.as_deref()),
+        Some("medium"),
+        "unmapped level must pass through"
+    );
     Ok(())
 }

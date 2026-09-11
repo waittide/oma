@@ -147,6 +147,15 @@ impl DaemonState {
             &record.active_agent,
             record.approval_mode,
         );
+        // 推理等级优先用会话已保存值；新建会话为空时套用全局默认
+        let level = if record.reasoning_level.is_empty() {
+            self.config.read().default_reasoning_level.clone()
+        } else {
+            record.reasoning_level.clone()
+        };
+        if !level.is_empty() {
+            *room.reasoning_level.write() = level;
+        }
 
         // 回填 subagent runner：TaskTool 需要房间，房间持有注册表，一次性槽位解环
         let subagent_runner = Arc::new(RoomSubagentRunner::new(room.clone()));
@@ -1041,6 +1050,18 @@ async fn handle_put_config(
         .validate(&cfg.custom_themes)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid theme config: {e}")))?;
 
+    // 默认推理等级必须是规范集合内的值，否则拒绝落盘
+    if !oma_contract::is_valid_reasoning_level(&cfg.default_reasoning_level) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Invalid default_reasoning_level {:?}: expect one of {:?}",
+                cfg.default_reasoning_level,
+                oma_contract::REASONING_LEVELS
+            ),
+        ));
+    }
+
     // 原子落盘：先写同目录临时文件再 rename，避免半截配置
     cfg.save_to_file_atomic(&state.config_path).map_err(|e| {
         (
@@ -1153,13 +1174,14 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     };
 
     // 3. 发送 Ready 握手确认（providers 携带配置的真实模型清单）
-    let (providers, active_model, active_agent, approval_mode) = {
+    let (providers, active_model, active_agent, approval_mode, reasoning_level) = {
         let cfg = state.config.read();
         (
             cfg.model_catalog(),
             room.active_model.read().clone(),
             room.active_agent.read().clone(),
             *room.approval_mode.read(),
+            room.reasoning_level.read().clone(),
         )
     };
     let ready = Ready {
@@ -1169,6 +1191,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         active_model,
         active_agent,
         approval_mode,
+        reasoning_level,
         current_leaf_id: room
             .storage
             .get_session(&room.session_id)

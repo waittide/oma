@@ -64,6 +64,8 @@ export const finalizing = ref(false);
 export const activeModel = ref('');
 export const activeAgent = ref('');
 export const approvalMode = ref<ApprovalMode>('normal');
+/** 当前会话推理等级；空串 = 未设置（回退模型默认） */
+export const reasoningLevel = ref('');
 export const providers = ref<Record<string, ModelInfo[]>>({});
 export const agents = ref<AgentSummary[]>([]);
 export const mcpServers = ref<McpServerSummary[]>([]);
@@ -232,6 +234,9 @@ function handleEvent(ev: AgentEvent) {
     case 'approval_mode_changed':
       if (ev.data) approvalMode.value = ev.data.mode;
       break;
+    case 'reasoning_level_changed':
+      if (ev.data) reasoningLevel.value = ev.data.level;
+      break;
     case 'active_turn_catch_up':
       applyCatchUp(ev.data ?? null);
       break;
@@ -306,6 +311,7 @@ function connect() {
       activeModel.value = r.active_model;
       activeAgent.value = r.active_agent;
       approvalMode.value = r.approval_mode;
+      reasoningLevel.value = r.reasoning_level ?? '';
       providers.value = r.providers;
       agents.value = r.agents;
       mcpServers.value = r.mcp_servers ?? [];
@@ -419,6 +425,11 @@ export function setAgent(agent: string) {
 
 export function setApprovalMode(mode: ApprovalMode) {
   command({ type: 'set_approval_mode', data: { mode } });
+}
+
+/** 设置当前会话推理等级；空串 = 回退模型默认。 */
+export function setReasoningLevel(level: string) {
+  command({ type: 'set_reasoning_level', data: { level } });
 }
 
 /** 删除消息及其子树；结果经 messages_deleted 事件广播回读。 */

@@ -77,7 +77,8 @@
     "uploadFailed": "Attachment upload failed: {message}",
     "notConnected": "Not connected to the daemon; message not sent",
     "forkAttachmentUnsupported": "Edit & resend does not support attachments; remove them first",
-    "queuedCount": "{count} queued"
+    "queuedCount": "{count} queued",
+    "reasoningDefault": "Model default"
   },
   "blocks": {
     "thinking": "Thinking",
@@ -156,7 +157,7 @@
     "maxOutput": "Max Output",
     "unset": "Unset (built-in default)",
     "reasoningEffort": "Reasoning Effort",
-    "effortOff": "Off",
+    "effortOff": "Unset (use model default)",
     "capabilities": "Capabilities",
     "supportsThinking": "Thinking",
     "supportsVision": "Vision",
@@ -233,7 +234,11 @@
     "scopeAgent": "Agent",
     "newScope": "Create in",
     "skillToolsAny": "Inherit all tools",
-    "skillToolsHint": "Leave empty to allow every tool the agent has."
+    "skillToolsHint": "Leave empty to allow every tool the agent has.",
+    "reasoningMap": "Reasoning level mapping",
+    "reasoningMapHint": "Map each level to a vendor-specific string; leave blank to send the level name as-is.",
+    "defaultReasoning": "Default reasoning level",
+    "defaultReasoningDesc": "Initial reasoning level for new sessions; adjustable in the chat."
   },
   "app": {
     "title": "Oma - Multi-client Collaborative AI Agent"

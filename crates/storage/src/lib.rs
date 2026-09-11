@@ -105,6 +105,9 @@ pub struct SessionRecord {
     pub active_model:    String,
     pub active_agent:    String,
     pub approval_mode:   ApprovalMode,
+    /// 会话推理等级（REASONING_LEVELS 之一；空 = 未设置，回退模型默认）
+    #[serde(default)]
+    pub reasoning_level: String,
     pub current_leaf_id: Option<String>,
     pub created_at:      i64,
     pub updated_at:      i64,
@@ -182,6 +185,7 @@ impl StorageManager {
                 active_model    TEXT NOT NULL,
                 active_agent    TEXT NOT NULL DEFAULT 'task',
                 approval_mode   TEXT NOT NULL DEFAULT 'normal',
+                reasoning_level TEXT NOT NULL DEFAULT '',
                 current_leaf_id TEXT,
                 created_at      INTEGER NOT NULL,
                 updated_at      INTEGER NOT NULL
@@ -193,6 +197,12 @@ impl StorageManager {
         .execute(&index_pool)
         .await
         .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to initialize sessions_index: {}", e)))?;
+
+        // 旧库补列：sessions_index 早于推理等级字段，CREATE TABLE IF NOT EXISTS
+        // 不会为已存在的表加列，忽略「重复列」错误即可完成幂等迁移。
+        let _ = sqlx::query("ALTER TABLE sessions_index ADD COLUMN reasoning_level TEXT NOT NULL DEFAULT ''")
+            .execute(&index_pool)
+            .await;
 
         Ok(Self {
             base_dir,
@@ -357,6 +367,8 @@ impl StorageManager {
             active_model: active_model.to_string(),
             active_agent: active_agent.to_string(),
             approval_mode,
+            // 新建会话尚未设置推理等级，回退模型默认
+            reasoning_level: String::new(),
             current_leaf_id: None,
             created_at: now,
             updated_at: now,
@@ -369,7 +381,7 @@ impl StorageManager {
         validate_session_id(session_id)?;
         let row = sqlx::query(
             r#"
-            SELECT session_id, workspace, title, active_model, active_agent, approval_mode, current_leaf_id, created_at, updated_at
+            SELECT session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at
             FROM sessions_index
             WHERE session_id = ?
             "#,
@@ -391,6 +403,7 @@ impl StorageManager {
             active_model: row.get("active_model"),
             active_agent: row.get("active_agent"),
             approval_mode,
+            reasoning_level: row.get("reasoning_level"),
             current_leaf_id: row.get("current_leaf_id"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
@@ -403,7 +416,7 @@ impl StorageManager {
         let rows = if let Some(ws) = workspace {
             sqlx::query(
                 r#"
-                SELECT session_id, workspace, title, active_model, active_agent, approval_mode, current_leaf_id, created_at, updated_at
+                SELECT session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at
                 FROM sessions_index
                 WHERE workspace = ?
                 ORDER BY updated_at DESC
@@ -415,7 +428,7 @@ impl StorageManager {
         } else {
             sqlx::query(
                 r#"
-                SELECT session_id, workspace, title, active_model, active_agent, approval_mode, current_leaf_id, created_at, updated_at
+                SELECT session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at
                 FROM sessions_index
                 ORDER BY updated_at DESC
                 "#,
@@ -511,13 +524,14 @@ impl StorageManager {
         Ok(true)
     }
 
-    /// 更新会话配置 (model, agent, approval_mode)
+    /// 更新会话配置 (model, agent, approval_mode, reasoning_level)
     pub async fn update_session_settings(
         &self,
         session_id: &str,
         active_model: Option<&str>,
         active_agent: Option<&str>,
         approval_mode: Option<ApprovalMode>,
+        reasoning_level: Option<&str>,
     ) -> Result<()> {
         validate_session_id(session_id)?;
         let now = chrono::Utc::now().timestamp_millis();
@@ -540,6 +554,14 @@ impl StorageManager {
         if let Some(mode) = approval_mode {
             sqlx::query("UPDATE sessions_index SET approval_mode = ?, updated_at = ? WHERE session_id = ?")
                 .bind(mode.as_str())
+                .bind(now)
+                .bind(session_id)
+                .execute(&self.index_pool)
+                .await?;
+        }
+        if let Some(level) = reasoning_level {
+            sqlx::query("UPDATE sessions_index SET reasoning_level = ?, updated_at = ? WHERE session_id = ?")
+                .bind(level)
                 .bind(now)
                 .bind(session_id)
                 .execute(&self.index_pool)

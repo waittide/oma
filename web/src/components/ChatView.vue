@@ -211,6 +211,25 @@ const approvalOptions = computed<{ value: ApprovalMode; label: string }[]>(() =>
   { value: 'auto', label: ta('auto') },
 ]);
 
+/** 规范推理等级：与后端 REASONING_LEVELS 一致 */
+const REASONING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+
+/** 当前选中模型是否支持思考：决定是否展示推理等级选择器 */
+const supportsThinking = computed(() => {
+  const wanted = chat.activeModel.value;
+  if (!wanted) return false;
+  const [pid, ...rest] = wanted.split('/');
+  const mid = rest.join('/');
+  const list = chat.providers.value[pid ?? ''] ?? [];
+  return list.find((m) => m.id === mid)?.supports_thinking ?? false;
+});
+
+const reasoningOptions = computed(() => [
+  // 空值 = 不覆盖模型默认等级
+  { value: '', label: t('reasoningDefault') },
+  ...REASONING_LEVELS.map((v) => ({ value: v, label: v })),
+]);
+
 const isEmpty = computed(() => chat.messages.value.length === 0 && !chat.running.value);
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */
 const ready = computed(() => !!activeSessionId.value && props.online && chat.connected.value);
@@ -413,6 +432,14 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
               :options="approvalOptions"
               width="96px"
               @update:model-value="chat.setApprovalMode"
+            />
+            <!-- 仅支持思考的模型才展示推理等级 -->
+            <OSelect
+              v-if="supportsThinking"
+              v-model="chat.reasoningLevel.value"
+              :options="reasoningOptions"
+              width="110px"
+              @update:model-value="chat.setReasoningLevel"
             />
             <OSelect
               v-model="chat.activeAgent.value"

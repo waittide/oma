@@ -212,7 +212,12 @@ async function removeTheme(id: string) {
 }
 
 // ---------- 默认参数 ----------
-const defaults = reactive({ model: '', agent: '', approval: 'normal' as OmaConfig['default_approval_mode'] });
+const defaults = reactive({
+  model: '',
+  agent: '',
+  approval: 'normal' as OmaConfig['default_approval_mode'],
+  reasoning: '',
+});
 const savingDefaults = ref(false);
 
 watch(
@@ -224,6 +229,7 @@ watch(
       defaults.model = config.value.default_model;
       defaults.agent = config.value.default_agent;
       defaults.approval = config.value.default_approval_mode;
+      defaults.reasoning = config.value.default_reasoning_level ?? '';
     }
     mode.value = theme.value.mode;
     themeSel.light = theme.value.light_theme || 'latte';
@@ -248,6 +254,7 @@ async function saveDefaults() {
       default_model: defaults.model,
       default_agent: defaults.agent,
       default_approval_mode: defaults.approval,
+      default_reasoning_level: defaults.reasoning,
     });
     toast.success(t('defaultsSaved'));
   } catch (e) {
@@ -670,6 +677,8 @@ interface ModelDraft {
   context_len: string;
   max_output: string;
   reasoning_effort: string;
+  /** 推理等级 → 厂商自定义字符串；空串表示按等级名下发 */
+  reasoning_map: Record<string, string>;
   supports_thinking: boolean;
   supports_vision: boolean;
   input_types: string[];
@@ -722,6 +731,7 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
       context_len: String(m.context_len),
       max_output: m.max_output === undefined ? '' : String(m.max_output),
       reasoning_effort: m.reasoning_effort ?? '',
+      reasoning_map: { ...(m.reasoning_map ?? {}) },
       supports_thinking: m.supports_thinking,
       supports_vision: m.supports_vision,
       input_types: [...(m.input_types ?? [])],
@@ -738,11 +748,13 @@ watch(
 );
 
 const apiTypeOptions = ['anthropic', 'completion', 'response', 'google'].map((v) => ({ value: v, label: v }));
+
+/** 规范推理等级：与后端 REASONING_LEVELS 保持一致，顺序即界面展示顺序 */
+const REASONING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+
 const effortOptions = computed(() => [
   { value: '', label: t('effortOff') },
-  { value: 'low', label: 'low' },
-  { value: 'medium', label: 'medium' },
-  { value: 'high', label: 'high' },
+  ...REASONING_LEVELS.map((v) => ({ value: v, label: v })),
 ]);
 
 /**
@@ -912,6 +924,7 @@ function addModel(d: ProviderDraft) {
     context_len: '128000',
     max_output: '',
     reasoning_effort: '',
+    reasoning_map: {},
     supports_thinking: true,
     supports_vision: true,
     input_types: ['text', 'image'],
@@ -983,6 +996,14 @@ async function saveProviders() {
               supports_thinking: m.supports_thinking,
               ...(Number.isFinite(mo) && mo > 0 ? { max_output: mo } : {}),
               ...(m.reasoning_effort ? { reasoning_effort: m.reasoning_effort } : {}),
+              // 只回写非空映射项，避免把整表空值写进配置
+              ...(Object.keys(m.reasoning_map).length
+                ? {
+                    reasoning_map: Object.fromEntries(
+                      Object.entries(m.reasoning_map).filter(([, v]) => v.trim() !== ''),
+                    ),
+                  }
+                : {}),
               ...(m.input_types.length ? { input_types: [...m.input_types] } : {}),
             };
           }),
@@ -1178,6 +1199,15 @@ function pickLocale(v: Locale) {
                   <OSelect v-model="defaults.approval" :options="approvalOptions" width="200px" />
                 </div>
               </div>
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('defaultReasoning') }}</span>
+                  <span class="srow-desc">{{ t('defaultReasoningDesc') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <OSelect v-model="defaults.reasoning" :options="effortOptions" width="200px" />
+                </div>
+              </div>
             </div>
           </div>
           <footer class="pane-foot">
@@ -1308,11 +1338,6 @@ function pickLocale(v: Locale) {
                     <OInput v-model="m.max_output" :placeholder="t('unset')" />
                   </div>
 
-                  <label class="cfg-label">{{ t('reasoningEffort') }}</label>
-                  <div class="cfg-ctl">
-                    <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
-                  </div>
-
                   <label class="cfg-label">{{ t('capabilities') }}</label>
                   <div class="cfg-ctl">
                     <OMultiSelect
@@ -1321,6 +1346,29 @@ function pickLocale(v: Locale) {
                       @update:model-value="(v) => setCapabilities(m, v)"
                     />
                   </div>
+
+                  <!-- 推理相关仅在模型支持思考时才有意义 -->
+                  <template v-if="m.supports_thinking">
+                    <label class="cfg-label">{{ t('reasoningEffort') }}</label>
+                    <div class="cfg-ctl">
+                      <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
+                    </div>
+
+                    <label class="cfg-label">{{ t('reasoningMap') }}</label>
+                    <div class="cfg-ctl cfg-stack">
+                      <p class="cfg-hint">{{ t('reasoningMapHint') }}</p>
+                      <div class="effort-map">
+                        <div v-for="lv in REASONING_LEVELS" :key="lv" class="effort-row">
+                          <span class="effort-key mono">{{ lv }}</span>
+                          <OInput
+                            :model-value="m.reasoning_map[lv] ?? ''"
+                            :placeholder="lv"
+                            @update:model-value="(v) => (m.reasoning_map[lv] = v)"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </template>
 
                   <label class="cfg-label">{{ t('inputTypes') }}</label>
                   <div class="cfg-ctl">
@@ -2121,6 +2169,35 @@ function pickLocale(v: Locale) {
 .cfg-ctl > .o-multi {
   flex: 1;
   min-width: 0;
+}
+/* 需纵向排布的配置项（如推理映射表） */
+.cfg-ctl.cfg-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.cfg-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--overlay0);
+}
+.effort-map {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.effort-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.effort-key {
+  flex-shrink: 0;
+  width: 62px;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
 }
 /* 标识符类输入（提供商名、模型 id）用等宽字体 */
 .mono :deep(input) {

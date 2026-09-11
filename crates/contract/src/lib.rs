@@ -151,6 +151,10 @@ pub enum AgentCommand {
     SetApprovalMode {
         mode: ApprovalMode,
     },
+    /// 设置当前会话的推理等级（必须在 REASONING_LEVELS 内，空串 = 未设置）
+    SetReasoningLevel {
+        level: String,
+    },
     ForkAndRun {
         parent_message_id: String,
         new_content:       Option<String>,
@@ -181,6 +185,17 @@ pub enum ClientMessage {
     Cancel {},
 }
 
+/// 规范化的推理等级集合。
+///
+/// 作为跨端共享的唯一定义：模型侧用它做「等级 → 厂商自定义字符串」映射的键，
+/// 会话侧用它做可选值校验，界面用它渲染下拉项。
+pub const REASONING_LEVELS: [&str; 7] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+/// 推理等级是否为规范集合中的合法值（空串表示未设置，同样合法）
+pub fn is_valid_reasoning_level(level: &str) -> bool {
+    level.is_empty() || REASONING_LEVELS.contains(&level)
+}
+
 /// 模型元数据
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -191,7 +206,7 @@ pub struct ModelInfo {
     pub supports_thinking: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output:        Option<usize>,
-    /// 推理等级: "" | low | medium | high
+    /// 模型未定制映射时的默认推理等级
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reasoning_effort:  String,
     /// 支持的输入模态: text / image / video
@@ -223,6 +238,9 @@ pub struct Ready {
     pub active_model:    String,
     pub active_agent:    String,
     pub approval_mode:   ApprovalMode,
+    /// 当前会话的推理等级（空 = 未设置）
+    #[serde(default)]
+    pub reasoning_level: String,
     pub current_leaf_id: Option<String>,
     pub providers:       BTreeMap<String, Vec<ModelInfo>>,
     pub agents:          Vec<AgentSummary>,
@@ -413,6 +431,9 @@ pub enum AgentEvent {
     },
     ApprovalModeChanged {
         mode: ApprovalMode,
+    },
+    ReasoningLevelChanged {
+        level: String,
     },
     ActiveTurnCatchUp(ActiveTurnCatchUp),
     SessionRenamed {

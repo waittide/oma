@@ -121,6 +121,7 @@ export type AgentEvent =
   | { type: 'model_changed'; data?: { active_model: string } }
   | { type: 'agent_changed'; data?: { active_agent: string } }
   | { type: 'approval_mode_changed'; data?: { mode: ApprovalMode } }
+  | { type: 'reasoning_level_changed'; data?: { level: string } }
   | { type: 'active_turn_catch_up'; data?: ActiveTurnCatchUp }
   | { type: 'session_renamed'; data?: { session_id: string; title: string } }
   | { type: 'messages_deleted'; data?: { deleted_ids: string[]; current_leaf_id: string | null } }
@@ -172,6 +173,8 @@ export interface Ready {
   active_model: string;
   active_agent: string;
   approval_mode: ApprovalMode;
+  /** 当前会话推理等级；空串 = 未设置（回退模型默认） */
+  reasoning_level: string;
   current_leaf_id: string | null;
   providers: Record<string, ModelInfo[]>;
   agents: AgentSummary[];
@@ -188,6 +191,7 @@ export type AgentCommand =
   | { type: 'set_model'; data: { model: string } }
   | { type: 'set_agent'; data: { agent: string } }
   | { type: 'set_approval_mode'; data: { mode: ApprovalMode } }
+  | { type: 'set_reasoning_level'; data: { level: string } }
   | { type: 'fork_and_run'; data: { parent_message_id: string; new_content?: string | null } }
   | { type: 'switch_branch'; data: { leaf_message_id: string } };
 
@@ -214,6 +218,8 @@ export interface SessionRecord {
   active_model: string;
   active_agent: string;
   approval_mode: ApprovalMode;
+  /** 会话推理等级；空串 = 未设置（回退模型默认） */
+  reasoning_level?: string;
   current_leaf_id: string | null;
   created_at: number;
   updated_at: number;
@@ -246,8 +252,10 @@ export interface ModelEntry {
   supports_thinking: boolean;
   /** 最大输出 Token；未设置时各协议使用内置默认 */
   max_output?: number;
-  /** 推理等级："" (关闭) | low | medium | high */
+  /** 模型未定制映射时的默认推理等级 */
   reasoning_effort?: string;
+  /** 推理等级 → 厂商自定义字符串；未配置的等级按等级名下发 */
+  reasoning_map?: Record<string, string>;
   /** 支持的输入模态：text / image / video */
   input_types?: string[];
 }
@@ -268,6 +276,8 @@ export interface OmaConfig {
   default_model: string;
   default_agent: string;
   default_approval_mode: ApprovalMode;
+  /** 新会话默认推理等级；空串 = 未指定（回退模型默认） */
+  default_reasoning_level?: string;
   theme: Theme;
   server: { listen_addr: string };
   providers: Record<string, ProviderConfig>;

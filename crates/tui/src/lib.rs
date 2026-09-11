@@ -690,6 +690,15 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             format!("审批模式 → {}", approval_mode_label(mode)),
             Style::default().fg(Color::DarkGray),
         ),
+        AgentEvent::ReasoningLevelChanged { level } => app.push(
+            "·",
+            if level.is_empty() {
+                "推理等级 → 模型默认".to_string()
+            } else {
+                format!("推理等级 → {}", level)
+            },
+            Style::default().fg(Color::DarkGray),
+        ),
     }
 }
 

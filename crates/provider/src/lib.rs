@@ -319,9 +319,12 @@ pub struct ModelEntry {
     /// 最大输出 Token 数；None 时各协议使用内置默认
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output:        Option<usize>,
-    /// 推理等级: "" (关闭) | low | medium | high
+    /// 模型未定制映射时的默认推理等级
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reasoning_effort:  String,
+    /// 推理等级 → 厂商自定义字符串；未配置的等级回退为等级名本身
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reasoning_map:     BTreeMap<String, String>,
     /// 支持的输入模态: text / image / video
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_types:       Vec<String>,
@@ -379,6 +382,9 @@ pub struct ModelConfig {
     pub max_output:        Option<usize>,
     #[serde(default)]
     pub reasoning_effort:  String,
+    /// 推理等级 → 厂商自定义字符串；未配置的等级回退为等级名本身
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reasoning_map:     BTreeMap<String, String>,
     #[serde(default)]
     pub headers:           BTreeMap<String, String>,
     #[serde(default = "empty_json_object", deserialize_with = "deserialize_json_body")]
@@ -392,6 +398,36 @@ impl ProviderConfig {
             std::env::var(env_var).unwrap_or_default()
         } else {
             self.api_key.clone()
+        }
+    }
+}
+
+impl ModelConfig {
+    /// 将规范化推理等级解析为发给厂商的字符串。
+    ///
+    /// - 会话等级为空：回退到模型配置里的 `reasoning_effort`（兼容旧行为）
+    /// - 定制了映射：取映射值；映射到空串表示「该等级下不下发该字段」
+    /// - 未定制映射：直接用等级名本身（如 `medium`）
+    ///
+    /// 返回 `None` 表示本次请求不携带推理等级。
+    pub fn resolve_reasoning_effort(&self, level: &str) -> Option<String> {
+        let key = if level.is_empty() {
+            self.reasoning_effort.as_str()
+        } else {
+            level
+        };
+        if key.is_empty() {
+            return None;
+        }
+        if self.reasoning_map.is_empty() {
+            return Some(key.to_string());
+        }
+        match self.reasoning_map.get(key) {
+            // 映射到空串 = 显式关闭该等级
+            Some(mapped) if mapped.is_empty() => None,
+            Some(mapped) => Some(mapped.clone()),
+            // 未配置该等级的映射：按约定回退为等级名
+            None => Some(key.to_string()),
         }
     }
 }
@@ -1693,6 +1729,7 @@ mod tests {
                 supports_thinking: true,
                 max_output:        Some(256),
                 reasoning_effort:  String::new(),
+                reasoning_map:     BTreeMap::new(),
                 headers:           BTreeMap::new(),
                 body:              serde_json::json!({}),
             },
@@ -1989,5 +2026,76 @@ data: [DONE]\n\n";
                 stop_reason: StopReason::EndTurn,
             }
         );
+    }
+
+    // ---------- 推理等级映射 ----------
+
+    fn model_with(effort: &str, map: &[(&str, &str)]) -> ModelConfig {
+        let mut reasoning_map = BTreeMap::new();
+        for (k, v) in map {
+            reasoning_map.insert(k.to_string(), v.to_string());
+        }
+        ModelConfig {
+            id: "m".into(),
+            name: "m".into(),
+            context_len: 1000,
+            supports_vision: true,
+            supports_thinking: true,
+            max_output: None,
+            reasoning_effort: effort.to_string(),
+            reasoning_map,
+            headers: BTreeMap::new(),
+            body: serde_json::json!({}),
+        }
+    }
+
+    /// 未定制映射：等级名直接下发。
+    #[test]
+    fn test_reasoning_passthrough_without_map() {
+        let m = model_with("", &[]);
+        assert_eq!(m.resolve_reasoning_effort("medium").as_deref(), Some("medium"));
+        assert_eq!(m.resolve_reasoning_effort("ultra").as_deref(), Some("ultra"));
+    }
+
+    /// 会话未选等级：回退到模型配置的默认等级（兼容旧行为）。
+    #[test]
+    fn test_reasoning_falls_back_to_model_default() {
+        let m = model_with("high", &[]);
+        assert_eq!(m.resolve_reasoning_effort("").as_deref(), Some("high"));
+        // 会话显式选了等级则优先于模型默认
+        assert_eq!(m.resolve_reasoning_effort("low").as_deref(), Some("low"));
+    }
+
+    /// 都未设置时不下发该字段。
+    #[test]
+    fn test_reasoning_absent_when_unset() {
+        let m = model_with("", &[]);
+        assert!(m.resolve_reasoning_effort("").is_none());
+    }
+
+    /// 定制映射：命中取自定义字符串，未命中回退等级名。
+    #[test]
+    fn test_reasoning_map_overrides_and_falls_back() {
+        let m = model_with("", &[("low", "think-low"), ("high", "think-ultra")]);
+        assert_eq!(m.resolve_reasoning_effort("low").as_deref(), Some("think-low"));
+        assert_eq!(m.resolve_reasoning_effort("high").as_deref(), Some("think-ultra"));
+        // 未配置映射的等级按等级名下发，不因存在映射表而丢失
+        assert_eq!(m.resolve_reasoning_effort("medium").as_deref(), Some("medium"));
+    }
+
+    /// 映射到空串 = 该等级显式关闭，不下发字段。
+    #[test]
+    fn test_reasoning_map_empty_disables() {
+        let m = model_with("", &[("minimal", ""), ("ultra", "  ")]);
+        assert!(m.resolve_reasoning_effort("minimal").is_none());
+        // 空白视为有值的自定义字符串（不清洗，原样透传）
+        assert_eq!(m.resolve_reasoning_effort("ultra").as_deref(), Some("  "));
+    }
+
+    /// 空等级 + 映射表：回退键也要经过映射。
+    #[test]
+    fn test_reasoning_map_applies_to_model_default() {
+        let m = model_with("high", &[("high", "think-max")]);
+        assert_eq!(m.resolve_reasoning_effort("").as_deref(), Some("think-max"));
     }
 }

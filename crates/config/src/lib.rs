@@ -181,21 +181,24 @@ impl CustomTheme {
 #[serde(deny_unknown_fields)]
 pub struct OmaConfig {
     #[serde(default = "default_model_str")]
-    pub default_model:         String,
+    pub default_model:           String,
     #[serde(default = "default_agent_str")]
-    pub default_agent:         String,
+    pub default_agent:           String,
     #[serde(default)]
-    pub default_approval_mode: ApprovalMode,
+    pub default_approval_mode:   ApprovalMode,
+    /// 新会话默认推理等级（REASONING_LEVELS 之一；空 = 不指定，回退模型默认）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default_reasoning_level: String,
     #[serde(default)]
-    pub theme:                 Theme,
+    pub theme:                   Theme,
     #[serde(default)]
-    pub server:                ServerConfig,
+    pub server:                  ServerConfig,
     #[serde(default)]
-    pub providers:             BTreeMap<String, ProviderConfig>,
+    pub providers:               BTreeMap<String, ProviderConfig>,
     #[serde(default)]
-    pub mcp_servers:           BTreeMap<String, McpServerConfig>,
+    pub mcp_servers:             BTreeMap<String, McpServerConfig>,
     #[serde(default)]
-    pub custom_themes:         Vec<CustomTheme>,
+    pub custom_themes:           Vec<CustomTheme>,
 }
 
 fn default_model_str() -> String {
@@ -208,14 +211,15 @@ fn default_agent_str() -> String {
 impl Default for OmaConfig {
     fn default() -> Self {
         Self {
-            default_model:         default_model_str(),
-            default_agent:         default_agent_str(),
-            default_approval_mode: ApprovalMode::Normal,
-            theme:                 Theme::default(),
-            server:                ServerConfig::default(),
-            providers:             BTreeMap::new(),
-            mcp_servers:           BTreeMap::new(),
-            custom_themes:         Vec::new(),
+            default_model:           default_model_str(),
+            default_agent:           default_agent_str(),
+            default_approval_mode:   ApprovalMode::Normal,
+            default_reasoning_level: String::new(),
+            theme:                   Theme::default(),
+            server:                  ServerConfig::default(),
+            providers:               BTreeMap::new(),
+            mcp_servers:             BTreeMap::new(),
+            custom_themes:           Vec::new(),
         }
     }
 }
@@ -309,6 +313,7 @@ impl OmaConfig {
                 supports_thinking: m.supports_thinking,
                 max_output:        m.max_output,
                 reasoning_effort:  m.reasoning_effort.clone(),
+                reasoning_map:     m.reasoning_map.clone(),
                 headers:           BTreeMap::new(),
                 body:              serde_json::json!({}),
             })
@@ -320,6 +325,7 @@ impl OmaConfig {
                 supports_thinking: true,
                 max_output:        None,
                 reasoning_effort:  String::new(),
+                reasoning_map:     BTreeMap::new(),
                 headers:           BTreeMap::new(),
                 body:              serde_json::json!({}),
             });

@@ -15,7 +15,7 @@ use oma_contract::{
     AskRequestedData, AskResponse, Block, ChatMessage, ClientType, PermissionRequestedData, Role, StopReason,
     TokenUsage, ToolCallStartedData, ToolOutput,
 };
-use oma_provider::{ProviderStreamEvent, UniversalProvider};
+use oma_provider::{ModelConfig, ProviderStreamEvent, UniversalProvider};
 use oma_storage::{StorageError, StorageManager};
 use oma_tool::{AskRunner, SubagentRunner, ToolRegistry};
 use parking_lot::RwLock;
@@ -113,6 +113,15 @@ impl ApprovalArbiter {
     pub async fn pending_count(&self) -> usize {
         self.pending.lock().await.len()
     }
+}
+
+/// 把会话推理等级落到请求参数上：
+/// `resolve_reasoning_effort` 已处理「空等级回退模型默认」与「映射为空 = 不下发」，
+/// 因此这里只需把结果回写到 `reasoning_effort`，各协议组装逻辑无需感知等级概念。
+fn apply_reasoning_level(model_cfg: &mut ModelConfig, level: &str) {
+    model_cfg.reasoning_effort = model_cfg
+        .resolve_reasoning_effort(level)
+        .unwrap_or_default();
 }
 
 /// 会话自动命名的系统提示：输出要短、无修饰、不改写语言
@@ -431,6 +440,8 @@ pub struct SessionRoom {
     pub active_model:    RwLock<String>,
     pub active_agent:    RwLock<String>,
     pub approval_mode:   RwLock<ApprovalMode>,
+    /// 当前会话推理等级（REASONING_LEVELS 之一；空 = 未设置，回退模型默认）
+    pub reasoning_level: RwLock<String>,
     pub whitelist:       RwLock<HashSet<String>>, // AllowSession 内存白名单
     pub event_tx:        broadcast::Sender<AgentEvent>,
     pub command_queue:   Mutex<VecDeque<AgentCommand>>,
@@ -466,6 +477,7 @@ impl SessionRoom {
             active_model: RwLock::new(active_model.into()),
             active_agent: RwLock::new(active_agent.into()),
             approval_mode: RwLock::new(approval_mode),
+            reasoning_level: RwLock::new(String::new()),
             whitelist: RwLock::new(HashSet::new()),
             event_tx,
             command_queue: Mutex::new(VecDeque::new()),
@@ -560,7 +572,7 @@ impl SessionRoom {
                 *self.active_model.write() = model.clone();
                 let _ = self
                     .storage
-                    .update_session_settings(&self.session_id, Some(&model), None, None)
+                    .update_session_settings(&self.session_id, Some(&model), None, None, None)
                     .await;
                 self.broadcast(AgentEvent::ModelChanged { active_model: model });
             }
@@ -568,7 +580,7 @@ impl SessionRoom {
                 *self.active_agent.write() = agent.clone();
                 let _ = self
                     .storage
-                    .update_session_settings(&self.session_id, None, Some(&agent), None)
+                    .update_session_settings(&self.session_id, None, Some(&agent), None, None)
                     .await;
                 self.broadcast(AgentEvent::AgentChanged { active_agent: agent });
             }
@@ -576,9 +588,24 @@ impl SessionRoom {
                 *self.approval_mode.write() = mode;
                 let _ = self
                     .storage
-                    .update_session_settings(&self.session_id, None, None, Some(mode))
+                    .update_session_settings(&self.session_id, None, None, Some(mode), None)
                     .await;
                 self.broadcast(AgentEvent::ApprovalModeChanged { mode });
+            }
+            AgentCommand::SetReasoningLevel { level } => {
+                // 校验收敛在服务端：非法等级一律拒绝，避免脏值落库
+                if !oma_contract::is_valid_reasoning_level(&level) {
+                    self.broadcast(AgentEvent::Error {
+                        message: format!("Invalid reasoning level: {}", level),
+                    });
+                    return;
+                }
+                *self.reasoning_level.write() = level.clone();
+                let _ = self
+                    .storage
+                    .update_session_settings(&self.session_id, None, None, None, Some(&level))
+                    .await;
+                self.broadcast(AgentEvent::ReasoningLevelChanged { level });
             }
             AgentCommand::SwitchBranch { leaf_message_id } => {
                 match self
@@ -1063,7 +1090,9 @@ impl SessionRoom {
             let tools_defs = self.tools.to_definitions(&template.tools);
             let allowed = allowed_tools(&template);
 
-            // 发起 Provider 请求
+            // 发起 Provider 请求：会话推理等级在此映射为厂商可识别参数
+            let mut model_cfg = model_cfg.clone();
+            apply_reasoning_level(&mut model_cfg, &self.reasoning_level.read());
             let provider = UniversalProvider::new(provider_cfg);
             let mut stream_rx = match provider
                 .send_stream(&messages, Some(&system_prompt), &tools_defs, &model_cfg)
@@ -1603,9 +1632,12 @@ impl RoomSubagentRunner {
             let mut request = messages.clone();
             compact_messages(&mut request, model_cfg.context_len, anchor);
 
+            // 子 Agent 继承会话推理等级，保证主/子轮次行为一致
+            let mut sub_model_cfg = model_cfg.clone();
+            apply_reasoning_level(&mut sub_model_cfg, &self.room.reasoning_level.read());
             let provider = UniversalProvider::new(provider_cfg.clone());
             let mut stream_rx = provider
-                .send_stream(&request, Some(&system_prompt), &tools_defs, &model_cfg)
+                .send_stream(&request, Some(&system_prompt), &tools_defs, &sub_model_cfg)
                 .await
                 .map_err(|e| format!("Subagent provider error: {}", e))?;
 
