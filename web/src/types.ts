@@ -28,7 +28,8 @@ export interface ModelInfo {
   supports_vision: boolean;
   supports_thinking: boolean;
   max_output?: number;
-  reasoning_effort?: string;
+  /** 推理等级 → 厂商自定义字符串；未配置的等级按等级名下发 */
+  reasoning_map?: Record<string, string>;
   input_types?: string[];
 }
 
@@ -252,8 +253,6 @@ export interface ModelEntry {
   supports_thinking: boolean;
   /** 最大输出 Token；未设置时各协议使用内置默认 */
   max_output?: number;
-  /** 模型未定制映射时的默认推理等级 */
-  reasoning_effort?: string;
   /** 推理等级 → 厂商自定义字符串；未配置的等级按等级名下发 */
   reasoning_map?: Record<string, string>;
   /** 支持的输入模态：text / image / video */

@@ -101,15 +101,16 @@ impl DaemonState {
 
         let mut record = self.storage.get_session(session_id).await?;
         if record.is_none() {
-            let (default_model, default_agent, default_approval) = {
+            let (default_model, default_agent, default_approval, default_level) = {
                 let cfg = self.config.read();
                 (
                     cfg.default_model.clone(),
                     cfg.default_agent.clone(),
                     cfg.default_approval_mode,
+                    cfg.default_reasoning_level.clone(),
                 )
             };
-            // 由外部直接指定 session_id 时的兜底创建：同样留空标题，
+            // 由外部直接指定 session_id 时的兜底创建：标题留空，
             // 交由模型在首轮结束后命名（与 POST /api/sessions 行为一致）
             let new_rec = self
                 .storage
@@ -120,6 +121,7 @@ impl DaemonState {
                     &default_model,
                     &default_agent,
                     default_approval,
+                    &default_level,
                 )
                 .await?;
             record = Some(new_rec);
@@ -147,14 +149,8 @@ impl DaemonState {
             &record.active_agent,
             record.approval_mode,
         );
-        // 推理等级优先用会话已保存值；旧会话为空时套用全局默认；
-        // 两者都缺（异常配置）则兜底 medium，保证界面总有一个具体等级可选
-        let level = if record.reasoning_level.is_empty() {
-            self.config.read().default_reasoning_level.clone()
-        } else {
-            record.reasoning_level.clone()
-        };
-        *room.reasoning_level.write() = if level.is_empty() { "medium".to_string() } else { level };
+        // 推理等级来自会话自身（创建时即写入，不会为空），无需再回退
+        *room.reasoning_level.write() = record.reasoning_level.clone();
 
         // 回填 subagent runner：TaskTool 需要房间，房间持有注册表，一次性槽位解环
         let subagent_runner = Arc::new(RoomSubagentRunner::new(room.clone()));
@@ -327,12 +323,13 @@ async fn handle_create_session(
     // 标题留空表示「交给模型根据首轮对话自动命名」；
     // 用户填写时原样保留，模型不会再覆盖（见 set_title_if_empty）。
     let title = payload.title.unwrap_or_default().trim().to_string();
-    let (default_model, default_agent, default_approval) = {
+    let (default_model, default_agent, default_approval, default_level) = {
         let cfg = state.config.read();
         (
             cfg.default_model.clone(),
             cfg.default_agent.clone(),
             cfg.default_approval_mode,
+            cfg.default_reasoning_level.clone(),
         )
     };
     let model = payload.model.unwrap_or(default_model);
@@ -341,7 +338,15 @@ async fn handle_create_session(
 
     let rec = state
         .storage
-        .create_session(&session_id, &payload.workspace, &title, &model, &agent, approval_mode)
+        .create_session(
+            &session_id,
+            &payload.workspace,
+            &title,
+            &model,
+            &agent,
+            approval_mode,
+            &default_level,
+        )
         .await
         .map_err(storage_error)?;
 
@@ -1678,7 +1683,7 @@ mod tests {
         let state = test_state(tmp.path()).await?;
         state
             .storage
-            .create_session("sess_att", "/w", "T", "m", "task", ApprovalMode::Normal)
+            .create_session("sess_att", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
         let base = spawn_app(state).await?;
         let client = reqwest::Client::new();

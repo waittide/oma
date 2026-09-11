@@ -144,6 +144,44 @@ fn session_connect_options(db_path: &Path, read_only: bool) -> SqliteConnectOpti
         .foreign_keys(true)
 }
 
+/// 校验全局索引表结构符合当前版本。
+///
+/// 本版本不做自动迁移：`CREATE TABLE IF NOT EXISTS` 不会给已存在的旧表补列，
+/// 静默容忍会让缺失字段在运行时才报错（如 `no such column`）。
+/// 这里在启动阶段直接拒绝，给出可操作的修复提示。
+async fn ensure_index_schema(pool: &SqlitePool) -> Result<()> {
+    const REQUIRED: [&str; 10] = [
+        "session_id",
+        "workspace",
+        "title",
+        "active_model",
+        "active_agent",
+        "approval_mode",
+        "reasoning_level",
+        "current_leaf_id",
+        "created_at",
+        "updated_at",
+    ];
+    let rows = sqlx::query("PRAGMA table_info(sessions_index)")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to inspect sessions_index: {}", e)))?;
+    let present: Vec<String> = rows.iter().map(|r| r.get::<String, _>("name")).collect();
+    let missing: Vec<&str> = REQUIRED
+        .into_iter()
+        .filter(|c| !present.iter().any(|p| p == c))
+        .collect();
+    if !missing.is_empty() {
+        return Err(StorageError::Internal(anyhow::anyhow!(
+            "sessions_index 缺少必要列 {:?}（当前列: {:?}）。\
+             本版本不再自动迁移旧库，请先备份并重建该表，或手动执行 ALTER TABLE 补列。",
+            missing,
+            present
+        )));
+    }
+    Ok(())
+}
+
 impl StorageManager {
     /// 初始化存储引擎，并在 base_dir 下建立全局 oma.db
     pub async fn new(base_dir: impl AsRef<Path>) -> Result<Self> {
@@ -197,12 +235,7 @@ impl StorageManager {
         .execute(&index_pool)
         .await
         .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to initialize sessions_index: {}", e)))?;
-
-        // 旧库补列：sessions_index 早于推理等级字段，CREATE TABLE IF NOT EXISTS
-        // 不会为已存在的表加列，忽略「重复列」错误即可完成幂等迁移。
-        let _ = sqlx::query("ALTER TABLE sessions_index ADD COLUMN reasoning_level TEXT NOT NULL DEFAULT ''")
-            .execute(&index_pool)
-            .await;
+        ensure_index_schema(&index_pool).await?;
 
         Ok(Self {
             base_dir,
@@ -319,6 +352,7 @@ impl StorageManager {
     }
 
     /// 创建会话
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_session(
         &self,
         session_id: &str,
@@ -327,6 +361,7 @@ impl StorageManager {
         active_model: &str,
         active_agent: &str,
         approval_mode: ApprovalMode,
+        reasoning_level: &str,
     ) -> Result<SessionRecord> {
         validate_session_id(session_id)?;
         let now = chrono::Utc::now().timestamp_millis();
@@ -334,8 +369,8 @@ impl StorageManager {
         sqlx::query(
             r#"
             INSERT INTO sessions_index 
-            (session_id, workspace, title, active_model, active_agent, approval_mode, current_leaf_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            (session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
             "#,
         )
         .bind(session_id)
@@ -344,6 +379,7 @@ impl StorageManager {
         .bind(active_model)
         .bind(active_agent)
         .bind(approval_mode.as_str())
+        .bind(reasoning_level)
         .bind(now)
         .bind(now)
         .execute(&self.index_pool)
@@ -367,8 +403,7 @@ impl StorageManager {
             active_model: active_model.to_string(),
             active_agent: active_agent.to_string(),
             approval_mode,
-            // 新建会话尚未设置推理等级，回退模型默认
-            reasoning_level: String::new(),
+            reasoning_level: reasoning_level.to_string(),
             current_leaf_id: None,
             created_at: now,
             updated_at: now,
@@ -837,6 +872,7 @@ mod tests {
                 "claude-3-7",
                 "task",
                 ApprovalMode::Normal,
+                "medium",
             )
             .await?;
         assert_eq!(s1.session_id, "s_1");
@@ -910,7 +946,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_del", "/w", "Del", "m", "task", ApprovalMode::Normal)
+            .create_session("s_del", "/w", "Del", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
 
         let msg = |id: &str, parent: Option<&str>| ChatMessage {
@@ -983,7 +1019,7 @@ mod tests {
 
         // 合法 id 仍然可用
         storage
-            .create_session("sess_OK-1", "/w", "T", "m", "task", ApprovalMode::Normal)
+            .create_session("sess_OK-1", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
         storage.delete_session("sess_OK-1").await?;
         Ok(())
@@ -997,7 +1033,7 @@ mod tests {
 
         // 用户创建时填了标题：模型自动命名不得覆盖
         storage
-            .create_session("s_user", "/w", "我的标题", "m", "task", ApprovalMode::Normal)
+            .create_session("s_user", "/w", "我的标题", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
         assert!(!storage.set_title_if_empty("s_user", "模型起的名字").await?);
         let rec = storage.get_session("s_user").await?.unwrap();
@@ -1005,7 +1041,7 @@ mod tests {
 
         // 用户留空：模型命名应当生效
         storage
-            .create_session("s_auto", "/w", "", "m", "task", ApprovalMode::Normal)
+            .create_session("s_auto", "/w", "", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
         assert!(storage.set_title_if_empty("s_auto", "自动命名").await?);
         let rec = storage.get_session("s_auto").await?.unwrap();
@@ -1018,7 +1054,7 @@ mod tests {
 
         // 空/纯空白标题不得写入
         storage
-            .create_session("s_blank", "/w", "", "m", "task", ApprovalMode::Normal)
+            .create_session("s_blank", "/w", "", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
         assert!(!storage.set_title_if_empty("s_blank", "   ").await?);
         assert_eq!(storage.get_session("s_blank").await?.unwrap().title, "");
@@ -1031,7 +1067,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_cache", "/w", "T", "m", "task", ApprovalMode::Normal)
+            .create_session("s_cache", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
 
         let pools = storage.session_pools("s_cache").await?;
@@ -1065,7 +1101,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_att", "/w", "T", "m", "task", ApprovalMode::Normal)
+            .create_session("s_att", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
 
         assert!(storage.attachment_path("s_att", "shot-1.png").is_ok());

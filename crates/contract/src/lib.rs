@@ -208,9 +208,9 @@ pub struct ModelInfo {
     pub supports_thinking: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output:        Option<usize>,
-    /// 模型未定制映射时的默认推理等级
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub reasoning_effort:  String,
+    /// 推理等级 → 厂商自定义字符串；未配置的等级按等级名下发
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reasoning_map:     BTreeMap<String, String>,
     /// 支持的输入模态: text / image / video
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_types:       Vec<String>,

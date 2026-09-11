@@ -300,7 +300,8 @@ impl OmaConfig {
 
         let provider = self.providers.get(provider_name)?;
 
-        // 优先使用配置的 models 清单；未配置该 id 或清单为空时，动态构造默认 ModelConfig
+        // 仅接受配置清单中显式声明的模型：未声明的 id 无法得知其上下文长度、
+        // 是否支持思考等元数据，不再动态合成（调用方据此报错）
         let model_cfg = provider
             .models
             .iter()
@@ -316,23 +317,12 @@ impl OmaConfig {
                 supports_vision:   m.supports_vision,
                 supports_thinking: m.supports_thinking,
                 max_output:        m.max_output,
-                reasoning_effort:  m.reasoning_effort.clone(),
+                // 会话等级在请求期解析后填入，模型配置不再持有默认等级
+                reasoning_effort:  String::new(),
                 reasoning_map:     m.reasoning_map.clone(),
                 headers:           BTreeMap::new(),
                 body:              serde_json::json!({}),
-            })
-            .unwrap_or_else(|| ModelConfig {
-                id:                model_id.to_string(),
-                name:              model_id.to_string(),
-                context_len:       128_000,
-                supports_vision:   true,
-                supports_thinking: true,
-                max_output:        None,
-                reasoning_effort:  String::new(),
-                reasoning_map:     BTreeMap::new(),
-                headers:           BTreeMap::new(),
-                body:              serde_json::json!({}),
-            });
+            })?;
         Some((provider, model_cfg))
     }
 
@@ -355,7 +345,7 @@ impl OmaConfig {
                         supports_vision:   m.supports_vision,
                         supports_thinking: m.supports_thinking,
                         max_output:        m.max_output,
-                        reasoning_effort:  m.reasoning_effort.clone(),
+                        reasoning_map:     m.reasoning_map.clone(),
                         input_types:       m.input_types.clone(),
                     })
                     .collect::<Vec<_>>();
@@ -1018,7 +1008,7 @@ api_key = "env:DEEPSEEK_KEY"
     }
 
     #[test]
-    fn test_configured_models_override_synthesis() {
+    fn test_configured_models_require_declaration() {
         let toml_str = r#"
 [providers.p1]
 api_type = "completion"
@@ -1048,13 +1038,10 @@ api_key = "k"
         let (_, m2) = config.find_model("p1/m2").unwrap();
         assert_eq!(m2.name, "m2");
         assert_eq!(m2.context_len, 128_000);
-        // 清单外的 id: 动态合成 (向后兼容)
-        let (_, mx) = config.find_model("p1/not-listed").unwrap();
-        assert_eq!(mx.context_len, 128_000);
-        assert!(mx.supports_thinking);
-        // 无清单 provider: 全部合成
-        let (_, p2m) = config.find_model("p2/anything").unwrap();
-        assert_eq!(p2m.id, "anything");
+        // 未声明的 model id 不再动态合成：元数据无从得知，返回 None 由调用方报错
+        assert!(config.find_model("p1/not-listed").is_none());
+        // 无清单 provider 的任何模型都不可用
+        assert!(config.find_model("p2/anything").is_none());
 
         // 握手目录: 配置清单原样枚举, 无清单 provider 为空列表
         let catalog = config.model_catalog();

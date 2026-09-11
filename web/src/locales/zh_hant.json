@@ -155,7 +155,6 @@
     "contextLen": "上下文大小",
     "maxOutput": "最大輸出",
     "unset": "未設定（使用內建預設）",
-    "reasoningEffort": "推理等級",
     "capabilities": "能力",
     "supportsThinking": "支援思考",
     "supportsVision": "支援視覺",

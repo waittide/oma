@@ -220,14 +220,8 @@ pub struct EditHunk {
 
 #[derive(Debug, Deserialize)]
 struct EditInput {
-    path:     String,
-    #[serde(default)]
-    edits:    Vec<EditHunk>,
-    // 兼容单对象参数传参
-    #[serde(default)]
-    old_text: Option<String>,
-    #[serde(default)]
-    new_text: Option<String>,
+    path:  String,
+    edits: Vec<EditHunk>,
 }
 
 #[async_trait::async_trait]
@@ -266,20 +260,10 @@ impl Tool for EditTool {
     }
 
     async fn execute(&self, workspace: &Path, input: serde_json::Value) -> ToolOutput {
-        let mut input: EditInput = match serde_json::from_value(input) {
+        let input: EditInput = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolOutput::error(format!("Invalid arguments for edit: {}", e)),
         };
-
-        // 归一化：若模型传入单块 old_text / new_text
-        if input.edits.is_empty() {
-            if let (Some(old_t), Some(new_t)) = (input.old_text.take(), input.new_text.take()) {
-                input.edits.push(EditHunk {
-                    old_text: old_t,
-                    new_text: new_t,
-                });
-            }
-        }
 
         if input.edits.is_empty() {
             return ToolOutput::error("No edits provided.");

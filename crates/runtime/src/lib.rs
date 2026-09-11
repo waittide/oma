@@ -2237,7 +2237,15 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_q", "/w", "T", "missing/model", "task", ApprovalMode::Normal)
+            .create_session(
+                "s_q",
+                "/w",
+                "T",
+                "missing/model",
+                "task",
+                ApprovalMode::Normal,
+                "medium",
+            )
             .await?;
 
         let room = SessionRoom::new(
@@ -2341,15 +2349,6 @@ mod tests {
             "non-thinking model must not receive reasoning params, got {:?}",
             m.reasoning_effort
         );
-    }
-
-    /// 旧会话等级为空时回退到模型配置的等级（兼容历史数据）。
-    #[test]
-    fn test_apply_reasoning_level_falls_back_for_legacy_session() {
-        let mut m = thinking_model(true, &[]);
-        m.reasoning_effort = "high".into();
-        apply_reasoning_level(&mut m, "");
-        assert_eq!(m.reasoning_effort, "high");
     }
 
     // ---------- 会话自动命名 ----------

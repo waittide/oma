@@ -676,7 +676,6 @@ interface ModelDraft {
   name: string;
   context_len: string;
   max_output: string;
-  reasoning_effort: string;
   /** 推理等级 → 厂商自定义字符串；空串表示按等级名下发 */
   reasoning_map: Record<string, string>;
   supports_thinking: boolean;
@@ -730,7 +729,6 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
       name: m.name,
       context_len: String(m.context_len),
       max_output: m.max_output === undefined ? '' : String(m.max_output),
-      reasoning_effort: m.reasoning_effort ?? DEFAULT_REASONING_LEVEL,
       reasoning_map: { ...(m.reasoning_map ?? {}) },
       supports_thinking: m.supports_thinking,
       supports_vision: m.supports_vision,
@@ -924,7 +922,6 @@ function addModel(d: ProviderDraft) {
     name: '',
     context_len: '128000',
     max_output: '',
-    reasoning_effort: DEFAULT_REASONING_LEVEL,
     reasoning_map: {},
     supports_thinking: true,
     supports_vision: true,
@@ -996,10 +993,6 @@ async function saveProviders() {
               supports_vision: m.supports_vision,
               supports_thinking: m.supports_thinking,
               ...(Number.isFinite(mo) && mo > 0 ? { max_output: mo } : {}),
-              // 支持思考的模型必须有具体等级：兜底到默认值，避免写入空值
-              ...(m.supports_thinking
-                ? { reasoning_effort: m.reasoning_effort || DEFAULT_REASONING_LEVEL }
-                : {}),
               // 只回写非空映射项，避免把整表空值写进配置
               ...(m.supports_thinking && Object.keys(m.reasoning_map).length
                 ? {
@@ -1351,13 +1344,8 @@ function pickLocale(v: Locale) {
                     />
                   </div>
 
-                  <!-- 推理相关仅在模型支持思考时才有意义 -->
+                  <!-- 推理映射仅在模型支持思考时才有意义 -->
                   <template v-if="m.supports_thinking">
-                    <label class="cfg-label">{{ t('reasoningEffort') }}</label>
-                    <div class="cfg-ctl">
-                      <OSelect v-model="m.reasoning_effort" :options="effortOptions" />
-                    </div>
-
                     <label class="cfg-label">{{ t('reasoningMap') }}</label>
                     <div class="cfg-ctl cfg-stack">
                       <p class="cfg-hint">{{ t('reasoningMapHint') }}</p>
