@@ -431,14 +431,6 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
               width="96px"
               @update:model-value="chat.setApprovalMode"
             />
-            <!-- 仅支持思考的模型才展示推理等级 -->
-            <OSelect
-              v-if="supportsThinking"
-              v-model="chat.reasoningLevel.value"
-              :options="reasoningOptions"
-              width="110px"
-              @update:model-value="chat.setReasoningLevel"
-            />
             <OSelect
               v-model="chat.activeAgent.value"
               :options="agentOptions"
@@ -450,6 +442,14 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
               :groups="chat.providers.value"
               width="170px"
               @update:model-value="chat.setModel"
+            />
+            <!-- 推理等级紧跟在模型选择右侧；仅支持思考的模型才展示 -->
+            <OSelect
+              v-if="supportsThinking"
+              v-model="chat.reasoningLevel.value"
+              :options="reasoningOptions"
+              width="110px"
+              @update:model-value="chat.setReasoningLevel"
             />
           </div>
           <div class="c-actions">
