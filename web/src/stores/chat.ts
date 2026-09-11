@@ -72,6 +72,8 @@ export const modelCatalog = ref<Record<string, ModelInfo[]>>({});
 export const agents = ref<AgentSummary[]>([]);
 export const mcpServers = ref<McpServerSummary[]>([]);
 export const lastUsage = ref<TokenUsage | null>(null);
+/** 最近一次模型请求的上下文占用（提示侧总量，含缓存） */
+export const contextUsage = ref<{ tokens: number; contextLen: number } | null>(null);
 export const queued = ref(0);
 
 export const modelList = computed(() => {
@@ -239,6 +241,11 @@ function handleEvent(ev: AgentEvent) {
     case 'reasoning_level_changed':
       if (ev.data) reasoningLevel.value = ev.data.level;
       break;
+    case 'context_usage':
+      if (ev.data) {
+        contextUsage.value = { tokens: ev.data.tokens, contextLen: ev.data.context_len };
+      }
+      break;
     case 'active_turn_catch_up':
       applyCatchUp(ev.data ?? null);
       break;
@@ -366,6 +373,7 @@ export function reset() {
   finalizing.value = false;
   currentLeafId.value = null;
   lastUsage.value = null;
+  contextUsage.value = null;
   queued.value = 0;
 }
 

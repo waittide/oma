@@ -25,6 +25,7 @@ import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
 import { prettyJson } from '../lib/format';
 import AskPanel from './AskPanel.vue';
+import ContextGauge from './ContextGauge.vue';
 import OButton from './ui/OButton.vue';
 import HistoryTree from './HistoryTree.vue';
 import type { ApprovalMode } from '../types';
@@ -455,6 +456,12 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
               :options="reasoningOptions"
               width="110px"
               @update:model-value="chat.setReasoningLevel"
+            />
+            <!-- 上下文占用：位于推理等级右侧 -->
+            <ContextGauge
+              v-if="chat.contextUsage.value"
+              :tokens="chat.contextUsage.value.tokens"
+              :context-len="chat.contextUsage.value.contextLen"
             />
           </div>
           <div class="c-actions">

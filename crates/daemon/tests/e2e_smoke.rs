@@ -1140,3 +1140,40 @@ async fn test_invalid_reasoning_level_is_rejected() -> Result<()> {
     assert_eq!(again.ready().reasoning_level, before);
     Ok(())
 }
+
+/// 上下文占用：每次模型请求后须广播 tokens 与窗口大小，供进度条使用。
+#[tokio::test]
+async fn test_context_usage_is_broadcast() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("ctx")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "ctx".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "hello".into(),
+            attachments: vec![],
+        })
+        .await?;
+    let events = drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    let usage = events.iter().find_map(|e| match e {
+        AgentEvent::ContextUsage { tokens, context_len } => Some((*tokens, *context_len)),
+        _ => None,
+    });
+    let (tokens, context_len) = usage.expect("context_usage must be broadcast after a request");
+
+    // mock 按 messages.len()*100+50 上报 prompt_tokens，必为正数
+    assert!(tokens > 0, "tokens must reflect the provider-reported input: {tokens}");
+    // 窗口取自 harness 配置（start_harness 默认 100_000）
+    assert_eq!(context_len, 100_000);
+    Ok(())
+}

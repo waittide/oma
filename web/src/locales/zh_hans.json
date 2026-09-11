@@ -77,7 +77,11 @@
     "uploadFailed": "附件上传失败：{message}",
     "notConnected": "未连接到 Daemon，消息未发送",
     "forkAttachmentUnsupported": "编辑重发暂不支持附件，请先移除附件",
-    "queuedCount": "排队 {count} 条"
+    "queuedCount": "排队 {count} 条",
+    "contextTip": "上下文 {tokens} / {total}（{percent}%）",
+    "contextUnknown": "已用 {tokens} tokens（模型窗口未知）",
+    "contextCompacting": "已超过 70% 压缩阈值：此后每轮请求都会裁剪较早的历史。",
+    "contextCompactingTag": "压缩区"
   },
   "blocks": {
     "thinking": "思考",

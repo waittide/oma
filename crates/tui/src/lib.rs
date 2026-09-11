@@ -103,6 +103,8 @@ struct App {
     stick:     bool,
     approval:  Option<PendingApproval>,
     ask:       Option<PendingAsk>,
+    /// 最近一次请求的上下文占用（tokens, context_len）
+    context:   Option<(usize, usize)>,
 }
 
 impl App {
@@ -121,6 +123,7 @@ impl App {
             stick: true,
             approval: None,
             ask: None,
+            context: None,
         }
     }
 
@@ -693,6 +696,9 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             format!("审批模式 → {}", approval_mode_label(mode)),
             Style::default().fg(Color::DarkGray),
         ),
+        AgentEvent::ContextUsage { tokens, context_len } => {
+            app.context = Some((tokens, context_len));
+        }
         AgentEvent::ReasoningLevelChanged { level } => app.push(
             "·",
             if level.is_empty() {
@@ -742,6 +748,21 @@ fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
+/// 上下文占用进度条：10 格 + 百分比，参照 oh-my-pi 的 contextGauge。
+fn context_gauge(tokens: usize, window: usize) -> String {
+    if window == 0 {
+        return format!("ctx {}", tokens);
+    }
+    let ratio = (tokens as f64 / window as f64).clamp(0.0, 1.0);
+    let filled = (ratio * 10.0).round() as usize;
+    format!(
+        "{}{} {}%",
+        "━".repeat(filled),
+        "─".repeat(10 - filled),
+        (ratio * 100.0).round() as usize
+    )
+}
+
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let dot = if app.connected { "●" } else { "○" };
     let state = if app.busy { "运行中" } else { app.status.as_str() };
@@ -750,6 +771,10 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         String::new()
     };
+    let ctx = app
+        .context
+        .map(|(tokens, window)| format!("  {}", context_gauge(tokens, window)))
+        .unwrap_or_default();
     let line = Line::from(vec![
         Span::styled(
             format!("{} ", dot),
@@ -761,6 +786,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             format!("{} · {}{}", state, app.model, queue),
             Style::default().fg(Color::DarkGray),
         ),
+        Span::styled(ctx, Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }

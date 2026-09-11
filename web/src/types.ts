@@ -126,6 +126,7 @@ export type AgentEvent =
   | { type: 'agent_changed'; data?: { active_agent: string } }
   | { type: 'approval_mode_changed'; data?: { mode: ApprovalMode } }
   | { type: 'reasoning_level_changed'; data?: { level: string } }
+  | { type: 'context_usage'; data?: { tokens: number; context_len: number } }
   | { type: 'active_turn_catch_up'; data?: ActiveTurnCatchUp }
   | { type: 'session_renamed'; data?: { session_id: string; title: string } }
   | { type: 'messages_deleted'; data?: { deleted_ids: string[]; current_leaf_id: string | null } }

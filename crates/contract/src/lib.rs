@@ -440,6 +440,12 @@ pub enum AgentEvent {
     ApprovalModeChanged {
         mode: ApprovalMode,
     },
+    /// 上下文占用更新：每次模型请求拿到用量后广播，供界面展示进度。
+    /// `tokens` 为提示侧总量（含缓存），`context_len` 为模型窗口。
+    ContextUsage {
+        tokens:      usize,
+        context_len: usize,
+    },
     ReasoningLevelChanged {
         level: String,
     },

@@ -1184,6 +1184,11 @@ impl SessionRoom {
             // 厂商未上报用量时保留旧锚点，绝不写入 0 覆盖。
             if let Some(recorded) = TokenAnchor::record(covered, request_input_tokens) {
                 anchor = Some(recorded);
+                // 每次请求后广播上下文占用，供界面进度条实时更新
+                self.broadcast(AgentEvent::ContextUsage {
+                    tokens:      request_input_tokens,
+                    context_len: model_cfg.context_len,
+                });
             }
 
             // 保存 Assistant 消息

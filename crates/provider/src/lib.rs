@@ -295,6 +295,7 @@ pub enum ProviderStreamEvent {
         input: serde_json::Value,
     },
     Usage {
+        /// 提示侧（输入）总量：统一含缓存读写，与各厂商口径对齐
         input_tokens:  usize,
         output_tokens: usize,
     },
@@ -1013,10 +1014,12 @@ where
             match event_type {
                 "message_start" => {
                     if let Some(usage) = val.get("message").and_then(|m| m.get("usage")) {
-                        let input_tokens = usage
-                            .get("input_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as usize;
+                        // Anthropic 的 input_tokens 不含缓存部分：上下文占用必须把
+                        // cache_creation/cache_read 一并计入，否则开启 caching 后严重低估
+                        let field = |k: &str| usage.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        let input_tokens = field("input_tokens")
+                            + field("cache_creation_input_tokens")
+                            + field("cache_read_input_tokens");
                         let _ = tx
                             .send(ProviderStreamEvent::Usage {
                                 input_tokens,
@@ -1217,6 +1220,8 @@ where
 
                 // 统计 Usage
                 if let Some(usage) = val.get("usage") {
+                    // prompt_tokens 已包含缓存命中部分（与 Anthropic 口径不同，
+                    // 这里不得再加 prompt_tokens_details.cached_tokens，否则重复计数）
                     let input_tokens = usage
                         .get("prompt_tokens")
                         .and_then(|v| v.as_u64())
@@ -1807,6 +1812,70 @@ data: [DONE]\n\n";
         assert_eq!(events[0], ProviderStreamEvent::ThinkingDelta("第一段".into()));
         assert_eq!(events[1], ProviderStreamEvent::ThinkingDelta("第二段".into()));
         assert_eq!(events[2], ProviderStreamEvent::TextDelta("答复".into()));
+    }
+
+    /// Anthropic 的 input_tokens 不含缓存：上下文占用必须是三者之和，
+    /// 否则开启 prompt caching 后进度条严重低估。
+    #[tokio::test]
+    async fn test_anthropic_usage_includes_cache_tokens() {
+        let sse_data = "event: message_start\ndata: {\"message\":{\"usage\":{\"input_tokens\":1000,\"cache_creation_input_tokens\":500,\"cache_read_input_tokens\":2000}}}\n\n\
+data: [DONE]\n\n";
+
+        let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
+        let (tx, mut rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            parse_anthropic_sse(stream, tx).await;
+        });
+
+        let mut usage = None;
+        while let Some(ev) = rx.recv().await {
+            if let ProviderStreamEvent::Usage { input_tokens, .. } = ev {
+                usage = Some(input_tokens);
+            }
+        }
+        assert_eq!(usage, Some(3500), "input + cache_creation + cache_read");
+    }
+
+    /// 无缓存字段时退化为纯 input_tokens。
+    #[tokio::test]
+    async fn test_anthropic_usage_without_cache_fields() {
+        let sse_data = "event: message_start\ndata: {\"message\":{\"usage\":{\"input_tokens\":777}}}\n\n\
+data: [DONE]\n\n";
+
+        let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
+        let (tx, mut rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            parse_anthropic_sse(stream, tx).await;
+        });
+
+        let mut usage = None;
+        while let Some(ev) = rx.recv().await {
+            if let ProviderStreamEvent::Usage { input_tokens, .. } = ev {
+                usage = Some(input_tokens);
+            }
+        }
+        assert_eq!(usage, Some(777));
+    }
+
+    /// OpenAI 的 prompt_tokens 本身含缓存，不得再叠加 cached_tokens（会重复计数）。
+    #[tokio::test]
+    async fn test_openai_usage_does_not_double_count_cache() {
+        let sse_data = "data: {\"usage\":{\"prompt_tokens\":1200,\"completion_tokens\":30,\"prompt_tokens_details\":{\"cached_tokens\":800}},\"choices\":[{\"delta\":{}}]}\n\n\
+data: [DONE]\n\n";
+
+        let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
+        let (tx, mut rx) = mpsc::channel(10);
+        tokio::spawn(async move {
+            parse_openai_sse(stream, tx).await;
+        });
+
+        let mut usage = None;
+        while let Some(ev) = rx.recv().await {
+            if let ProviderStreamEvent::Usage { input_tokens, .. } = ev {
+                usage = Some(input_tokens);
+            }
+        }
+        assert_eq!(usage, Some(1200), "prompt_tokens already includes cached tokens");
     }
 
     /// 同一段内容同时出现在 `reasoning` 与 `reasoning_details` 时不得重复拼接；
