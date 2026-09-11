@@ -127,9 +127,11 @@ impl DaemonState {
 
         // 先装配完整工具注册表（含 task 与 MCP），再交给房间：
         // 房间持有的是注册表快照，注册必须发生在构造之前。
+        // MCP 只取已预热好的缓存：发现涉及网络/子进程握手，放在这里会直接
+        // 拖慢每次打开会话；预热在进程启动与配置变更时后台完成。
         let runner_slot = Arc::new(RunnerSlot::new());
         let mut reg = ToolRegistry::with_builtins(runner_slot.clone());
-        for mcp_tool in self.mcp.create_all_tools().await {
+        for mcp_tool in self.mcp.cached_tools() {
             reg.register(mcp_tool);
         }
 
@@ -1044,6 +1046,11 @@ async fn handle_put_config(
     })?;
     *state.config.write() = cfg.clone();
     state.mcp.sync_servers(&cfg.mcp_servers);
+    // 配置变更后后台重新发现工具：新接入的服务器需预热完成后才注入新建房间
+    {
+        let mcp = state.mcp.clone();
+        tokio::spawn(async move { mcp.warm_up().await });
+    }
 
     Ok(Json(serde_json::json!({ "success": true })))
 }

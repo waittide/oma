@@ -98,6 +98,11 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
     let storage = StorageManager::new(&data_dir).await?;
     let mcp = Arc::new(McpManager::new());
     mcp.sync_servers(&config.mcp_servers);
+    // 后台预热 MCP 工具发现：不阻塞监听端口，也不拖慢首次打开会话
+    {
+        let mcp = mcp.clone();
+        tokio::spawn(async move { mcp.warm_up().await });
+    }
 
     let state = DaemonState::new(token.clone(), storage, config, config_path, mcp);
     let app = create_router(state);

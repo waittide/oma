@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -77,6 +78,12 @@ pub struct McpToolInfo {
     pub input_schema: serde_json::Value,
 }
 
+/// MCP 服务器握手（initialize / tools/list）超时上限：
+/// 远端服务不可达时不得拖住会话房间创建，否则打开会话会一直挂到 TCP 超时。
+const MCP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// 单次工具调用超时上限
+const MCP_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// 本地 Stdio 客户端连接
 struct LocalMcpProcess {
     stdin:  ChildStdin,
@@ -102,7 +109,12 @@ impl McpClient {
             req_counter: AtomicU64::new(1),
             local_proc: Mutex::new(None),
             tools_cache: RwLock::new(Vec::new()),
-            http_client: reqwest::Client::new(),
+            // 显式超时：默认的 reqwest::Client::new() 无超时，
+            // 远端 MCP 不可达时会一直等待，进而拖死房间创建
+            http_client: reqwest::Client::builder()
+                .timeout(MCP_HANDSHAKE_TIMEOUT)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
@@ -112,6 +124,24 @@ impl McpClient {
 
     /// 初始化握手并拉取工具列表
     pub async fn connect_and_discover(&self) -> Result<Vec<McpToolInfo>> {
+        // 已有缓存直接复用：会话房间创建不需要每次都重新握手
+        {
+            let cached = self.tools_cache.read();
+            if !cached.is_empty() {
+                return Ok(cached.clone());
+            }
+        }
+        match tokio::time::timeout(MCP_HANDSHAKE_TIMEOUT, self.discover_inner()).await {
+            Ok(result) => result,
+            Err(_) => anyhow::bail!(
+                "MCP server '{}' handshake timed out after {:?}",
+                self.name,
+                MCP_HANDSHAKE_TIMEOUT
+            ),
+        }
+    }
+
+    async fn discover_inner(&self) -> Result<Vec<McpToolInfo>> {
         match &self.config {
             McpServerConfig::Local { command, args, env } => {
                 let mut proc_guard = self.local_proc.lock().await;
@@ -246,6 +276,16 @@ impl McpClient {
 
     /// 执行远程/本地工具调用 (tools/call)
     pub async fn call_tool(&self, tool_name: &str, arguments: serde_json::Value) -> ToolOutput {
+        match tokio::time::timeout(MCP_CALL_TIMEOUT, self.call_tool_inner(tool_name, arguments)).await {
+            Ok(out) => out,
+            Err(_) => ToolOutput::error(format!(
+                "MCP tool '{}' timed out after {:?}",
+                tool_name, MCP_CALL_TIMEOUT
+            )),
+        }
+    }
+
+    async fn call_tool_inner(&self, tool_name: &str, arguments: serde_json::Value) -> ToolOutput {
         match &self.config {
             McpServerConfig::Local { .. } => {
                 let mut proc_guard = self.local_proc.lock().await;
@@ -472,27 +512,59 @@ impl McpManager {
         out
     }
 
-    pub async fn create_all_tools(&self) -> Vec<Arc<dyn Tool>> {
+    /// 由缓存构造工具集：**不触发任何连接或握手**，供房间创建等热路径调用。
+    /// 未完成发现的服务器本次不注入工具（预热完成后新建房间即可拿到）。
+    pub fn cached_tools(&self) -> Vec<Arc<dyn Tool>> {
         let clients: Vec<Arc<McpClient>> = self.clients.read().values().cloned().collect();
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-
         for client in clients {
-            if let Ok(discovered) = client.connect_and_discover().await {
-                for t in discovered {
-                    let namespaced_name = format!("mcp__{}__{}", client.name, t.name);
-                    let desc = t.description.unwrap_or_default();
-                    let wrapper = McpToolWrapper {
-                        namespaced_name,
-                        original_tool_name: t.name,
-                        description: desc,
-                        input_schema: t.input_schema,
-                        client: client.clone(),
-                    };
-                    tools.push(Arc::new(wrapper));
-                }
+            for t in client.tools_cache.read().iter() {
+                tools.push(Arc::new(McpToolWrapper {
+                    namespaced_name:    format!("mcp__{}__{}", client.name, t.name),
+                    original_tool_name: t.name.clone(),
+                    description:        t.description.clone().unwrap_or_default(),
+                    input_schema:       t.input_schema.clone(),
+                    client:             client.clone(),
+                }));
             }
         }
+        tools
+    }
 
+    /// 并发预热所有 MCP 服务器（进程启动 / 配置变更时调用一次）。
+    /// 每台服务器都有自己的超时，不可达者会被跳过而不影响其余。
+    pub async fn warm_up(&self) {
+        let _ = self.create_all_tools().await;
+    }
+
+    /// 发现并获取所有 MCP 服务器的包装工具集。
+    ///
+    /// 各服务器并发发现，单个不可达不影响其余（已由 `connect_and_discover` 内的
+    /// 超时兑底）；否则串行等待会把房间创建耗时叠加上每台服务器的超时。
+    pub async fn create_all_tools(&self) -> Vec<Arc<dyn Tool>> {
+        let clients: Vec<Arc<McpClient>> = self.clients.read().values().cloned().collect();
+        let discovered = futures_util::future::join_all(clients.into_iter().map(|client| async move {
+            client
+                .connect_and_discover()
+                .await
+                .ok()
+                .map(|tools| (client, tools))
+        }))
+        .await;
+
+        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+        for entry in discovered.into_iter().flatten() {
+            let (client, tool_list) = entry;
+            for t in tool_list {
+                tools.push(Arc::new(McpToolWrapper {
+                    namespaced_name:    format!("mcp__{}__{}", client.name, t.name),
+                    original_tool_name: t.name,
+                    description:        t.description.unwrap_or_default(),
+                    input_schema:       t.input_schema,
+                    client:             client.clone(),
+                }));
+            }
+        }
         tools
     }
 }
@@ -541,5 +613,48 @@ mod tests {
         let resp_s = serde_json::to_string(&resp).unwrap();
         let de: JsonRpcResponse = serde_json::from_str(&resp_s).unwrap();
         assert!(de.result.is_some());
+    }
+
+    /// 不可达的远端服务器必须在超时内返回错误，而不是永久挂起。
+    #[tokio::test]
+    async fn test_remote_handshake_fails_within_timeout() {
+        // 192.0.2.0/24 是 TEST-NET-1，保证不可达（不会路由到真实主机）
+        let client = McpClient::new(
+            "unreachable",
+            McpServerConfig::Remote {
+                url:     "http://192.0.2.1:9/tools".into(),
+                headers: BTreeMap::new(),
+            },
+        );
+        let started = std::time::Instant::now();
+        let result = client.connect_and_discover().await;
+        assert!(result.is_err(), "unreachable server must not report tools");
+        assert!(
+            started.elapsed() < MCP_HANDSHAKE_TIMEOUT + Duration::from_secs(5),
+            "handshake must not hang: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// 已有缓存时不得重新握手（房间创建依赖此行为做到无网络等待）。
+    #[tokio::test]
+    async fn test_cached_tools_does_not_connect() {
+        let mgr = McpManager::new();
+        mgr.sync_servers(&BTreeMap::from([(
+            "dead".to_string(),
+            McpServerConfig::Remote {
+                url:     "http://192.0.2.1:9/tools".into(),
+                headers: BTreeMap::new(),
+            },
+        )]));
+
+        // 未预热：cached_tools 必须立即返回空，绝不发起连接
+        let started = std::time::Instant::now();
+        assert!(mgr.cached_tools().is_empty());
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "cached_tools must not block on network: {:?}",
+            started.elapsed()
+        );
     }
 }
