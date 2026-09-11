@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import {
   LuBot,
   LuBrain,
@@ -85,11 +85,56 @@ const items = computed<Item[]>(() => {
 // manual 记录用户显式开合；未操作过的思考块按 active 自动展开/折叠
 const manual = ref<Record<string, boolean>>({});
 function toggleFold(it: Item) {
-  manual.value[it.key] = !isOpen(it);
+  const open = !isOpen(it);
+  manual.value[it.key] = open;
+  // 重新展开正在输出的思考块时，先回到最新内容再继续跟随
+  if (open && it.kind === 'thinking' && it.active) {
+    following.value[it.key] = true;
+    void nextTick(() => syncFollow());
+  }
 }
 function isOpen(it: Item): boolean {
   return manual.value[it.key] ?? !!it.active;
 }
+
+// ---------- 思考内容跟随滚动：内容超出折叠体高度时贴底显示最新内容 ----------
+
+/** 每个折叠体的滚动容器（流式思考正文） */
+const bodyEls: Record<string, HTMLElement | null> = {};
+function setBodyEl(key: string, el: unknown) {
+  const node = (el ?? null) as HTMLElement | null;
+  if (node) bodyEls[key] = node;
+  else delete bodyEls[key];
+}
+
+/** 仅记录被显式上滚过的折叠体；未记录者视为跟随中 */
+const following = ref<Record<string, boolean>>({});
+
+function onFoldScroll(key: string) {
+  const el = bodyEls[key];
+  if (el) following.value[key] = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+}
+
+/** 内容增长后，仅让「仍在输出且未手动上滚」的折叠体保持贴底。 */
+function syncFollow() {
+  for (const it of items.value) {
+    if (it.kind !== 'thinking' || !it.active || !isOpen(it)) continue;
+    if (following.value[it.key] === false) continue;
+    const el = bodyEls[it.key];
+    if (el) el.scrollTop = el.scrollHeight;
+  }
+}
+
+/** 当前正在输出的思考块：其正文长度变化时触发跟随。 */
+const activeThinking = computed(() => {
+  const last = items.value[items.value.length - 1];
+  return last?.kind === 'thinking' && last.active ? last : null;
+});
+
+watch(
+  () => [activeThinking.value?.key ?? '', activeThinking.value?.thinking?.length ?? 0],
+  () => void nextTick(syncFollow),
+);
 
 // ---------- 工具展示元数据：图标 + 副标题（参照 opencode 的 Title · Subtitle 形态） ----------
 
@@ -131,7 +176,12 @@ function toolSubtitle(it: Item): string {
           <span class="fold-title">{{ t('thinking') }}</span>
           <LuChevronRight :size="13" class="caret" />
         </button>
-        <pre v-show="isOpen(it)" class="fold-body">{{ it.thinking }}</pre>
+        <pre
+          v-show="isOpen(it)"
+          :ref="(el) => setBodyEl(it.key, el)"
+          class="fold-body"
+          @scroll.passive="onFoldScroll(it.key)"
+        >{{ it.thinking }}</pre>
       </div>
 
       <img v-else-if="it.kind === 'image' && it.imageSrc" class="att" :src="it.imageSrc" alt="attachment" />
@@ -357,6 +407,8 @@ function toolSubtitle(it: Item): string {
   color: var(--text-tertiary);
   max-height: 240px;
   overflow-y: auto;
+  /* 滚动到底时不再把滚动链传给外层消息流 */
+  overscroll-behavior: contain;
 }
 .fold-body.result {
   color: var(--text-secondary);
