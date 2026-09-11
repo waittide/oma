@@ -25,7 +25,7 @@ use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachme
 use oma_tool::{RunnerSlot, ToolRegistry, resolve_path};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tower_http::cors::CorsLayer;
+use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 
 /// 附件上传体积上限（单请求）
 const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
@@ -1350,6 +1350,9 @@ pub fn create_router(state: DaemonState) -> Router {
     router
         .layer(CorsLayer::new())
         .layer(axum::middleware::from_fn(dev_cors))
+        // 消息历史可达数 MB，压缩后可降至 1/4 左右，远端/公网访问收益明显。
+        // 取默认级别：Fastest 压缩率偏低，Best CPU 代价过高，默认级为折中
+        .layer(CompressionLayer::new())
         .with_state(state)
 }
 
@@ -1472,6 +1475,95 @@ mod tests {
         let list_data: Vec<SessionRecord> = resp_list.json().await?;
         assert_eq!(list_data.len(), 1);
 
+        Ok(())
+    }
+
+    /// 大会话历史必须被压缩：这是远端访问时最大的单项优化。
+    #[tokio::test]
+    async fn test_large_json_response_is_compressed() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let base = spawn_app(test_state(tmp.path()).await?).await?;
+        let token = "test_secret_token";
+        let client = reqwest::Client::new();
+
+        // 造一个带大块文本的会话，确保响应超过压缩阈值
+        let resp = client
+            .post(format!("{}/api/sessions", base))
+            .header("Authorization", format!("Bearer {}", token))
+            .json(&serde_json::json!({
+                "workspace": tmp.path().to_string_lossy().to_string(),
+                "title": "compress"
+            }))
+            .send()
+            .await?;
+        let created: CreateSessionResp = resp.json().await?;
+
+        // 直接写库，避免依赖 provider
+        let big = "压缩测试文本".repeat(20_000);
+        let storage = StorageManager::new(tmp.path()).await?;
+        let msg = oma_contract::ChatMessage {
+            id:         "m1".to_string(),
+            parent_id:  None,
+            role:       oma_contract::Role::User,
+            content:    vec![oma_contract::Block::Text { text: big }],
+            created_at: 0,
+        };
+        storage
+            .append_message(&created.session_id, &msg, 0, 0)
+            .await?;
+
+        // 不带 Accept-Encoding 时不得压缩
+        let plain = client
+            .get(format!("{}/api/sessions/{}/messages", base, created.session_id))
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await?;
+        assert!(
+            plain.headers().get("content-encoding").is_none(),
+            "without Accept-Encoding the body must stay identity"
+        );
+        let plain_len = plain.bytes().await?.len();
+
+        // 带 gzip 时必须声明 content-encoding 且体积显著变小
+        let gz = client
+            .get(format!("{}/api/sessions/{}/messages", base, created.session_id))
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept-Encoding", "gzip")
+            .send()
+            .await?;
+        assert_eq!(
+            gz.headers()
+                .get("content-encoding")
+                .and_then(|v| v.to_str().ok()),
+            Some("gzip"),
+            "large JSON must be gzip encoded"
+        );
+        let gz_len = gz.bytes().await?.len();
+        assert!(
+            gz_len < plain_len / 2,
+            "compressed body should be much smaller: {} -> {}",
+            plain_len,
+            gz_len
+        );
+        Ok(())
+    }
+
+    /// 小响应不应被压缩（避免为几十字节付出压缩开销）。
+    #[tokio::test]
+    async fn test_small_json_response_not_compressed() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let base = spawn_app(test_state(tmp.path()).await?).await?;
+        let resp = reqwest::Client::new()
+            .get(format!("{}/api/sessions", base))
+            .header("Authorization", "Bearer test_secret_token")
+            .header("Accept-Encoding", "gzip")
+            .send()
+            .await?;
+        // 空列表很小，默认 predicate 会跳过压缩
+        assert!(
+            resp.headers().get("content-encoding").is_none(),
+            "tiny responses must not be compressed"
+        );
         Ok(())
     }
 
