@@ -845,10 +845,10 @@ const INPUT_TYPE_LABELS: Record<string, string> = {
   video: 'inputVideo',
 };
 
-function inputTypeLabel(ty: string): string {
-  return t(INPUT_TYPE_LABELS[ty] ?? ty);
-}
-
+/** 与预设可用工具一致的多选下拉选项 */
+const inputTypeOptions = computed(() =>
+  INPUT_TYPES.map((v) => ({ value: v, label: t(INPUT_TYPE_LABELS[v]!) })),
+);
 
 /** 当前展示的提供商 tab；草稿列表变化时兜底选中第一个 */
 const activeProviderUid = ref<number | null>(null);
@@ -899,12 +899,6 @@ function addModel(d: ProviderDraft) {
     supports_vision: true,
     input_types: ['text', 'image'],
   });
-}
-
-function toggleInputType(m: ModelDraft, type: string, on: boolean) {
-  m.input_types = on
-    ? [...m.input_types, type]
-    : m.input_types.filter((x) => x !== type);
 }
 
 /** "provider/model" 选择器仅在首个 '/' 处切分（模型 id 可含 '/'）。 */
@@ -1312,15 +1306,7 @@ function pickLocale(v: Locale) {
 
                   <label class="cfg-label">{{ t('inputTypes') }}</label>
                   <div class="cfg-ctl">
-                    <div class="checks">
-                      <OCheckbox
-                        v-for="ty in INPUT_TYPES"
-                        :key="ty"
-                        :model-value="m.input_types.includes(ty)"
-                        :label="inputTypeLabel(ty)"
-                        @update:model-value="toggleInputType(m, ty, $event)"
-                      />
-                    </div>
+                    <OMultiSelect v-model="m.input_types" :options="inputTypeOptions" />
                   </div>
                 </div>
               </section>
@@ -2113,7 +2099,8 @@ function pickLocale(v: Locale) {
   min-width: 0;
 }
 .cfg-ctl > .o-input,
-.cfg-ctl > .o-select {
+.cfg-ctl > .o-select,
+.cfg-ctl > .o-multi {
   flex: 1;
   min-width: 0;
 }
