@@ -255,6 +255,11 @@ impl OmaClient {
         .await
     }
 
+    /// 回答 ask 工具的提问
+    pub async fn respond_ask(&self, response: oma_contract::AskResponse) -> Result<()> {
+        self.send(ClientMessage::Ask { response }).await
+    }
+
     /// 中止当前轮次并清空排队指令
     pub async fn cancel(&self) -> Result<()> {
         self.send(ClientMessage::Cancel {}).await

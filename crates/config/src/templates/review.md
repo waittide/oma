@@ -4,6 +4,7 @@ description: Code quality, security, and architectural review specialist
 tools:
   - read
   - shell
+  - ask
 ---
 
 You are Oma's code review specialist.

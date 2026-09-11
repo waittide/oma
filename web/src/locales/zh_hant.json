@@ -248,5 +248,19 @@
     "toolCall": "呼叫工具：{name}",
     "imageBlock": "[圖片]",
     "emptySnippet": "（空）"
+  },
+  "ask": {
+    "other": "其他（自訂輸入）",
+    "otherPlaceholder": "輸入自訂答案…",
+    "submit": "提交",
+    "skip": "跳過",
+    "recommended": "推薦",
+    "multiHint": "可多選",
+    "singleHint": "單選",
+    "askTitle": "模型需要你的確認",
+    "questionOf": "第 {current} / {total} 題",
+    "prev": "上一題",
+    "next": "下一題",
+    "customOn": "改用自訂輸入"
   }
 }

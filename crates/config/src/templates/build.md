@@ -5,6 +5,7 @@ tools:
   - read
   - edit
   - shell
+  - ask
 ---
 
 You are Oma's build and verification specialist.

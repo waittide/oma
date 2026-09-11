@@ -248,5 +248,19 @@
     "toolCall": "Tool call: {name}",
     "imageBlock": "[image]",
     "emptySnippet": "(empty)"
+  },
+  "ask": {
+    "other": "Other (type your own)",
+    "otherPlaceholder": "Type your own answer…",
+    "submit": "Submit",
+    "skip": "Skip",
+    "recommended": "Recommended",
+    "multiHint": "Multiple",
+    "singleHint": "Single",
+    "askTitle": "The model needs your input",
+    "questionOf": "Question {current} of {total}",
+    "prev": "Previous",
+    "next": "Next",
+    "customOn": "Use custom input"
   }
 }

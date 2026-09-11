@@ -85,7 +85,29 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
     );
 
     let tool_rounds = role_sequence.iter().filter(|r| *r == "tool").count();
-    let mut chunks: Vec<String> = if tool_rounds >= 2 {
+    // ask 场景：仅当用户输入带 ASK_TRIGGER 标记时走提问分支，
+    // 否则会污染其它用例（内置 agent 白名单都含 ask）
+    let user_text = messages
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .filter_map(|m| m["content"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ask_wanted = user_text.contains("ASK_TRIGGER");
+    let ask_answered = messages.iter().any(|m| {
+        m["role"] == "tool"
+            && m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("User answers:"))
+    });
+    let mut chunks: Vec<String> = if ask_wanted && tool_names.iter().any(|t| t == "ask") && !ask_answered {
+        vec![
+            sse(
+                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_ask","function":{"name":"ask","arguments":"{\"questions\":[{\"id\":\"pick\",\"question\":\"which one?\",\"options\":[{\"label\":\"alpha\"},{\"label\":\"beta\"}],\"multi\":false,\"recommended\":1}]}"}}]}}]}"#,
+            ),
+            sse(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
+        ]
+    } else if tool_rounds >= 2 {
         // 已有回执：产出最终文本并收尾
         vec![
             sse(r#"{"choices":[{"delta":{"content":"done"}}]}"#),
@@ -219,6 +241,47 @@ async fn drive_turn(client: &mut OmaClient, timeout: Duration) -> Result<Vec<Age
         else {
             break;
         };
+        let main_finished = matches!(
+            &event,
+            AgentEvent::TurnFinished { subagent_id, .. } if subagent_id.is_none()
+        );
+        events.push(event);
+        if main_finished {
+            break;
+        }
+    }
+    Ok(events)
+}
+
+/// 收集事件并在收到提问时自动作答，直到主轮次结束。
+async fn drive_turn_answering(client: &mut OmaClient, timeout: Duration, answer: &str) -> Result<Vec<AgentEvent>> {
+    let deadline = Instant::now() + timeout;
+    let mut events = Vec::new();
+    while Instant::now() < deadline {
+        let Some(event) = tokio::time::timeout(Duration::from_secs(5), client.next_event())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
+        if let AgentEvent::AskRequested(data) = &event {
+            let answers = data
+                .questions
+                .iter()
+                .map(|_| oma_contract::AskAnswer {
+                    selected:     vec![answer.to_string()],
+                    custom_input: String::new(),
+                })
+                .collect();
+            client
+                .respond_ask(oma_contract::AskResponse {
+                    request_id: data.request_id.clone(),
+                    answers,
+                    cancelled: false,
+                })
+                .await?;
+        }
         let main_finished = matches!(
             &event,
             AgentEvent::TurnFinished { subagent_id, .. } if subagent_id.is_none()
@@ -671,5 +734,82 @@ async fn test_strict_approval_blocks_until_allowed() -> Result<()> {
         "approved subagent tool must actually run: {:?}",
         calls
     );
+    Ok(())
+}
+
+/// ask 全链路：模型发起提问 → 客户端作答 → 答案回灌为工具结果，轮次正常收尾。
+#[tokio::test]
+async fn test_end_to_end_ask_tool_round_trip() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("ask-e2e")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "asker".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "ASK_TRIGGER ask me something".into(),
+            attachments: vec![],
+        })
+        .await?;
+
+    let events = drive_turn_answering(&mut client, Duration::from_secs(30), "beta").await?;
+
+    let requested = events.iter().find_map(|e| match e {
+        AgentEvent::AskRequested(d) => Some(d.clone()),
+        _ => None,
+    });
+    let requested = requested.expect("ask_requested must be broadcast");
+    assert_eq!(requested.questions.len(), 1);
+    assert_eq!(requested.questions[0].options.len(), 2);
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::AskResolved { cancelled: false, .. })),
+        "answering must broadcast ask_resolved: {:?}",
+        events
+    );
+
+    let calls = tool_calls(&events);
+    assert!(
+        calls
+            .iter()
+            .any(|(name, is_error, _)| name == "ask" && !is_error),
+        "ask must be registered and executable: {:?}",
+        calls
+    );
+
+    // 模型侧必须真的收到用户选择的答案文本
+    let observed = h.mock.observed.lock().clone();
+    let with_answer = observed
+        .iter()
+        .find(|o| o.tool_contents.iter().any(|c| c.contains("User answers:")))
+        .expect("the answer must be fed back to the provider");
+    assert!(
+        with_answer.tool_contents.iter().any(|c| c.contains("beta")),
+        "selected option must appear in the tool result: {:?}",
+        with_answer.tool_contents
+    );
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::TurnFinished {
+                stop_reason: StopReason::EndTurn,
+                subagent_id: None,
+                ..
+            }
+        )),
+        "turn should end normally after the question is answered"
+    );
+
     Ok(())
 }

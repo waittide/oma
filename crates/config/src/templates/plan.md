@@ -4,6 +4,7 @@ description: Architecture, design, and roadmap planning specialist
 tools:
   - read
   - shell
+  - ask
 ---
 
 You are Oma's software architecture and planning specialist.

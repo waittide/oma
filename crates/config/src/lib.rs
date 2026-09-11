@@ -555,7 +555,7 @@ impl AgentLoader {
         let arch = std::env::consts::ARCH;
 
         let mut prompt = format!(
-            "{}\n\n<runtime_context>\n- Workspace: {}\n- Operating System: {} ({})\n- Today: {}\n- Active Model: {}\n</runtime_context>",
+            "{}\n\n<runtime_context>\n- Workspace: {}\n- Operating System: {} ({})\n- Today: {}\n- Active Model: {}\n</runtime_context>\n\n<ask_tool>\n你有 `ask` 工具，仅在多个方向取舍差异显著、且仓库内无法自行判定时使用：\n- 默认先自主行动：能从代码、配置、文档、历史中推出结论时不要提问。\n- 一次提出所有相关问题（questions 数组），不要逐条问。\n- 每题给 2-5 个简短、互斥的选项；取舍说明放 description，不要塞进 label。\n- 多选用 `\"multi\": true`；`recommended` 传推荐项下标。\n- 不要自己添加「其他」选项，界面会自动提供自定义输入。\n</ask_tool>",
             template.system_prompt_body,
             workspace.display(),
             os,
@@ -977,10 +977,13 @@ mod tests {
         assert!(task_agent.tools.contains(&"edit".to_string()));
         assert!(task_agent.tools.contains(&"shell".to_string()));
         assert!(task_agent.tools.contains(&"task".to_string()));
+        assert!(task_agent.tools.contains(&"ask".to_string()));
 
         let prompt = AgentLoader::build_system_prompt(&task_agent, ws, "my_anthropic/claude-3-7");
         assert!(prompt.contains("<runtime_context>"));
         assert!(prompt.contains("Active Model: my_anthropic/claude-3-7"));
+        // ask 使用准则必须随系统提示下发，否则模型不知道何时该提问
+        assert!(prompt.contains("<ask_tool>"));
     }
 
     #[test]

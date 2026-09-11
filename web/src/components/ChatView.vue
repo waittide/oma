@@ -23,6 +23,7 @@ import OModelSelect from './ui/OModelSelect.vue';
 import OTooltip from './ui/OTooltip.vue';
 import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
+import AskPanel from './AskPanel.vue';
 import OButton from './ui/OButton.vue';
 import HistoryTree from './HistoryTree.vue';
 import type { ApprovalMode } from '../types';
@@ -344,6 +345,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
     </Transition>
 
     <footer class="composer">
+      <AskPanel />
       <div v-if="pendingUploads.length > 0" class="attach-row">
         <span v-for="(a, i) in pendingUploads" :key="a.ref" class="attach-chip">
           <LuPaperclip :size="11" />

@@ -174,6 +174,10 @@ pub enum ClientMessage {
     Approval {
         response: ApprovalResponse,
     },
+    /// 提问回答（ask 工具）
+    Ask {
+        response: AskResponse,
+    },
     Cancel {},
 }
 
@@ -253,6 +257,59 @@ pub struct ToolCallStartedData {
     pub subagent_id: Option<String>,
 }
 
+/// 模型向用户提问的单个选项
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskOption {
+    pub label:       String,
+    /// 补充说明：解释该选项的取舍，展示在标签下方
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+/// 模型向用户提问的单个问题
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskQuestion {
+    pub id:          String,
+    pub question:    String,
+    pub options:     Vec<AskOption>,
+    /// true = 多选（复选），false = 单选
+    #[serde(default)]
+    pub multi:       bool,
+    /// 推荐选项下标，供界面标注默认值；越界则忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<usize>,
+}
+
+/// 用户对单个问题的回答
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskAnswer {
+    /// 选中的选项标签（按选择顺序）
+    #[serde(default)]
+    pub selected:     Vec<String>,
+    /// 「其他」自定义输入；为空表示未使用
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub custom_input: String,
+}
+
+/// 提问请求（服务端下行，等待用户作答）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskRequestedData {
+    pub request_id: String,
+    pub questions:  Vec<AskQuestion>,
+}
+
+/// 提问回答（客户端上行）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskResponse {
+    pub request_id: String,
+    /// 与请求 questions 一一对应；为空数组表示用户取消
+    #[serde(default)]
+    pub answers:    Vec<AskAnswer>,
+    /// true = 用户取消/拒绝作答
+    #[serde(default)]
+    pub cancelled:  bool,
+}
+
 /// 权限审批请求数据
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionRequestedData {
@@ -271,6 +328,8 @@ pub struct ActiveTurnCatchUp {
     pub active_tool_call:     Option<ToolCallStartedData>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_approval:     Option<PermissionRequestedData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_ask:          Option<AskRequestedData>,
 }
 
 /// Agent 运行事件集
@@ -332,6 +391,15 @@ pub enum AgentEvent {
     PermissionResolved {
         request_id:  String,
         decision:    ApprovalDecision,
+        resolved_by: String,
+    },
+    /// 模型请求用户作答（ask 工具）
+    AskRequested(AskRequestedData),
+    /// 提问已被回答或取消
+    AskResolved {
+        request_id:  String,
+        #[serde(default)]
+        cancelled:   bool,
         resolved_by: String,
     },
     ActiveBranchChanged {
@@ -438,6 +506,7 @@ mod tests {
                 name:       "shell".into(),
                 summary:    "cargo test".into(),
             }),
+            pending_ask:          None,
         };
         let server_msg = ServerMessage::Event {
             event: AgentEvent::ActiveTurnCatchUp(catch_up),

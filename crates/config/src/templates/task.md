@@ -7,6 +7,7 @@ tools:
   - edit
   - shell
   - task
+  - ask
 ---
 
 You are Oma's primary software engineering agent.
