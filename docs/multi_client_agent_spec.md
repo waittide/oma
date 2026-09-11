@@ -696,8 +696,9 @@ headers = { Authorization = "Bearer secret_token" }
 
 ### 9.1 统一 `oma` 命令行入口 (`crates/bin`)
 - `oma daemon`：独立启动后台 Daemon 服务（默认监听 `127.0.0.1:17431`）；
-- `oma web`：启动 Daemon 并拉起 Web 前端页面服务，自动打开浏览器；
-- `oma tui`：启动/连接 Daemon 并进入 Ratatui 终端交互界面。
+- `oma web`：启动 Daemon 并托管 Web 前端页面服务，仅打印访问地址，需 `--open` 才自动打开浏览器；
+- `oma tui`：启动/连接 Daemon 并进入 Ratatui 终端交互界面；
+- 不带子命令（`oma`）：等价于 `oma -h`，仅打印帮助，不自动启动任何界面。
 
 ### 9.2 原生 Web 前端工程 (`web/`)
 - 技术选型：**纯原生 Vue 3 + TypeScript + 手写 CSS**（不引入 Tailwind、UnoCSS、Element Plus、NaiveUI 等任何第三方 UI 或样式库）；

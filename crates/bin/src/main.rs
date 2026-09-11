@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use oma_config::OmaConfig;
 use oma_daemon::{DaemonState, create_router, resolve_or_create_token};
 use oma_mcp::McpManager;
@@ -12,7 +12,12 @@ use oma_storage::StorageManager;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
-#[command(name = "oma", about = "Oma: Multi-client Collaborative AI Agent", version = "0.1.0")]
+#[command(
+    name = "oma",
+    about = "Oma: Multi-client Collaborative AI Agent",
+    long_about = "Oma: Multi-client Collaborative AI Agent\n\n不带子命令时等价于 `oma -h`，不会自动启动任何界面。",
+    version = "0.1.0"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -29,7 +34,7 @@ enum Commands {
         #[arg(long)]
         config: Option<PathBuf>,
     },
-    /// 启动 Daemon 并打开 Web 交互界面
+    /// 启动 Daemon 并托管 Web 交互界面
     Web {
         #[arg(long, default_value = "127.0.0.1:17431")]
         addr:  String,
@@ -39,6 +44,9 @@ enum Commands {
         dev:   bool,
         #[arg(long, default_value = "5173")]
         port:  u16,
+        /// 就绪后自动调用浏览器打开页面（默认仅打印访问地址）
+        #[arg(long)]
+        open:  bool,
     },
     /// 连接 Daemon 启动 TUI 终端客户端
     Tui {
@@ -108,7 +116,7 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
     Ok(())
 }
 
-async fn run_web(addr: &str, token_opt: Option<&str>, dev: bool, port: u16) -> Result<()> {
+async fn run_web(addr: &str, token_opt: Option<&str>, dev: bool, port: u16, open: bool) -> Result<()> {
     let data_dir = get_data_dir();
     let token = resolve_or_create_token(token_opt, &data_dir)?;
 
@@ -141,6 +149,14 @@ async fn run_web(addr: &str, token_opt: Option<&str>, dev: bool, port: u16) -> R
     println!("   ➜ 内置直出访问 (Daemon):  {}", daemon_url);
     println!("   ➜ 本地独立前端 (Vite):    {}", web_url);
     println!("👉 请在浏览器中访问上述任一链接以进入 Oma 协同工作台。");
+
+    // 仅在显式 `--open` 时才拉起浏览器，避免默认弹窗打扰用户
+    let open_browser = |url: &str| {
+        if !open {
+            return;
+        }
+        let _ = tokio::process::Command::new("xdg-open").arg(url).spawn();
+    };
 
     let web_dir = Path::new("web");
     if dev {
@@ -183,15 +199,11 @@ async fn run_web(addr: &str, token_opt: Option<&str>, dev: bool, port: u16) -> R
         };
         cmd.current_dir(web_dir);
         println!("🌐 正在启动本地前端端口 {} 服务...", port);
-        let _ = tokio::process::Command::new("xdg-open")
-            .arg(&daemon_url)
-            .spawn();
+        open_browser(&daemon_url);
         let mut child = cmd.spawn()?;
         let _ = child.wait().await;
     } else {
-        let _ = tokio::process::Command::new("xdg-open")
-            .arg(&daemon_url)
-            .spawn();
+        open_browser(&daemon_url);
         tokio::signal::ctrl_c().await?;
     }
 
@@ -234,8 +246,14 @@ async fn main() -> Result<()> {
         Some(Commands::Daemon { addr, token, config }) => {
             start_daemon(&addr, token.as_deref(), config.as_deref()).await?;
         }
-        Some(Commands::Web { addr, token, dev, port }) => {
-            run_web(&addr, token.as_deref(), dev, port).await?;
+        Some(Commands::Web {
+            addr,
+            token,
+            dev,
+            port,
+            open,
+        }) => {
+            run_web(&addr, token.as_deref(), dev, port, open).await?;
         }
         Some(Commands::Tui { addr, token, workspace }) => {
             let data_dir = get_data_dir();
@@ -250,8 +268,9 @@ async fn main() -> Result<()> {
             run_status(&addr, token.as_deref()).await?;
         }
         None => {
-            // 默认敲 oma 直接打开 web
-            run_web("127.0.0.1:17431", None, false, 5173).await?;
+            // 默认不启动任何界面，仅打印帮助，交由用户显式选择 `oma tui` / `oma web`
+            Cli::command().print_help()?;
+            println!();
         }
     }
 
