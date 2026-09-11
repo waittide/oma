@@ -229,7 +229,7 @@ watch(
       defaults.model = config.value.default_model;
       defaults.agent = config.value.default_agent;
       defaults.approval = config.value.default_approval_mode;
-      defaults.reasoning = config.value.default_reasoning_level ?? '';
+      defaults.reasoning = config.value.default_reasoning_level || DEFAULT_REASONING_LEVEL;
     }
     mode.value = theme.value.mode;
     themeSel.light = theme.value.light_theme || 'latte';
@@ -730,7 +730,7 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
       name: m.name,
       context_len: String(m.context_len),
       max_output: m.max_output === undefined ? '' : String(m.max_output),
-      reasoning_effort: m.reasoning_effort ?? '',
+      reasoning_effort: m.reasoning_effort ?? DEFAULT_REASONING_LEVEL,
       reasoning_map: { ...(m.reasoning_map ?? {}) },
       supports_thinking: m.supports_thinking,
       supports_vision: m.supports_vision,
@@ -751,11 +751,12 @@ const apiTypeOptions = ['anthropic', 'completion', 'response', 'google'].map((v)
 
 /** 规范推理等级：与后端 REASONING_LEVELS 保持一致，顺序即界面展示顺序 */
 const REASONING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+/** 等级为必选项，历史配置缺值时统一回退到这里（与后端默认一致） */
+const DEFAULT_REASONING_LEVEL = 'medium';
 
-const effortOptions = computed(() => [
-  { value: '', label: t('effortOff') },
-  ...REASONING_LEVELS.map((v) => ({ value: v, label: v })),
-]);
+const effortOptions = computed(() =>
+  REASONING_LEVELS.map((v) => ({ value: v, label: v })),
+);
 
 /**
  * 重建草稿列表。
@@ -923,7 +924,7 @@ function addModel(d: ProviderDraft) {
     name: '',
     context_len: '128000',
     max_output: '',
-    reasoning_effort: '',
+    reasoning_effort: DEFAULT_REASONING_LEVEL,
     reasoning_map: {},
     supports_thinking: true,
     supports_vision: true,
@@ -995,9 +996,12 @@ async function saveProviders() {
               supports_vision: m.supports_vision,
               supports_thinking: m.supports_thinking,
               ...(Number.isFinite(mo) && mo > 0 ? { max_output: mo } : {}),
-              ...(m.reasoning_effort ? { reasoning_effort: m.reasoning_effort } : {}),
+              // 支持思考的模型必须有具体等级：兜底到默认值，避免写入空值
+              ...(m.supports_thinking
+                ? { reasoning_effort: m.reasoning_effort || DEFAULT_REASONING_LEVEL }
+                : {}),
               // 只回写非空映射项，避免把整表空值写进配置
-              ...(Object.keys(m.reasoning_map).length
+              ...(m.supports_thinking && Object.keys(m.reasoning_map).length
                 ? {
                     reasoning_map: Object.fromEntries(
                       Object.entries(m.reasoning_map).filter(([, v]) => v.trim() !== ''),

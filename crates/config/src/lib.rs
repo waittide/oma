@@ -186,8 +186,8 @@ pub struct OmaConfig {
     pub default_agent:           String,
     #[serde(default)]
     pub default_approval_mode:   ApprovalMode,
-    /// 新会话默认推理等级（REASONING_LEVELS 之一；空 = 不指定，回退模型默认）
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// 新会话默认推理等级（REASONING_LEVELS 之一）；不得为空，缺省为 medium
+    #[serde(default = "default_reasoning_level_str")]
     pub default_reasoning_level: String,
     #[serde(default)]
     pub theme:                   Theme,
@@ -207,6 +207,10 @@ fn default_model_str() -> String {
 fn default_agent_str() -> String {
     "task".to_string()
 }
+/// 默认推理等级：模型支持思考时必须落在某个等级上，故不提供「空」语义
+fn default_reasoning_level_str() -> String {
+    "medium".to_string()
+}
 
 impl Default for OmaConfig {
     fn default() -> Self {
@@ -214,7 +218,7 @@ impl Default for OmaConfig {
             default_model:           default_model_str(),
             default_agent:           default_agent_str(),
             default_approval_mode:   ApprovalMode::Normal,
-            default_reasoning_level: String::new(),
+            default_reasoning_level: default_reasoning_level_str(),
             theme:                   Theme::default(),
             server:                  ServerConfig::default(),
             providers:               BTreeMap::new(),

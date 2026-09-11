@@ -116,9 +116,16 @@ impl ApprovalArbiter {
 }
 
 /// 把会话推理等级落到请求参数上：
-/// `resolve_reasoning_effort` 已处理「空等级回退模型默认」与「映射为空 = 不下发」，
-/// 因此这里只需把结果回写到 `reasoning_effort`，各协议组装逻辑无需感知等级概念。
+/// `resolve_reasoning_effort` 已处理「映射为空 = 不下发」，这里把结果回写到
+/// `reasoning_effort`，各协议组装逻辑无需感知等级概念。
+///
+/// **仅对支持思考的模型生效**：不支持思考的模型收到 reasoning 类参数可能被
+/// 厂商拒绝或产生非预期行为，等级配置在那类模型上无意义。
 fn apply_reasoning_level(model_cfg: &mut ModelConfig, level: &str) {
+    if !model_cfg.supports_thinking {
+        model_cfg.reasoning_effort = String::new();
+        return;
+    }
     model_cfg.reasoning_effort = model_cfg
         .resolve_reasoning_effort(level)
         .unwrap_or_default();
@@ -2288,6 +2295,61 @@ mod tests {
         assert!(!room.is_busy());
         assert_eq!(room.command_queue.lock().await.len(), 0);
         Ok(())
+    }
+
+    // ---------- 推理等级下发 ----------
+
+    fn thinking_model(supports_thinking: bool, map: &[(&str, &str)]) -> oma_provider::ModelConfig {
+        let mut reasoning_map = std::collections::BTreeMap::new();
+        for (k, v) in map {
+            reasoning_map.insert(k.to_string(), v.to_string());
+        }
+        oma_provider::ModelConfig {
+            id: "m".into(),
+            name: "m".into(),
+            context_len: 1000,
+            supports_vision: true,
+            supports_thinking,
+            max_output: None,
+            reasoning_effort: String::new(),
+            reasoning_map,
+            headers: std::collections::BTreeMap::new(),
+            body: serde_json::json!({}),
+        }
+    }
+
+    /// 支持思考的模型：等级经映射后落到 reasoning_effort。
+    #[test]
+    fn test_apply_reasoning_level_maps_for_thinking_model() {
+        let mut m = thinking_model(true, &[("ultra", "think-ultra")]);
+        apply_reasoning_level(&mut m, "ultra");
+        assert_eq!(m.reasoning_effort, "think-ultra");
+
+        // 未配置映射的等级按等级名下发
+        let mut m2 = thinking_model(true, &[("low", "x")]);
+        apply_reasoning_level(&mut m2, "medium");
+        assert_eq!(m2.reasoning_effort, "medium");
+    }
+
+    /// 不支持思考的模型：即使会话有具体等级也不得下发推理参数。
+    #[test]
+    fn test_apply_reasoning_level_skipped_for_non_thinking_model() {
+        let mut m = thinking_model(false, &[("ultra", "think-ultra")]);
+        apply_reasoning_level(&mut m, "ultra");
+        assert!(
+            m.reasoning_effort.is_empty(),
+            "non-thinking model must not receive reasoning params, got {:?}",
+            m.reasoning_effort
+        );
+    }
+
+    /// 旧会话等级为空时回退到模型配置的等级（兼容历史数据）。
+    #[test]
+    fn test_apply_reasoning_level_falls_back_for_legacy_session() {
+        let mut m = thinking_model(true, &[]);
+        m.reasoning_effort = "high".into();
+        apply_reasoning_level(&mut m, "");
+        assert_eq!(m.reasoning_effort, "high");
     }
 
     // ---------- 会话自动命名 ----------

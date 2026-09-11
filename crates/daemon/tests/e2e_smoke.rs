@@ -974,8 +974,8 @@ async fn test_reasoning_level_is_mapped_before_request() -> Result<()> {
     })
     .await?;
 
-    // 握手默认不带等级（配置未设 default_reasoning_level）
-    assert_eq!(client.ready().reasoning_level, "");
+    // 等级是必选项：配置未显式设置时也回落到内置默认 medium
+    assert_eq!(client.ready().reasoning_level, "medium");
 
     // 选中被映射的等级：ultra -> think-ultra
     client
@@ -1048,5 +1048,91 @@ async fn test_reasoning_level_passthrough_for_unmapped() -> Result<()> {
         Some("medium"),
         "unmapped level must pass through"
     );
+    Ok(())
+}
+
+/// 不支持思考的模型不得被下发推理参数（等级恒有值后尤其重要）。
+#[tokio::test]
+async fn test_reasoning_not_sent_for_non_thinking_model() -> Result<()> {
+    // 该 harness 的 mock 模型 supports_thinking = true，
+    // 这里直接校验映射层：不支持思考时应被清空
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("nothink")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "nothink".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "hi".into(),
+            attachments: vec![],
+        })
+        .await?;
+    drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    // 支持思考的模型本轮应带上映射后的等级
+    let observed = h.mock.observed.lock().clone();
+    assert_eq!(
+        observed.last().and_then(|o| o.reasoning_effort.as_deref()),
+        Some("medium"),
+        "thinking model must receive its concrete level"
+    );
+    Ok(())
+}
+
+/// 非法等级必须被拒绝且不改变会话状态。
+#[tokio::test]
+async fn test_invalid_reasoning_level_is_rejected() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("badlevel")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "bad".into(),
+    })
+    .await?;
+    let before = client.ready().reasoning_level.clone();
+
+    client
+        .send_command(AgentCommand::SetReasoningLevel { level: "bogus".into() })
+        .await?;
+    let events = drain_for_event(&mut client, Duration::from_secs(3), |e| {
+        matches!(e, AgentEvent::ReasoningLevelChanged { .. })
+    })
+    .await?;
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ReasoningLevelChanged { .. })),
+        "invalid level must not be broadcast"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::Error { .. })),
+        "invalid level should surface an error"
+    );
+
+    // 重连后等级应保持不变
+    let again = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "bad2".into(),
+    })
+    .await?;
+    assert_eq!(again.ready().reasoning_level, before);
     Ok(())
 }

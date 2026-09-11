@@ -224,11 +224,9 @@ const supportsThinking = computed(() => {
   return list.find((m) => m.id === mid)?.supports_thinking ?? false;
 });
 
-const reasoningOptions = computed(() => [
-  // 空值 = 不覆盖模型默认等级
-  { value: '', label: t('reasoningDefault') },
-  ...REASONING_LEVELS.map((v) => ({ value: v, label: v })),
-]);
+const reasoningOptions = computed(() =>
+  REASONING_LEVELS.map((v) => ({ value: v, label: v })),
+);
 
 const isEmpty = computed(() => chat.messages.value.length === 0 && !chat.running.value);
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */

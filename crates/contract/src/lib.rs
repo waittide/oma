@@ -191,9 +191,11 @@ pub enum ClientMessage {
 /// 会话侧用它做可选值校验，界面用它渲染下拉项。
 pub const REASONING_LEVELS: [&str; 7] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
-/// 推理等级是否为规范集合中的合法值（空串表示未设置，同样合法）
+/// 推理等级是否为规范集合中的合法值。
+///
+/// 空串**不是**合法等级：模型支持思考时必须落在具体等级上，不允许「留空」语义。
 pub fn is_valid_reasoning_level(level: &str) -> bool {
-    level.is_empty() || REASONING_LEVELS.contains(&level)
+    REASONING_LEVELS.contains(&level)
 }
 
 /// 模型元数据

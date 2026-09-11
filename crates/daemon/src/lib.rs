@@ -147,15 +147,14 @@ impl DaemonState {
             &record.active_agent,
             record.approval_mode,
         );
-        // 推理等级优先用会话已保存值；新建会话为空时套用全局默认
+        // 推理等级优先用会话已保存值；旧会话为空时套用全局默认；
+        // 两者都缺（异常配置）则兜底 medium，保证界面总有一个具体等级可选
         let level = if record.reasoning_level.is_empty() {
             self.config.read().default_reasoning_level.clone()
         } else {
             record.reasoning_level.clone()
         };
-        if !level.is_empty() {
-            *room.reasoning_level.write() = level;
-        }
+        *room.reasoning_level.write() = if level.is_empty() { "medium".to_string() } else { level };
 
         // 回填 subagent runner：TaskTool 需要房间，房间持有注册表，一次性槽位解环
         let subagent_runner = Arc::new(RoomSubagentRunner::new(room.clone()));
@@ -1050,7 +1049,13 @@ async fn handle_put_config(
         .validate(&cfg.custom_themes)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid theme config: {e}")))?;
 
-    // 默认推理等级必须是规范集合内的值，否则拒绝落盘
+    // 默认推理等级必项：模型支持思考时一定有等级，空值会让会话拿不到初始值
+    if cfg.default_reasoning_level.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "default_reasoning_level must not be empty".to_string(),
+        ));
+    }
     if !oma_contract::is_valid_reasoning_level(&cfg.default_reasoning_level) {
         return Err((
             StatusCode::BAD_REQUEST,

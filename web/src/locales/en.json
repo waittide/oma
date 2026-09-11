@@ -77,8 +77,7 @@
     "uploadFailed": "Attachment upload failed: {message}",
     "notConnected": "Not connected to the daemon; message not sent",
     "forkAttachmentUnsupported": "Edit & resend does not support attachments; remove them first",
-    "queuedCount": "{count} queued",
-    "reasoningDefault": "Model default"
+    "queuedCount": "{count} queued"
   },
   "blocks": {
     "thinking": "Thinking",
@@ -157,7 +156,6 @@
     "maxOutput": "Max Output",
     "unset": "Unset (built-in default)",
     "reasoningEffort": "Reasoning Effort",
-    "effortOff": "Unset (use model default)",
     "capabilities": "Capabilities",
     "supportsThinking": "Thinking",
     "supportsVision": "Vision",
