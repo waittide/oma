@@ -68,6 +68,7 @@ export type AgentEvent =
   | { type: 'turn_started'; data?: { turn_id: string; subagent_id?: string | null } }
   | { type: 'turn_finished'; data?: { turn_id: string; stop_reason: StopReason; usage: TokenUsage; subagent_id?: string | null } }
   | { type: 'user_message'; data?: { client_id: string; client_name: string; client_type: ClientType; content: string; queued: boolean } }
+  | { type: 'session_running'; data?: { session_id: string; running: boolean } }
   | { type: 'queue_cleared'; data?: Record<string, never> }
   | { type: 'queue_updated'; data?: { pending: number } }
   | { type: 'sync_required'; data?: Record<string, never> }
@@ -176,6 +177,8 @@ export interface SessionRecord {
   current_leaf_id: string | null;
   created_at: number;
   updated_at: number;
+  /** 该会话当前是否有正在执行的轮次（由服务端回填/事件驱动） */
+  is_running?: boolean;
 }
 
 /** 用户自定义主题：以内置 flavor 为基底的调色板覆盖 */

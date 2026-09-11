@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
 import { api } from '../api';
 import { tr } from '../composables/i18n';
@@ -115,6 +115,40 @@ export function applyRemoteRename(id: string, title: string) {
   const target = sessions.value.find((s) => s.session_id === id);
   if (target) target.title = title;
 }
+
+/** WebSocket 广播驱动的运行状态更新。 */
+export function applyRemoteRunning(id: string, isRunning: boolean) {
+  const target = sessions.value.find((s) => s.session_id === id);
+  if (target) target.is_running = isRunning;
+}
+
+/** 是否存在正在执行的会话：决定是否需要轮询校准运行状态。 */
+const anyRunning = computed(() => sessions.value.some((s) => s.is_running));
+
+let watchTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * 校准运行状态：本端只订阅当前会话的事件，离开运行中的会话后
+ * 收不到它的结束广播，故仅在存在运行中会话时轮询列表接口。
+ */
+async function syncRunningState() {
+  if (document.hidden) return;
+  try {
+    const list = await api.listSessions();
+    const running = new Map(list.map((s) => [s.session_id, !!s.is_running]));
+    for (const s of sessions.value) s.is_running = running.get(s.session_id) ?? false;
+  } catch {
+    // 静默重试：只是状态校准，不干扰用户
+  }
+}
+
+watch(anyRunning, (active) => {
+  if (active && !watchTimer) watchTimer = setInterval(() => void syncRunningState(), 3000);
+  else if (!active && watchTimer) {
+    clearInterval(watchTimer);
+    watchTimer = null;
+  }
+});
 
 export async function remove(id: string) {
   try {

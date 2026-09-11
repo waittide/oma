@@ -18,7 +18,6 @@ import OTooltip from './ui/OTooltip.vue';
 import OModal from './ui/OModal.vue';
 import * as store from '../stores/sessions';
 import { activeSessionId } from '../stores/sessions';
-import * as chat from '../stores/chat';
 import type { SessionRecord } from '../types';
 import type { WorkspaceGroup } from '../stores/sessions';
 import { useTranslations } from '../composables/i18n';
@@ -54,9 +53,9 @@ function select(id: string) {
   activeSessionId.value = id;
 }
 
-/** 当前会话正在执行轮次时，侧栏条目显示加载动画 */
+/** 会话是否有正在执行的轮次：不限当前打开的会话。 */
 function isRunning(s: SessionRecord): boolean {
-  return chat.running.value && s.session_id === activeSessionId.value;
+  return !!s.is_running;
 }
 
 function startRename(id: string, title: string) {

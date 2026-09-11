@@ -18,7 +18,7 @@ import type {
   TokenUsage,
 } from '../types';
 import { tr } from '../composables/i18n';
-import { activeSessionId, applyRemoteRename } from './sessions';
+import { activeSessionId, applyRemoteRename, applyRemoteRunning } from './sessions';
 import { releaseAll } from '../lib/attachments';
 
 /** 流式轮次缓冲：按到达顺序排列的实时段（thinking/text/tool 交错）。 */
@@ -226,6 +226,10 @@ function handleEvent(ev: AgentEvent) {
     case 'session_renamed':
       if (ev.data) applyRemoteRename(ev.data.session_id, ev.data.title);
       break;
+    case 'session_running':
+      // 其他会话的运行状态由服务端广播：侧栏不依赖当前打开哪个会话
+      if (ev.data) applyRemoteRunning(ev.data.session_id, ev.data.running);
+      break;
     case 'messages_deleted':
       // 本端或他端删除消息（含编辑重发失败自动回滚）后统一回读
       currentLeafId.value = ev.data?.current_leaf_id ?? null;
@@ -240,6 +244,8 @@ function handleEvent(ev: AgentEvent) {
 function applyCatchUp(c: ActiveTurnCatchUp | null) {
   if (!c) return;
   running.value = true;
+  // 中途接入正在执行的轮次：侧栏同步显示运行中（该轮开始时的广播本端未收到）
+  applyRemoteRunning(sessionId, true);
   // catch-up 快照不含到达顺序，按 thinking → text → 活动工具 重建
   const segments: LiveSegment[] = [];
   if (c.accumulated_thinking) segments.push({ kind: 'thinking', key: 'cu-th', text: c.accumulated_thinking });

@@ -296,6 +296,12 @@ pub enum AgentEvent {
         content:     String,
         queued:      bool,
     },
+    /// 会话轮次占用状态变化：服务端在轮次开始/全部结束时广播，
+    /// 所有已连接客户端据此更新侧栏的运行中标记（不限当前会话）。
+    SessionRunning {
+        session_id: String,
+        running:    bool,
+    },
     QueueCleared {},
     /// 队列深度变化（服务端权威计数，客户端不再自行累加）
     QueueUpdated {

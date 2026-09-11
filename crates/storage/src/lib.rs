@@ -108,6 +108,9 @@ pub struct SessionRecord {
     pub current_leaf_id: Option<String>,
     pub created_at:      i64,
     pub updated_at:      i64,
+    /// 运行时状态：该会话当前是否有正在执行的轮次（不持久化，仅列表响应回填）
+    #[serde(default)]
+    pub is_running:      bool,
 }
 
 /// 单会话连接池：写池串行（max_connections = 1），读池并行只读，读写互不阻塞。
@@ -357,6 +360,7 @@ impl StorageManager {
             current_leaf_id: None,
             created_at: now,
             updated_at: now,
+            is_running: false,
         })
     }
 
@@ -390,6 +394,7 @@ impl StorageManager {
             current_leaf_id: row.get("current_leaf_id"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
+            is_running: false,
         }
     }
 

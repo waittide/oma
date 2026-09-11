@@ -524,6 +524,10 @@ impl SessionRoom {
         });
 
         if accepted {
+            self.broadcast(AgentEvent::SessionRunning {
+                session_id: self.session_id.clone(),
+                running:    true,
+            });
             let room = self.clone();
             tokio::spawn(async move {
                 room.run_user_turn(content, attachments, parent_id_override)
@@ -1235,6 +1239,12 @@ impl SessionRoom {
                 (None, _) => {
                     self.is_running.store(false, Ordering::SeqCst);
                     if self.command_queue.lock().await.is_empty() {
+                        // 确实不再有后续轮次时才广播：交棒或被他轮接管时不发，
+                        // 否则会把仍在运行的状态误报为已结束
+                        self.broadcast(AgentEvent::SessionRunning {
+                            session_id: self.session_id.clone(),
+                            running:    false,
+                        });
                         return;
                     }
                     if self

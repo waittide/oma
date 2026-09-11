@@ -415,6 +415,8 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             }
         }
         AgentEvent::QueueUpdated { pending } => app.queue = pending,
+        // 仅侧栏运行标记使用（Web 端）；TUI 已由 TurnStarted/Finished 维护状态
+        AgentEvent::SessionRunning { .. } => {}
         AgentEvent::QueueCleared {} => app.queue = 0,
         AgentEvent::ThinkingDelta { delta, subagent_id } => {
             app.append_stream(

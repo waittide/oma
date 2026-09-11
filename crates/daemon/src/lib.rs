@@ -265,12 +265,20 @@ async fn handle_list_sessions(
         return Err(unauthorized());
     }
 
-    state
+    let mut records = state
         .storage
         .list_sessions(query.workspace.as_deref())
         .await
-        .map(Json)
-        .map_err(storage_error)
+        .map_err(storage_error)?;
+    // 回填运行时状态：仅已加载且正在执行轮次的房间算作运行中
+    for r in &mut records {
+        r.is_running = state
+            .rooms
+            .read()
+            .get(&r.session_id)
+            .is_some_and(|room| room.is_busy());
+    }
+    Ok(Json(records))
 }
 
 #[derive(Deserialize)]
