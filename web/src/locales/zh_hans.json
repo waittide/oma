@@ -54,6 +54,7 @@
     "stop": "中止",
     "stopHint": "中止当前轮次",
     "sendHint": "发送",
+    "resizeHint": "拖动调整输入框高度",
     "noModel": "未选择模型",
     "lastUsage": "上轮 {input}↑ / {output}↓ tokens",
     "approvalRequest": "请求执行：",

@@ -7,6 +7,7 @@ import {
   LuBot,
   LuCheck,
   LuGitBranch,
+  LuGripHorizontal,
   LuListTree,
   LuPlus,
   LuLoader,
@@ -46,6 +47,60 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const uploading = ref(false);
 const scrollEl = ref<HTMLElement | null>(null);
 const stickBottom = ref(true);
+
+/** 输入框固定高度（px）；null 表示保持默认自适应高度。 */
+const boxEl = ref<HTMLElement | null>(null);
+const boxHeight = ref<number | null>(readBoxHeight());
+
+const BOX_H_KEY = 'oma.composer.height';
+const BOX_H_MIN = 96;
+const BOX_H_MAX = 560;
+
+function clampBoxHeight(h: number): number {
+  const max = Math.min(BOX_H_MAX, window.innerHeight * 0.7);
+  return Math.round(Math.min(Math.max(h, BOX_H_MIN), max));
+}
+
+function readBoxHeight(): number | null {
+  const stored = Number(localStorage.getItem(BOX_H_KEY));
+  return Number.isFinite(stored) && stored > 0 ? clampBoxHeight(stored) : null;
+}
+
+function persistBoxHeight() {
+  if (boxHeight.value === null) localStorage.removeItem(BOX_H_KEY);
+  else localStorage.setItem(BOX_H_KEY, String(boxHeight.value));
+}
+
+/** 拖动输入框上边沿：向上拉高、向下压低。 */
+function startResize(e: PointerEvent) {
+  const el = boxEl.value;
+  const handle = e.currentTarget as HTMLElement | null;
+  if (!el || !handle) return;
+  e.preventDefault();
+
+  const startY = e.clientY;
+  const startH = el.offsetHeight;
+  handle.setPointerCapture(e.pointerId);
+
+  const onMove = (ev: PointerEvent) => {
+    boxHeight.value = clampBoxHeight(startH + startY - ev.clientY);
+  };
+  const onEnd = () => {
+    handle.removeEventListener('pointermove', onMove);
+    handle.removeEventListener('pointerup', onEnd);
+    handle.removeEventListener('pointercancel', onEnd);
+    persistBoxHeight();
+  };
+  handle.addEventListener('pointermove', onMove);
+  handle.addEventListener('pointerup', onEnd);
+  handle.addEventListener('pointercancel', onEnd);
+}
+
+/** 键盘支持：方向键微调高度。 */
+function nudgeBoxHeight(delta: number) {
+  boxHeight.value = clampBoxHeight((boxHeight.value ?? boxEl.value?.offsetHeight ?? BOX_H_MIN) + delta);
+  persistBoxHeight();
+}
 
 watch(activeSessionId, () => {
   forkFrom.value = null;
@@ -303,7 +358,24 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
         <span>{{ t('editResendBanner') }}</span>
         <button type="button" class="fork-cancel" @click="cancelFork">{{ tc('cancel') }}</button>
       </div>
-      <div class="box" :class="{ disabled: !ready }">
+      <div
+        ref="boxEl"
+        class="box"
+        :class="{ disabled: !ready }"
+        :style="boxHeight ? { height: `${boxHeight}px` } : undefined"
+      >
+        <div
+          class="resize-handle"
+          role="separator"
+          aria-orientation="horizontal"
+          :aria-label="t('resizeHint')"
+          tabindex="0"
+          @pointerdown="startResize"
+          @keydown.up.prevent="nudgeBoxHeight(24)"
+          @keydown.down.prevent="nudgeBoxHeight(-24)"
+        >
+          <LuGripHorizontal :size="12" class="grip" />
+        </div>
         <textarea
           v-model="draft"
           rows="2"
@@ -665,6 +737,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
   white-space: nowrap;
 }
 .box {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 96px;
@@ -680,6 +753,31 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
 .box.disabled {
   opacity: 0.6;
 }
+/* 上边沿拖拽热区：悬停时浮现把手图标 */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.grip {
+  color: var(--overlay0);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.box:hover .grip,
+.resize-handle:focus-visible .grip {
+  opacity: 0.7;
+}
+.resize-handle:focus-visible {
+  outline: none;
+}
 textarea {
   flex: 1;
   resize: none;
@@ -690,7 +788,6 @@ textarea {
   font-family: inherit;
   font-size: 13px;
   line-height: 20px;
-  max-height: 180px;
   padding: 12px 16px 2px;
 }
 textarea::placeholder {

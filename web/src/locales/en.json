@@ -54,6 +54,7 @@
     "stop": "Stop",
     "stopHint": "Cancel current turn",
     "sendHint": "Send",
+    "resizeHint": "Drag to resize the input box",
     "noModel": "No model selected",
     "lastUsage": "last turn {input}↑ / {output}↓ tokens",
     "approvalRequest": "requests to run:",
