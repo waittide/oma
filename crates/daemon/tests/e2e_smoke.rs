@@ -84,6 +84,27 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
         messages.len() * 100 + 50
     );
 
+    // 命名请求：system prompt 标识为命名任务时，直接回一个短标题
+    let is_naming = req["messages"]
+        .as_array()
+        .map(|arr| {
+            arr.iter().any(|m| {
+                m["role"] == "system"
+                    && m["content"]
+                        .as_str()
+                        .is_some_and(|c| c.contains("name chat sessions"))
+            })
+        })
+        .unwrap_or(false);
+    if is_naming {
+        let mut payload = String::new();
+        payload.push_str(&sse(r#"{"choices":[{"delta":{"content":"数据库查询优化"}}]}"#));
+        payload.push_str(&sse(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#));
+        payload.push_str(&usage);
+        payload.push_str("data: [DONE]\n\n");
+        return ([(axum::http::header::CONTENT_TYPE, "text/event-stream")], payload).into_response();
+    }
+
     let tool_rounds = role_sequence.iter().filter(|r| *r == "tool").count();
     // ask 场景：仅当用户输入带 ASK_TRIGGER 标记时走提问分支，
     // 否则会污染其它用例（内置 agent 白名单都含 ask）
@@ -319,6 +340,30 @@ async fn drive_turn_approving(
         );
         events.push(event);
         if main_finished {
+            break;
+        }
+    }
+    Ok(events)
+}
+
+/// 继续收集事件直到 `stop` 命中或超时；返回这段时间内收到的事件。
+async fn drain_for_event<F>(client: &mut OmaClient, timeout: Duration, stop: F) -> Result<Vec<AgentEvent>>
+where
+    F: Fn(&AgentEvent) -> bool,
+{
+    let deadline = Instant::now() + timeout;
+    let mut events = Vec::new();
+    while Instant::now() < deadline {
+        let Some(event) = tokio::time::timeout(Duration::from_secs(5), client.next_event())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
+        let hit = stop(&event);
+        events.push(event);
+        if hit {
             break;
         }
     }
@@ -811,5 +856,97 @@ async fn test_end_to_end_ask_tool_round_trip() -> Result<()> {
         "turn should end normally after the question is answered"
     );
 
+    Ok(())
+}
+
+/// 留空标题：模型在首轮结束后自动命名并广播 session_renamed。
+#[tokio::test]
+async fn test_session_autonamed_after_first_turn() -> Result<()> {
+    let h = start_harness().await?;
+    // 不传 title -> 服务端存空串，等待模型命名
+    let session = h.api.create_session(&h.workspace, None).await?;
+    assert_eq!(session.title, "", "empty title must be stored as-is");
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "namer".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "帮我优化数据库查询".into(),
+            attachments: vec![],
+        })
+        .await?;
+
+    let mut events = drive_turn(&mut client, Duration::from_secs(30)).await?;
+    // 自动命名在 TurnFinished 之后后台执行，需继续等待其广播
+    events.extend(
+        drain_for_event(&mut client, Duration::from_secs(15), |e| {
+            matches!(e, AgentEvent::SessionRenamed { .. })
+        })
+        .await?,
+    );
+
+    let renamed = events.iter().find_map(|e| match e {
+        AgentEvent::SessionRenamed { title, session_id } => Some((title.clone(), session_id.clone())),
+        _ => None,
+    });
+    let (title, sid) = renamed.expect("autoname must broadcast session_renamed");
+    assert_eq!(sid, session.session_id);
+    assert_eq!(title, "数据库查询优化");
+
+    // 落库校验
+    let list = h.api.list_sessions(Some(&h.workspace)).await?;
+    let rec = list
+        .iter()
+        .find(|s| s.session_id == session.session_id)
+        .expect("session present");
+    assert_eq!(rec.title, "数据库查询优化");
+    Ok(())
+}
+
+/// 用户填写了标题：模型不得覆盖。
+#[tokio::test]
+async fn test_user_title_is_not_overwritten() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("我的会话")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "namer".into(),
+    })
+    .await?;
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "随便聊聊".into(),
+            attachments: vec![],
+        })
+        .await?;
+
+    let events = drive_turn(&mut client, Duration::from_secs(30)).await?;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::SessionRenamed { .. })),
+        "user-provided title must not be overwritten: {:?}",
+        events
+    );
+
+    let list = h.api.list_sessions(Some(&h.workspace)).await?;
+    let rec = list
+        .iter()
+        .find(|s| s.session_id == session.session_id)
+        .unwrap();
+    assert_eq!(rec.title, "我的会话");
     Ok(())
 }

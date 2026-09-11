@@ -80,7 +80,8 @@ function openNewFor(workspace: string) {
 async function createSession() {
   const ws = newWorkspace.value.trim();
   if (!ws) return;
-  const rec = await store.create(ws, newTitle.value.trim() || t('defaultTitle'));
+  // 留空则由模型根据首轮对话自动命名（服务端生成后广播 session_renamed）
+  const rec = await store.create(ws, newTitle.value.trim());
   if (rec) {
     localStorage.setItem('oma.lastWorkspace', ws);
     showNew.value = false;
@@ -177,8 +178,8 @@ const deleteTarget = computed(
             <template v-else>
               <LuLoader v-if="isRunning(s)" :size="13" class="s-icon spin" />
               <LuMessageSquare v-else :size="13" class="s-icon" />
-              <OTooltip :label="s.title" align="start" block>
-                <span class="s-title">{{ s.title }}</span>
+              <OTooltip :label="s.title || t('untitled')" align="start" block>
+                <span class="s-title" :class="{ untitled: !s.title }">{{ s.title || t('untitled') }}</span>
               </OTooltip>
               <span class="s-actions">
                 <OTooltip :label="t('rename')" align="end">
@@ -219,7 +220,7 @@ const deleteTarget = computed(
         <label>{{ t('workspacePath') }}</label>
         <OInput v-model="newWorkspace" :placeholder="t('workspacePlaceholder')" autofocus />
         <label>{{ t('sessionTitle') }}</label>
-        <OInput v-model="newTitle" :placeholder="t('titlePlaceholder')" @enter="createSession" />
+        <OInput v-model="newTitle" :placeholder="t('titleAutoPlaceholder')" @enter="createSession" />
       </div>
       <template #footer>
         <OButton variant="ghost" @click="showNew = false">{{ tc('cancel') }}</OButton>
@@ -431,6 +432,11 @@ const deleteTarget = computed(
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 尚未由模型命名的会话：弱化显示，与真实标题区分 */
+.s-title.untitled {
+  color: var(--overlay0);
+  font-style: italic;
 }
 .s-actions {
   display: inline-flex;

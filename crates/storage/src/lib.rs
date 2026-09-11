@@ -480,6 +480,37 @@ impl StorageManager {
         Ok(())
     }
 
+    /// 仅当会话标题仍为空时写入（用于模型自动命名）。
+    ///
+    /// 返回是否实际写入：`UPDATE ... WHERE title = ''` 的原子性保证「用户已手动
+    /// 填写/重命名」不会被并发到达的自动命名覆盖。
+    pub async fn set_title_if_empty(&self, session_id: &str, title: &str) -> Result<bool> {
+        validate_session_id(session_id)?;
+        if title.trim().is_empty() {
+            return Ok(false);
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        let affected =
+            sqlx::query("UPDATE sessions_index SET title = ?, updated_at = ? WHERE session_id = ? AND title = ''")
+                .bind(title)
+                .bind(now)
+                .bind(session_id)
+                .execute(&self.index_pool)
+                .await?
+                .rows_affected();
+        if affected == 0 {
+            return Ok(false);
+        }
+
+        let pools = self.session_pools(session_id).await?;
+        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('title', ?)")
+            .bind(title)
+            .execute(&pools.write)
+            .await?;
+
+        Ok(true)
+    }
+
     /// 更新会话配置 (model, agent, approval_mode)
     pub async fn update_session_settings(
         &self,
@@ -933,6 +964,42 @@ mod tests {
             .create_session("sess_OK-1", "/w", "T", "m", "task", ApprovalMode::Normal)
             .await?;
         storage.delete_session("sess_OK-1").await?;
+        Ok(())
+    }
+
+    /// 自动命名必须遵守「用户填写优先」：已非空则不得覆盖。
+    #[tokio::test]
+    async fn test_set_title_if_empty_respects_existing_title() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let storage = StorageManager::new(tmp.path()).await?;
+
+        // 用户创建时填了标题：模型自动命名不得覆盖
+        storage
+            .create_session("s_user", "/w", "我的标题", "m", "task", ApprovalMode::Normal)
+            .await?;
+        assert!(!storage.set_title_if_empty("s_user", "模型起的名字").await?);
+        let rec = storage.get_session("s_user").await?.unwrap();
+        assert_eq!(rec.title, "我的标题");
+
+        // 用户留空：模型命名应当生效
+        storage
+            .create_session("s_auto", "/w", "", "m", "task", ApprovalMode::Normal)
+            .await?;
+        assert!(storage.set_title_if_empty("s_auto", "自动命名").await?);
+        let rec = storage.get_session("s_auto").await?.unwrap();
+        assert_eq!(rec.title, "自动命名");
+
+        // 二次自动命名不得再覆盖已有标题
+        assert!(!storage.set_title_if_empty("s_auto", "另一个名字").await?);
+        let rec = storage.get_session("s_auto").await?.unwrap();
+        assert_eq!(rec.title, "自动命名");
+
+        // 空/纯空白标题不得写入
+        storage
+            .create_session("s_blank", "/w", "", "m", "task", ApprovalMode::Normal)
+            .await?;
+        assert!(!storage.set_title_if_empty("s_blank", "   ").await?);
+        assert_eq!(storage.get_session("s_blank").await?.unwrap().title, "");
         Ok(())
     }
 

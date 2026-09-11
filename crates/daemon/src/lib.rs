@@ -109,12 +109,14 @@ impl DaemonState {
                     cfg.default_approval_mode,
                 )
             };
+            // 由外部直接指定 session_id 时的兜底创建：同样留空标题，
+            // 交由模型在首轮结束后命名（与 POST /api/sessions 行为一致）
             let new_rec = self
                 .storage
                 .create_session(
                     session_id,
                     workspace,
-                    "New Session",
+                    "",
                     &default_model,
                     &default_agent,
                     default_approval,
@@ -314,7 +316,9 @@ async fn handle_create_session(
     }
 
     let session_id = format!("sess_{}", uuid::Uuid::new_v4().simple());
-    let title = payload.title.unwrap_or_else(|| "New Session".into());
+    // 标题留空表示「交给模型根据首轮对话自动命名」；
+    // 用户填写时原样保留，模型不会再覆盖（见 set_title_if_empty）。
+    let title = payload.title.unwrap_or_default().trim().to_string();
     let (default_model, default_agent, default_approval) = {
         let cfg = state.config.read();
         (

@@ -17,12 +17,12 @@
     "sessionTitle": "Session Title (optional)",
     "deleteSession": "Delete Session",
     "deleteConfirm": "Delete \"{title}\"? All messages in this session will be permanently removed.",
-    "titlePlaceholder": "New Session",
-    "defaultTitle": "New Session",
     "addSessionHere": "New session in this workspace",
     "clearWorkspace": "Clear sessions in this workspace",
     "clearWorkspaceTitle": "Clear workspace sessions",
-    "clearConfirm": "Delete all {count} sessions in \"{label}\"? This cannot be undone."
+    "clearConfirm": "Delete all {count} sessions in \"{label}\"? This cannot be undone.",
+    "untitled": "Untitled",
+    "titleAutoPlaceholder": "Leave empty to let the model name it"
   },
   "sessions": {
     "created": "Session created",

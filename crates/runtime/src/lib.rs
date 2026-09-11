@@ -115,6 +115,74 @@ impl ApprovalArbiter {
     }
 }
 
+/// 会话自动命名的系统提示：输出要短、无修饰、不改写语言
+const NAMING_SYSTEM_PROMPT: &str = "You name chat sessions. Read the conversation and reply with ONLY a \
+short title: 2-6 words, no quotes, no trailing punctuation, same language as the user. \
+Output the title and nothing else.";
+
+/// 自动命名标题长度上限（字符）
+const TITLE_MAX_CHARS: usize = 60;
+/// 构造命名提示词所需的对话文本上限
+const NAMING_CONTEXT_CHARS: usize = 4000;
+
+/// 从会话历史构造命名提示词；无有效内容（如只有仅带工具的轮次）时返回 None。
+fn build_naming_prompt(messages: &[ChatMessage]) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for m in messages {
+        let role = match m.role {
+            Role::User => "User",
+            Role::Assistant => "Assistant",
+            Role::System => continue,
+        };
+        let text: String = m
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        parts.push(format!("{}: {}", role, text));
+        if parts.iter().map(|p| p.chars().count()).sum::<usize>() >= NAMING_CONTEXT_CHARS {
+            break;
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let mut joined = parts.join("\n\n");
+    if joined.chars().count() > NAMING_CONTEXT_CHARS {
+        joined = joined.chars().take(NAMING_CONTEXT_CHARS).collect();
+    }
+    Some(format!(
+        "Conversation so far:\n\n{}\n\nReply with only a short title for this session.",
+        joined
+    ))
+}
+
+/// 将模型输出清洗为可用标题：去掉引号/前缀/换行，超长截断；无有效内容时返回 None。
+fn sanitize_title(raw: &str) -> Option<String> {
+    let first_line = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let cleaned = first_line
+        .trim_start_matches(|c: char| c == '#' || c == '-' || c.is_whitespace())
+        .trim()
+        // 模型常把标题包在引号或书名号里
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '“' | '”' | '‘' | '’' | '《' | '》' | '`'))
+        .trim_start_matches("Title:")
+        .trim_start_matches("标题：")
+        .trim()
+        .to_string();
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(cleaned.chars().take(TITLE_MAX_CHARS).collect())
+}
+
 /// 审批判定结果：放行 / 拒绝 / 轮次被取消
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalOutcome {
@@ -1245,6 +1313,87 @@ impl SessionRoom {
         }
     }
 
+    /// 轮次结束后自动命名：标题为空时用小模型根据首轮对话生成一次。
+    ///
+    /// 用户在创建时已填写或自己重命名过则跳过（由 `set_title_if_empty` 原子校验）。
+    /// 任何失败都只记录不影响轮次结果。
+    async fn maybe_autoname(self: &Arc<Self>) {
+        let Some(record) = self
+            .storage
+            .get_session(&self.session_id)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        if !record.title.trim().is_empty() {
+            return;
+        }
+
+        let messages = self
+            .storage
+            .get_linear_messages(&self.session_id, None)
+            .await
+            .unwrap_or_default();
+        let Some(prompt) = build_naming_prompt(&messages) else {
+            return;
+        };
+
+        let active_model = self.active_model.read().clone();
+        let (provider_cfg, model_cfg) = {
+            let cfg = self.config.read();
+            match cfg.find_model(&active_model) {
+                Some((p, m)) => (p.clone(), m),
+                None => return,
+            }
+        };
+
+        let request = vec![ChatMessage {
+            id:         "autoname".to_string(),
+            parent_id:  None,
+            role:       Role::User,
+            content:    vec![Block::Text { text: prompt }],
+            created_at: chrono::Utc::now().timestamp_millis(),
+        }];
+
+        // 复用流式接口：命名请求不带工具、不需要 thinking，仅拼接文本增量
+        let provider = UniversalProvider::new(provider_cfg);
+        let mut rx = match provider
+            .send_stream(&request, Some(NAMING_SYSTEM_PROMPT), &[], &model_cfg)
+            .await
+        {
+            Ok(rx) => rx,
+            Err(_) => return,
+        };
+
+        let mut raw = String::new();
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                ProviderStreamEvent::TextDelta(d) => raw.push_str(&d),
+                ProviderStreamEvent::Error(_) | ProviderStreamEvent::Done { .. } => break,
+                _ => {}
+            }
+            if raw.chars().count() > 512 {
+                break; // 命名结果很短，防止异常长输出
+            }
+        }
+
+        let Some(title) = sanitize_title(&raw) else {
+            return;
+        };
+        if let Ok(true) = self
+            .storage
+            .set_title_if_empty(&self.session_id, &title)
+            .await
+        {
+            self.broadcast(AgentEvent::SessionRenamed {
+                session_id: self.session_id.clone(),
+                title,
+            });
+        }
+    }
+
     /// 结束轮次并自动接管下一条排队命令
     async fn finish_turn(self: &Arc<Self>, turn_id: String, stop_reason: StopReason, usage: TokenUsage) {
         *self.active_turn.write() = None;
@@ -1254,6 +1403,19 @@ impl SessionRoom {
             usage,
             subagent_id: None,
         });
+
+        // 空标题的会话在首轮结束后自动命名：后台执行，不阻塞轮次收尾与队列入队
+        if self
+            .storage
+            .get_session(&self.session_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|r| r.title.trim().is_empty())
+        {
+            let room = self.clone();
+            tokio::spawn(async move { room.maybe_autoname().await });
+        }
 
         self.pump_queue().await;
     }
@@ -2094,6 +2256,97 @@ mod tests {
         assert!(!room.is_busy());
         assert_eq!(room.command_queue.lock().await.len(), 0);
         Ok(())
+    }
+
+    // ---------- 会话自动命名 ----------
+
+    fn msg(role: Role, text: &str) -> ChatMessage {
+        ChatMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            parent_id: None,
+            role,
+            content: vec![Block::Text { text: text.to_string() }],
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn test_sanitize_title_strips_decorations() {
+        assert_eq!(sanitize_title("修复登录超时").unwrap(), "修复登录超时");
+        assert_eq!(
+            sanitize_title("  \"Fix login timeout\"  ").unwrap(),
+            "Fix login timeout"
+        );
+        assert_eq!(sanitize_title("Title: Cache warmup plan").unwrap(), "Cache warmup plan");
+        assert_eq!(sanitize_title("标题：缓存预热方案").unwrap(), "缓存预热方案");
+        assert_eq!(sanitize_title("# 会话标题").unwrap(), "会话标题");
+        // 多行只取第一个非空行，避免把解释性文字带进标题
+        assert_eq!(sanitize_title("\n\n短标题\n这里是一段说明").unwrap(), "短标题");
+        // 纯空内容不得产出空标题
+        assert!(sanitize_title("   ").is_none());
+        assert!(sanitize_title("\n\n").is_none());
+        assert!(sanitize_title("\"\"").is_none());
+    }
+
+    #[test]
+    fn test_sanitize_title_truncates_overlong() {
+        let long = "字".repeat(TITLE_MAX_CHARS + 50);
+        let out = sanitize_title(&long).unwrap();
+        assert_eq!(out.chars().count(), TITLE_MAX_CHARS);
+    }
+
+    #[test]
+    fn test_build_naming_prompt_uses_dialogue_only() {
+        let messages = vec![
+            msg(Role::User, "帮我优化数据库查询"),
+            // 仅含工具调用的消息不应污染命名上下文
+            ChatMessage {
+                id:         "t".into(),
+                parent_id:  None,
+                role:       Role::Assistant,
+                content:    vec![Block::ToolUse {
+                    id:    "c1".into(),
+                    name:  "read".into(),
+                    input: serde_json::json!({ "path": "x" }),
+                }],
+                created_at: 0,
+            },
+            msg(Role::Assistant, "好的，我先看索引"),
+        ];
+        let prompt = build_naming_prompt(&messages).unwrap();
+        assert!(prompt.contains("User: 帮我优化数据库查询"));
+        assert!(prompt.contains("Assistant: 好的，我先看索引"));
+        assert!(!prompt.contains("read"), "tool blocks must not leak into naming prompt");
+    }
+
+    #[test]
+    fn test_build_naming_prompt_none_without_text() {
+        assert!(build_naming_prompt(&[]).is_none());
+        let only_tools = vec![ChatMessage {
+            id:         "t".into(),
+            parent_id:  None,
+            role:       Role::User,
+            content:    vec![Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content:     "ok".into(),
+                is_error:    false,
+            }],
+            created_at: 0,
+        }];
+        assert!(build_naming_prompt(&only_tools).is_none());
+    }
+
+    #[test]
+    fn test_build_naming_prompt_bounded() {
+        let messages: Vec<ChatMessage> = (0..50)
+            .map(|i| msg(Role::User, &format!("{}-{}", i, "很长的内容".repeat(200))))
+            .collect();
+        let prompt = build_naming_prompt(&messages).unwrap();
+        assert!(
+            prompt.chars().count() < NAMING_CONTEXT_CHARS + 200,
+            "prompt must stay bounded: {}",
+            prompt.chars().count()
+        );
     }
 
     /// 工具白名单：模板声明只读时，写工具不可见亦不可执行。

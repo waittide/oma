@@ -17,12 +17,12 @@
     "sessionTitle": "会话标题（可选）",
     "deleteSession": "删除会话",
     "deleteConfirm": "确定删除「{title}」？该会话的全部消息将被永久移除。",
-    "titlePlaceholder": "新会话",
-    "defaultTitle": "新会话",
     "addSessionHere": "在此工作区新建会话",
     "clearWorkspace": "清空该工作区的会话",
     "clearWorkspaceTitle": "清空工作区会话",
-    "clearConfirm": "确定删除「{label}」下的 {count} 个会话？该操作不可撤销。"
+    "clearConfirm": "确定删除「{label}」下的 {count} 个会话？该操作不可撤销。",
+    "untitled": "未命名",
+    "titleAutoPlaceholder": "留空则由模型自动命名"
   },
   "sessions": {
     "created": "会话已创建",
