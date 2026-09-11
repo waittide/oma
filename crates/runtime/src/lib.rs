@@ -743,7 +743,7 @@ impl SessionRoom {
         let request = PermissionRequestedData {
             request_id: request_id.clone(),
             tool_name:  tool_name.to_string(),
-            input:      tool_input.to_string(),
+            input:      tool_input.clone(),
         };
         if let Some(turn) = self.active_turn.write().as_mut() {
             turn.pending_approval = Some(request.clone());

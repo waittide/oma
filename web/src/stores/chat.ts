@@ -67,7 +67,8 @@ export const activeAgent = ref('');
 export const approvalMode = ref<ApprovalMode>('normal');
 /** 当前会话推理等级；空串 = 未设置（回退模型默认） */
 export const reasoningLevel = ref('');
-export const providers = ref<Record<string, ModelInfo[]>>({});
+/** 可选模型目录（provider → 模型清单），来自握手载荷的 model_catalog */
+export const modelCatalog = ref<Record<string, ModelInfo[]>>({});
 export const agents = ref<AgentSummary[]>([]);
 export const mcpServers = ref<McpServerSummary[]>([]);
 export const lastUsage = ref<TokenUsage | null>(null);
@@ -75,7 +76,7 @@ export const queued = ref(0);
 
 export const modelList = computed(() => {
   const out: { selector: string; info: ModelInfo }[] = [];
-  for (const [pid, models] of Object.entries(providers.value)) {
+  for (const [pid, models] of Object.entries(modelCatalog.value)) {
     for (const m of models) out.push({ selector: `${pid}/${m.id}`, info: m });
   }
   return out;
@@ -313,9 +314,9 @@ function connect() {
       activeAgent.value = r.active_agent;
       approvalMode.value = r.approval_mode;
       reasoningLevel.value = r.reasoning_level ?? '';
-      providers.value = r.providers;
+      modelCatalog.value = r.model_catalog;
       agents.value = r.agents;
-      mcpServers.value = r.mcp_servers ?? [];
+      mcpServers.value = r.mcp_summaries ?? [];
       currentLeafId.value = r.current_leaf_id;
       void reload();
     } else if (msg.kind === 'event') {

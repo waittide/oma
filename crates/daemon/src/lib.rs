@@ -1183,8 +1183,8 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         }
     };
 
-    // 3. 发送 Ready 握手确认（providers 携带配置的真实模型清单）
-    let (providers, active_model, active_agent, approval_mode, reasoning_level) = {
+    // 3. 发送 Ready 握手确认（model_catalog 携带配置的真实模型清单）
+    let (model_catalog, active_model, active_agent, approval_mode, reasoning_level) = {
         let cfg = state.config.read();
         (
             cfg.model_catalog(),
@@ -1209,9 +1209,9 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
             .ok()
             .flatten()
             .and_then(|rec| rec.current_leaf_id),
-        providers,
+        model_catalog,
         agents: AgentLoader::list_agents(&room.workspace),
-        mcp_servers: state
+        mcp_summaries: state
             .mcp
             .server_tool_counts()
             .await

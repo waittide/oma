@@ -38,7 +38,7 @@ struct Entry {
 struct PendingApproval {
     request_id: String,
     tool_name:  String,
-    input:      String,
+    input:      serde_json::Value,
 }
 
 /// 待作答的提问（ask 工具）。终端里用数字键选择，`o` 进入自定义输入。
@@ -827,7 +827,7 @@ fn draw_approval(frame: &mut Frame, pending: &PendingApproval, area: Rect) {
         ]),
         Line::raw(""),
         Line::styled(
-            truncate(&pending.input, width.saturating_sub(4) as usize),
+            truncate(&summarize_tool_input(&pending.input), width.saturating_sub(4) as usize),
             Style::default().fg(Color::Gray),
         ),
         Line::raw(""),

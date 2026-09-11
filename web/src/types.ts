@@ -51,8 +51,8 @@ export interface PermissionRequestedData {
   request_id: string;
   /** 待执行的工具名 */
   tool_name: string;
-  /** 工具入参的 JSON 原文 */
-  input: string;
+  /** 工具入参原文；与 ToolCallStartedData.input 同为结构化 JSON */
+  input: unknown;
 }
 
 /** ask 工具：单个选项 */
@@ -180,9 +180,11 @@ export interface Ready {
   /** 当前会话推理等级；空串 = 未设置（回退模型默认） */
   reasoning_level: string;
   current_leaf_id: string | null;
-  providers: Record<string, ModelInfo[]>;
+  /** 可选模型目录（provider → 模型清单），与 OmaConfig.providers 的配置形态不同 */
+  model_catalog: Record<string, ModelInfo[]>;
   agents: AgentSummary[];
-  mcp_servers: McpServerSummary[];
+  /** MCP 服务器概览（名称 + 工具数），非完整配置 */
+  mcp_summaries: McpServerSummary[];
 }
 
 export type ServerMessage =

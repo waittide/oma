@@ -23,6 +23,7 @@ import OModelSelect from './ui/OModelSelect.vue';
 import OTooltip from './ui/OTooltip.vue';
 import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
+import { prettyJson } from '../lib/format';
 import AskPanel from './AskPanel.vue';
 import OButton from './ui/OButton.vue';
 import HistoryTree from './HistoryTree.vue';
@@ -220,7 +221,7 @@ const supportsThinking = computed(() => {
   if (!wanted) return false;
   const [pid, ...rest] = wanted.split('/');
   const mid = rest.join('/');
-  const list = chat.providers.value[pid ?? ''] ?? [];
+  const list = chat.modelCatalog.value[pid ?? ''] ?? [];
   return list.find((m) => m.id === mid)?.supports_thinking ?? false;
 });
 
@@ -232,7 +233,7 @@ const isEmpty = computed(() => chat.messages.value.length === 0 && !chat.running
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */
 const ready = computed(() => !!activeSessionId.value && props.online && chat.connected.value);
 
-const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0);
+const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length > 0);
 </script>
 
 <template>
@@ -342,7 +343,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
           <LuAlertTriangle :size="15" class="warn" />
           <div class="ap-text">
             <strong>{{ chat.pendingApproval.value.tool_name }}</strong>
-            {{ t('approvalRequest') }}<code>{{ chat.pendingApproval.value.input }}</code>
+            {{ t('approvalRequest') }}<code>{{ prettyJson(chat.pendingApproval.value.input) }}</code>
           </div>
           <div class="ap-actions">
             <OButton variant="primary" size="sm" @click="chat.respond('allow_once')">
@@ -439,7 +440,7 @@ const hasProviders = computed(() => Object.keys(chat.providers.value).length > 0
             />
             <OModelSelect
               v-model="chat.activeModel.value"
-              :groups="chat.providers.value"
+              :groups="chat.modelCatalog.value"
               width="170px"
               @update:model-value="chat.setModel"
             />

@@ -410,7 +410,7 @@ async fn test_end_to_end_turn_with_task_tool() -> Result<()> {
 
     // 就绪载荷必须携带模型目录
     assert!(
-        client.ready().providers.contains_key("mock"),
+        client.ready().model_catalog.contains_key("mock"),
         "ready providers should list the configured provider"
     );
 

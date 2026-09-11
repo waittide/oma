@@ -244,9 +244,11 @@ pub struct Ready {
     #[serde(default)]
     pub reasoning_level: String,
     pub current_leaf_id: Option<String>,
-    pub providers:       BTreeMap<String, Vec<ModelInfo>>,
+    /// 可选模型目录（provider → 模型清单），与 OmaConfig.providers 的配置形态不同
+    pub model_catalog:   BTreeMap<String, Vec<ModelInfo>>,
     pub agents:          Vec<AgentSummary>,
-    pub mcp_servers:     Vec<McpServerSummary>,
+    /// MCP 服务器概览（名称 + 工具数），非完整配置
+    pub mcp_summaries:   Vec<McpServerSummary>,
 }
 
 /// 结束原因
@@ -337,8 +339,8 @@ pub struct PermissionRequestedData {
     pub request_id: String,
     /// 待执行的工具名
     pub tool_name:  String,
-    /// 工具入参的 JSON 原文（非摘要，由客户端按需展示）
-    pub input:      String,
+    /// 工具入参原文；与 ToolCallStartedData.input 同为结构化 JSON
+    pub input:      serde_json::Value,
 }
 
 /// 活跃轮次重连追赶快照
@@ -531,7 +533,7 @@ mod tests {
             pending_approval:     Some(PermissionRequestedData {
                 request_id: "req_1".into(),
                 tool_name:  "shell".into(),
-                input:      "cargo test".into(),
+                input:      serde_json::json!({ "command": "cargo test" }),
             }),
             pending_ask:          None,
         };
