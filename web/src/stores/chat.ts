@@ -340,12 +340,23 @@ function connect() {
 
 export async function open(id: string, workspace: string) {
   if (sessionId === id && connected.value) return;
-  // close() 已让代次自增，旧连接及其重连定时器全部作废
-  close();
-  releaseAll();
+  // reset() 内部 close() 已让代次自增，旧连接及其重连定时器全部作废
+  reset();
   disposed = false;
   sessionId = id;
   workspacePath = workspace;
+  connect();
+}
+
+/**
+ * 断开连接并清空会话态（不含连接代次，由 close() 负责）。
+ * 取消选中或删除当前会话时调用，避免悬空的 sessionId 与遗留消息被后续渲染。
+ */
+export function reset() {
+  close();
+  releaseAll();
+  sessionId = '';
+  workspacePath = '';
   messages.value = [];
   tree.value = [];
   live.value = emptyLive();
@@ -355,10 +366,10 @@ export async function open(id: string, workspace: string) {
   finalizing.value = false;
   currentLeafId.value = null;
   lastUsage.value = null;
-  connect();
+  queued.value = 0;
 }
 
-export function close() {
+function close() {
   disposed = true;
   // 代次自增让在途 socket 的 open/close/重连回调全部失效
   epoch += 1;

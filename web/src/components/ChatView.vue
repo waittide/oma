@@ -109,6 +109,10 @@ watch(activeSessionId, () => {
   const id = activeSessionId.value;
   if (id && activeSession.value) {
     void chat.open(id, activeSession.value.workspace);
+  } else {
+    // 会话被取消选中（如删除）：断开连接并清空遗留状态，
+    // 否则 WebSocket 与 sessionId 会悬空指向已不存在的会话
+    chat.reset();
   }
 });
 
