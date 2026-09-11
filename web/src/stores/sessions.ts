@@ -126,3 +126,29 @@ export async function remove(id: string) {
     toast.error(tr('sessions.deleteFailed', { message: (e as Error).message }));
   }
 }
+
+/**
+ * 清空某工作区下的全部会话。运行中的会话会被服务端拒绝，跳过并计数，
+ * 不中断其余会话的删除，最后按结果给出提示。
+ */
+export async function clearWorkspace(workspace: string) {
+  const targets = sessions.value.filter((s) => s.workspace === workspace);
+  if (targets.length === 0) return;
+
+  const removed = new Set<string>();
+  let failed = 0;
+  for (const s of targets) {
+    try {
+      await api.deleteSession(s.session_id);
+      removed.add(s.session_id);
+    } catch {
+      failed += 1;
+    }
+  }
+
+  sessions.value = sessions.value.filter((s) => !removed.has(s.session_id));
+  if (activeSessionId.value && removed.has(activeSessionId.value)) activeSessionId.value = null;
+
+  if (failed === 0) toast.success(tr('sessions.cleared', { count: removed.size }));
+  else toast.error(tr('sessions.clearPartial', { done: removed.size, failed }));
+}

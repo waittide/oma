@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import {
   LuChevronRight,
+  LuEraser,
   LuFolder,
   LuLoader,
   LuMessageSquare,
@@ -19,6 +20,7 @@ import * as store from '../stores/sessions';
 import { activeSessionId } from '../stores/sessions';
 import * as chat from '../stores/chat';
 import type { SessionRecord } from '../types';
+import type { WorkspaceGroup } from '../stores/sessions';
 import { useTranslations } from '../composables/i18n';
 
 const emit = defineEmits<{ openSettings: [] }>();
@@ -32,6 +34,9 @@ const newTitle = ref('');
 const renaming = ref<string | null>(null);
 const renameValue = ref('');
 const confirmDelete = ref<string | null>(null);
+/** 待清空的工作区分组（null 表示未打开确认框） */
+const clearTarget = ref<WorkspaceGroup | null>(null);
+const clearing = ref(false);
 
 onMounted(() => store.refresh());
 
@@ -85,6 +90,18 @@ async function createSession() {
   }
 }
 
+async function clearSessions() {
+  const target = clearTarget.value;
+  if (!target) return;
+  clearing.value = true;
+  try {
+    await store.clearWorkspace(target.workspace);
+  } finally {
+    clearing.value = false;
+    clearTarget.value = null;
+  }
+}
+
 const deleteTarget = computed(
   () => store.sessions.value.find((s) => s.session_id === confirmDelete.value) ?? null,
 );
@@ -122,11 +139,23 @@ const deleteTarget = computed(
               <span class="g-count">{{ g.items.length }}</span>
             </button>
           </OTooltip>
-          <OTooltip :label="t('addSessionHere')" align="end">
-            <button type="button" class="gh-add" :aria-label="t('addSessionHere')" @click="openNewFor(g.workspace)">
-              <LuPlus :size="14" />
-            </button>
-          </OTooltip>
+          <div class="gh-actions">
+            <OTooltip :label="t('addSessionHere')" align="end">
+              <button type="button" class="gh-add" :aria-label="t('addSessionHere')" @click="openNewFor(g.workspace)">
+                <LuPlus :size="14" />
+              </button>
+            </OTooltip>
+            <OTooltip :label="t('clearWorkspace')" align="end">
+              <button
+                type="button"
+                class="gh-add danger"
+                :aria-label="t('clearWorkspace')"
+                @click="clearTarget = g"
+              >
+                <LuEraser :size="14" />
+              </button>
+            </OTooltip>
+          </div>
         </div>
 
         <div v-if="!store.collapsed.value[g.workspace]" class="group-body">
@@ -197,6 +226,23 @@ const deleteTarget = computed(
         <OButton variant="ghost" @click="showNew = false">{{ tc('cancel') }}</OButton>
         <OButton variant="primary" :disabled="!newWorkspace.trim()" @click="createSession">
           {{ tc('create') }}
+        </OButton>
+      </template>
+    </OModal>
+
+    <OModal
+      :open="clearTarget !== null"
+      :title="t('clearWorkspaceTitle')"
+      width="380px"
+      @close="clearTarget = null"
+    >
+      <p class="confirm-text">
+        {{ t('clearConfirm', { label: clearTarget?.label ?? '', count: clearTarget?.items.length ?? 0 }) }}
+      </p>
+      <template #footer>
+        <OButton variant="ghost" @click="clearTarget = null">{{ tc('cancel') }}</OButton>
+        <OButton variant="danger" :loading="clearing" @click="clearSessions">
+          {{ tc('delete') }}
         </OButton>
       </template>
     </OModal>
@@ -296,6 +342,12 @@ const deleteTarget = computed(
   cursor: pointer;
   text-align: left;
 }
+.gh-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
 .gh-add {
   display: inline-flex;
   align-items: center;
@@ -308,19 +360,16 @@ const deleteTarget = computed(
   background: transparent;
   color: var(--overlay0);
   cursor: pointer;
-  opacity: 0;
   transition:
-    opacity 0.12s ease,
     color 0.12s ease,
     background-color 0.12s ease;
-}
-.group-head:hover .gh-add,
-.gh-add:focus-visible {
-  opacity: 1;
 }
 .gh-add:hover {
   color: var(--accent);
   background: var(--surface-active);
+}
+.gh-add.danger:hover {
+  color: var(--danger);
 }
 .caret {
   flex-shrink: 0;

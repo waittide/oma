@@ -19,11 +19,16 @@
     "deleteConfirm": "Delete \"{title}\"? All messages in this session will be permanently removed.",
     "titlePlaceholder": "New Session",
     "defaultTitle": "New Session",
-    "addSessionHere": "New session in this workspace"
+    "addSessionHere": "New session in this workspace",
+    "clearWorkspace": "Clear sessions in this workspace",
+    "clearWorkspaceTitle": "Clear workspace sessions",
+    "clearConfirm": "Delete all {count} sessions in \"{label}\"? This cannot be undone."
   },
   "sessions": {
     "created": "Session created",
     "deleted": "Session deleted",
+    "cleared": "Cleared {count} sessions",
+    "clearPartial": "Cleared {done} sessions, {failed} kept (running)",
     "loadListFailed": "Failed to load sessions: {message}",
     "renameFailed": "Rename failed: {message}",
     "deleteFailed": "Failed to delete session: {message}",

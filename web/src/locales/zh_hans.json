@@ -19,11 +19,16 @@
     "deleteConfirm": "确定删除「{title}」？该会话的全部消息将被永久移除。",
     "titlePlaceholder": "新会话",
     "defaultTitle": "新会话",
-    "addSessionHere": "在此工作区新建会话"
+    "addSessionHere": "在此工作区新建会话",
+    "clearWorkspace": "清空该工作区的会话",
+    "clearWorkspaceTitle": "清空工作区会话",
+    "clearConfirm": "确定删除「{label}」下的 {count} 个会话？该操作不可撤销。"
   },
   "sessions": {
     "created": "会话已创建",
     "deleted": "会话已删除",
+    "cleared": "已清空 {count} 个会话",
+    "clearPartial": "已清空 {done} 个会话，{failed} 个正在运行未删除",
     "loadListFailed": "加载会话失败：{message}",
     "renameFailed": "重命名失败：{message}",
     "deleteFailed": "删除会话失败：{message}",
