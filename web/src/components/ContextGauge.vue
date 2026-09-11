@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import OTooltip from './ui/OTooltip.vue';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{
@@ -52,30 +53,36 @@ const tip = computed(() => {
     total: props.contextLen.toLocaleString(),
     percent: percent.value.toFixed(1),
   });
-  return compacting.value ? `${base}\n${t('contextCompacting')}` : base;
+  // OTooltip 以普通文本渲染（空白折叠），故不用换行而用分句拼接
+  return compacting.value ? `${base} — ${t('contextCompacting')}` : base;
 });
 </script>
 
 <template>
-  <span class="ctx" :class="level" :title="tip" role="status">
-    <span class="bar" aria-hidden="true">
-      <span v-for="i in 10" :key="i" class="cell" :class="{ on: i <= filled }" />
+  <OTooltip :label="tip" placement="bottom">
+    <span class="ctx" :class="level" role="status">
+      <span class="bar" aria-hidden="true">
+        <span v-for="i in 10" :key="i" class="cell" :class="{ on: i <= filled }" />
+      </span>
+      <span class="pct">{{ percentText }}</span>
+      <!-- 始终渲染以预留宽度：跨过阈值时避免工具栏因标签出现而抖动 -->
+      <span class="tag" :class="{ off: !compacting }">{{ t('contextCompactingTag') }}</span>
     </span>
-    <span class="pct">{{ percentText }}</span>
-    <span v-if="compacting" class="tag">{{ t('contextCompactingTag') }}</span>
-  </span>
+  </OTooltip>
 </template>
 
 <style scoped>
 .ctx {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   flex-shrink: 0;
-  height: 28px;
-  padding: 0 8px;
+  /* 高度与 OSelect/OModelSelect 保持一致（均 32px） */
+  height: 32px;
+  padding: 0 10px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--surface);
   color: var(--text-tertiary);
   font-size: 11px;
@@ -85,11 +92,11 @@ const tip = computed(() => {
 }
 .bar {
   display: inline-flex;
-  gap: 1px;
+  gap: 2px;
 }
 .cell {
-  width: 3px;
-  height: 10px;
+  width: 4px;
+  height: 12px;
   border-radius: 1px;
   background: var(--surface2);
 }
@@ -124,5 +131,9 @@ const tip = computed(() => {
   background: var(--surface-strong);
   color: var(--text-tertiary);
   font-size: 10px;
+}
+/* 未达阈值时不可见但占位，保证整体宽度恒定 */
+.tag.off {
+  visibility: hidden;
 }
 </style>
