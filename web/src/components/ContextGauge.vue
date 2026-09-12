@@ -65,8 +65,8 @@ const tip = computed(() => {
         <span v-for="i in 10" :key="i" class="cell" :class="{ on: i <= filled }" />
       </span>
       <span class="pct">{{ percentText }}</span>
-      <!-- 始终渲染以预留宽度：跨过阈值时避免工具栏因标签出现而抖动 -->
-      <span class="tag" :class="{ off: !compacting }">{{ t('contextCompactingTag') }}</span>
+      <!-- 仅进入压缩区时展示：常态下不预留宽度，容器贴合进度条与百分比 -->
+      <span v-if="compacting" class="tag">{{ t('contextCompactingTag') }}</span>
     </span>
   </OTooltip>
 </template>
@@ -80,7 +80,7 @@ const tip = computed(() => {
   flex-shrink: 0;
   /* 高度与 OSelect/OModelSelect 保持一致（均 32px） */
   height: 32px;
-  padding: 0 10px;
+  padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
@@ -132,21 +132,17 @@ const tip = computed(() => {
   border-color: color-mix(in srgb, var(--red) 40%, transparent);
 }
 .pct {
-  /* 定宽右对齐：'9.9%' 到 '100.0%' 字数不同，不定宽会造成整体抖动 */
-  min-width: 36px;
+  /* 定宽右对齐：'9.9%' 到 '100.0%' 字数不同，不定宽会造成数字左右跳动 */
+  min-width: 34px;
   text-align: right;
 }
 .tag {
-  /* 定宽占位，与是否处于压缩区无关，保证整体宽度恒定 */
-  min-width: 40px;
-  padding: 0 5px;
+  padding: 0 6px;
   border-radius: 99px;
   background: var(--surface-strong);
   color: var(--text-tertiary);
   font-size: 10px;
-  text-align: center;
-}
-.tag.off {
-  visibility: hidden;
+  /* 不参与宽度预留：常态下容器只包含进度条与百分比 */
+  flex-shrink: 0;
 }
 </style>
