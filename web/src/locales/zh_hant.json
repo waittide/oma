@@ -79,8 +79,7 @@
     "forkAttachmentUnsupported": "編輯重送暫不支援附件，請先移除附件",
     "queuedCount": "排隊 {count} 條",
     "contextTip": "上下文 {tokens} / {total}（{percent}%）",
-    "contextUnknown": "已用 {tokens} tokens（模型視窗未知）",
-    "contextCompacting": "已超過 70% 壓縮閾值：此後每輪請求都會裁剪較早的歷史。"
+    "contextUnknown": "已用 {tokens} tokens（模型視窗未知）"
   },
   "blocks": {
     "thinking": "思考",

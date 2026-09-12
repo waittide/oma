@@ -24,7 +24,7 @@ const percentText = computed(() =>
 );
 
 /**
- * 占用分档：阈值对齐 oh-my-pi（50 / 70 / 90），仅用颜色区分，不加文字标签。
+ * 占用分档：阈值对齐 oh-my-pi（50 / 70 / 90）。
  * 70% 恰好是 oma 的压缩触发点（`context_len * 0.7`），故该档起即已进入压缩区。
  */
 const level = computed<'normal' | 'warning' | 'pending' | 'danger'>(() => {
@@ -36,25 +36,21 @@ const level = computed<'normal' | 'warning' | 'pending' | 'danger'>(() => {
   return 'normal';
 });
 
-/** 已达压缩阈值：此后每轮请求都会裁剪历史 */
-const compacting = computed(() => (percent.value ?? 0) >= 70);
-
 /** 10 格进度条：与参考实现的 contextGauge 一致 */
 const filled = computed(() =>
   ratio.value === null ? 0 : Math.round(ratio.value * 10),
 );
 
+/** 悬停明细：仅展示数值，分档含义由进度条颜色表达 */
 const tip = computed(() => {
   if (percent.value === null) {
     return t('contextUnknown', { tokens: props.tokens.toLocaleString() });
   }
-  const base = t('contextTip', {
+  return t('contextTip', {
     tokens: props.tokens.toLocaleString(),
     total: props.contextLen.toLocaleString(),
     percent: percent.value.toFixed(1),
   });
-  // OTooltip 以普通文本渲染（空白折叠），故不用换行而用分句拼接
-  return compacting.value ? `${base} — ${t('contextCompacting')}` : base;
 });
 </script>
 

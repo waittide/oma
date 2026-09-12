@@ -79,8 +79,7 @@
     "forkAttachmentUnsupported": "Edit & resend does not support attachments; remove them first",
     "queuedCount": "{count} queued",
     "contextTip": "Context {tokens} / {total} ({percent}%)",
-    "contextUnknown": "{tokens} tokens used (model window unknown)",
-    "contextCompacting": "Past the 70% compaction threshold: each further request prunes older history."
+    "contextUnknown": "{tokens} tokens used (model window unknown)"
   },
   "blocks": {
     "thinking": "Thinking",
