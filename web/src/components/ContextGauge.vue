@@ -24,8 +24,8 @@ const percentText = computed(() =>
 );
 
 /**
- * 占用分档：阈值对齐 oh-my-pi（50 提醒 / 70 注意 / 90 危险）。
- * 70% 恰好是 oma 的压缩触发点（`context_len * 0.7`），因此该档同时表示已进入压缩区。
+ * 占用分档：阈值对齐 oh-my-pi（50 / 70 / 90），仅用颜色区分，不加文字标签。
+ * 70% 恰好是 oma 的压缩触发点（`context_len * 0.7`），故该档起即已进入压缩区。
  */
 const level = computed<'normal' | 'warning' | 'pending' | 'danger'>(() => {
   const p = percent.value;
@@ -65,8 +65,6 @@ const tip = computed(() => {
         <span v-for="i in 10" :key="i" class="cell" :class="{ on: i <= filled }" />
       </span>
       <span class="pct">{{ percentText }}</span>
-      <!-- 仅进入压缩区时展示：常态下不预留宽度，容器贴合进度条与百分比 -->
-      <span v-if="compacting" class="tag">{{ t('contextCompactingTag') }}</span>
     </span>
   </OTooltip>
 </template>
@@ -135,14 +133,5 @@ const tip = computed(() => {
   /* 定宽右对齐：'9.9%' 到 '100.0%' 字数不同，不定宽会造成数字左右跳动 */
   min-width: 34px;
   text-align: right;
-}
-.tag {
-  padding: 0 6px;
-  border-radius: 99px;
-  background: var(--surface-strong);
-  color: var(--text-tertiary);
-  font-size: 10px;
-  /* 不参与宽度预留：常态下容器只包含进度条与百分比 */
-  flex-shrink: 0;
 }
 </style>

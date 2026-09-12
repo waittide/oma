@@ -80,8 +80,7 @@
     "queuedCount": "{count} queued",
     "contextTip": "Context {tokens} / {total} ({percent}%)",
     "contextUnknown": "{tokens} tokens used (model window unknown)",
-    "contextCompacting": "Past the 70% compaction threshold: each further request prunes older history.",
-    "contextCompactingTag": "compacting"
+    "contextCompacting": "Past the 70% compaction threshold: each further request prunes older history."
   },
   "blocks": {
     "thinking": "Thinking",
