@@ -324,6 +324,10 @@ function connect() {
       modelCatalog.value = r.model_catalog;
       agents.value = r.agents;
       mcpServers.value = r.mcp_summaries ?? [];
+      // 重启/重连后无内存态：用握手携带的上次占用立即恢复进度条
+      contextUsage.value = r.context_usage
+        ? { tokens: r.context_usage.tokens, contextLen: r.context_usage.context_len }
+        : null;
       currentLeafId.value = r.current_leaf_id;
       void reload();
     } else if (msg.kind === 'event') {

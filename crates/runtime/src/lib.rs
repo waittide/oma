@@ -1189,6 +1189,12 @@ impl SessionRoom {
                     tokens:      request_input_tokens,
                     context_len: model_cfg.context_len,
                 });
+                // 同时落库：重启后无内存态，靠它恢复进度条。
+                // `covered` 一并存下，恢复时才能只估算新增部分
+                let _ = self
+                    .storage
+                    .set_context_usage(&self.session_id, request_input_tokens, model_cfg.context_len, covered)
+                    .await;
             }
 
             // 保存 Assistant 消息

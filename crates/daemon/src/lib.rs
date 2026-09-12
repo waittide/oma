@@ -20,7 +20,7 @@ use futures_util::{SinkExt, StreamExt};
 use oma_config::{AgentLoader, OmaConfig, SkillLoader};
 use oma_contract::{AgentEvent, ApprovalMode, ChatMessage, ClientMessage, McpServerSummary, Ready, ServerMessage};
 use oma_mcp::McpManager;
-use oma_runtime::{RoomError, RoomSubagentRunner, SessionRoom};
+use oma_runtime::{RoomError, RoomSubagentRunner, SessionRoom, estimate_tokens};
 use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachment_name};
 use oma_tool::{RunnerSlot, ToolRegistry, resolve_path};
 use parking_lot::RwLock;
@@ -1194,6 +1194,34 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
             room.reasoning_level.read().clone(),
         )
     };
+    // 上下文占用：用上次记录值 + 其后新增部分的估算，与 TokenAnchor 的做法一致。
+    // 绝不能对整段历史重估 —— 启发式折算对代码/中文会明显高估，会把准确值盖掉。
+    let context_usage = match room
+        .storage
+        .context_usage(&room.session_id)
+        .await
+        .ok()
+        .flatten()
+    {
+        Some((tokens, context_len, covered)) => {
+            let added = match room
+                .storage
+                .get_linear_messages(&room.session_id, None)
+                .await
+            {
+                // 历史短于记录时说明前缀已变（分支切换/删除消息），估算不可靠：
+                // 只用记录值，宁可短暂偏差等下次请求刷新
+                Ok(msgs) if msgs.len() >= covered => estimate_tokens(&msgs[covered..]),
+                _ => 0,
+            };
+            Some(oma_contract::ContextUsage {
+                tokens: tokens + added,
+                context_len,
+            })
+        }
+        None => None,
+    };
+
     let ready = Ready {
         version: "0.1.0".into(),
         session_id: room.session_id.clone(),
@@ -1218,6 +1246,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
             .into_iter()
             .map(|(name, tool_count)| McpServerSummary { name, tool_count })
             .collect(),
+        context_usage,
     };
 
     let (mut ws_sender, mut ws_receiver) = socket.split();

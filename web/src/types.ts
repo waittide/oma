@@ -186,6 +186,16 @@ export interface Ready {
   agents: AgentSummary[];
   /** MCP 服务器概览（名称 + 工具数），非完整配置 */
   mcp_summaries: McpServerSummary[];
+  /** 上次记录的上下文占用；用于重连/重启后立即恢复进度条 */
+  context_usage?: ContextUsage | null;
+}
+
+/** 上下文占用快照 */
+export interface ContextUsage {
+  /** 提示侧 token 总量（含缓存） */
+  tokens: number;
+  /** 模型上下文窗口 */
+  context_len: number;
 }
 
 export type ServerMessage =

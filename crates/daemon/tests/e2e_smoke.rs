@@ -1177,3 +1177,56 @@ async fn test_context_usage_is_broadcast() -> Result<()> {
     assert_eq!(context_len, 100_000);
     Ok(())
 }
+
+/// 上下文占用须跨连接/重连恢复：首轮写入后，新连接握手即带回该值。
+#[tokio::test]
+async fn test_context_usage_survives_reconnect() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h
+        .api
+        .create_session(&h.workspace, Some("ctx-persist"))
+        .await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "first".into(),
+    })
+    .await?;
+
+    // 首连尚无记录
+    assert!(client.ready().context_usage.is_none());
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "hello".into(),
+            attachments: vec![],
+        })
+        .await?;
+    drive_turn(&mut client, Duration::from_secs(30)).await?;
+    drop(client);
+
+    // 重连：握手应带回上次记录的占用（模拟重启后恢复进度条）
+    let again = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "second".into(),
+    })
+    .await?;
+    let usage = again
+        .ready()
+        .context_usage
+        .expect("context_usage must be restored on reconnect");
+    assert!(
+        usage.tokens > 0,
+        "tokens must come from the recorded request: {usage:?}"
+    );
+    assert_eq!(usage.context_len, 100_000);
+    Ok(())
+}

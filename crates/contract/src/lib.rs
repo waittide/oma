@@ -249,6 +249,18 @@ pub struct Ready {
     pub agents:          Vec<AgentSummary>,
     /// MCP 服务器概览（名称 + 工具数），非完整配置
     pub mcp_summaries:   Vec<McpServerSummary>,
+    /// 上次记录的上下文占用与模型窗口，供重连后立即恢复进度条；无记录时为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_usage:   Option<ContextUsage>,
+}
+
+/// 上下文占用快照
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextUsage {
+    /// 提示侧 token 总量（含缓存）
+    pub tokens:      usize,
+    /// 模型上下文窗口
+    pub context_len: usize,
 }
 
 /// 结束原因

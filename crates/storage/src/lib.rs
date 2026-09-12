@@ -696,6 +696,50 @@ impl StorageManager {
         Ok(row.map(|r| r.get::<String, _>("value")))
     }
 
+    /// 记录最近一次请求的上下文占用。
+    ///
+    /// `covered` 为该请求发出时的历史条数：重启后历史可能又追加了消息，
+    /// 只有知道上次覆盖到哪里，才能只对新增部分做估算（不能拿整段历史重估，
+    /// 启发式折算对代码/中文会明显高估）。
+    pub async fn set_context_usage(
+        &self,
+        session_id: &str,
+        tokens: usize,
+        context_len: usize,
+        covered: usize,
+    ) -> Result<()> {
+        let pools = self.session_pools(session_id).await?;
+        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('context_usage', ?)")
+            .bind(format!("{}:{}:{}", tokens, context_len, covered))
+            .execute(&pools.write)
+            .await?;
+        Ok(())
+    }
+
+    /// 读取上次记录的上下文占用（tokens, context_len, covered）。
+    /// 无记录或格式不合法时返回 None。
+    pub async fn context_usage(&self, session_id: &str) -> Result<Option<(usize, usize, usize)>> {
+        let pools = self.session_pools(session_id).await?;
+        let row = sqlx::query("SELECT value FROM session_meta WHERE key = 'context_usage'")
+            .fetch_optional(&pools.read)
+            .await?;
+        let Some(raw) = row.map(|r| r.get::<String, _>("value")) else {
+            return Ok(None);
+        };
+        let parsed = raw.split(':').collect::<Vec<_>>();
+        let [t, l, c] = match parsed.as_slice() {
+            [t, l, c] => [*t, *l, *c],
+            _ => return Ok(None),
+        };
+        let value = t
+            .parse::<usize>()
+            .ok()
+            .zip(l.parse::<usize>().ok())
+            .zip(c.parse::<usize>().ok())
+            .map(|((t, l), c)| (t, l, c));
+        Ok(value)
+    }
+
     /// 获取激活分支的线性消息链（从 root 到指定/当前 leaf_id）
     pub async fn get_linear_messages(&self, session_id: &str, leaf_id: Option<&str>) -> Result<Vec<ChatMessage>> {
         let pools = self.session_pools(session_id).await?;
@@ -1058,6 +1102,46 @@ mod tests {
             .await?;
         assert!(!storage.set_title_if_empty("s_blank", "   ").await?);
         assert_eq!(storage.get_session("s_blank").await?.unwrap().title, "");
+        Ok(())
+    }
+
+    /// 上下文占用需可跨进程恢复：写入后读回一致，无记录时为 None。
+    #[tokio::test]
+    async fn test_context_usage_roundtrip() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let storage = StorageManager::new(tmp.path()).await?;
+        storage
+            .create_session("s_ctx", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
+            .await?;
+
+        // 未写入前无记录
+        assert!(storage.context_usage("s_ctx").await?.is_none());
+
+        storage
+            .set_context_usage("s_ctx", 123_456, 1_048_576, 42)
+            .await?;
+        assert_eq!(storage.context_usage("s_ctx").await?, Some((123_456, 1_048_576, 42)));
+
+        // 覆盖写：同 key 应被替换而非累积
+        storage.set_context_usage("s_ctx", 200, 1000, 7).await?;
+        assert_eq!(storage.context_usage("s_ctx").await?, Some((200, 1000, 7)));
+        Ok(())
+    }
+
+    /// 非法存储值不得让读取 panic，应退化为 None。
+    #[tokio::test]
+    async fn test_context_usage_tolerates_corrupt_value() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let storage = StorageManager::new(tmp.path()).await?;
+        storage
+            .create_session("s_bad", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
+            .await?;
+        let pools = storage.session_pools("s_bad").await?;
+        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('context_usage', ?)")
+            .bind("not-a-number")
+            .execute(&pools.write)
+            .await?;
+        assert!(storage.context_usage("s_bad").await?.is_none());
         Ok(())
     }
 
