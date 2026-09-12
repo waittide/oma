@@ -92,11 +92,17 @@ const tip = computed(() => {
 }
 .bar {
   display: inline-flex;
-  gap: 2px;
+  align-items: center;
+  /* 固定轨道宽度：外层宽度由内容决定，flex:1 拿不到富余空间；
+     固定尺寸同时避免百分比文字变长变短时进度条跟着抽动 */
+  width: 72px;
+  /* 格子两端对齐均分铺开，轨道随宽度拉开而非挤在左侧 */
+  justify-content: space-between;
 }
 .cell {
-  width: 4px;
+  width: 5px;
   height: 12px;
+  flex-shrink: 0;
   border-radius: 1px;
   background: var(--surface2);
 }
@@ -125,14 +131,21 @@ const tip = computed(() => {
 .ctx.danger {
   border-color: color-mix(in srgb, var(--red) 40%, transparent);
 }
+.pct {
+  /* 定宽右对齐：'9.9%' 到 '100.0%' 字数不同，不定宽会造成整体抖动 */
+  min-width: 36px;
+  text-align: right;
+}
 .tag {
+  /* 定宽占位，与是否处于压缩区无关，保证整体宽度恒定 */
+  min-width: 40px;
   padding: 0 5px;
   border-radius: 99px;
   background: var(--surface-strong);
   color: var(--text-tertiary);
   font-size: 10px;
+  text-align: center;
 }
-/* 未达阈值时不可见但占位，保证整体宽度恒定 */
 .tag.off {
   visibility: hidden;
 }
