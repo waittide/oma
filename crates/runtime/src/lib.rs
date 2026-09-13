@@ -13,11 +13,11 @@ use oma_config::{AgentLoader, AgentTemplate, OmaConfig};
 use oma_contract::{
     ActiveTurnCatchUp, AgentCommand, AgentEvent, ApprovalDecision, ApprovalMode, AskAnswer, AskQuestion,
     AskRequestedData, AskResponse, Block, ChatMessage, ClientType, PermissionRequestedData, Role, StopReason,
-    TokenUsage, ToolCallStartedData, ToolOutput,
+    TokenUsage, ToolCallStartedData, ToolImage, ToolOutput,
 };
 use oma_provider::{ModelConfig, ProviderStreamEvent, UniversalProvider};
 use oma_storage::{StorageError, StorageManager};
-use oma_tool::{AskRunner, SubagentRunner, ToolRegistry};
+use oma_tool::{AskRunner, SubagentRunner, ToolContext, ToolRegistry};
 use parking_lot::RwLock;
 use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -880,10 +880,12 @@ impl SessionRoom {
                 false,
             );
         };
+        // 先取出模型能力再进 select：临时值不能在 select 分支里悬空
+        let vision_ctx = VisionCtx(self.model_supports_vision());
         let output = tokio::select! {
             biased;
             _ = cancel.cancelled() => ToolOutput::error("Tool execution cancelled."),
-            out = tool.execute(&self.workspace, tool_input) => out,
+            out = tool.execute_with(&self.workspace, tool_input, &vision_ctx) => out,
         };
         let cancelled = cancel.is_cancelled();
         (
@@ -891,6 +893,18 @@ impl SessionRoom {
                 .await,
             cancelled,
         )
+    }
+
+    /// 当前模型能否直接接收图片输入。
+    ///
+    /// 只认 `supports_vision`：它同时驱动 provider 侧的图片编码与会话内的
+    /// `read` 图像回传，两处判断必须同源，否则会把图发给看不见图的模型。
+    fn model_supports_vision(&self) -> bool {
+        let selector = self.active_model.read().clone();
+        self.config
+            .read()
+            .find_model(&selector)
+            .is_some_and(|(_, m)| m.supports_vision)
     }
 
     /// 广播工具执行结果并清理活跃工具槽位，把输出交回调用方用于落库
@@ -1286,7 +1300,7 @@ impl SessionRoom {
                             parent,
                             assistant_tool_calls
                                 .iter()
-                                .map(|(id, _, _)| (id.clone(), reason.to_string(), true))
+                                .map(|(id, _, _)| (id.clone(), reason.to_string(), true, Vec::new()))
                                 .collect(),
                             history,
                         )
@@ -1299,18 +1313,19 @@ impl SessionRoom {
 
             // 执行工具调用
             let parent_id = assistant_msg_id.expect("assistant message persisted for tool use");
-            let mut results: Vec<(String, String, bool)> = Vec::with_capacity(assistant_tool_calls.len());
+            let mut results: Vec<(String, String, bool, Vec<ToolImage>)> =
+                Vec::with_capacity(assistant_tool_calls.len());
             let mut cancelled = false;
             for (call_id, tool_name, tool_input) in assistant_tool_calls {
                 if cancelled {
-                    results.push((call_id, "Tool call cancelled.".into(), true));
+                    results.push((call_id, "Tool call cancelled.".into(), true, Vec::new()));
                     continue;
                 }
                 let (output, was_cancelled) = self
                     .execute_tool_call(&call_id, &tool_name, tool_input, allowed.as_ref(), cancel_token, None)
                     .await;
                 cancelled = was_cancelled;
-                results.push((call_id, output.output, output.is_error));
+                results.push((call_id, output.output, output.is_error, output.images));
             }
 
             self.append_tool_results(&parent_id, results, history).await;
@@ -1322,10 +1337,13 @@ impl SessionRoom {
     }
 
     /// 持久化工具回执消息（role = user），并同步到内存历史
+    ///
+    /// `results` 为 (tool_use_id, 文本, is_error, 图片)，图片附加在同一条回执消息里，
+    /// 保证顺序上紧跟对应的 tool_use（各厂商协议的硬性要求）并且能随历史落库。
     async fn append_tool_results(
         &self,
         parent_id: &str,
-        results: Vec<(String, String, bool)>,
+        results: Vec<(String, String, bool, Vec<ToolImage>)>,
         history: &mut Vec<ChatMessage>,
     ) {
         if results.is_empty() {
@@ -1333,10 +1351,18 @@ impl SessionRoom {
         }
         let blocks: Vec<Block> = results
             .into_iter()
-            .map(|(tool_use_id, content, is_error)| Block::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
+            .flat_map(|(tool_use_id, content, is_error, images)| {
+                let mut out = vec![Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                }];
+                // 图片排在回执之后：provider 侧据此把回执改写为带图的内容数组
+                out.extend(images.into_iter().map(|img| Block::Image {
+                    mime_type: img.mime_type,
+                    data:      img.data,
+                }));
+                out
             })
             .collect();
 
@@ -1548,6 +1574,15 @@ enum TurnOutcome {
     Finished(StopReason),
 }
 
+/// 把「当前模型能不能看图」包成工具可用的上下文
+struct VisionCtx(bool);
+
+impl ToolContext for VisionCtx {
+    fn supports_vision(&self) -> bool {
+        self.0
+    }
+}
+
 /// Agent 模板声明的工具白名单（空声明 = 不限制）
 fn allowed_tools(template: &AgentTemplate) -> Option<HashSet<String>> {
     if template.tools.is_empty() {
@@ -1738,7 +1773,7 @@ impl RoomSubagentRunner {
                             &parent,
                             calls
                                 .iter()
-                                .map(|(id, _, _)| (id.clone(), "Tool call not executed.".to_string(), true))
+                                .map(|(id, _, _)| (id.clone(), "Tool call not executed.".to_string(), true, Vec::new()))
                                 .collect(),
                         ));
                     }
@@ -1751,7 +1786,7 @@ impl RoomSubagentRunner {
             let mut cancelled = false;
             for (call_id, tool_name, tool_input) in calls {
                 if cancelled {
-                    results.push((call_id, "Tool call cancelled.".to_string(), true));
+                    results.push((call_id, "Tool call cancelled.".to_string(), true, Vec::new()));
                     continue;
                 }
                 let (output, was_cancelled) = room
@@ -1765,7 +1800,7 @@ impl RoomSubagentRunner {
                     )
                     .await;
                 cancelled = was_cancelled;
-                results.push((call_id, output.output, output.is_error));
+                results.push((call_id, output.output, output.is_error, output.images));
             }
             messages.push(subagent_tool_results(&parent, results));
             if cancelled {
@@ -1780,17 +1815,25 @@ impl RoomSubagentRunner {
     }
 }
 
-fn subagent_tool_results(parent_id: &str, results: Vec<(String, String, bool)>) -> ChatMessage {
+fn subagent_tool_results(parent_id: &str, results: Vec<(String, String, bool, Vec<ToolImage>)>) -> ChatMessage {
     ChatMessage {
         id:         uuid::Uuid::new_v4().to_string(),
         parent_id:  Some(parent_id.to_string()),
         role:       Role::User,
         content:    results
             .into_iter()
-            .map(|(tool_use_id, content, is_error)| Block::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
+            .flat_map(|(tool_use_id, content, is_error, images)| {
+                let mut out = vec![Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                }];
+                // 子 Agent 同样支持图片回传，否则「让子代理看图」会静默降级
+                out.extend(images.into_iter().map(|img| Block::Image {
+                    mime_type: img.mime_type,
+                    data:      img.data,
+                }));
+                out
             })
             .collect(),
         created_at: chrono::Utc::now().timestamp_millis(),
