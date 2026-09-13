@@ -387,6 +387,10 @@ export interface ModelEntry {
   reasoning_map?: Record<string, string>;
   /** 支持的输入模态：text / image / video */
   input_types?: string[];
+  /** 模型级请求头：同名覆盖提供商级 */
+  headers?: Record<string, string>;
+  /** 模型级请求体字段：递归合并，覆盖提供商级 */
+  body?: unknown;
 }
 
 export interface ProviderConfig {

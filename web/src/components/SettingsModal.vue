@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
 import {
   LuCheck,
+  LuChevronRight,
   LuEye,
   LuEyeOff,
   LuLanguages,
@@ -732,6 +733,44 @@ function parseKvText(text: string): Record<string, string> {
   return out;
 }
 
+/** 键值对 → 每行 KEY=value 的文本（与 parseKvText 互逆）。 */
+function formatKvText(kv: Record<string, string> | undefined): string {
+  return Object.entries(kv ?? {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+}
+
+/** JSON 对象 → 缩进文本；空对象与非法值一律渲染为空串，界面从干净状态开始编辑。 */
+function formatJsonText(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+  if (Object.keys(value).length === 0) return '';
+  return JSON.stringify(value, null, 2);
+}
+
+/**
+ * 解析请求体文本。
+ *
+ * 返回 null 表示格式非法（调用方据此阻断保存）；空文本视为未填写，返回 `{}`。
+ * 只接受 JSON 对象：请求体字段是合并目标，数组/标量无法与内置载荷合并。
+ */
+function parseJsonText(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
+}
+
+/** 是否含有实际字段：空对象不写入配置，保持配置文件干净。 */
+function hasJsonKeys(value: Record<string, unknown>): boolean {
+  return Object.keys(value).length > 0;
+}
+
 function addMcpServer() {
   mcpDrafts.value.push({
     origName: null,
@@ -799,6 +838,14 @@ interface ModelDraft {
   supports_thinking: boolean;
   supports_vision: boolean;
   input_types: string[];
+  /** 模型级请求头（每行 KEY=value） */
+  headersText: string;
+  /** 模型级请求体覆写（JSON 文本） */
+  bodyText: string;
+  /** 推理等级映射折叠区是否展开（默认收起） */
+  reasoningOpen: boolean;
+  /** 请求头/请求体折叠区是否展开（默认收起） */
+  requestOpen: boolean;
 }
 
 interface ProviderDraft {
@@ -815,8 +862,12 @@ interface ProviderDraft {
   keyMasked: boolean;
   /** 真实密钥字符数，供脱敏占位渲染等长掩码 */
   keyLen: number;
-  headers: Record<string, string>;
-  body: unknown;
+  /** 提供商级请求头（每行 KEY=value） */
+  headersText: string;
+  /** 提供商级请求体覆写（JSON 文本） */
+  bodyText: string;
+  /** 请求头/请求体折叠区是否展开（默认收起） */
+  requestOpen: boolean;
   models: ModelDraft[];
 }
 
@@ -840,8 +891,9 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
     api_key: p.api_key === API_KEY_MASK ? '' : p.api_key,
     keyMasked: p.api_key === API_KEY_MASK,
     keyLen: p.api_key === API_KEY_MASK ? (p.api_key_len ?? API_KEY_MASK.length) : 0,
-    headers: { ...p.headers },
-    body: p.body,
+    headersText: formatKvText(p.headers),
+    bodyText: formatJsonText(p.body),
+    requestOpen: false,
     models: (p.models ?? []).map((m) => ({
       id: m.id,
       name: m.name,
@@ -851,6 +903,10 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
       supports_thinking: m.supports_thinking,
       supports_vision: m.supports_vision,
       input_types: [...(m.input_types ?? [])],
+      headersText: formatKvText(m.headers),
+      bodyText: formatJsonText(m.body),
+      reasoningOpen: false,
+      requestOpen: false,
     })),
   };
 }
@@ -1015,8 +1071,9 @@ function addProvider() {
     api_key: '',
     keyMasked: false,
     keyLen: 0,
-    headers: {},
-    body: {},
+    headersText: '',
+    bodyText: '',
+    requestOpen: false,
     models: [],
   };
   providerDrafts.value.push(draft);
@@ -1044,6 +1101,10 @@ function addModel(d: ProviderDraft) {
     supports_thinking: true,
     supports_vision: true,
     input_types: ['text', 'image'],
+    headersText: '',
+    bodyText: '',
+    reasoningOpen: false,
+    requestOpen: false,
   });
 }
 
@@ -1093,35 +1154,50 @@ async function saveProviders() {
 
     const providers: Record<string, ProviderConfig> = {};
     for (const d of providerDrafts.value) {
+      // 校验 JSON/键值文本：格式错误应阻断保存，而不是静默写进配置
+      const headers = parseKvText(d.headersText);
+      const body = parseJsonText(d.bodyText);
+      if (body === null) {
+        toast.error(t('requestBodyInvalid', { name: d.name || t('providerName') }));
+        return;
+      }
+      const models = [];
+      for (const m of d.models) {
+        if (!m.id.trim()) continue;
+        const ctx = parseInt(m.context_len, 10);
+        const mo = parseInt(m.max_output, 10);
+        const modelBody = parseJsonText(m.bodyText);
+        if (modelBody === null) {
+          toast.error(t('requestBodyInvalid', { name: m.name || m.id }));
+          return;
+        }
+        models.push({
+          id: m.id.trim(),
+          name: m.name.trim(),
+          context_len: Number.isFinite(ctx) && ctx > 0 ? ctx : 128000,
+          supports_vision: m.supports_vision,
+          supports_thinking: m.supports_thinking,
+          ...(Number.isFinite(mo) && mo > 0 ? { max_output: mo } : {}),
+          // 只回写非空映射项，避免把整表空值写进配置
+          ...(m.supports_thinking && Object.keys(m.reasoning_map).length
+            ? {
+                reasoning_map: Object.fromEntries(
+                  Object.entries(m.reasoning_map).filter(([, v]) => v.trim() !== ''),
+                ),
+              }
+            : {}),
+          ...(m.input_types.length ? { input_types: [...m.input_types] } : {}),
+          ...(Object.keys(parseKvText(m.headersText)).length ? { headers: parseKvText(m.headersText) } : {}),
+          ...(hasJsonKeys(modelBody) ? { body: modelBody } : {}),
+        });
+      }
       providers[d.name.trim()] = {
         api_type: d.api_type,
         base_url: d.base_url.trim(),
         api_key: d.keyMasked ? API_KEY_MASK : d.api_key,
-        headers: d.headers,
-        body: d.body,
-        models: d.models
-          .filter((m) => m.id.trim())
-          .map((m) => {
-            const ctx = parseInt(m.context_len, 10);
-            const mo = parseInt(m.max_output, 10);
-            return {
-              id: m.id.trim(),
-              name: m.name.trim(),
-              context_len: Number.isFinite(ctx) && ctx > 0 ? ctx : 128000,
-              supports_vision: m.supports_vision,
-              supports_thinking: m.supports_thinking,
-              ...(Number.isFinite(mo) && mo > 0 ? { max_output: mo } : {}),
-              // 只回写非空映射项，避免把整表空值写进配置
-              ...(m.supports_thinking && Object.keys(m.reasoning_map).length
-                ? {
-                    reasoning_map: Object.fromEntries(
-                      Object.entries(m.reasoning_map).filter(([, v]) => v.trim() !== ''),
-                    ),
-                  }
-                : {}),
-              ...(m.input_types.length ? { input_types: [...m.input_types] } : {}),
-            };
-          }),
+        headers: parseKvText(d.headersText),
+        body: parseJsonText(d.bodyText) ?? {},
+        models,
       };
     }
     await saveConfig({ ...config.value, providers, default_model });
@@ -1496,6 +1572,27 @@ function pickLocale(v: Locale) {
                       </button>
                     </OTooltip>
                   </div>
+
+                  <!-- 请求头/请求体覆写：默认收起，展开后内容与标签顶格对齐 -->
+                  <label class="cfg-label">{{ t('requestOverride') }}</label>
+                  <div class="cfg-ctl cfg-stack">
+                    <button
+                      type="button"
+                      class="cfg-fold"
+                      :aria-expanded="d.requestOpen"
+                      @click="d.requestOpen = !d.requestOpen"
+                    >
+                      <span>{{ t('requestOverrideToggle') }}</span>
+                      <LuChevronRight :size="13" class="caret" :class="{ open: d.requestOpen }" />
+                    </button>
+                    <template v-if="d.requestOpen">
+                      <p class="cfg-hint">{{ t('requestOverrideHint') }}</p>
+                      <label class="cfg-sub-label">{{ t('requestHeaders') }}</label>
+                      <textarea v-model="d.headersText" rows="3" spellcheck="false" />
+                      <label class="cfg-sub-label">{{ t('requestBody') }}</label>
+                      <textarea v-model="d.bodyText" rows="5" spellcheck="false" />
+                    </template>
+                  </div>
                 </div>
               </section>
 
@@ -1548,27 +1645,59 @@ function pickLocale(v: Locale) {
                     />
                   </div>
 
-                  <!-- 推理映射仅在模型支持思考时才有意义 -->
+                  <!-- 推理映射仅在模型支持思考时才有意义；默认收起 -->
                   <template v-if="m.supports_thinking">
                     <label class="cfg-label">{{ t('reasoningMap') }}</label>
                     <div class="cfg-ctl cfg-stack">
-                      <p class="cfg-hint">{{ t('reasoningMapHint') }}</p>
-                      <div class="effort-map">
-                        <div v-for="lv in REASONING_LEVELS" :key="lv" class="effort-row">
-                          <span class="effort-key mono">{{ lv }}</span>
-                          <OInput
-                            :model-value="m.reasoning_map[lv] ?? ''"
-                            :placeholder="lv"
-                            @update:model-value="(v) => (m.reasoning_map[lv] = v)"
-                          />
+                      <button
+                        type="button"
+                        class="cfg-fold"
+                        :aria-expanded="m.reasoningOpen"
+                        @click="m.reasoningOpen = !m.reasoningOpen"
+                      >
+                        <span>{{ t('reasoningMapToggle') }}</span>
+                        <LuChevronRight :size="13" class="caret" :class="{ open: m.reasoningOpen }" />
+                      </button>
+                      <template v-if="m.reasoningOpen">
+                        <p class="cfg-hint">{{ t('reasoningMapHint') }}</p>
+                        <div class="effort-map">
+                          <div v-for="lv in REASONING_LEVELS" :key="lv" class="effort-row">
+                            <span class="effort-key mono">{{ lv }}</span>
+                            <OInput
+                              :model-value="m.reasoning_map[lv] ?? ''"
+                              :placeholder="lv"
+                              @update:model-value="(v) => (m.reasoning_map[lv] = v)"
+                            />
+                          </div>
                         </div>
-                      </div>
+                      </template>
                     </div>
                   </template>
 
                   <label class="cfg-label">{{ t('inputTypes') }}</label>
                   <div class="cfg-ctl">
                     <OMultiSelect v-model="m.input_types" :options="inputTypeOptions" />
+                  </div>
+
+                  <!-- 模型级请求头/请求体覆写：默认收起 -->
+                  <label class="cfg-label">{{ t('requestOverride') }}</label>
+                  <div class="cfg-ctl cfg-stack">
+                    <button
+                      type="button"
+                      class="cfg-fold"
+                      :aria-expanded="m.requestOpen"
+                      @click="m.requestOpen = !m.requestOpen"
+                    >
+                      <span>{{ t('requestOverrideToggle') }}</span>
+                      <LuChevronRight :size="13" class="caret" :class="{ open: m.requestOpen }" />
+                    </button>
+                    <template v-if="m.requestOpen">
+                      <p class="cfg-hint">{{ t('requestOverrideHint') }}</p>
+                      <label class="cfg-sub-label">{{ t('requestHeaders') }}</label>
+                      <textarea v-model="m.headersText" rows="3" spellcheck="false" />
+                      <label class="cfg-sub-label">{{ t('requestBody') }}</label>
+                      <textarea v-model="m.bodyText" rows="5" spellcheck="false" />
+                    </template>
                   </div>
                 </div>
               </section>
@@ -2412,11 +2541,14 @@ function pickLocale(v: Locale) {
 .cfg-rows {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
-  align-items: center;
+  /* 标签对齐控件首行而不是垂直居中：映射表、请求头等多行控件下，
+     居中的标签会飘在中间，与内容脱节 */
+  align-items: start;
   gap: 8px 12px;
   padding-top: 8px;
 }
 .cfg-label {
+  padding-top: 8px;
   font-size: 12.5px;
   line-height: 1.35;
   color: var(--text-secondary);
@@ -2441,6 +2573,61 @@ function pickLocale(v: Locale) {
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
+}
+/* 折叠区开关：整行可点，箭头靠右表示展开状态 */
+.cfg-fold {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+.cfg-fold:hover {
+  border-color: var(--overlay0);
+  color: var(--ink);
+}
+.cfg-fold .caret {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform 0.15s ease;
+}
+.cfg-fold .caret.open {
+  transform: rotate(90deg);
+}
+/* 折叠区内的子标签：同样顶格，与上方提示、下方输入框左边缘齐平 */
+.cfg-sub-label {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+/* 请求头/请求体文本域：默认即顶格换行，不引入额外内缩 */
+.cfg-ctl.cfg-stack > textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  resize: vertical;
+  transition: border-color 0.15s ease;
+}
+.cfg-ctl.cfg-stack > textarea:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 .cfg-hint {
   margin: 0;
