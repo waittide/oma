@@ -377,7 +377,7 @@ pub struct ModelEntry {
     pub name:          String,
     #[serde(default = "model_entry_default_context")]
     pub context_len:   usize,
-    /// 模型能力集合；未声明时仅文本理解与文本生成
+    /// 模型能力集合；未声明时仅文本输入与文本输出
     #[serde(default = "oma_contract::default_model_capabilities")]
     pub capabilities:  BTreeSet<ModelCapability>,
     /// 最大输出 Token 数；None 时各协议使用内置默认
@@ -472,7 +472,7 @@ impl ModelConfig {
 
     /// 能否直接接收图片输入（驱动图片编码与 `read` 内联判断）
     pub fn supports_image_input(&self) -> bool {
-        self.has(ModelCapability::ImageUnderstanding)
+        self.has(ModelCapability::ImageInput)
     }
 
     /// 是否支持思考（决定是否下发 reasoning 类参数）
@@ -1697,13 +1697,13 @@ where
 mod tests {
     use super::*;
 
-    /// 测试用能力集：文本理解/生成 + 思考 + 图像理解，与旧默认（vision/thinking 均 true）等价
+    /// 测试用能力集：文本输入/输出 + 思考 + 图像输入，与旧默认（vision/thinking 均 true）等价
     fn test_capabilities() -> BTreeSet<ModelCapability> {
         [
             ModelCapability::Thinking,
-            ModelCapability::TextUnderstanding,
-            ModelCapability::TextGeneration,
-            ModelCapability::ImageUnderstanding,
+            ModelCapability::TextInput,
+            ModelCapability::TextOutput,
+            ModelCapability::ImageInput,
         ]
         .into_iter()
         .collect()

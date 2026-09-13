@@ -908,7 +908,7 @@ impl SessionRoom {
 
     /// 当前模型能否直接接收图片输入。
     ///
-    /// 只认 `ImageUnderstanding` 能力：它同时驱动 provider 侧的图片编码与会话
+    /// 只认 `ImageInput` 能力：它同时驱动 provider 侧的图片编码与会话
     /// 内的 `read` 图像回传，两处判断必须同源，否则会把图发给看不见图的模型。
     fn model_supports_vision(&self) -> bool {
         let selector = self.active_model.read().clone();
@@ -2443,7 +2443,7 @@ mod tests {
             reasoning_map.insert(k.to_string(), v.to_string());
         }
         let mut capabilities = oma_contract::default_model_capabilities();
-        capabilities.insert(oma_contract::ModelCapability::ImageUnderstanding);
+        capabilities.insert(oma_contract::ModelCapability::ImageInput);
         if supports_thinking {
             capabilities.insert(oma_contract::ModelCapability::Thinking);
         }

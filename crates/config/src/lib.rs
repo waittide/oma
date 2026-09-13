@@ -1177,7 +1177,7 @@ api_key = "k"
 id = "m1"
 name = "Model One"
 context_len = 1_048_576
-capabilities = ["text_understanding", "image_understanding"]
+capabilities = ["text_input", "image_input"]
 [[providers.p1.models]]
 id = "m2"
 
@@ -1192,10 +1192,10 @@ api_key = "k"
         let (_, m1) = config.find_model("p1/m1").unwrap();
         assert_eq!(m1.name, "Model One");
         assert_eq!(m1.context_len, 1_048_576);
-        assert!(m1.has(ModelCapability::ImageUnderstanding));
-        assert!(m1.has(ModelCapability::TextUnderstanding));
+        assert!(m1.has(ModelCapability::ImageInput));
+        assert!(m1.has(ModelCapability::TextInput));
         assert!(!m1.has(ModelCapability::Thinking));
-        // 未声明 capabilities 时仅文本理解与生成
+        // 未声明 capabilities 时仅文本输入与输出
         let (_, m2) = config.find_model("p1/m2").unwrap();
         assert_eq!(m2.name, "m2");
         assert_eq!(m2.context_len, 128_000);

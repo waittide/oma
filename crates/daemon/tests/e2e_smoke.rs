@@ -212,7 +212,7 @@ async fn start_harness() -> Result<Harness> {
     start_harness_with(100_000, true).await
 }
 
-/// 只改模型的图像理解能力，其余与默认 harness 一致
+/// 只改模型的图像输入能力，其余与默认 harness 一致
 async fn start_harness_with_vision(supports_vision: bool) -> Result<Harness> {
     start_harness_with(100_000, supports_vision).await
 }
@@ -238,10 +238,10 @@ async fn start_harness_with(context_len: usize, supports_vision: bool) -> Result
     });
 
     // 2. Daemon（指向 mock provider）
-    // 能力集：文本理解/生成与思考是测试基线，视觉按参数开关
-    let mut capabilities = vec!["thinking", "text_understanding", "text_generation"];
+    // 能力集：文本输入/输出与思考是测试基线，视觉按参数开关
+    let mut capabilities = vec!["thinking", "text_input", "text_output"];
     if supports_vision {
-        capabilities.push("image_understanding");
+        capabilities.push("image_input");
     }
     let capabilities = capabilities
         .iter()
@@ -1124,7 +1124,7 @@ async fn test_read_image_reaches_provider_and_persists() -> Result<()> {
         .await?;
     drive_turn(&mut client, Duration::from_secs(30)).await?;
 
-    // mock 模型具备 image_understanding（默认），因此图片必须以 data URL 交付
+    // mock 模型具备 image_input（默认），因此图片必须以 data URL 交付
     let observed = h.mock.observed.lock().clone();
     let with_image = observed
         .iter()

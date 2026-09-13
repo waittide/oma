@@ -122,11 +122,11 @@ pub trait Tool: Send + Sync {
 /// 工具本身不应感知会话与模型配置；确实需要感知的（当前只有 `read` 判断
 /// 「要不要把图片交给模型」）通过这一层显式传入，避免把 Trait 扩散成大杂烩。
 pub trait ToolContext: Send + Sync {
-    /// 当前模型能否直接接收图片输入（即具备图像理解能力）
+    /// 当前模型能否直接接收图片输入（即具备图像输入能力）
     fn supports_image_input(&self) -> bool;
 }
 
-/// 默认上下文：视为不具备图像理解能力，工具据此只回元数据文本。
+/// 默认上下文：视为不具备图像输入能力，工具据此只回元数据文本。
 pub struct NoImageInput;
 
 impl ToolContext for NoImageInput {
@@ -910,7 +910,7 @@ impl ToolRegistry {
 mod tests {
     use super::*;
 
-    /// 可切换图像理解能力的测试上下文
+    /// 可切换图像输入能力的测试上下文
     struct Ctx(bool);
     impl ToolContext for Ctx {
         fn supports_image_input(&self) -> bool {

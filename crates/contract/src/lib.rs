@@ -438,57 +438,57 @@ pub struct ResolvedTheme {
 /// 模型能力：描述模型能做什么，取代原先分散的 `supports_vision` /
 /// `supports_thinking` / `input_types` 三个字段。
 ///
-/// 单一枚举兼顾「输入模态」与「产出形态」：文本理解与文本生成是所有模型
-/// 的底线能力，图像/视频/音频的理解与生成则按模型差异声明。
+/// 单一枚举兼顾「输入模态」与「产出形态」：文本输入与文本输出是所有模型
+/// 的底线能力，图像/视频/音频的输入与输出则按模型差异声明。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelCapability {
     /// 思考（推理过程可见）
     Thinking,
-    /// 文本理解
-    TextUnderstanding,
-    /// 文本生成
-    TextGeneration,
-    /// 图像理解
-    ImageUnderstanding,
-    /// 图像生成
-    ImageGeneration,
-    /// 视频理解
-    VideoUnderstanding,
-    /// 视频生成
-    VideoGeneration,
-    /// 音频理解
-    AudioUnderstanding,
-    /// 音频生成
-    AudioGeneration,
+    /// 文本输入
+    TextInput,
+    /// 文本输出
+    TextOutput,
+    /// 图像输入
+    ImageInput,
+    /// 图像输出
+    ImageOutput,
+    /// 视频输入
+    VideoInput,
+    /// 视频输出
+    VideoOutput,
+    /// 音频输入
+    AudioInput,
+    /// 音频输出
+    AudioOutput,
 }
 
 impl ModelCapability {
     /// 全部能力，顺序即界面展示顺序
     pub const ALL: [ModelCapability; 9] = [
         ModelCapability::Thinking,
-        ModelCapability::TextUnderstanding,
-        ModelCapability::TextGeneration,
-        ModelCapability::ImageUnderstanding,
-        ModelCapability::ImageGeneration,
-        ModelCapability::VideoUnderstanding,
-        ModelCapability::VideoGeneration,
-        ModelCapability::AudioUnderstanding,
-        ModelCapability::AudioGeneration,
+        ModelCapability::TextInput,
+        ModelCapability::TextOutput,
+        ModelCapability::ImageInput,
+        ModelCapability::ImageOutput,
+        ModelCapability::VideoInput,
+        ModelCapability::VideoOutput,
+        ModelCapability::AudioInput,
+        ModelCapability::AudioOutput,
     ];
 
     /// 配置与协议中的字符串表示（与 `serde` 的 snake_case 一致）
     pub fn as_str(self) -> &'static str {
         match self {
             ModelCapability::Thinking => "thinking",
-            ModelCapability::TextUnderstanding => "text_understanding",
-            ModelCapability::TextGeneration => "text_generation",
-            ModelCapability::ImageUnderstanding => "image_understanding",
-            ModelCapability::ImageGeneration => "image_generation",
-            ModelCapability::VideoUnderstanding => "video_understanding",
-            ModelCapability::VideoGeneration => "video_generation",
-            ModelCapability::AudioUnderstanding => "audio_understanding",
-            ModelCapability::AudioGeneration => "audio_generation",
+            ModelCapability::TextInput => "text_input",
+            ModelCapability::TextOutput => "text_output",
+            ModelCapability::ImageInput => "image_input",
+            ModelCapability::ImageOutput => "image_output",
+            ModelCapability::VideoInput => "video_input",
+            ModelCapability::VideoOutput => "video_output",
+            ModelCapability::AudioInput => "audio_input",
+            ModelCapability::AudioOutput => "audio_output",
         }
     }
 
@@ -497,12 +497,12 @@ impl ModelCapability {
     }
 }
 
-/// 未显式配置能力时的默认值：仅文本理解与文本生成。
+/// 未显式配置能力时的默认值：仅文本输入与文本输出。
 ///
 /// 刻意不含 `Thinking` 与视觉类能力 —— 少数派能力交给用户显式声明，
 /// 未声明的模型不会被误判成能看图，避免把图片发给看不见图的模型。
 pub fn default_model_capabilities() -> BTreeSet<ModelCapability> {
-    [ModelCapability::TextUnderstanding, ModelCapability::TextGeneration]
+    [ModelCapability::TextInput, ModelCapability::TextOutput]
         .into_iter()
         .collect()
 }
@@ -861,17 +861,17 @@ mod tests {
         let caps = default_model_capabilities();
         assert_eq!(
             serde_json::to_value(&caps).unwrap(),
-            serde_json::json!(["text_understanding", "text_generation"])
+            serde_json::json!(["text_input", "text_output"])
         );
 
         let parsed: BTreeSet<ModelCapability> = serde_json::from_str(
-            r#"["thinking", "text_understanding", "text_generation", "image_understanding", "audio_understanding", "audio_generation"]"#,
+            r#"["thinking", "text_input", "text_output", "image_input", "audio_input", "audio_output"]"#,
         )
         .unwrap();
         assert!(parsed.contains(&ModelCapability::Thinking));
-        assert!(parsed.contains(&ModelCapability::AudioUnderstanding));
-        assert!(parsed.contains(&ModelCapability::AudioGeneration));
-        assert!(!parsed.contains(&ModelCapability::VideoUnderstanding));
+        assert!(parsed.contains(&ModelCapability::AudioInput));
+        assert!(parsed.contains(&ModelCapability::AudioOutput));
+        assert!(!parsed.contains(&ModelCapability::VideoInput));
     }
 
     /// 字符串表示与 serde 保持一致，且能被 `parse` 反向解析（供前后端共享取值）。
@@ -883,6 +883,10 @@ mod tests {
         }
         assert_eq!(ModelCapability::parse("vision"), None);
         assert_eq!(ModelCapability::parse("embedding"), None);
+        // 旧命名不再兼容：理解/生成 已分别改为 输入/输出
+        assert_eq!(ModelCapability::parse("text_understanding"), None);
+        assert_eq!(ModelCapability::parse("text_generation"), None);
+        assert_eq!(ModelCapability::parse("image_understanding"), None);
         assert_eq!(ModelCapability::ALL.len(), 9);
     }
 
