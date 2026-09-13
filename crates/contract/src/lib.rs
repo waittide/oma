@@ -257,7 +257,11 @@ impl ThemeMode {
 }
 
 /// 主题设置：浅色与深色各引用一套调色板 id，另叠加一个强调色令牌。
+///
+/// 拒绝未知字段：旧版键名（如 `dark_flavor` / `light_theme`）必须直接报错，
+/// 静默忽略会让用户以为设置已生效。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Theme {
     #[serde(default)]
     pub mode:          ThemeMode,

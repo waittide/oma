@@ -21,7 +21,7 @@ use tokio::{
 
 /// MCP 服务器配置定义
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum McpServerConfig {
     Local {
         command: String,

@@ -16,6 +16,7 @@ pub const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:17431";
 
 /// 服务端配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "default_listen_addr")]
     pub listen_addr: String,
@@ -305,18 +306,6 @@ impl OmaConfig {
     /// 配置文件标准路径 (~/.config/oma/config.toml)
     pub fn config_path() -> Option<PathBuf> {
         dirs_config_dir().map(|d| d.join("oma").join("config.toml"))
-    }
-
-    /// 自动从标准路径加载配置（若不存在则返回默认配置）
-    pub fn load_or_default() -> Self {
-        if let Some(path) = Self::config_path() {
-            if path.exists() {
-                if let Ok(cfg) = Self::load_from_file(&path) {
-                    return cfg;
-                }
-            }
-        }
-        Self::default()
     }
 
     /// 序列化并回写配置文件（前端配置修改后的持久化入口）
@@ -1606,5 +1595,49 @@ model = "p/other"
 
         // 合法配置不受影响
         assert!(toml::from_str::<OmaConfig>("default_model = \"p/m\"").is_ok());
+    }
+
+    /// 未知键在任意层级都必须报错：旧版残留键名被静默忽略时，
+    /// 用户会以为设置已生效（历史上 `theme.dark_flavor` 即如此）。
+    #[test]
+    fn test_unknown_config_field_is_rejected_at_every_level() {
+        let cases = [
+            ("theme", "[theme]\ndark_flavor = \"mocha\"\n"),
+            ("server", "[server]\nlisten = \"0.0.0.0:1\"\n"),
+            (
+                "provider",
+                r#"
+[providers.p]
+api_type = "completion"
+base_url = "http://x/v1"
+api_key = "k"
+modles = []
+"#,
+            ),
+            (
+                "model",
+                r#"
+[providers.p]
+api_type = "completion"
+base_url = "http://x/v1"
+api_key = "k"
+
+[[providers.p.models]]
+id = "m"
+ctx = 100
+"#,
+            ),
+            (
+                "mcp server",
+                "[mcp_servers.s]\ntype = \"local\"\ncommand = \"x\"\ntimeout = 1\n",
+            ),
+        ];
+
+        for (level, toml_str) in cases {
+            assert!(
+                toml::from_str::<OmaConfig>(toml_str).is_err(),
+                "unknown {level} field must not be silently ignored"
+            );
+        }
     }
 }

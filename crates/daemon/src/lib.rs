@@ -1075,6 +1075,19 @@ fn mask_config(config: &OmaConfig) -> serde_json::Value {
     v
 }
 
+/// 剔除 GET 脱敏时附加的只读元数据：客户端回传整份配置时会带上它们，
+/// 但它们不属于配置结构（ProviderConfig 拒绝未知字段）。
+fn strip_api_key_len(payload: &mut serde_json::Value) {
+    let Some(providers) = payload.get_mut("providers").and_then(|p| p.as_object_mut()) else {
+        return;
+    };
+    for pv in providers.values_mut() {
+        if let Some(obj) = pv.as_object_mut() {
+            obj.remove("api_key_len");
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct GetConfigQuery {
     /// 1 = 返回真实密钥（供设置页「显示密钥」使用）；默认脱敏
@@ -1100,11 +1113,16 @@ async fn handle_get_config(
 async fn handle_put_config(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    Json(payload): Json<serde_json::Value>,
+    Json(mut payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     if check_auth(&headers, None, &state.token, false).is_none() {
         return Err(unauthorized());
     }
+
+    // `api_key_len` 是 GET 脱敏时附加的只读元数据（见 mask_config），
+    // 客户端会把整份配置原样回传；它不是配置结构的一部分，写入前剔除，
+    // 否则 ProviderConfig 的 deny_unknown_fields 会把合法回传判为非法载荷
+    strip_api_key_len(&mut payload);
 
     let mut cfg: OmaConfig = serde_json::from_value(payload)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid config payload: {e}")))?;

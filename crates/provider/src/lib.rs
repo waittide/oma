@@ -307,6 +307,7 @@ pub enum ProviderStreamEvent {
 
 /// 配置文件中的模型条目（ProviderConfig.models）
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelEntry {
     pub id:                String,
     #[serde(default = "model_entry_default_name")]
@@ -355,6 +356,7 @@ where
 
 /// Provider 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     pub api_type: String, // "anthropic" | "completion" | "response" | "google"
     pub base_url: String,
