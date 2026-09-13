@@ -14,12 +14,24 @@ use serde::{Deserialize, Serialize};
 /// 默认监听地址
 pub const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:17431";
 
+/// 未配置访问 token 时写入配置文件的默认值。
+///
+/// 默认只监听回环地址，本地访问本来就不需要密钥；这里给一个固定值是为了
+/// 「装完就能用」，需要暴露到局域网/公网时必须自行改掉。
+pub const DEFAULT_AUTH_TOKEN: &str = "admin";
+
 /// 服务端配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default = "default_listen_addr")]
     pub listen_addr: String,
+    /// 访问 token：REST 需 `Authorization: Bearer`，WS 握手可用 `?token=`。
+    ///
+    /// 缺省为空表示「尚未设置」：启动时会向配置文件补写
+    /// [`DEFAULT_AUTH_TOKEN`]，这样用户能在 config.toml 里直接看到并修改。
+    #[serde(default)]
+    pub token:       String,
 }
 
 fn default_listen_addr() -> String {
@@ -30,6 +42,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen_addr: default_listen_addr(),
+            token:       String::new(),
         }
     }
 }

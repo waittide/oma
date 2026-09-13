@@ -38,33 +38,30 @@ const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 const TREE_MAX_DEPTH: usize = 4;
 const TREE_MAX_ENTRIES: usize = 2000;
 
-/// 解析或自动生成安全随机 Token
-pub fn resolve_or_create_token(custom_token: Option<&str>, base_dir: &Path) -> Result<String> {
-    if let Some(t) = custom_token {
-        if !t.is_empty() {
-            return Ok(t.to_string());
-        }
+/// 解析生效的访问 token。
+///
+/// 优先级：命令行 `--token` > 环境变量 `OMA_AUTH_TOKEN` > 配置文件 `[server].token`。
+/// 不再单独落一个 `auth.token` 文件：token 属于配置的一部分，
+/// 放在 `config.toml` 里用户才能自己查看与修改（设置界面也写回这里）。
+/// 配置缺省时使用 [`oma_config::DEFAULT_AUTH_TOKEN`]，并在必要时回写配置以便可见。
+pub fn resolve_token(cli_token: Option<&str>, config: &OmaConfig) -> String {
+    resolve_token_with(cli_token, std::env::var("OMA_AUTH_TOKEN").ok().as_deref(), config)
+}
+
+/// [`resolve_token`] 的可测形式：环境变量以参数传入。
+///
+/// 这样测试无需修改进程级环境（本仓库禁用 unsafe，且并发测试会互相干扰）。
+fn resolve_token_with(cli_token: Option<&str>, env_token: Option<&str>, config: &OmaConfig) -> String {
+    if let Some(t) = cli_token.filter(|t| !t.is_empty()) {
+        return t.to_string();
     }
-    if let Ok(env_token) = std::env::var("OMA_AUTH_TOKEN") {
-        if !env_token.is_empty() {
-            return Ok(env_token);
-        }
+    if let Some(t) = env_token.filter(|t| !t.is_empty()) {
+        return t.to_string();
     }
-    let token_path = base_dir.join("auth.token");
-    if token_path.exists() {
-        if let Ok(saved) = std::fs::read_to_string(&token_path) {
-            let t = saved.trim();
-            if !t.is_empty() {
-                return Ok(t.to_string());
-            }
-        }
+    if config.server.token.trim().is_empty() {
+        return oma_config::DEFAULT_AUTH_TOKEN.to_string();
     }
-    let new_token = format!("oma_sec_{}", uuid::Uuid::new_v4().simple());
-    if let Some(parent) = token_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&token_path, &new_token);
-    Ok(new_token)
+    config.server.token.clone()
 }
 
 /// 服务端全局共享状态
@@ -2115,6 +2112,31 @@ mod tests {
                 .is_success()
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_resolve_token_precedence() {
+        // 命令行 > 环境变量 > 配置文件；配置为空时回落到默认值
+        let mut config = OmaConfig::default();
+        config.server.token = "from-config".into();
+
+        assert_eq!(resolve_token_with(Some("from-cli"), None, &config), "from-cli");
+        // 空串等同未传，不应把 token 悄悄清空
+        assert_eq!(resolve_token_with(Some(""), None, &config), "from-config");
+
+        // 环境变量优先于配置，但仍低于命令行
+        assert_eq!(resolve_token_with(None, Some("from-env"), &config), "from-env");
+        assert_eq!(
+            resolve_token_with(Some("from-cli"), Some("from-env"), &config),
+            "from-cli"
+        );
+        assert_eq!(resolve_token_with(None, Some(""), &config), "from-config");
+
+        // 配置里没写 token（旧配置文件）时给默认值，而不是空串把接口裸奔
+        config.server.token = String::new();
+        assert_eq!(resolve_token_with(None, None, &config), oma_config::DEFAULT_AUTH_TOKEN);
+        config.server.token = "   ".into();
+        assert_eq!(resolve_token_with(None, None, &config), oma_config::DEFAULT_AUTH_TOKEN);
     }
 
     #[tokio::test]

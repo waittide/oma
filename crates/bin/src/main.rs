@@ -11,7 +11,7 @@ use axum::{
 };
 use clap::{CommandFactory, Parser, Subcommand};
 use oma_config::OmaConfig;
-use oma_daemon::{DaemonState, create_router, resolve_or_create_token};
+use oma_daemon::{DaemonState, create_router, resolve_token};
 use oma_mcp::McpManager;
 use oma_storage::StorageManager;
 use rust_embed::Embed;
@@ -111,13 +111,33 @@ fn load_config(path: &Path) -> Result<OmaConfig> {
     }
 }
 
+/// 取生效的 token，并在配置缺省时把默认值落盘。
+///
+/// 落盘是为了让用户能直接看到、并自行改成强密钥；否则「默认 admin」只存在于
+/// 代码里，用户既不知情也无从修改。仅在原先没有值时写入，不覆盖用户已设的值。
+fn resolve_and_persist_token(cli_token: Option<&str>, config: &mut OmaConfig, path: &Path) -> Result<String> {
+    if config.server.token.is_empty() {
+        config.server.token = oma_config::DEFAULT_AUTH_TOKEN.to_string();
+        config
+            .save_to_file_atomic(path)
+            .with_context(|| format!("Failed to write default token into {}", path.display()))?;
+    }
+    Ok(resolve_token(cli_token, config))
+}
+
+/// 只读取 token，不修改配置（供 tui / status 这类客户端使用）
+fn read_token(cli_token: Option<&str>, config_path: &Path) -> Result<String> {
+    let config = load_config(config_path)?;
+    Ok(resolve_token(cli_token, &config))
+}
+
 async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&Path>) -> Result<()> {
     let data_dir = get_data_dir();
     std::fs::create_dir_all(&data_dir)?;
 
-    let token = resolve_or_create_token(token_opt, &data_dir)?;
     let config_path = config_path(config_opt);
-    let config = load_config(&config_path)?;
+    let mut config = load_config(&config_path)?;
+    let token = resolve_and_persist_token(token_opt, &mut config, &config_path)?;
 
     let storage = StorageManager::new(&data_dir).await?;
     let mcp = Arc::new(McpManager::new());
@@ -227,8 +247,7 @@ fn index_html() -> Response {
 }
 
 async fn run_status(addr: &str, token_opt: Option<&str>) -> Result<()> {
-    let data_dir = get_data_dir();
-    let token = resolve_or_create_token(token_opt, &data_dir)?;
+    let token = read_token(token_opt, &config_path(None))?;
 
     let url = format!("http://{}/api/server/status", addr);
     let client = reqwest::Client::new();
@@ -266,8 +285,7 @@ async fn main() -> Result<()> {
             run_web(&host, port, open).await?;
         }
         Some(Commands::Tui { addr, token, workspace }) => {
-            let data_dir = get_data_dir();
-            let token = resolve_or_create_token(token.as_deref(), &data_dir)?;
+            let token = read_token(token.as_deref(), &config_path(None))?;
             let workspace = match workspace {
                 Some(w) => w,
                 None => std::env::current_dir()?.to_string_lossy().to_string(),
