@@ -99,8 +99,7 @@ api_key = "x"
 id = "m1"
 name = "m1"
 context_len = 100000
-supports_vision = false
-supports_thinking = false
+capabilities = ["text_understanding", "text_generation"]
 `);
 
   const bin = join(REPO, 'target/debug/oma');

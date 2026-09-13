@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
-use oma_contract::{Block, ChatMessage, Role, StopReason};
+use oma_contract::{Block, ChatMessage, ModelCapability, Role, StopReason};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -372,34 +372,30 @@ pub enum ProviderStreamEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelEntry {
-    pub id:                String,
+    pub id:            String,
     #[serde(default = "model_entry_default_name")]
-    pub name:              String,
+    pub name:          String,
     #[serde(default = "model_entry_default_context")]
-    pub context_len:       usize,
-    #[serde(default = "model_entry_default_true")]
-    pub supports_vision:   bool,
-    #[serde(default = "model_entry_default_true")]
-    pub supports_thinking: bool,
+    pub context_len:   usize,
+    /// 模型能力集合；未声明时仅文本理解与文本生成
+    #[serde(default = "oma_contract::default_model_capabilities")]
+    pub capabilities:  BTreeSet<ModelCapability>,
     /// 最大输出 Token 数；None 时各协议使用内置默认
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_output:        Option<usize>,
+    pub max_output:    Option<usize>,
     /// 推理等级 → 厂商自定义字符串；未配置的等级回退为等级名本身
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub reasoning_map:     BTreeMap<String, String>,
-    /// 支持的输入模态: text / image / video
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub input_types:       Vec<String>,
+    pub reasoning_map: BTreeMap<String, String>,
     /// 该模型附加的请求头：同名覆盖 Provider 级配置
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub headers:           BTreeMap<String, String>,
+    pub headers:       BTreeMap<String, String>,
     /// 该模型附加的请求体字段：递归深合并，覆盖 Provider 级配置
     #[serde(
         default = "empty_json_object",
         deserialize_with = "deserialize_json_body",
         skip_serializing_if = "is_empty_json_object"
     )]
-    pub body:              serde_json::Value,
+    pub body:          serde_json::Value,
 }
 
 fn model_entry_default_name() -> String {
@@ -407,9 +403,6 @@ fn model_entry_default_name() -> String {
 }
 fn model_entry_default_context() -> usize {
     128_000
-}
-fn model_entry_default_true() -> bool {
-    true
 }
 fn empty_json_object() -> serde_json::Value {
     serde_json::json!({})
@@ -451,23 +444,41 @@ pub struct ProviderConfig {
 /// Model 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
-    pub id:                String,
-    pub name:              String,
-    pub context_len:       usize,
-    pub supports_vision:   bool,
-    pub supports_thinking: bool,
+    pub id:               String,
+    pub name:             String,
+    pub context_len:      usize,
+    /// 模型能力集合；驱动图片编码与思考参数下发
+    #[serde(default = "oma_contract::default_model_capabilities")]
+    pub capabilities:     BTreeSet<ModelCapability>,
     #[serde(default)]
-    pub max_output:        Option<usize>,
+    pub max_output:       Option<usize>,
     /// 实际下发给厂商的推理参数；由会话等级经 `reasoning_map` 解析后填入
     #[serde(default)]
-    pub reasoning_effort:  String,
+    pub reasoning_effort: String,
     /// 推理等级 → 厂商自定义字符串；未配置的等级回退为等级名本身
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub reasoning_map:     BTreeMap<String, String>,
+    pub reasoning_map:    BTreeMap<String, String>,
     #[serde(default)]
-    pub headers:           BTreeMap<String, String>,
+    pub headers:          BTreeMap<String, String>,
     #[serde(default = "empty_json_object", deserialize_with = "deserialize_json_body")]
-    pub body:              serde_json::Value,
+    pub body:             serde_json::Value,
+}
+
+impl ModelConfig {
+    /// 是否具备某项能力
+    pub fn has(&self, capability: ModelCapability) -> bool {
+        self.capabilities.contains(&capability)
+    }
+
+    /// 能否直接接收图片输入（驱动图片编码与 `read` 内联判断）
+    pub fn supports_image_input(&self) -> bool {
+        self.has(ModelCapability::ImageUnderstanding)
+    }
+
+    /// 是否支持思考（决定是否下发 reasoning 类参数）
+    pub fn supports_thinking(&self) -> bool {
+        self.has(ModelCapability::Thinking)
+    }
 }
 
 impl ProviderConfig {
@@ -1686,6 +1697,18 @@ where
 mod tests {
     use super::*;
 
+    /// 测试用能力集：文本理解/生成 + 思考 + 图像理解，与旧默认（vision/thinking 均 true）等价
+    fn test_capabilities() -> BTreeSet<ModelCapability> {
+        [
+            ModelCapability::Thinking,
+            ModelCapability::TextUnderstanding,
+            ModelCapability::TextGeneration,
+            ModelCapability::ImageUnderstanding,
+        ]
+        .into_iter()
+        .collect()
+    }
+
     #[test]
     fn test_deep_merge_json() {
         let mut target = serde_json::json!({
@@ -1865,16 +1888,15 @@ mod tests {
 
     fn model_for_tests() -> ModelConfig {
         ModelConfig {
-            id:                "m".into(),
-            name:              "m".into(),
-            context_len:       1000,
-            supports_vision:   true,
-            supports_thinking: true,
-            max_output:        None,
-            reasoning_effort:  String::new(),
-            reasoning_map:     BTreeMap::new(),
-            headers:           BTreeMap::new(),
-            body:              serde_json::json!({}),
+            id:               "m".into(),
+            name:             "m".into(),
+            context_len:      1000,
+            capabilities:     test_capabilities(),
+            max_output:       None,
+            reasoning_effort: String::new(),
+            reasoning_map:    BTreeMap::new(),
+            headers:          BTreeMap::new(),
+            body:             serde_json::json!({}),
         }
     }
 
@@ -1925,16 +1947,15 @@ mod tests {
             Some("sys"),
             &tools,
             &ModelConfig {
-                id:                "gemini-pro".into(),
-                name:              "gemini-pro".into(),
-                context_len:       1000,
-                supports_vision:   true,
-                supports_thinking: true,
-                max_output:        Some(256),
-                reasoning_effort:  String::new(),
-                reasoning_map:     BTreeMap::new(),
-                headers:           BTreeMap::new(),
-                body:              serde_json::json!({}),
+                id:               "gemini-pro".into(),
+                name:             "gemini-pro".into(),
+                context_len:      1000,
+                capabilities:     test_capabilities(),
+                max_output:       Some(256),
+                reasoning_effort: String::new(),
+                reasoning_map:    BTreeMap::new(),
+                headers:          BTreeMap::new(),
+                body:             serde_json::json!({}),
             },
         );
 
@@ -2306,8 +2327,7 @@ data: [DONE]\n\n";
             id: "m".into(),
             name: "m".into(),
             context_len: 1000,
-            supports_vision: true,
-            supports_thinking: true,
+            capabilities: test_capabilities(),
             max_output: None,
             reasoning_effort: String::new(),
             reasoning_map,

@@ -340,15 +340,26 @@ pub struct Ready {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// 模型能力：既能描述输入模态，也覆盖产出形态
+pub enum ModelCapability {
+    Thinking,            // 思考
+    TextUnderstanding,   // 文本理解
+    TextGeneration,      // 文本生成
+    ImageUnderstanding,  // 图像理解
+    ImageGeneration,     // 图像生成
+    VideoUnderstanding,  // 视频理解
+    VideoGeneration,     // 视频生成
+    Embedding,           // 向量生成
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub id:                String,
     pub name:              String,
     pub context_len:       usize,
-    pub supports_vision:   bool,
-    pub supports_thinking: bool,
+    pub capabilities:      BTreeSet<ModelCapability>,
     pub max_output:        Option<usize>,
     pub reasoning_effort:  String,        // "" | low | medium | high
-    pub input_types:       Vec<String>,   // text | image | video
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -502,16 +513,15 @@ api_key = "env:ANTHROPIC_API_KEY"
 id = "claude-3-7-sonnet"
 name = "Claude 3.7 Sonnet"
 context_len = 200000
-supports_vision = true
-supports_thinking = true
+capabilities = ["thinking", "text_understanding", "text_generation", "image_understanding"]
 
 [providers.my_deepseek]
 api_type = "completion"
 base_url = "https://api.deepseek.com/v1"
 api_key = "env:DEEPSEEK_API_KEY"
 models = [
-    { id = "deepseek-chat", name = "DeepSeek V3", context_len = 64000, supports_vision = false, supports_thinking = false },
-    { id = "deepseek-reasoner", name = "DeepSeek R1", context_len = 64000, supports_vision = false, supports_thinking = true }
+    { id = "deepseek-chat", name = "DeepSeek V3", context_len = 64000 },
+    { id = "deepseek-reasoner", name = "DeepSeek R1", context_len = 64000, capabilities = ["thinking", "text_understanding", "text_generation"] }
 ]
 
 # MCP 服务配置
@@ -661,10 +671,10 @@ ToolOutput {
    - 按行分片安全读取文本文件。
    - **图片文件**：按文件头识别 PNG / JPEG / GIF / WebP / BMP / TIFF（不引入解码器，
      仅解析头部取得宽高、通道数、alpha 与 MIME）：
-     - 当前模型 `supports_vision = true` 时，图片经 `ToolOutput.images` 随工具回执
+     - 当前模型具备 `image_understanding` 能力时，图片经 `ToolOutput.images` 随工具回执
        回到模型（Anthropic 内联在 `tool_result.content`；其余协议作为紧随回执的
        用户消息），文本部分同时给出尺寸、通道、alpha、MIME 与体积；
-     - 模型不支持视觉、或图片超过 5 MiB 时，只返回元数据块，不下发图片字节。
+     - 模型不具备图像理解能力、或图片超过 5 MiB 时，只返回元数据块，不下发图片字节。
 2. **`write`**：
    - 参数：`{ "path": "...", "content": "..." }`
    - 覆盖写入或新建文件。

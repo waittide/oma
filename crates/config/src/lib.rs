@@ -375,21 +375,20 @@ impl OmaConfig {
             .iter()
             .find(|m| m.id == model_id)
             .map(|m| ModelConfig {
-                id:                m.id.clone(),
-                name:              if m.name.is_empty() {
+                id:               m.id.clone(),
+                name:             if m.name.is_empty() {
                     m.id.clone()
                 } else {
                     m.name.clone()
                 },
-                context_len:       m.context_len,
-                supports_vision:   m.supports_vision,
-                supports_thinking: m.supports_thinking,
-                max_output:        m.max_output,
+                context_len:      m.context_len,
+                capabilities:     m.capabilities.clone(),
+                max_output:       m.max_output,
                 // 会话等级在请求期解析后填入，模型配置不再持有默认等级
-                reasoning_effort:  String::new(),
-                reasoning_map:     m.reasoning_map.clone(),
-                headers:           m.headers.clone(),
-                body:              m.body.clone(),
+                reasoning_effort: String::new(),
+                reasoning_map:    m.reasoning_map.clone(),
+                headers:          m.headers.clone(),
+                body:             m.body.clone(),
             })?;
         Some((provider, model_cfg))
     }
@@ -403,18 +402,16 @@ impl OmaConfig {
                     .models
                     .iter()
                     .map(|m| ModelInfo {
-                        id:                m.id.clone(),
-                        name:              if m.name.is_empty() {
+                        id:            m.id.clone(),
+                        name:          if m.name.is_empty() {
                             m.id.clone()
                         } else {
                             m.name.clone()
                         },
-                        context_len:       m.context_len,
-                        supports_vision:   m.supports_vision,
-                        supports_thinking: m.supports_thinking,
-                        max_output:        m.max_output,
-                        reasoning_map:     m.reasoning_map.clone(),
-                        input_types:       m.input_types.clone(),
+                        context_len:   m.context_len,
+                        capabilities:  m.capabilities.clone(),
+                        max_output:    m.max_output,
+                        reasoning_map: m.reasoning_map.clone(),
                     })
                     .collect::<Vec<_>>();
                 (p_id.clone(), models)
@@ -980,6 +977,8 @@ fn render_markdown(name: &str, description: &str, tools: &[String], content: &st
 
 #[cfg(test)]
 mod tests {
+    use oma_contract::{ModelCapability, default_model_capabilities};
+
     use super::*;
 
     #[test]
@@ -1178,7 +1177,7 @@ api_key = "k"
 id = "m1"
 name = "Model One"
 context_len = 1_048_576
-supports_vision = false
+capabilities = ["text_understanding", "image_understanding"]
 [[providers.p1.models]]
 id = "m2"
 
@@ -1193,11 +1192,14 @@ api_key = "k"
         let (_, m1) = config.find_model("p1/m1").unwrap();
         assert_eq!(m1.name, "Model One");
         assert_eq!(m1.context_len, 1_048_576);
-        assert!(!m1.supports_vision);
-        // name 缺省时回退为 id
+        assert!(m1.has(ModelCapability::ImageUnderstanding));
+        assert!(m1.has(ModelCapability::TextUnderstanding));
+        assert!(!m1.has(ModelCapability::Thinking));
+        // 未声明 capabilities 时仅文本理解与生成
         let (_, m2) = config.find_model("p1/m2").unwrap();
         assert_eq!(m2.name, "m2");
         assert_eq!(m2.context_len, 128_000);
+        assert_eq!(m2.capabilities, default_model_capabilities());
         // 未声明的 model id 不再动态合成：元数据无从得知，返回 None 由调用方报错
         assert!(config.find_model("p1/not-listed").is_none());
         // 无清单 provider 的任何模型都不可用

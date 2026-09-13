@@ -122,7 +122,7 @@ impl ApprovalArbiter {
 /// **仅对支持思考的模型生效**：不支持思考的模型收到 reasoning 类参数可能被
 /// 厂商拒绝或产生非预期行为，等级配置在那类模型上无意义。
 fn apply_reasoning_level(model_cfg: &mut ModelConfig, level: &str) {
-    if !model_cfg.supports_thinking {
+    if !model_cfg.supports_thinking() {
         model_cfg.reasoning_effort = String::new();
         return;
     }
@@ -908,14 +908,14 @@ impl SessionRoom {
 
     /// 当前模型能否直接接收图片输入。
     ///
-    /// 只认 `supports_vision`：它同时驱动 provider 侧的图片编码与会话内的
-    /// `read` 图像回传，两处判断必须同源，否则会把图发给看不见图的模型。
+    /// 只认 `ImageUnderstanding` 能力：它同时驱动 provider 侧的图片编码与会话
+    /// 内的 `read` 图像回传，两处判断必须同源，否则会把图发给看不见图的模型。
     fn model_supports_vision(&self) -> bool {
         let selector = self.active_model.read().clone();
         self.config
             .read()
             .find_model(&selector)
-            .is_some_and(|(_, m)| m.supports_vision)
+            .is_some_and(|(_, m)| m.supports_image_input())
     }
 
     /// 广播工具执行结果并清理活跃工具槽位，把输出交回调用方用于落库
@@ -2442,12 +2442,16 @@ mod tests {
         for (k, v) in map {
             reasoning_map.insert(k.to_string(), v.to_string());
         }
+        let mut capabilities = oma_contract::default_model_capabilities();
+        capabilities.insert(oma_contract::ModelCapability::ImageUnderstanding);
+        if supports_thinking {
+            capabilities.insert(oma_contract::ModelCapability::Thinking);
+        }
         oma_provider::ModelConfig {
             id: "m".into(),
             name: "m".into(),
             context_len: 1000,
-            supports_vision: true,
-            supports_thinking,
+            capabilities,
             max_output: None,
             reasoning_effort: String::new(),
             reasoning_map,

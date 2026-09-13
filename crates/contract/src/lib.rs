@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -435,22 +435,88 @@ pub struct ResolvedTheme {
     pub dark:   Palette,
 }
 
+/// 模型能力：描述模型能做什么，取代原先分散的 `supports_vision` /
+/// `supports_thinking` / `input_types` 三个字段。
+///
+/// 单一枚举兼顾「输入模态」与「产出形态」：文本理解与文本生成是所有模型
+/// 的底线能力，图像/视频理解与生成、向量生成则按模型差异声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCapability {
+    /// 思考（推理过程可见）
+    Thinking,
+    /// 文本理解
+    TextUnderstanding,
+    /// 文本生成
+    TextGeneration,
+    /// 图像理解
+    ImageUnderstanding,
+    /// 图像生成
+    ImageGeneration,
+    /// 视频理解
+    VideoUnderstanding,
+    /// 视频生成
+    VideoGeneration,
+    /// 向量生成
+    Embedding,
+}
+
+impl ModelCapability {
+    /// 全部能力，顺序即界面展示顺序
+    pub const ALL: [ModelCapability; 8] = [
+        ModelCapability::Thinking,
+        ModelCapability::TextUnderstanding,
+        ModelCapability::TextGeneration,
+        ModelCapability::ImageUnderstanding,
+        ModelCapability::ImageGeneration,
+        ModelCapability::VideoUnderstanding,
+        ModelCapability::VideoGeneration,
+        ModelCapability::Embedding,
+    ];
+
+    /// 配置与协议中的字符串表示（与 `serde` 的 snake_case 一致）
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelCapability::Thinking => "thinking",
+            ModelCapability::TextUnderstanding => "text_understanding",
+            ModelCapability::TextGeneration => "text_generation",
+            ModelCapability::ImageUnderstanding => "image_understanding",
+            ModelCapability::ImageGeneration => "image_generation",
+            ModelCapability::VideoUnderstanding => "video_understanding",
+            ModelCapability::VideoGeneration => "video_generation",
+            ModelCapability::Embedding => "embedding",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        ModelCapability::ALL.into_iter().find(|c| c.as_str() == s)
+    }
+}
+
+/// 未显式配置能力时的默认值：仅文本理解与文本生成。
+///
+/// 刻意不含 `Thinking` 与视觉类能力 —— 少数派能力交给用户显式声明，
+/// 未声明的模型不会被误判成能看图，避免把图片发给看不见图的模型。
+pub fn default_model_capabilities() -> BTreeSet<ModelCapability> {
+    [ModelCapability::TextUnderstanding, ModelCapability::TextGeneration]
+        .into_iter()
+        .collect()
+}
+
 /// 模型元数据
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
-    pub id:                String,
-    pub name:              String,
-    pub context_len:       usize,
-    pub supports_vision:   bool,
-    pub supports_thinking: bool,
+    pub id:            String,
+    pub name:          String,
+    pub context_len:   usize,
+    /// 模型能力集合
+    #[serde(default = "default_model_capabilities")]
+    pub capabilities:  BTreeSet<ModelCapability>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_output:        Option<usize>,
+    pub max_output:    Option<usize>,
     /// 推理等级 → 厂商自定义字符串；未配置的等级按等级名下发
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub reasoning_map:     BTreeMap<String, String>,
-    /// 支持的输入模态: text / image / video
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub input_types:       Vec<String>,
+    pub reasoning_map: BTreeMap<String, String>,
 }
 
 /// Agent 模板元数据

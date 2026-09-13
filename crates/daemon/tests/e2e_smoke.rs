@@ -238,6 +238,16 @@ async fn start_harness_with(context_len: usize, supports_vision: bool) -> Result
     });
 
     // 2. Daemon（指向 mock provider）
+    // 能力集：文本理解/生成与思考是测试基线，视觉按参数开关
+    let mut capabilities = vec!["thinking", "text_understanding", "text_generation"];
+    if supports_vision {
+        capabilities.push("image_understanding");
+    }
+    let capabilities = capabilities
+        .iter()
+        .map(|c| format!("\"{c}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     let config_toml = format!(
         r#"
 default_model = "mock/model-x"
@@ -253,7 +263,7 @@ api_key = "test-key"
 id = "model-x"
 name = "Mock Model"
 context_len = {context_len}
-supports_vision = {supports_vision}
+capabilities = [{capabilities}]
 
 [providers.mock.models.reasoning_map]
 low = "think-low"
@@ -1114,7 +1124,7 @@ async fn test_read_image_reaches_provider_and_persists() -> Result<()> {
         .await?;
     drive_turn(&mut client, Duration::from_secs(30)).await?;
 
-    // mock 模型 supports_vision = true（默认），因此图片必须以 data URL 交付
+    // mock 模型具备 image_understanding（默认），因此图片必须以 data URL 交付
     let observed = h.mock.observed.lock().clone();
     let with_image = observed
         .iter()
@@ -1463,7 +1473,7 @@ async fn test_reasoning_level_passthrough_for_unmapped() -> Result<()> {
 /// 不支持思考的模型不得被下发推理参数（等级恒有值后尤其重要）。
 #[tokio::test]
 async fn test_reasoning_not_sent_for_non_thinking_model() -> Result<()> {
-    // 该 harness 的 mock 模型 supports_thinking = true，
+    // 该 harness 的 mock 模型具备 thinking 能力，
     // 这里直接校验映射层：不支持思考时应被清空
     let h = start_harness().await?;
     let session = h.api.create_session(&h.workspace, Some("nothink")).await?;
