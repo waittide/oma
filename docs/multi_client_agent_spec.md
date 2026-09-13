@@ -343,14 +343,14 @@ pub struct Ready {
 /// 模型能力：既能描述输入模态，也覆盖产出形态
 pub enum ModelCapability {
     Thinking,            // 思考
-    TextUnderstanding,   // 文本理解
-    TextGeneration,      // 文本生成
-    ImageUnderstanding,  // 图像理解
-    ImageGeneration,     // 图像生成
-    VideoUnderstanding,  // 视频理解
-    VideoGeneration,     // 视频生成
-    AudioUnderstanding,  // 音频理解
-    AudioGeneration,     // 音频生成
+    TextInput,           // 文本输入
+    TextOutput,          // 文本输出
+    ImageInput,          // 图像输入
+    ImageOutput,         // 图像输出
+    VideoInput,          // 视频输入
+    VideoOutput,         // 视频输出
+    AudioInput,          // 音频输入
+    AudioOutput,         // 音频输出
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -514,7 +514,7 @@ api_key = "env:ANTHROPIC_API_KEY"
 id = "claude-3-7-sonnet"
 name = "Claude 3.7 Sonnet"
 context_len = 200000
-capabilities = ["thinking", "text_understanding", "text_generation", "image_understanding"]
+capabilities = ["thinking", "text_input", "text_output", "image_input"]
 
 [providers.my_deepseek]
 api_type = "completion"
@@ -522,7 +522,7 @@ base_url = "https://api.deepseek.com/v1"
 api_key = "env:DEEPSEEK_API_KEY"
 models = [
     { id = "deepseek-chat", name = "DeepSeek V3", context_len = 64000 },
-    { id = "deepseek-reasoner", name = "DeepSeek R1", context_len = 64000, capabilities = ["thinking", "text_understanding", "text_generation"] }
+    { id = "deepseek-reasoner", name = "DeepSeek R1", context_len = 64000, capabilities = ["thinking", "text_input", "text_output"] }
 ]
 
 # MCP 服务配置
@@ -672,10 +672,10 @@ ToolOutput {
    - 按行分片安全读取文本文件。
    - **图片文件**：按文件头识别 PNG / JPEG / GIF / WebP / BMP / TIFF（不引入解码器，
      仅解析头部取得宽高、通道数、alpha 与 MIME）：
-     - 当前模型具备 `image_understanding` 能力时，图片经 `ToolOutput.images` 随工具回执
+     - 当前模型具备 `image_input` 能力时，图片经 `ToolOutput.images` 随工具回执
        回到模型（Anthropic 内联在 `tool_result.content`；其余协议作为紧随回执的
        用户消息），文本部分同时给出尺寸、通道、alpha、MIME 与体积；
-     - 模型不具备图像理解能力、或图片超过 5 MiB 时，只返回元数据块，不下发图片字节。
+     - 模型不具备图像输入能力、或图片超过 5 MiB 时，只返回元数据块，不下发图片字节。
 2. **`write`**：
    - 参数：`{ "path": "...", "content": "..." }`
    - 覆盖写入或新建文件。
