@@ -310,14 +310,25 @@ impl TokenAnchor {
     }
 }
 
-/// 真实用户轮次起点：role=user 且含非 tool_result 内容块。
-/// tool_result 回执同为 role=user，但它必须紧跟其 tool_use，不能作为裁剪边界。
+/// 真实用户轮次起点：role=user、含文本或图片，且不是工具回执。
+///
+/// 不能只判断「含文本或图片」：工具回执里可能附有图片（见 read 读图），
+/// 那样它会被当成新一轮，压缩时把轮次从中间切断、留下孤儿 tool_result。
 fn is_turn_start(message: &ChatMessage) -> bool {
-    message.role == Role::User
-        && message
-            .content
-            .iter()
-            .any(|b| !matches!(b, Block::ToolResult { .. }))
+    if message.role != Role::User {
+        return false;
+    }
+    if message
+        .content
+        .iter()
+        .any(|b| matches!(b, Block::ToolResult { .. }))
+    {
+        return false;
+    }
+    message
+        .content
+        .iter()
+        .any(|b| matches!(b, Block::Text { .. } | Block::Image { .. }))
 }
 
 /// 执行两阶段压缩策略：达到 70% 阈值时修剪旧 ToolResult 并按整轮裁剪前缀。
@@ -1338,8 +1349,10 @@ impl SessionRoom {
 
     /// 持久化工具回执消息（role = user），并同步到内存历史
     ///
-    /// `results` 为 (tool_use_id, 文本, is_error, 图片)，图片附加在同一条回执消息里，
-    /// 保证顺序上紧跟对应的 tool_use（各厂商协议的硬性要求）并且能随历史落库。
+    /// `results` 为 (tool_use_id, 文本, is_error, 图片)。图片与回执同处一条消息：
+    /// 它属于工具输出而非用户发言，落库形态与展示形态都据此统一（见
+    /// `isInternalMessage`）。只有 Anthropic 能原样消费这种结构，completion /
+    /// response 在发请求时才把图片拆到紧随其后的用户消息里（协议翻译属 provider 职责）。
     async fn append_tool_results(
         &self,
         parent_id: &str,
@@ -1357,7 +1370,6 @@ impl SessionRoom {
                     content,
                     is_error,
                 }];
-                // 图片排在回执之后：provider 侧据此把回执改写为带图的内容数组
                 out.extend(images.into_iter().map(|img| Block::Image {
                     mime_type: img.mime_type,
                     data:      img.data,
@@ -1815,6 +1827,10 @@ impl RoomSubagentRunner {
     }
 }
 
+/// 子 Agent 的工具回执：与主轮次同构，图片按协议需求附在同一消息内。
+///
+/// 子 Agent 的上下文不落库也不渲染，不存在「被当作用户消息」的问题，
+/// 因此统一沿用 Anthropic 的内联形态，由各协议自行拆解。
 fn subagent_tool_results(parent_id: &str, results: Vec<(String, String, bool, Vec<ToolImage>)>) -> ChatMessage {
     ChatMessage {
         id:         uuid::Uuid::new_v4().to_string(),
@@ -2027,6 +2043,69 @@ mod tests {
             }],
             created_at: 0,
         }
+    }
+
+    /// 带图片的工具回执（read 读图）不得被当成真实用户轮次起点。
+    #[test]
+    fn test_tool_result_with_image_is_not_a_turn_start() {
+        let mut msg = tool_result_msg("r1", "a1", "call_1", "mime: image/png");
+        msg.content.push(Block::Image {
+            mime_type: "image/png".into(),
+            data:      "QUJD".into(),
+        });
+        assert!(
+            !is_turn_start(&msg),
+            "an image carried by a tool result must not open a new turn"
+        );
+
+        // 对照：真实用户消息（文本或纯图片）仍是轮次起点
+        let mut user_image = ChatMessage {
+            id:         "u1".into(),
+            parent_id:  None,
+            role:       Role::User,
+            content:    vec![Block::Image {
+                mime_type: "image/png".into(),
+                data:      "QUJD".into(),
+            }],
+            created_at: 0,
+        };
+        assert!(is_turn_start(&user_image), "a user-sent image opens a turn");
+        user_image.content.push(Block::Text { text: "hi".into() });
+        assert!(is_turn_start(&user_image));
+        assert!(!is_turn_start(&tool_result_msg("r2", "a1", "call_2", "ok")));
+    }
+
+    /// 回执带图的会话压缩后同样合法：图片不得把轮次边界切到回执中间。
+    #[test]
+    fn test_compaction_survives_image_tool_results() {
+        let mut messages = Vec::new();
+        let mut parent: Option<String> = None;
+        for i in 0..6 {
+            let user_id = format!("u{i}");
+            messages.push(ChatMessage {
+                id:         user_id.clone(),
+                parent_id:  parent.clone(),
+                role:       Role::User,
+                content:    vec![Block::Text {
+                    text: format!("看看图 {i} {}", "详情".repeat(200)),
+                }],
+                created_at: i as i64,
+            });
+            let call_id = format!("call_{i}");
+            let assistant_id = format!("a{i}");
+            messages.push(tool_use_msg(&assistant_id, &user_id, &call_id));
+            let mut result = tool_result_msg(&format!("r{i}"), &assistant_id, &call_id, &"结果".repeat(200));
+            result.content.push(Block::Image {
+                mime_type: "image/png".into(),
+                data:      "QUJD".into(),
+            });
+            messages.push(result);
+            parent = Some(format!("r{i}"));
+        }
+
+        compact_messages(&mut messages, 4_000, None);
+        assert!(messages.len() < 18, "compaction should have dropped turns");
+        assert_well_formed(&messages);
     }
 
     /// 压缩后仍然必须是合法对话：首条为用户输入，且每个 tool_result 都有前置 tool_use。

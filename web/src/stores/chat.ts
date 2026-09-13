@@ -496,12 +496,15 @@ export const toolResults = computed(() => {
   return out;
 });
 
-/** 运行时内部消息（仅 tool_result 的回执或空壳），不渲染气泡。 */
+/**
+ * 运行时内部消息：不渲染成用户气泡的机器消息。
+ *
+ * 含 `tool_result` 的 user 消息都是工具回执（可能还带图片，如图像类工具的输出），
+ * 它不是用户说的话，因此一律按内部消息处理。这里按「包含」而非「全部是」判断，
+ * 否则回执后追加任意块（如 read 读图带回来的图片）就会让它变成一个假的用户气泡。
+ */
 export function isInternalMessage(m: ChatMessage): boolean {
-  return (
-    m.content.length === 0 ||
-    (m.role === 'user' && m.content.every((b) => b.type === 'tool_result'))
-  );
+  return m.content.length === 0 || m.content.some((b) => b.type === 'tool_result');
 }
 
 /** 渲染序列：流式缓冲按到达顺序展开为块。 */

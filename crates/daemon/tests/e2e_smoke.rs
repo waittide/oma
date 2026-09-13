@@ -1136,10 +1136,28 @@ async fn test_read_image_reaches_provider_and_persists() -> Result<()> {
         with_image.tool_contents
     );
 
-    // 图片块必须随回执落库：重读历史后仍然存在（否则重连后模型就“失忆”了）
+    // 图片块必须随回执落库，且与 tool_result 处于同一条消息：
+    // 前端据此把这条消息认作内部消息（不渲染成用户气泡、导航竖线也不加点）
     let msgs = fetch_messages(&h, &session.session_id).await?;
-    let images = count_image_blocks(&msgs);
-    assert_eq!(images, 1, "tool result image must be persisted: {msgs:#?}");
+    assert_eq!(
+        count_image_blocks(&msgs),
+        1,
+        "tool result image must be persisted: {msgs:#?}"
+    );
+    let carrier = msgs
+        .iter()
+        .find(|m| {
+            m["content"]
+                .as_array()
+                .is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "image"))
+        })
+        .expect("image block present");
+    assert!(
+        carrier["content"]
+            .as_array()
+            .is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "tool_result")),
+        "image must share the tool result message, got: {carrier:#?}"
+    );
     Ok(())
 }
 
