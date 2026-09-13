@@ -439,7 +439,7 @@ pub struct ResolvedTheme {
 /// `supports_thinking` / `input_types` 三个字段。
 ///
 /// 单一枚举兼顾「输入模态」与「产出形态」：文本理解与文本生成是所有模型
-/// 的底线能力，图像/视频/音频的理解与生成、向量生成则按模型差异声明。
+/// 的底线能力，图像/视频/音频的理解与生成则按模型差异声明。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelCapability {
@@ -461,13 +461,11 @@ pub enum ModelCapability {
     AudioUnderstanding,
     /// 音频生成
     AudioGeneration,
-    /// 向量生成
-    Embedding,
 }
 
 impl ModelCapability {
     /// 全部能力，顺序即界面展示顺序
-    pub const ALL: [ModelCapability; 10] = [
+    pub const ALL: [ModelCapability; 9] = [
         ModelCapability::Thinking,
         ModelCapability::TextUnderstanding,
         ModelCapability::TextGeneration,
@@ -477,7 +475,6 @@ impl ModelCapability {
         ModelCapability::VideoGeneration,
         ModelCapability::AudioUnderstanding,
         ModelCapability::AudioGeneration,
-        ModelCapability::Embedding,
     ];
 
     /// 配置与协议中的字符串表示（与 `serde` 的 snake_case 一致）
@@ -492,7 +489,6 @@ impl ModelCapability {
             ModelCapability::VideoGeneration => "video_generation",
             ModelCapability::AudioUnderstanding => "audio_understanding",
             ModelCapability::AudioGeneration => "audio_generation",
-            ModelCapability::Embedding => "embedding",
         }
     }
 
@@ -869,13 +865,12 @@ mod tests {
         );
 
         let parsed: BTreeSet<ModelCapability> = serde_json::from_str(
-            r#"["thinking", "text_understanding", "text_generation", "image_understanding", "audio_understanding", "audio_generation", "embedding"]"#,
+            r#"["thinking", "text_understanding", "text_generation", "image_understanding", "audio_understanding", "audio_generation"]"#,
         )
         .unwrap();
         assert!(parsed.contains(&ModelCapability::Thinking));
         assert!(parsed.contains(&ModelCapability::AudioUnderstanding));
         assert!(parsed.contains(&ModelCapability::AudioGeneration));
-        assert!(parsed.contains(&ModelCapability::Embedding));
         assert!(!parsed.contains(&ModelCapability::VideoUnderstanding));
     }
 
@@ -887,7 +882,8 @@ mod tests {
             assert_eq!(serde_json::to_value(cap).unwrap(), serde_json::json!(cap.as_str()));
         }
         assert_eq!(ModelCapability::parse("vision"), None);
-        assert_eq!(ModelCapability::ALL.len(), 10);
+        assert_eq!(ModelCapability::parse("embedding"), None);
+        assert_eq!(ModelCapability::ALL.len(), 9);
     }
 
     #[test]
