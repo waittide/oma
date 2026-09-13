@@ -91,7 +91,10 @@
     "thinking": "思考",
     "running": "执行中…",
     "failed": "失败",
-    "done": "完成"
+    "done": "完成",
+    "copyCode": "复制代码",
+    "copied": "已复制到剪贴板",
+    "copyFailed": "复制失败，请手动选择复制"
   },
   "select": {
     "placeholder": "请选择",

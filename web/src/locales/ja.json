@@ -91,7 +91,10 @@
     "thinking": "思考",
     "running": "実行中…",
     "failed": "失敗",
-    "done": "完了"
+    "done": "完了",
+    "copyCode": "コードをコピー",
+    "copied": "クリップボードにコピーしました",
+    "copyFailed": "コピーに失敗しました。手動で選択してコピーしてください"
   },
   "select": {
     "placeholder": "選択…",
