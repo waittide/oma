@@ -8,12 +8,15 @@ import {
   LuMessageSquare,
   LuPencil,
   LuPlus,
+  LuSearch,
   LuSettings,
   LuSparkles,
   LuTrash2,
+  LuX,
 } from 'vue-icons-plus/lu';
 import OButton from './ui/OButton.vue';
 import OInput from './ui/OInput.vue';
+import OSelect from './ui/OSelect.vue';
 import OTooltip from './ui/OTooltip.vue';
 import OModal from './ui/OModal.vue';
 import * as store from '../stores/sessions';
@@ -28,6 +31,9 @@ const { t } = useTranslations('sidebar');
 const { t: tc } = useTranslations('common');
 
 const showNew = ref(false);
+/** 新建工作区弹窗：只填路径，不建会话 */
+const showNewWorkspace = ref(false);
+const newWorkspacePath = ref(localStorage.getItem('oma.lastWorkspace') ?? '');
 const newWorkspace = ref(localStorage.getItem('oma.lastWorkspace') ?? '');
 const newTitle = ref('');
 const renaming = ref<string | null>(null);
@@ -44,12 +50,46 @@ onMounted(() => store.refresh());
 // 空态 CTA 等外部入口请求新建会话时打开弹窗
 watch(store.newSessionRequested, (v) => {
   if (v) {
-    showNew.value = true;
+    // 走与顶部按钮同一条路径：必须预填工作区，否则弹窗里没地方可改（路径只读）
+    openNewSession();
     store.newSessionRequested.value = false;
   }
 });
 
 const groups = store.groups;
+
+/** 排序下拉项：字段 x 方向共 6 种组合 */
+const sortOptions = computed(() => [
+  { value: 'name:asc', label: t('sortNameAsc') },
+  { value: 'name:desc', label: t('sortNameDesc') },
+  { value: 'created:asc', label: t('sortCreatedAsc') },
+  { value: 'created:desc', label: t('sortCreatedDesc') },
+  { value: 'updated:asc', label: t('sortUpdatedAsc') },
+  { value: 'updated:desc', label: t('sortUpdatedDesc') },
+]);
+
+/** 搜索时展示空结果的提示，而不是“暂无会话” */
+const noMatch = computed(() => store.query.value.trim().length > 0);
+
+/**
+ * 新建工作区：只在侧栏登记一个工作区分组，不创建任何会话。
+ * 路径本身不落服务端（会话创建时才带上），因此这里仅做本地记录。
+ */
+function createWorkspace() {
+  const ws = newWorkspacePath.value.trim();
+  if (!ws) return;
+  store.rememberWorkspace(ws);
+  store.collapsed.value[ws] = false;
+  localStorage.setItem('oma.lastWorkspace', ws);
+  showNewWorkspace.value = false;
+  newWorkspacePath.value = '';
+}
+
+/** 打开「新建工作区」弹窗：预填上次使用的路径方便微调 */
+function createWorkspaceDialog() {
+  newWorkspacePath.value = localStorage.getItem('oma.lastWorkspace') ?? '';
+  showNewWorkspace.value = true;
+}
 
 function select(id: string) {
   activeSessionId.value = id;
@@ -75,6 +115,15 @@ function commitRename() {
 /** 从工作区分组头部新建该工作区下的会话：预填路径并打开弹窗 */
 function openNewFor(workspace: string) {
   newWorkspace.value = workspace;
+  newTitle.value = '';
+  showNew.value = true;
+}
+
+/** 顶部「新建会话」：默认沿用上次使用的工作区路径 */
+function openNewSession() {
+  // 工作区在弹窗中不可编辑，必须预填；优先上次使用的，其次已登记的第一个
+  newWorkspace.value =
+    localStorage.getItem('oma.lastWorkspace') ?? store.knownWorkspaces.value[0] ?? '';
   newTitle.value = '';
   showNew.value = true;
 }
@@ -123,15 +172,38 @@ const deleteTarget = computed(
       <span class="brand-name">Oma</span>
     </header>
     <div class="brand-actions">
-      <OButton variant="soft" class="new-ws" @click="showNew = true">
-        <template #icon><LuPlus :size="14" /></template>
-        {{ t('newSession') }}
+      <OButton variant="soft" class="new-ws" @click="createWorkspaceDialog">
+        <template #icon><LuFolder :size="14" /></template>
+        {{ t('newWorkspace') }}
       </OButton>
+    </div>
+
+    <!-- 搜索与排序：搜工作区名与会话标题，结果仍按工作区分组展示 -->
+    <div class="filters">
+      <OInput v-model="store.query.value" :placeholder="t('searchPlaceholder')">
+        <template #prefix><LuSearch :size="13" /></template>
+        <template v-if="store.query.value" #suffix>
+          <button
+            type="button"
+            class="clear-btn"
+            :aria-label="t('clearSearch')"
+            @click="store.query.value = ''"
+          >
+            <LuX :size="13" />
+          </button>
+        </template>
+      </OInput>
+      <OSelect
+        :model-value="store.sortValue.value"
+        :options="sortOptions"
+        width="100%"
+        @update:model-value="store.setSort"
+      />
     </div>
 
     <nav class="tree">
       <div v-if="groups.length === 0 && !store.loading.value" class="empty">
-        {{ t('empty') }}
+        {{ noMatch ? t('noMatch') : t('empty') }}
       </div>
 
       <section v-for="g in groups" :key="g.workspace" class="group">
@@ -227,12 +299,34 @@ const deleteTarget = computed(
       </button>
     </footer>
 
-    <OModal :open="showNew" :title="t('newSession')" width="480px" @close="showNew = false">
+    <OModal :open="showNewWorkspace" :title="t('newWorkspace')" width="480px" @close="showNewWorkspace = false">
       <div class="form">
         <label>{{ t('workspacePath') }}</label>
-        <OInput v-model="newWorkspace" :placeholder="t('workspacePlaceholder')" autofocus />
+        <OInput
+          v-model="newWorkspacePath"
+          :placeholder="t('workspacePlaceholder')"
+          autofocus
+          @enter="createWorkspace"
+        />
+        <span class="field-hint">{{ t('newWorkspaceHint') }}</span>
+      </div>
+      <template #footer>
+        <OButton variant="ghost" @click="showNewWorkspace = false">{{ tc('cancel') }}</OButton>
+        <OButton variant="primary" :disabled="!newWorkspacePath.trim()" @click="createWorkspace">
+          {{ tc('create') }}
+        </OButton>
+      </template>
+    </OModal>
+
+    <OModal :open="showNew" :title="t('newSession')" width="480px" @close="showNew = false">
+      <div class="form">
+        <!-- 工作区已由分组决定；只会在侧栏存在的工作区下新建会话 -->
+        <div class="field">
+          <label>{{ t('newSessionWorkspace') }}</label>
+          <span class="ws-path">{{ newWorkspace || t('workspaceUnset') }}</span>
+        </div>
         <label>{{ t('sessionTitle') }}</label>
-        <OInput v-model="newTitle" :placeholder="t('titleAutoPlaceholder')" @enter="createSession" />
+        <OInput v-model="newTitle" :placeholder="t('titleAutoPlaceholder')" autofocus @enter="createSession" />
       </div>
       <template #footer>
         <OButton variant="ghost" @click="showNew = false">{{ tc('cancel') }}</OButton>
@@ -325,6 +419,34 @@ const deleteTarget = computed(
 }
 .new-ws {
   width: 100%;
+}
+/* 搜索 + 排序：两个控件上下排列，与上方新建按钮同宽 */
+.filters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+/* 搜索框清空按钮：图标小但热区要够大 */
+.clear-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    background-color 0.12s ease;
+}
+.clear-btn:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
 }
 .tree {
   flex: 1;
@@ -561,5 +683,26 @@ const deleteTarget = computed(
   font-size: 13px;
   color: var(--text-secondary);
   line-height: 1.6;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+/* 工作区路径：只读展示，长路径可换行，不让弹窗横向溢出 */
+.ws-path {
+  padding: 7px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.field-hint {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--overlay0);
 }
 </style>

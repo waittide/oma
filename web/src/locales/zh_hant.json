@@ -7,8 +7,9 @@
     "close": "關閉"
   },
   "sidebar": {
-    "newSession": "新建工作區",
-    "empty": "尚無會話，點擊右上角建立",
+    "newSession": "新增會話",
+    "newWorkspace": "新增工作區",
+    "empty": "尚無會話，點擊上方「新增會話」建立",
     "rename": "重新命名該會話",
     "deleteAria": "刪除",
     "settings": "設定",
@@ -25,7 +26,19 @@
     "deleteWorkspaceConfirm": "確定刪除工作區「{label}」？僅從列表中移除該分組，不會刪除磁碟上的任何檔案。",
     "noSessions": "此工作區尚無會話",
     "untitled": "未命名",
-    "titleAutoPlaceholder": "留空則由模型自動命名"
+    "titleAutoPlaceholder": "留空則由模型自動命名",
+    "newWorkspaceHint": "工作區僅登記於側邊欄，之後可在其下新增會話。",
+    "newSessionWorkspace": "所屬工作區",
+    "workspaceUnset": "未指定工作區",
+    "searchPlaceholder": "搜尋工作區或會話",
+    "clearSearch": "清除搜尋",
+    "noMatch": "沒有符合的工作區或會話",
+    "sortNameAsc": "名稱正序",
+    "sortNameDesc": "名稱倒序",
+    "sortCreatedAsc": "建立時間正序",
+    "sortCreatedDesc": "建立時間倒序",
+    "sortUpdatedAsc": "修改時間正序",
+    "sortUpdatedDesc": "修改時間倒序"
   },
   "sessions": {
     "created": "會話已建立",

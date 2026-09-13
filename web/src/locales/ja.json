@@ -7,8 +7,9 @@
     "close": "閉じる"
   },
   "sidebar": {
-    "newSession": "新しいワークスペース",
-    "empty": "セッションがありません。上の「新しいセッション」から作成してください。",
+    "newSession": "セッションを作成",
+    "newWorkspace": "ワークスペースを追加",
+    "empty": "セッションがありません。上の「セッションを作成」から作成してください。",
     "rename": "このセッションの名前を変更",
     "deleteAria": "削除",
     "settings": "設定",
@@ -25,7 +26,19 @@
     "deleteWorkspaceConfirm": "ワークスペース「{label}」を削除しますか？一覧からグループを外すだけで、ディスク上のファイルは削除されません。",
     "noSessions": "このワークスペースにセッションはありません",
     "untitled": "無題",
-    "titleAutoPlaceholder": "空欄にするとモデルが自動で命名します"
+    "titleAutoPlaceholder": "空欄にするとモデルが自動で命名します",
+    "newWorkspaceHint": "ワークスペースはサイドバーに登録されるだけで、その下にセッションを作成できます。",
+    "newSessionWorkspace": "所属ワークスペース",
+    "workspaceUnset": "ワークスペース未指定",
+    "searchPlaceholder": "ワークスペースまたはセッションを検索",
+    "clearSearch": "検索をクリア",
+    "noMatch": "一致するワークスペースまたはセッションがありません",
+    "sortNameAsc": "名前 昇順",
+    "sortNameDesc": "名前 降順",
+    "sortCreatedAsc": "作成日時 昇順",
+    "sortCreatedDesc": "作成日時 降順",
+    "sortUpdatedAsc": "更新日時 昇順",
+    "sortUpdatedDesc": "更新日時 降順"
   },
   "sessions": {
     "created": "セッションを作成しました",

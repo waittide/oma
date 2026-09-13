@@ -7,8 +7,9 @@
     "close": "Close"
   },
   "sidebar": {
-    "newSession": "New workspace",
-    "empty": "No sessions yet. Click New Session above.",
+    "newSession": "New session",
+    "newWorkspace": "New workspace",
+    "empty": "No sessions yet. Click New session above.",
     "rename": "Rename this session",
     "deleteAria": "Delete",
     "settings": "Settings",
@@ -25,7 +26,19 @@
     "deleteWorkspaceConfirm": "Delete workspace \"{label}\"? Only the group is removed here; no files on disk are touched.",
     "noSessions": "No sessions in this workspace",
     "untitled": "Untitled",
-    "titleAutoPlaceholder": "Leave empty to let the model name it"
+    "titleAutoPlaceholder": "Leave empty to let the model name it",
+    "newWorkspaceHint": "A workspace is only registered in the sidebar; add sessions under it afterwards.",
+    "newSessionWorkspace": "Workspace",
+    "workspaceUnset": "No workspace selected",
+    "searchPlaceholder": "Search workspaces or sessions",
+    "clearSearch": "Clear search",
+    "noMatch": "No matching workspace or session",
+    "sortNameAsc": "Name A→Z",
+    "sortNameDesc": "Name Z→A",
+    "sortCreatedAsc": "Created (oldest first)",
+    "sortCreatedDesc": "Created (newest first)",
+    "sortUpdatedAsc": "Modified (oldest first)",
+    "sortUpdatedDesc": "Modified (newest first)"
   },
   "sessions": {
     "created": "Session created",

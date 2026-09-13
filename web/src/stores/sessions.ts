@@ -7,6 +7,8 @@ import type { SessionRecord } from '../types';
 const COLLAPSED_KEY = 'oma.sidebar.collapsed';
 /** 已发现过的工作区路径：会话全部删除后分组仍保留，供新建/删除整个工作区 */
 const WORKSPACES_KEY = 'oma.workspaces';
+/** 侧栏排序方式（持久化，刷新后保持） */
+const SORT_KEY = 'oma.sidebar.sort';
 
 /** 会话列表状态：按工作区路径分组、折叠持久化。 */
 export const sessions = ref<SessionRecord[]>([]);
@@ -75,30 +77,110 @@ export interface WorkspaceGroup {
   items: SessionRecord[];
 }
 
+/** 侧栏排序字段与方向 */
+export type SortKey = 'name' | 'created' | 'updated';
+export type SortDir = 'asc' | 'desc';
+export const SORT_KEYS: SortKey[] = ['name', 'created', 'updated'];
+export const SORT_DIRS: SortDir[] = ['asc', 'desc'];
+
+/** 侧栏搜索关键词（匹配工作区名称与会话标题） */
+export const query = ref('');
+
+/** 当前排序：按“名称 / 创建时间 / 修改时间”与升降序组合。 */
+export const sort = ref<{ key: SortKey; dir: SortDir }>(
+  (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SORT_KEY) ?? 'null') as {
+        key?: SortKey;
+        dir?: SortDir;
+      } | null;
+      if (raw && SORT_KEYS.includes(raw.key as SortKey) && SORT_DIRS.includes(raw.dir as SortDir)) {
+        return { key: raw.key as SortKey, dir: raw.dir as SortDir };
+      }
+    } catch {
+      // 存储损坏时回落默认排序
+    }
+    // 默认与旧行为一致：最近修改优先
+    return { key: 'updated' as SortKey, dir: 'desc' as SortDir };
+  })(),
+);
+
+/** 排序值字符串：`名称:创建时间` 形式的单一下拉项 */
+export const sortValue = computed(() => `${sort.value.key}:${sort.value.dir}`);
+
+/** 选择排序：解析下拉项并持久化。 */
+export function setSort(value: string) {
+  const [key, dir] = value.split(':') as [SortKey, SortDir];
+  if (!SORT_KEYS.includes(key) || !SORT_DIRS.includes(dir)) return;
+  sort.value = { key, dir };
+  localStorage.setItem(SORT_KEY, JSON.stringify(sort.value));
+}
+
+/** 比较函数：名称走本地化比较（大小写不敏感），时间戳直接相减。 */
+function compare(a: SessionRecord, b: SessionRecord, key: SortKey): number {
+  if (key === 'name') return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
+  if (key === 'created') return a.created_at - b.created_at;
+  return a.updated_at - b.updated_at;
+}
+
 /**
  * 分组工作区：会话按 workspace 聚合，再并入「已知但已无会话」的工作区。
- * 后者没有条目可排序，追加在末尾，保证空分组不会因排序消失。
+ *
+ * 搜索在分组前做：工作区名称命中时保留其全部会话（否则搜工作区名会得到一个空壳），
+ * 会话标题命中时只保留命中的会话。
  */
 export const groups = computed<WorkspaceGroup[]>(() => {
+  const q = query.value.trim().toLowerCase();
+  const dir = sort.value.dir === 'asc' ? 1 : -1;
+
   const map = new Map<string, SessionRecord[]>();
   for (const s of sessions.value) {
     const list = map.get(s.workspace);
     if (list) list.push(s);
     else map.set(s.workspace, [s]);
   }
-  const groupList = [...map.entries()].map(([workspace, items]) => ({
-    workspace,
-    label: basename(workspace),
-    items,
-  }));
-  groupList.sort((a, b) => {
-    const ta = a.items[0]?.updated_at ?? 0;
-    const tb = b.items[0]?.updated_at ?? 0;
-    return tb - ta;
-  });
+  // 已知但已无会话的工作区也要能建分组与参与搜索
   for (const workspace of knownWorkspaces.value) {
-    if (!map.has(workspace)) groupList.push({ workspace, label: basename(workspace), items: [] });
+    if (!map.has(workspace)) map.set(workspace, []);
   }
+
+  const groupList: WorkspaceGroup[] = [...map.entries()]
+    .map(([workspace, items]) => ({ workspace, label: basename(workspace), items }))
+    .filter((g) => {
+      if (!q) return true;
+      if (g.label.toLowerCase().includes(q) || g.workspace.toLowerCase().includes(q)) return true;
+      return g.items.some((s) => s.title.toLowerCase().includes(q));
+    });
+
+  for (const g of groupList) {
+    const wsHit = !q || g.label.toLowerCase().includes(q) || g.workspace.toLowerCase().includes(q);
+    // 工作区名命中时保留全部会话；否则只留标题命中的
+    g.items = (wsHit ? g.items : g.items.filter((s) => s.title.toLowerCase().includes(q)))
+      .slice()
+      .sort((a, b) => compare(a, b, sort.value.key) * dir);
+  }
+
+  // 工作区分组之间用同一种排序：名称比分组名，时间取组内极值
+  groupList.sort((a, b) => {
+    if (sort.value.key === 'name') {
+      return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }) * dir;
+    }
+    const pick = (g: WorkspaceGroup, fn: (s: SessionRecord) => number) => {
+      if (g.items.length === 0) return null;
+      const values = g.items.map(fn);
+      // 升序看最早、降序看最晚，保证组序与组内顺序方向一致
+      return dir === 1 ? Math.min(...values) : Math.max(...values);
+    };
+    const fn = sort.value.key === 'created' ? (s: SessionRecord) => s.created_at : (s: SessionRecord) => s.updated_at;
+    const va = pick(a, fn);
+    const vb = pick(b, fn);
+    // 空分组没有时间可比：始终排在末尾，避免它们随着升降序乱跳
+    if (va === null && vb === null) return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+    if (va === null) return 1;
+    if (vb === null) return -1;
+    return (va - vb) * dir;
+  });
+
   return groupList;
 });
 
