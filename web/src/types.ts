@@ -18,6 +18,8 @@ export type ModelCapability =
   | 'image_generation'
   | 'video_understanding'
   | 'video_generation'
+  | 'audio_understanding'
+  | 'audio_generation'
   | 'embedding';
 
 /** 全部能力及其 i18n 文案键，顺序即界面展示顺序（与后端 ALL 一致） */
@@ -29,6 +31,8 @@ export const MODEL_CAPABILITIES: { value: ModelCapability; label: string }[] = [
   { value: 'image_generation', label: 'capabilityImageGeneration' },
   { value: 'video_understanding', label: 'capabilityVideoUnderstanding' },
   { value: 'video_generation', label: 'capabilityVideoGeneration' },
+  { value: 'audio_understanding', label: 'capabilityAudioUnderstanding' },
+  { value: 'audio_generation', label: 'capabilityAudioGeneration' },
   { value: 'embedding', label: 'capabilityEmbedding' },
 ];
 

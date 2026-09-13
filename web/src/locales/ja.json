@@ -190,6 +190,8 @@
     "capabilityImageGeneration": "画像生成",
     "capabilityVideoUnderstanding": "動画理解",
     "capabilityVideoGeneration": "動画生成",
+    "capabilityAudioUnderstanding": "音声理解",
+    "capabilityAudioGeneration": "音声生成",
     "capabilityEmbedding": "埋め込み生成",
     "requestOverride": "リクエスト上書き",
     "requestOverrideToggle": "ヘッダーとボディを展開",

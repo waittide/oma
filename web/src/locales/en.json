@@ -190,6 +190,8 @@
     "capabilityImageGeneration": "Image Generation",
     "capabilityVideoUnderstanding": "Video Understanding",
     "capabilityVideoGeneration": "Video Generation",
+    "capabilityAudioUnderstanding": "Audio Understanding",
+    "capabilityAudioGeneration": "Audio Generation",
     "capabilityEmbedding": "Embedding",
     "requestOverride": "Request overrides",
     "requestOverrideToggle": "Expand headers and body",

@@ -190,6 +190,8 @@
     "capabilityImageGeneration": "图像生成",
     "capabilityVideoUnderstanding": "视频理解",
     "capabilityVideoGeneration": "视频生成",
+    "capabilityAudioUnderstanding": "音频理解",
+    "capabilityAudioGeneration": "音频生成",
     "capabilityEmbedding": "向量生成",
     "requestOverride": "请求覆写",
     "requestOverrideToggle": "展开请求头与请求体",
