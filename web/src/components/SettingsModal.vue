@@ -1082,7 +1082,7 @@ function addModel(d: ProviderDraft) {
     context_len: '128000',
     max_output: '',
     reasoning_map: {},
-    capabilities: ['text_understanding', 'text_generation'],
+    capabilities: ['text_input', 'text_output'],
     headersText: '',
     bodyText: '',
     reasoningOpen: false,

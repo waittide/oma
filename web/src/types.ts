@@ -12,26 +12,26 @@ export type StopReason = 'end_turn' | 'tool_use' | 'max_tokens' | 'cancelled' | 
  */
 export type ModelCapability =
   | 'thinking'
-  | 'text_understanding'
-  | 'text_generation'
-  | 'image_understanding'
-  | 'image_generation'
-  | 'video_understanding'
-  | 'video_generation'
-  | 'audio_understanding'
-  | 'audio_generation';
+  | 'text_input'
+  | 'text_output'
+  | 'image_input'
+  | 'image_output'
+  | 'video_input'
+  | 'video_output'
+  | 'audio_input'
+  | 'audio_output';
 
 /** 全部能力及其 i18n 文案键，顺序即界面展示顺序（与后端 ALL 一致） */
 export const MODEL_CAPABILITIES: { value: ModelCapability; label: string }[] = [
   { value: 'thinking', label: 'capabilityThinking' },
-  { value: 'text_understanding', label: 'capabilityTextUnderstanding' },
-  { value: 'text_generation', label: 'capabilityTextGeneration' },
-  { value: 'image_understanding', label: 'capabilityImageUnderstanding' },
-  { value: 'image_generation', label: 'capabilityImageGeneration' },
-  { value: 'video_understanding', label: 'capabilityVideoUnderstanding' },
-  { value: 'video_generation', label: 'capabilityVideoGeneration' },
-  { value: 'audio_understanding', label: 'capabilityAudioUnderstanding' },
-  { value: 'audio_generation', label: 'capabilityAudioGeneration' },
+  { value: 'text_input', label: 'capabilityTextInput' },
+  { value: 'text_output', label: 'capabilityTextOutput' },
+  { value: 'image_input', label: 'capabilityImageInput' },
+  { value: 'image_output', label: 'capabilityImageOutput' },
+  { value: 'video_input', label: 'capabilityVideoInput' },
+  { value: 'video_output', label: 'capabilityVideoOutput' },
+  { value: 'audio_input', label: 'capabilityAudioInput' },
+  { value: 'audio_output', label: 'capabilityAudioOutput' },
 ];
 
 export type Block =
@@ -413,7 +413,7 @@ export interface ModelEntry {
   id: string;
   name: string;
   context_len: number;
-  /** 模型能力集合；缺省时后端仅补文本理解与文本生成 */
+  /** 模型能力集合；缺省时后端仅补文本输入与文本输出 */
   capabilities: ModelCapability[];
   /** 最大输出 Token；未设置时各协议使用内置默认 */
   max_output?: number;
