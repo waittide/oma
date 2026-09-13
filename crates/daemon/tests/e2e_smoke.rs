@@ -1227,7 +1227,147 @@ async fn test_read_image_metadata_only_for_text_model() -> Result<()> {
     Ok(())
 }
 
-/// read 读图片但模型不支持视觉：只回元数据，不把图片发给厂商。
+/// 从历史中间点分叉：新消息挂在被选节点的父节点上，与它成为兄弟分支。
+///
+/// 对应前端行为：历史树里点某条用户消息 U → 视图截断到 U 的父节点（不写服务端）→
+/// 再以 `fork_and_run(parent_of_U)` 发送，于是新消息与 U 平级，形成真正的分叉。
+#[tokio::test]
+async fn test_fork_from_middle_point_creates_sibling_branch() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("fork")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "forker".into(),
+    })
+    .await?;
+
+    // 两轮，得到链 u1 → a1 → u2 → a2
+    for text in ["第一条消息", "第二条消息"] {
+        client
+            .send_command(AgentCommand::UserInput {
+                content:     text.into(),
+                attachments: vec![],
+            })
+            .await?;
+        drive_turn(&mut client, Duration::from_secs(30)).await?;
+    }
+
+    let before = fetch_messages(&h, &session.session_id).await?;
+    let real_users = |msgs: &[serde_json::Value]| -> Vec<serde_json::Value> {
+        msgs.iter()
+            .filter(|m| m["role"] == "user")
+            // 工具回执同为 role=user，需排除
+            .filter(|m| {
+                m["content"]
+                    .as_array()
+                    .is_some_and(|bs| !bs.iter().any(|b| b["type"] == "tool_result"))
+            })
+            .cloned()
+            .collect()
+    };
+    let users = real_users(&before);
+    assert_eq!(users.len(), 2, "two rounds persisted: {before:#?}");
+    let u2 = &users[1];
+    let u2_id = u2["id"].as_str().unwrap().to_string();
+    // u2 的父节点就是 a1：以它为分叉点，新消息应与 u2 平级
+    let a1_id = u2["parent_id"]
+        .as_str()
+        .expect("u2 has a parent")
+        .to_string();
+    let u2_text = u2["content"][0]["text"].as_str().unwrap().to_string();
+
+    // 等价于：历史树点 U2 → 草稿回填其文本 → 发送时从 a1 分叉
+    client
+        .send_command(AgentCommand::ForkAndRun {
+            parent_message_id: a1_id.clone(),
+            new_content:       Some(format!("{u2_text}（改写的版本）")),
+        })
+        .await?;
+    drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    let after = fetch_messages(&h, &session.session_id).await?;
+    let siblings: Vec<serde_json::Value> = real_users(&after)
+        .into_iter()
+        .filter(|m| m["parent_id"].as_str() == Some(a1_id.as_str()))
+        .collect();
+    assert_eq!(
+        siblings.len(),
+        2,
+        "the fork must be a sibling of the clicked user message: {after:#?}"
+    );
+    let forked = siblings
+        .iter()
+        .find(|m| m["id"].as_str() != Some(u2_id.as_str()))
+        .expect("the new message is the other sibling");
+    assert!(
+        forked["content"].as_array().is_some_and(|bs| {
+            bs.iter()
+                .any(|b| b["text"].as_str().is_some_and(|t| t.contains("改写的版本")))
+        }),
+        "forked content must be persisted: {forked:#?}"
+    );
+    Ok(())
+}
+
+/// 普通发送接在最新分支：证明前端“预览不写服务端”的做法不会丢掉分叉语义。
+#[tokio::test]
+async fn test_plain_send_continues_from_latest_leaf() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("chain")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "chainer".into(),
+    })
+    .await?;
+
+    for text in ["第一轮", "第二轮", "第三轮"] {
+        client
+            .send_command(AgentCommand::UserInput {
+                content:     text.into(),
+                attachments: vec![],
+            })
+            .await?;
+        drive_turn(&mut client, Duration::from_secs(30)).await?;
+    }
+
+    let all = fetch_messages(&h, &session.session_id).await?;
+    let users: Vec<&serde_json::Value> = all
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .filter(|m| {
+            m["content"]
+                .as_array()
+                .is_some_and(|bs| !bs.iter().any(|b| b["type"] == "tool_result"))
+        })
+        .collect();
+    assert_eq!(
+        users.len(),
+        3,
+        "three rounds must produce three user messages: {all:#?}"
+    );
+    // 每条用户消息的父节点都应是上一条助手回复（线性链，无分叉）
+    for m in users.iter().skip(1) {
+        let parent = m["parent_id"].as_str().expect("chained parent");
+        let pm = all
+            .iter()
+            .find(|x| x["id"].as_str() == Some(parent))
+            .unwrap();
+        assert_eq!(pm["role"], "assistant", "chain must alternate: {all:#?}");
+    }
+    Ok(())
+}
+
+/// 推理等级映射：会话选中的等级经模型映射表转换后才发给厂商。
 #[tokio::test]
 async fn test_reasoning_level_is_mapped_before_request() -> Result<()> {
     let h = start_harness().await?;
