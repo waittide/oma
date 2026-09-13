@@ -85,11 +85,21 @@ const connDetail = ref('');
 
 /** 探测目标 Daemon：需要用表单里的值（而不是已保存的值）即时验证。 */
 async function testConnection(): Promise<boolean> {
+  const probeToken = conn.token.trim();
+  if (!probeToken) {
+    // 空 token 只会发出一个 `Authorization: Bearer ` 的请求，401 也看不出所以然，
+    // 这里直接说明原因，省得用户去翻控制台
+    connState.value = 'fail';
+    connDetail.value = t('connTokenRequired');
+    return false;
+  }
+
+  const base = normalizeBaseUrl(conn.baseUrl);
+
   connTesting.value = true;
   try {
-    const base = normalizeBaseUrl(conn.baseUrl);
     const resp = await fetch(`${base}/api/server/status`, {
-      headers: { Authorization: `Bearer ${conn.token.trim()}` },
+      headers: { Authorization: `Bearer ${probeToken}` },
     });
     if (resp.ok) {
       const info = (await resp.json()) as { version?: string; active_sessions?: number };
@@ -106,9 +116,11 @@ async function testConnection(): Promise<boolean> {
         ? t('connUnauthorized')
         : t('connHttpError', { status: resp.status });
     return false;
-  } catch (e) {
+  } catch {
+    // fetch 失败只有浏览器自带的英文原因（`Failed to fetch` 之类），既不是中文也
+    // 帮不上排查（原因本身对 JS 不透明），这里换成目标地址 + 可能的排查方向
     connState.value = 'fail';
-    connDetail.value = t('connUnreachable', { message: (e as Error).message });
+    connDetail.value = t('connUnreachable', { base: base || location.origin });
     return false;
   } finally {
     connTesting.value = false;
@@ -124,6 +136,9 @@ async function saveConnection() {
     // 地址/凭证换了之后，旧数据（会话、消息、主题、配置）都属于上一个 Daemon，
     // 必须整体重载；由 App 统一做：会话列表 + 配置主题 + 重新建立 WS
     await reloadAll();
+  } else {
+    // 失败也要给出可见反馈：否则点完按钮像是「什么都没发生」，只能去翻控制台
+    toast.error(connDetail.value || t('connFailed'));
   }
 }
 

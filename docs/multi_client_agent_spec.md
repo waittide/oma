@@ -95,7 +95,10 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
      （不再生成 `auth.token` 随机密钥文件）；
    - 本地客户端（TUI / status）启动时读取同一配置文件获取 Token；
    - 远程客户端（Web / 远程 Tauri）在设置界面的「连接」页填写地址与 Token，
-     保存在客户端本地（`localStorage`）。
+     保存在客户端本地（`localStorage`）；地址与 Token 都预填默认值
+     （`http://127.0.0.1:17431` 与 `admin`），开箱即可连上默认 Daemon；
+   - 连接页的空 Token 不会发出无凭证请求（否则只会看到 `Authorization: Bearer `，
+     401 也查不出原因），保存失败时以通知给出「被拒绝 / 服务不可达」的具体原因。
 
 > 默认只监听回环地址，因此默认 token 仅用于「装完即用」；
 > 将 Daemon 暴露到局域网或公网前，必须先在设置界面或配置文件中改成强密钥。

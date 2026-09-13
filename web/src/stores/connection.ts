@@ -13,6 +13,12 @@ const TOKEN_KEY = 'oma.token';
  * 同源没有 API，因此留空会在首次打开时直接报错。 */
 const DEFAULT_BASE_URL = 'http://127.0.0.1:17431';
 
+/** 与 `oma_config::DEFAULT_AUTH_TOKEN` 一致：Daemon 未配置 token 时用的默认值。
+ *
+ * 这里同样兜底，界面才能开箱即用；否则输入框只会以 placeholder 展示 `admin`，
+ * 看起来像填好了、实际发出去的是没有凭证的 `Authorization: Bearer `。 */
+const DEFAULT_AUTH_TOKEN = 'admin';
+
 /** 从 URL 的 ?token= 取凭证后立即从地址栏抹掉（历史记录/Referer 都会留存）。 */
 function takeTokenFromUrl(): string | null {
   if (typeof location === 'undefined') return null;
@@ -45,7 +51,7 @@ function writeStorage(key: string, value: string) {
 
 /** 访问地址：缺省指向 Daemon 默认地址；清空表示与页面同源（反向代理场景）。 */
 export const baseUrl = ref(readStorage(BASE_KEY) || DEFAULT_BASE_URL);
-export const token = ref(readStorage(TOKEN_KEY));
+export const token = ref(readStorage(TOKEN_KEY) || DEFAULT_AUTH_TOKEN);
 
 // 首次加载：URL 里的 token 优先，视为用户显式指定
 const urlToken = takeTokenFromUrl();
