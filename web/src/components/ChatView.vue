@@ -24,6 +24,7 @@ import OModelSelect from './ui/OModelSelect.vue';
 import OTooltip from './ui/OTooltip.vue';
 import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
+import MessageRail from './MessageRail.vue';
 import { prettyJson } from '../lib/format';
 import AskPanel from './AskPanel.vue';
 import ContextGauge from './ContextGauge.vue';
@@ -283,6 +284,29 @@ const isEmpty = computed(() => chat.messages.value.length === 0 && !chat.running
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */
 const ready = computed(() => !!activeSessionId.value && props.online && chat.connected.value);
 
+/**
+ * 右侧竖线导航：每条用户消息对应一个点，悬停展示提示词。
+ * 仅取文本块，附件、工具回执（内部消息）不参与。
+ */
+const railItems = computed(() =>
+  chat.messages.value
+    .filter((m) => m.role === 'user' && !chat.isInternalMessage(m))
+    .map((m) => ({ id: m.id, text: userText(m.id) })),
+);
+
+/** 消息元素引用：导航点据此定位目标，避免依赖会随重构失效的属性选择器。 */
+const msgEls: Record<string, HTMLElement | null> = {};
+function setMsgEl(id: string, el: unknown) {
+  const node = (el ?? null) as HTMLElement | null;
+  if (node) msgEls[id] = node;
+  else delete msgEls[id];
+}
+
+/** 点击点：把对应用户消息滚动到可视区（而非顶部，保留上下文）。 */
+function jumpToMessage(id: string) {
+  msgEls[id]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length > 0);
 </script>
 
@@ -318,73 +342,77 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
       </div>
     </header>
 
-    <div ref="scrollEl" class="stream" @scroll.passive="onScroll">
-      <div v-if="!activeSessionId" class="hero">
-        <LuBot :size="42" class="hero-icon" />
-        <h2>{{ t('welcomeTitle') }}</h2>
-        <p>{{ t('welcomeBody') }}</p>
-        <OButton variant="primary" size="md" @click="requestNewSession">
-          <template #icon><LuPlus :size="14" /></template>
-          {{ t('newSession') }}
-        </OButton>
-      </div>
+    <div class="stream-wrap">
+      <div ref="scrollEl" class="stream" @scroll.passive="onScroll">
+        <div v-if="!activeSessionId" class="hero">
+          <LuBot :size="42" class="hero-icon" />
+          <h2>{{ t('welcomeTitle') }}</h2>
+          <p>{{ t('welcomeBody') }}</p>
+          <OButton variant="primary" size="md" @click="requestNewSession">
+            <template #icon><LuPlus :size="14" /></template>
+            {{ t('newSession') }}
+          </OButton>
+        </div>
 
-      <div v-else-if="!props.online" class="hero">
-        <LuAlertTriangle :size="42" class="hero-icon warn" />
-        <h2>{{ t('offlineTitle') }}</h2>
-        <p>{{ t('offlineBody') }}</p>
-      </div>
+        <div v-else-if="!props.online" class="hero">
+          <LuAlertTriangle :size="42" class="hero-icon warn" />
+          <h2>{{ t('offlineTitle') }}</h2>
+          <p>{{ t('offlineBody') }}</p>
+        </div>
 
-      <div v-else-if="isEmpty" class="hero">
-        <LuZap :size="42" class="hero-icon" />
-        <h2>{{ t('emptyTitle') }}</h2>
-        <p>{{ t('emptyBody') }}</p>
-        <OButton v-if="!hasProviders" variant="soft" @click="emit('needSettings')">{{ t('goSettings') }}</OButton>
-      </div>
+        <div v-else-if="isEmpty" class="hero">
+          <LuZap :size="42" class="hero-icon" />
+          <h2>{{ t('emptyTitle') }}</h2>
+          <p>{{ t('emptyBody') }}</p>
+          <OButton v-if="!hasProviders" variant="soft" @click="emit('needSettings')">{{ t('goSettings') }}</OButton>
+        </div>
 
-      <template v-else>
-        <article
-          v-for="m in chat.messages.value.filter((x) => !chat.isInternalMessage(x))"
-          :key="m.id"
-          class="msg"
-          :class="m.role"
-        >
-          <template v-if="m.role === 'user'">
-            <div class="user-bubble">
+        <template v-else>
+          <article
+            v-for="m in chat.messages.value.filter((x) => !chat.isInternalMessage(x))"
+            :key="m.id"
+            :ref="(el) => setMsgEl(m.id, el)"
+            class="msg"
+            :class="m.role"
+          >
+            <template v-if="m.role === 'user'">
+              <div class="user-bubble">
+                <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
+              </div>
+              <div class="user-actions">
+                <button
+                  v-if="m.parent_id"
+                  type="button"
+                  class="fork"
+                  :aria-label="t('editResendHint')"
+                  @click="startFork(m.parent_id, userText(m.id))"
+                >
+                  <LuPencil :size="11" /> {{ t('editResend') }}
+                </button>
+                <button
+                  type="button"
+                  class="fork"
+                  :aria-label="t('deleteHint')"
+                  @click="chat.deleteMessage(m.id)"
+                >
+                  <LuTrash2 :size="11" /> {{ t('delete') }}
+                </button>
+              </div>
+            </template>
+            <template v-else>
               <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
-            </div>
-            <div class="user-actions">
-              <button
-                v-if="m.parent_id"
-                type="button"
-                class="fork"
-                :aria-label="t('editResendHint')"
-                @click="startFork(m.parent_id, userText(m.id))"
-              >
-                <LuPencil :size="11" /> {{ t('editResend') }}
-              </button>
-              <button
-                type="button"
-                class="fork"
-                :aria-label="t('deleteHint')"
-                @click="chat.deleteMessage(m.id)"
-              >
-                <LuTrash2 :size="11" /> {{ t('delete') }}
-              </button>
-            </div>
-          </template>
-          <template v-else>
-            <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
-          </template>
-        </article>
+            </template>
+          </article>
 
-        <article v-if="chat.running.value || chat.finalizing.value" class="msg assistant">
-          <MessageBlocks :blocks="chat.renderBlocks.value" :streaming="true" />
-          <div v-if="chat.running.value" class="live-row">
-            <LuLoader :size="13" class="spin" />
-          </div>
-        </article>
-      </template>
+          <article v-if="chat.running.value || chat.finalizing.value" class="msg assistant">
+            <MessageBlocks :blocks="chat.renderBlocks.value" :streaming="true" />
+            <div v-if="chat.running.value" class="live-row">
+              <LuLoader :size="13" class="spin" />
+            </div>
+          </article>
+        </template>
+      </div>
+      <MessageRail :items="railItems" @jump="jumpToMessage" />
     </div>
 
     <Transition name="slide">
@@ -638,11 +666,17 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
 .dot.off {
   background: var(--overlay0);
 }
+.stream-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
 .stream {
   flex: 1;
   overflow-y: auto;
-  padding: 14px 0 8px;
-  /* 两侧对称预留滚动条槽位：滚动条出现时消息列仍与输入框列对齐 */
+  /* 左右对称：右侧为竖线导航让位，同时保持消息列与输入框列同轴居中 */
+  padding: 14px 24px 8px;
   scrollbar-gutter: stable both-edges;
 }
 .hero {
@@ -765,8 +799,8 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   flex-shrink: 0;
 }
 .composer {
-  padding: 8px 14px 12px;
-  max-width: var(--chat-col);
+  padding: 8px 24px 12px;
+  max-width: calc(var(--chat-col) + 20px);
   width: 100%;
   margin: 0 auto;
 }

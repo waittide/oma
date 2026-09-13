@@ -52,6 +52,7 @@
     "editResendHint": "編輯並從該處分叉重跑",
     "editResendBanner": "編輯重寄：將從上一則訊息處分叉出新分支",
     "historyTree": "歷史樹",
+    "messageRail": "訊息導覽",
     "placeholder": "輸入訊息，Enter 傳送，Shift+Enter 換行",
     "placeholderNoSession": "請先選擇或建立會話",
     "stop": "中止",

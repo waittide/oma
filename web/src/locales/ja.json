@@ -52,6 +52,7 @@
     "editResendHint": "ここから編集し、新しいブランチを作成します",
     "editResendBanner": "編集して再送: 前のメッセージから新しいブランチを作成します",
     "historyTree": "履歴ツリー",
+    "messageRail": "メッセージナビ",
     "placeholder": "メッセージを入力。Enter で送信、Shift+Enter で改行",
     "placeholderNoSession": "先にセッションを選択または作成してください",
     "stop": "停止",
