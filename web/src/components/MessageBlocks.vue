@@ -177,12 +177,13 @@ function toolSubtitle(it: Item): string {
           <span class="fold-title">{{ t('thinking') }}</span>
           <LuChevronRight :size="13" class="caret" />
         </button>
-        <pre
+        <div
           v-show="isOpen(it)"
           :ref="(el) => setBodyEl(it.key, el)"
-          class="fold-body"
+          class="fold-body think-body md"
           @scroll.passive="onFoldScroll(it.key)"
-        >{{ it.thinking }}</pre>
+          v-html="renderMarkdown(it.thinking ?? '')"
+        />
       </div>
 
       <img v-else-if="it.kind === 'image' && it.imageSrc" class="att" :src="it.imageSrc" alt="attachment" />
@@ -410,6 +411,70 @@ function toolSubtitle(it: Item): string {
   overflow-y: auto;
   /* 滚动到底时不再把滚动链传给外层消息流 */
   overscroll-behavior: contain;
+}
+/* 思考正文：与正文一样按 Markdown 渲染，但整体压一档、默认偏弱色 */
+.think-body {
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.65;
+  /* 折叠体默认 pre-wrap；Markdown 渲染后的 HTML 若沿用会在块级标签之间
+     留下源码换行，多出空白行 */
+  white-space: normal;
+}
+.think-body :deep(p) {
+  margin: 0 0 8px;
+}
+.think-body :deep(p:last-child) {
+  margin-bottom: 0;
+}
+/* 思考内容里的代码块/行内代码沿用正文样式，不再叠一层内边距 */
+.think-body :deep(pre) {
+  margin: 6px 0 8px;
+  padding: 0;
+  background: transparent;
+  font-size: 11.5px;
+  overflow-x: auto;
+}
+.think-body :deep(pre code) {
+  padding: 0;
+  background: transparent;
+}
+.think-body :deep(code) {
+  font-size: 11.5px;
+  background: color-mix(in srgb, var(--surface2) 55%, transparent);
+}
+.think-body :deep(ul),
+.think-body :deep(ol) {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+.think-body :deep(li) {
+  margin: 2px 0;
+}
+.think-body :deep(h1),
+.think-body :deep(h2),
+.think-body :deep(h3),
+.think-body :deep(h4),
+.think-body :deep(h5),
+.think-body :deep(h6) {
+  margin: 10px 0 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.think-body :deep(blockquote) {
+  margin: 6px 0 8px;
+  padding: 0 10px;
+  border-left: 2px solid var(--surface2);
+}
+.think-body :deep(table) {
+  border-collapse: collapse;
+  font-size: 11.5px;
+  margin: 0 0 8px;
+}
+.think-body :deep(th),
+.think-body :deep(td) {
+  border: 1px solid var(--line);
+  padding: 3px 8px;
 }
 .fold-body.result {
   color: var(--text-secondary);
