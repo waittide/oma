@@ -331,7 +331,11 @@ pub struct ModelEntry {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers:           BTreeMap<String, String>,
     /// 该模型附加的请求体字段：递归深合并，覆盖 Provider 级配置
-    #[serde(default = "empty_json_object", deserialize_with = "deserialize_json_body")]
+    #[serde(
+        default = "empty_json_object",
+        deserialize_with = "deserialize_json_body",
+        skip_serializing_if = "is_empty_json_object"
+    )]
     pub body:              serde_json::Value,
 }
 
@@ -346,6 +350,11 @@ fn model_entry_default_true() -> bool {
 }
 fn empty_json_object() -> serde_json::Value {
     serde_json::json!({})
+}
+
+/// 空请求体不写入配置文件：模型条目数量多，每项都带 `body = {}` 徒增噪声。
+fn is_empty_json_object(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(|o| o.is_empty())
 }
 
 /// 请求体预设：TOML 无法表达 null，反序列化时将缺失/null 规范为空对象

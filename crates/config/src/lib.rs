@@ -1132,6 +1132,21 @@ id = "m2"
     }
 
     #[test]
+    fn test_model_entry_omits_empty_override_fields() {
+        // 空覆写不落盘：模型条目多时每项都带空 body/headers 会淹没真正的配置
+        let entry: ModelEntry = toml::from_str(r#"id = "m""#).unwrap();
+        let out = toml::to_string(&entry).unwrap();
+        assert!(!out.contains("body"), "empty body must be skipped: {out}");
+        assert!(!out.contains("headers"), "empty headers must be skipped: {out}");
+
+        let rich: ModelEntry =
+            toml::from_str("id = \"m\"\nheaders = { \"X-A\" = \"1\" }\nbody = { temperature = 0.7 }\n").unwrap();
+        let out = toml::to_string(&rich).unwrap();
+        assert!(out.contains("X-A"));
+        assert!(out.contains("temperature"));
+    }
+
+    #[test]
     fn test_parse_toml_config() {
         let toml_str = r#"
 default_model = "deepseek/deepseek-chat"
