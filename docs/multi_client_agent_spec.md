@@ -79,8 +79,8 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 - **单端口统一路由**：
   - `/ws`：双向 WebSocket（承载 `ClientMessage` / `ServerMessage` JSON 协议，基于 `session_id` 自动加入对应 Room）；
   - `/api/*`：HTTP REST 接口（会话 CRUD、消息回放、状态探测、文件树、Diff 读取、附件上传）；
-  - Daemon 保持 Headless：不内置任何前端资产。若存在 `web/dist`（Vite 产物），
-  Daemon 会将其作为静态资源直出并提供 SPA fallback，便于单端口访问；不存在则仅暴露 API。
+  - Daemon 保持 Headless：不内置也不直出任何前端资产，只提供 API；
+    界面统一由 `oma web` 提供（见 §9.1）。
 
 ### 2.2 严格 Bearer Token 鉴权
 1. **传输规范**：
@@ -737,8 +737,10 @@ pub struct Palette {
 ## 9. 命令行入口与 Web 前端工程
 
 ### 9.1 统一 `oma` 命令行入口 (`crates/bin`)
-- `oma daemon`：独立启动后台 Daemon 服务（默认监听 `127.0.0.1:17431`）；
-- `oma web`：启动 Daemon 并托管 Web 前端页面服务，仅打印访问地址，需 `--open` 才自动打开浏览器；
+- `oma daemon`：独立启动后台 Daemon 服务（仅 API，默认监听 `127.0.0.1:17431`）；
+- `oma web`：仅启动内嵌前端静态服务，**不会**顺便拉起 Daemon，也不再依赖 Vite/pnpm；
+  构建产物经 `rust-embed` 内嵌进二进制（release 下不依赖任何外部目录），
+  仅打印界面地址，需 `--open` 才自动打开浏览器；
 - `oma tui`：启动/连接 Daemon 并进入 Ratatui 终端交互界面；
 - 不带子命令（`oma`）：等价于 `oma -h`，仅打印帮助，不自动启动任何界面。
 
@@ -770,7 +772,7 @@ pub struct Palette {
 | 事项 | 决策与理由 |
 |---|---|
 | 鉴权传输 | REST 仅接受 `Authorization: Bearer`；WebSocket 握手额外接受 `?token=`，因为浏览器无法为 WS 请求设置自定义头。 |
-| 前端静态资源 | Daemon 不内置资产；存在 `web/dist` 时直出并做 SPA fallback，否则纯 API 服务。 |
+| 前端静态资源 | `oma web` 提供界面：资产由 `rust-embed` 内嵌进二进制，debug 下从 `web/dist` 实时读取（改前端只需 `pnpm build`），release 下真正内嵌。Daemon 不直出资产、保持 Headless。 |
 | 上下文压缩 | 第一阶段只替换 `ToolResult` 内容（保持配对），第二阶段按**完整轮次**丢弃前缀；旧的「按消息条数切半」会切出孤儿回执或以 assistant 开头，长会话下必然被厂商 API 拒绝。 |
 | 工具白名单 | Agent 模板的 `tools` 声明是硬约束：既过滤下发给模型的清单，也拦截实际执行；为空表示不限制。 |
 | 会话标识 | `session_id` 会被拼接进文件系统路径，因此全局校验为 `[A-Za-z0-9_-]{1,128}`；附件名同样只允许安全字符并丢弃任何目录成分。 |

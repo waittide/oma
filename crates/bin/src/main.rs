@@ -4,12 +4,32 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use axum::{
+    Router,
+    http::{StatusCode, Uri, header},
+    response::{IntoResponse, Response},
+};
 use clap::{CommandFactory, Parser, Subcommand};
 use oma_config::OmaConfig;
 use oma_daemon::{DaemonState, create_router, resolve_or_create_token};
 use oma_mcp::McpManager;
 use oma_storage::StorageManager;
+use rust_embed::Embed;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+const DEFAULT_ADDR: &str = "127.0.0.1:17431";
+/// 前端默认监听端口：独立于 Daemon 端口，避免两者互相抢占
+const DEFAULT_WEB_PORT: u16 = 5173;
+const INDEX_HTML: &str = "index.html";
+
+/// 内嵌的前端构建产物。
+///
+/// debug 构建下 rust-embed 直接从磁盘读取 `web/dist`，因此改完前端只要跑一次
+/// `pnpm build` 即可生效，无需重新编译 Rust；release 构建则把资产写进二进制，
+/// 部署时不再依赖任何外部目录，也不需要目标机器安装 node。
+#[derive(Embed)]
+#[folder = "$OMA_WEB_DIST"]
+struct WebAssets;
 
 #[derive(Parser)]
 #[command(
@@ -25,32 +45,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 独立启动后台 Daemon 服务
+    /// 独立启动后台 Daemon 服务（仅 API，界面由 `oma web` 提供）
     Daemon {
-        #[arg(long, default_value = "127.0.0.1:17431")]
+        #[arg(long, default_value = DEFAULT_ADDR)]
         addr:   String,
         #[arg(long)]
         token:  Option<String>,
         #[arg(long)]
         config: Option<PathBuf>,
     },
-    /// 启动 Daemon 并托管 Web 交互界面
+    /// 启动内嵌前端静态服务（不启动 Daemon）
     Web {
-        #[arg(long, default_value = "127.0.0.1:17431")]
-        addr:  String,
-        #[arg(long)]
-        token: Option<String>,
-        #[arg(long)]
-        dev:   bool,
-        #[arg(long, default_value = "5173")]
-        port:  u16,
+        /// 前端监听地址
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// 前端监听端口
+        #[arg(long, default_value_t = DEFAULT_WEB_PORT)]
+        port: u16,
         /// 就绪后自动调用浏览器打开页面（默认仅打印访问地址）
         #[arg(long)]
-        open:  bool,
+        open: bool,
     },
     /// 连接 Daemon 启动 TUI 终端客户端
     Tui {
-        #[arg(long, default_value = "127.0.0.1:17431")]
+        #[arg(long, default_value = DEFAULT_ADDR)]
         addr:      String,
         #[arg(long)]
         token:     Option<String>,
@@ -60,7 +78,7 @@ enum Commands {
     },
     /// 查看 Daemon 服务端运行状态
     Status {
-        #[arg(long, default_value = "127.0.0.1:17431")]
+        #[arg(long, default_value = DEFAULT_ADDR)]
         addr:  String,
         #[arg(long)]
         token: Option<String>,
@@ -75,25 +93,31 @@ fn get_data_dir() -> PathBuf {
         .join("oma")
 }
 
+fn config_path(config_opt: Option<&Path>) -> PathBuf {
+    config_opt
+        .map(PathBuf::from)
+        .or_else(OmaConfig::config_path)
+        .unwrap_or_else(|| get_data_dir().join("config.toml"))
+}
+
+/// 加载配置；文件存在但解析失败时报错退出。
+///
+/// 静默回退到默认配置会丢掉全部 provider 与模型设置，比直接启动失败更难排查。
+fn load_config(path: &Path) -> Result<OmaConfig> {
+    if path.exists() {
+        OmaConfig::load_from_file(path).with_context(|| format!("Invalid config file {}", path.display()))
+    } else {
+        Ok(OmaConfig::default())
+    }
+}
+
 async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&Path>) -> Result<()> {
     let data_dir = get_data_dir();
     std::fs::create_dir_all(&data_dir)?;
 
     let token = resolve_or_create_token(token_opt, &data_dir)?;
-
-    let config_path = config_opt
-        .map(PathBuf::from)
-        .or_else(OmaConfig::config_path)
-        .unwrap_or_else(|| data_dir.join("config.toml"));
-
-    // 配置文件存在但解析失败时必须报错退出：静默回退到默认配置会丢掉
-    // 全部 provider 与模型设置，比直接启动失败更难排查
-    let config = if config_path.exists() {
-        OmaConfig::load_from_file(&config_path)
-            .with_context(|| format!("Invalid config file {}", config_path.display()))?
-    } else {
-        OmaConfig::default()
-    };
+    let config_path = config_path(config_opt);
+    let config = load_config(&config_path)?;
 
     let storage = StorageManager::new(&data_dir).await?;
     let mcp = Arc::new(McpManager::new());
@@ -111,131 +135,95 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
         .await
         .with_context(|| format!("Failed to bind to {}", addr))?;
 
-    println!("┌────────────────────────────────────────────────────────────┐");
-    println!("│ Oma Core Daemon v0.1.0                                     │");
-    println!("│ Listening:   http://{:<38} │", addr);
-    println!("│ Auth Token:  {:<45} │", token);
-    println!("└────────────────────────────────────────────────────────────┘");
+    println!("Oma Daemon v{} 已启动", env!("CARGO_PKG_VERSION"));
+    println!("  API 地址:  http://{}", addr);
 
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn run_web(addr: &str, token_opt: Option<&str>, dev: bool, port: u16, open: bool) -> Result<()> {
-    let data_dir = get_data_dir();
-    let token = resolve_or_create_token(token_opt, &data_dir)?;
+/// 启动内嵌前端的静态服务。
+///
+/// 只提供界面本身：连接哪个 Daemon、用什么 token 由用户在设置的「连接」页填写，
+/// 因此这里不需要也不应该知道 Daemon 的任何信息。
+async fn run_web(host: &str, port: u16, open: bool) -> Result<()> {
+    if WebAssets::iter().next().is_none() {
+        anyhow::bail!("前端资产缺失：请在 web/ 目录执行 `pnpm build` 后重新编译（当前二进制内没有任何文件）");
+    }
 
-    // 1. 探测 Daemon 是否已经在运行
-    let test_url = format!("http://{}/api/server/status", addr);
-    let client = reqwest::Client::new();
-    let is_running = client
-        .get(&test_url)
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
+    let listener = tokio::net::TcpListener::bind((host, port))
         .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
+        .with_context(|| format!("Failed to bind to {host}:{port}"))?;
+    // 端口传 0 时由系统分配，打印真实端口而不是用户传的 0
+    let actual = listener.local_addr()?;
 
-    if !is_running {
-        println!("🚀 Oma Daemon 未在 {} 运行，正在本地启动后台服务...", addr);
-        let addr_clone = addr.to_string();
-        let token_clone = token.clone();
-        let daemon = tokio::spawn(async move { start_daemon(&addr_clone, Some(&token_clone), None).await });
+    let app = Router::new().fallback(web_asset_handler);
+    let url = format!("http://{}", format_host(host, actual.port()));
 
-        // 必须等到 Daemon 真正监听端口：启动失败（配置解析错误、端口占用等）
-        // 时直接冒泡退出，否则前端会把请求代理到死端口刷 ECONNREFUSED，
-        // 把真正的失败原因埋掉
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let ready = client
-                .get(&test_url)
-                .header("Authorization", format!("Bearer {}", token))
-                .send()
-                .await
-                .map(|r| r.status().is_success())
-                .unwrap_or(false);
-            if ready {
-                break;
-            }
-            if daemon.is_finished() {
-                return match daemon.await {
-                    Ok(Err(e)) => Err(e),
-                    Ok(Ok(())) => Err(anyhow::anyhow!("Daemon 未监听 {} 便退出", addr)),
-                    Err(e) => Err(anyhow::anyhow!("Daemon 任务异常终止: {e}")),
-                };
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(anyhow::anyhow!("等待 Daemon 就绪超时: {}", addr));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    }
-    let daemon_url = format!("http://{}?token={}", addr, token);
-    let web_url = format!("http://localhost:{}?token={}", port, token);
+    println!("Oma Web v{} 已启动", env!("CARGO_PKG_VERSION"));
+    println!("  界面地址:  {}", url);
 
-    println!("✨ Oma Web Client Ready:");
-    println!("   ➜ 内置直出访问 (Daemon):  {}", daemon_url);
-    println!("   ➜ 本地独立前端 (Vite):    {}", web_url);
-    println!("👉 请在浏览器中访问上述任一链接以进入 Oma 协同工作台。");
-
-    // 仅在显式 `--open` 时才拉起浏览器，避免默认弹窗打扰用户
-    let open_browser = |url: &str| {
-        if !open {
-            return;
-        }
-        let _ = tokio::process::Command::new("xdg-open").arg(url).spawn();
-    };
-
-    let web_dir = Path::new("web");
-    if dev {
-        if web_dir.exists() {
-            println!("📦 正在启动 Vite 前端开发服务器 (pnpm run dev)...");
-            let mut child = tokio::process::Command::new("pnpm")
-                .arg("run")
-                .arg("dev")
-                .arg("--")
-                .arg("--host")
-                .arg("0.0.0.0")
-                .arg("--port")
-                .arg(port.to_string())
-                .current_dir(web_dir)
-                .spawn()?;
-            let _ = child.wait().await;
-        }
-    } else if web_dir.exists() {
-        let dist_dir = web_dir.join("dist");
-        let mut cmd = if dist_dir.exists() {
-            let mut c = tokio::process::Command::new("pnpm");
-            c.arg("exec")
-                .arg("vite")
-                .arg("preview")
-                .arg("--host")
-                .arg("0.0.0.0")
-                .arg("--port")
-                .arg(port.to_string());
-            c
-        } else {
-            let mut c = tokio::process::Command::new("pnpm");
-            c.arg("run")
-                .arg("dev")
-                .arg("--")
-                .arg("--host")
-                .arg("0.0.0.0")
-                .arg("--port")
-                .arg(port.to_string());
-            c
-        };
-        cmd.current_dir(web_dir);
-        println!("🌐 正在启动本地前端端口 {} 服务...", port);
-        open_browser(&daemon_url);
-        let mut child = cmd.spawn()?;
-        let _ = child.wait().await;
-    } else {
-        open_browser(&daemon_url);
-        tokio::signal::ctrl_c().await?;
+    if open {
+        let _ = tokio::process::Command::new("xdg-open").arg(&url).spawn();
     }
 
+    axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// 绑定 `0.0.0.0` 时打印 localhost：用户要访问的是可点击的地址
+fn format_host(host: &str, port: u16) -> String {
+    let host = match host {
+        "0.0.0.0" | "::" => "localhost",
+        other => other,
+    };
+    format!("{host}:{port}")
+}
+
+/// 静态资源处理：命中文件则直出，未命中且不像文件路径时回落到 SPA 入口。
+async fn web_asset_handler(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+
+    if path.is_empty() || path == INDEX_HTML {
+        return index_html();
+    }
+
+    if let Some(content) = WebAssets::get(path) {
+        return (
+            [
+                (header::CONTENT_TYPE, content.metadata.mimetype().to_string()),
+                // 构建产物带内容哈希文件名，可长期缓存；入口 index.html 不缓存
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+            ],
+            content.data,
+        )
+            .into_response();
+    }
+
+    // 含扩展名的路径视为真实资源缺失，返回 404；否则交给前端路由
+    if path.contains('.') {
+        return (StatusCode::NOT_FOUND, "404 Not Found").into_response();
+    }
+    index_html()
+}
+
+fn index_html() -> Response {
+    match WebAssets::get(INDEX_HTML) {
+        Some(content) => (
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                // 入口必须每次回源校验：否则前端发版后用户会一直卡在旧页面
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            content.data,
+        )
+            .into_response(),
+        None => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "前端入口缺失：请重新执行 `pnpm build` 并编译",
+        )
+            .into_response(),
+    }
 }
 
 async fn run_status(addr: &str, token_opt: Option<&str>) -> Result<()> {
@@ -274,14 +262,8 @@ async fn main() -> Result<()> {
         Some(Commands::Daemon { addr, token, config }) => {
             start_daemon(&addr, token.as_deref(), config.as_deref()).await?;
         }
-        Some(Commands::Web {
-            addr,
-            token,
-            dev,
-            port,
-            open,
-        }) => {
-            run_web(&addr, token.as_deref(), dev, port, open).await?;
+        Some(Commands::Web { host, port, open }) => {
+            run_web(&host, port, open).await?;
         }
         Some(Commands::Tui { addr, token, workspace }) => {
             let data_dir = get_data_dir();
