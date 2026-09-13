@@ -131,6 +131,60 @@ fn read_token(cli_token: Option<&str>, config_path: &Path) -> Result<String> {
     Ok(resolve_token(cli_token, &config))
 }
 
+/// 守护进程的信号策略。
+///
+/// - `SIGHUP`：传统上表示「控制终端已关闭」。脚本后台启动、或 SSH 会话结束时
+///   内核会发这个信号，默认动作是**终止进程**；作为服务必须忽略它，否则
+///   `oma daemon &` 之类的启动方式会随终端一起悄无声息地死掉。
+/// - `SIGTERM` / `SIGINT`：作为正常的关闭请求，优雅退出。
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    // 安装失败时不能直接退出：那会让进程回到「SIGHUP 终止」的默认行为，
+    // 反而比不做任何处理更容易被悄悄杀掉
+    let mut hup = match signal(SignalKind::hangup()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot install SIGHUP handler");
+            return std::future::pending().await;
+        }
+    };
+    let mut term = signal(SignalKind::terminate()).ok();
+    let mut int = signal(SignalKind::interrupt()).ok();
+
+    loop {
+        tokio::select! {
+            _ = hup.recv() => {
+                tracing::info!("收到 SIGHUP（终端已关闭），继续在后台运行");
+            }
+            // 两个 Option 用 match 而非 unwrap：流未装上时对应分支整体不参与
+            Some(_) = recv_opt(term.as_mut()), if term.is_some() => {
+                tracing::info!("收到 SIGTERM，正在停止");
+                return;
+            }
+            Some(_) = recv_opt(int.as_mut()), if int.is_some() => {
+                tracing::info!("收到 SIGINT，正在停止");
+                return;
+            }
+        }
+    }
+}
+
+/// 包一层便于在 `select!` 中对 `Option<Signal>` 取流
+#[cfg(unix)]
+async fn recv_opt(sig: Option<&mut tokio::signal::unix::Signal>) -> Option<()> {
+    match sig {
+        Some(s) => s.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
 async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&Path>) -> Result<()> {
     let data_dir = get_data_dir();
     std::fs::create_dir_all(&data_dir)?;
@@ -158,7 +212,9 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
     println!("Oma Daemon v{} 已启动", env!("CARGO_PKG_VERSION"));
     println!("  API 地址:  http://{}", addr);
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
 }
 
@@ -187,7 +243,9 @@ async fn run_web(host: &str, port: u16, open: bool) -> Result<()> {
         let _ = tokio::process::Command::new("xdg-open").arg(&url).spawn();
     }
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
 }
 
