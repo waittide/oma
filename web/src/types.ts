@@ -408,7 +408,8 @@ export interface OmaConfig {
   /** 新会话默认推理等级；空串 = 未指定（回退模型默认） */
   default_reasoning_level?: string;
   theme: Theme;
-  server: { listen_addr: string };
+  /** `token` 由 GET 原样下发、又随整份配置回传，缺字段会把配置里已设的 token 清空 */
+  server: { listen_addr: string; token: string };
   providers: Record<string, ProviderConfig>;
   mcp_servers: Record<string, McpServerConfig>;
 }
