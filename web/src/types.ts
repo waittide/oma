@@ -11,7 +11,14 @@ export type Block =
   | { type: 'thinking'; thinking: string }
   | { type: 'image'; mime_type: string; data: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean };
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean }
+  /**
+   * task 工具的子代理过程（thinking / text / 工具调用）。
+   *
+   * 仅存在于流式缓冲：子代理上下文不落库，因此历史消息里不会出现该块。
+   * `tool_use_id` 指向宿主 task 的 call_id，渲染时嵌进那张卡片内部。
+   */
+  | { type: 'subagent'; tool_use_id: string; blocks: Block[] };
 
 export interface ChatMessage {
   id: string;

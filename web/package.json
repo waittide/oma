@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
+    "test": "node --experimental-strip-types scripts/liveSegments.check.ts && node --experimental-strip-types scripts/render-subagent.ts",
+    "test:e2e": "node --experimental-strip-types scripts/e2e-subagent-events.ts",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -109,7 +109,8 @@
     "done": "Done",
     "copyCode": "Copy code",
     "copied": "Copied to clipboard",
-    "copyFailed": "Copy failed, please select and copy manually"
+    "copyFailed": "Copy failed, please select and copy manually",
+    "subagent": "Subagent steps"
   },
   "select": {
     "placeholder": "Select…",

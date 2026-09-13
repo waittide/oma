@@ -23,38 +23,36 @@ import { tr } from '../composables/i18n';
 import { activeSessionId, applyRemoteRename, applyRemoteRunning } from './sessions';
 import { applyResolvedTheme } from './theme';
 import { releaseAll } from '../lib/attachments';
-
-/** 流式轮次缓冲：按到达顺序排列的实时段（thinking/text/tool 交错）。 */
-export interface LiveTool {
-  call_id: string;
-  /** 被调用的工具名 */
-  tool_name: string;
-  input: unknown;
-  output?: string;
-  is_error?: boolean;
-  done: boolean;
-}
-
-export type LiveSegment =
-  | { kind: 'thinking'; key: string; text: string }
-  | { kind: 'text'; key: string; text: string }
-  | { kind: 'tool'; key: string; tool: LiveTool };
-
-export interface LiveTurn {
-  segments: LiveSegment[];
-}
+import {
+  emptyLive,
+  foldSegments,
+  SubagentHostStack,
+  type LiveSegment,
+  type LiveTurn,
+} from '../lib/liveSegments';
 
 let liveSeq = 0;
-
-function emptyLive(): LiveTurn {
-  return { segments: [] };
-}
 
 export const connected = ref(false);
 export const messages = ref<ChatMessage[]>([]);
 /** 全量消息树（含非当前分支的兄弟节点），用于分支切换候选。 */
 export const tree = ref<ChatMessage[]>([]);
 export const live = ref<LiveTurn>(emptyLive());
+
+/**
+ * 子代理宿主栈：栈顶是当前正在执行的子代理所属的 task call_id。
+ *
+ * 推栈/弹栈必须与子代理的 turn_started / turn_finished 严格配对，
+ * 具体理由见 [`SubagentHostStack`]。
+ */
+const hostStack = new SubagentHostStack();
+
+/** 重置流式缓冲；栈与缓冲同生命周期，必须一并清空。 */
+function setLive(next: LiveTurn) {
+  live.value = next;
+  hostStack.clear();
+}
+
 export const running = ref(false);
 export const pendingApproval = ref<PermissionRequestedData | null>(null);
 /** 待作答的提问（ask 工具）；null 表示无待办 */
@@ -151,22 +149,39 @@ async function reload() {
 function handleEvent(ev: AgentEvent) {
   switch (ev.type) {
     case 'turn_started':
-      // 子代理轮次沿用同一事件类型：不能据此清空主流式缓冲或结束轮次状态
-      if (ev.data?.subagent_id) break;
+      // 子代理轮次沿用同一事件类型：仅压入宿主栈，不清空主流式缓冲
+      if (ev.data?.subagent_id) {
+        hostStack.push(live.value.segments);
+        break;
+      }
       running.value = true;
-      live.value = emptyLive();
+      setLive(emptyLive());
       break;
     case 'thinking_delta': {
       // 同类段连续则续写，否则新开一段，保持与真实到达顺序一致
+      const host = ev.data?.subagent_id ? hostStack.current() : undefined;
       const last = live.value.segments[live.value.segments.length - 1];
-      if (last && last.kind === 'thinking') last.text += ev.data?.delta ?? '';
-      else live.value.segments.push({ kind: 'thinking', key: `th${liveSeq++}`, text: ev.data?.delta ?? '' });
+      if (last && last.kind === 'thinking' && last.host_call_id === host) last.text += ev.data?.delta ?? '';
+      else
+        live.value.segments.push({
+          kind: 'thinking',
+          key: `th${liveSeq++}`,
+          text: ev.data?.delta ?? '',
+          host_call_id: host,
+        });
       break;
     }
     case 'text_delta': {
+      const host = ev.data?.subagent_id ? hostStack.current() : undefined;
       const last = live.value.segments[live.value.segments.length - 1];
-      if (last && last.kind === 'text') last.text += ev.data?.delta ?? '';
-      else live.value.segments.push({ kind: 'text', key: `tx${liveSeq++}`, text: ev.data?.delta ?? '' });
+      if (last && last.kind === 'text' && last.host_call_id === host) last.text += ev.data?.delta ?? '';
+      else
+        live.value.segments.push({
+          kind: 'text',
+          key: `tx${liveSeq++}`,
+          text: ev.data?.delta ?? '',
+          host_call_id: host,
+        });
       break;
     }
     case 'tool_call_started': {
@@ -174,7 +189,12 @@ function handleEvent(ev: AgentEvent) {
       // 而完成事件只能命中第一张，其余永远停在「执行中」
       const d = ev.data;
       if (d && !live.value.segments.some((s) => s.kind === 'tool' && s.tool.call_id === d.call_id)) {
-        live.value.segments.push({ kind: 'tool', key: d.call_id, tool: { ...d, done: false } });
+        live.value.segments.push({
+          kind: 'tool',
+          key: d.call_id,
+          host_call_id: d.subagent_id ? hostStack.current() : undefined,
+          tool: { ...d, done: false },
+        });
       }
       break;
     }
@@ -215,8 +235,11 @@ function handleEvent(ev: AgentEvent) {
       void reload();
       break;
     case 'turn_finished': {
-      // 子代理结束时主流式轮次仍在继续，忽略其生命周期事件
-      if (ev.data?.subagent_id) break;
+      // 子代理结束时主流式轮次仍在继续：仅弹出宿主栈，忽略其生命周期事件
+      if (ev.data?.subagent_id) {
+        hostStack.pop();
+        break;
+      }
       running.value = false;
       finalizing.value = true;
       if (ev.data) {
@@ -226,7 +249,7 @@ function handleEvent(ev: AgentEvent) {
       currentLeafId.value = null; // 让服务端解析默认 leaf
       // 回读完成后再清空缓冲，持久化消息与流式内容同帧交接，界面不跳动
       void reload().finally(() => {
-        live.value = emptyLive();
+        setLive(emptyLive());
         finalizing.value = false;
       });
       break;
@@ -250,7 +273,7 @@ function handleEvent(ev: AgentEvent) {
     case 'active_branch_changed':
       currentLeafId.value = ev.data?.current_leaf_id ?? null;
       // 编辑重发同样广播此事件：轮次进行中保留实时缓冲，避免打断流式渲染
-      if (!running.value) live.value = emptyLive();
+      if (!running.value) setLive(emptyLive());
       void reload();
       break;
     case 'model_changed':
@@ -297,11 +320,19 @@ function applyCatchUp(c: ActiveTurnCatchUp | null) {
   // 中途接入正在执行的轮次：侧栏同步显示运行中（该轮开始时的广播本端未收到）
   applyRemoteRunning(sessionId, true);
   // catch-up 快照不含到达顺序，按 thinking → text → 活动工具 重建
+  // 快照里的活动工具若正是 task，说明接入时子代理正在跑：后续子代理事件
+  // 会照常压栈归位；此前已发生的子代理输出无法恢复（服务端不留存）
   const segments: LiveSegment[] = [];
-  if (c.accumulated_thinking) segments.push({ kind: 'thinking', key: 'cu-th', text: c.accumulated_thinking });
+  if (c.accumulated_thinking)
+    segments.push({ kind: 'thinking', key: 'cu-th', text: c.accumulated_thinking });
   if (c.accumulated_text) segments.push({ kind: 'text', key: 'cu-tx', text: c.accumulated_text });
-  if (c.active_tool_call) segments.push({ kind: 'tool', key: c.active_tool_call.call_id, tool: { ...c.active_tool_call, done: false } });
-  live.value = { segments };
+  if (c.active_tool_call)
+    segments.push({
+      kind: 'tool',
+      key: c.active_tool_call.call_id,
+      tool: { ...c.active_tool_call, done: false },
+    });
+  setLive({ segments });
   pendingApproval.value = c.pending_approval ?? null;
   pendingAsk.value = c.pending_ask ?? null;
 }
@@ -397,7 +428,7 @@ export function reset() {
   workspacePath = '';
   messages.value = [];
   tree.value = [];
-  live.value = emptyLive();
+  setLive(emptyLive());
   pendingApproval.value = null;
   pendingAsk.value = null;
   running.value = false;
@@ -572,23 +603,6 @@ export function isInternalMessage(m: ChatMessage): boolean {
 
 /** 渲染序列：流式缓冲按到达顺序展开为块。 */
 export const renderBlocks = computed<Block[]>(() => {
-  const out: Block[] = [];
-  const l = live.value;
-  if (!running.value && l.segments.length === 0) return out;
-  for (const seg of l.segments) {
-    if (seg.kind === 'thinking') out.push({ type: 'thinking', thinking: seg.text });
-    else if (seg.kind === 'text') out.push({ type: 'text', text: seg.text });
-    else {
-      out.push({ type: 'tool_use', id: seg.tool.call_id, name: seg.tool.tool_name, input: seg.tool.input });
-      if (seg.tool.done) {
-        out.push({
-          type: 'tool_result',
-          tool_use_id: seg.tool.call_id,
-          content: seg.tool.output ?? '',
-          is_error: !!seg.tool.is_error,
-        });
-      }
-    }
-  }
-  return out;
+  if (!running.value && live.value.segments.length === 0) return [];
+  return foldSegments(live.value.segments);
 });
