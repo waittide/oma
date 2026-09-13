@@ -43,9 +43,9 @@ const { t: tc } = useTranslations('common');
 const { t: ta } = useTranslations('approval');
 const treeOpen = ref(false);
 
-const draft = ref('');
-/** 非空表示下一条发送将从该消息处分叉重跑（编辑重发）。 */
-const forkFrom = ref<string | null>(null);
+// 草稿与分叉目标放在 store 里：历史树切换对话时需回填输入框
+const draft = chat.draft;
+const forkFrom = chat.forkFrom;
 /** 已上传待发送的附件：ref 为 session_attachment:// 引用 */
 const pendingUploads = ref<{ ref: string; name: string }[]>([]);
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -126,6 +126,18 @@ watch(
   },
   { deep: true },
 );
+
+// 历史树切换查看位置后回到最新一条，避免停在中间看不见变化
+watch(
+  () => chat.viewLeafId.value,
+  () => {
+    stickBottom.value = true;
+    void nextTick(() => scrollToBottom());
+  },
+);
+
+/** 是否处于历史树预览（非最新分支）：提醒用户可一键回到最新。 */
+const previewing = computed(() => chat.viewLeafId.value !== null);
 
 function scrollToBottom() {
   const el = scrollEl.value;
@@ -227,7 +239,6 @@ function startFork(messageId: string, text: string) {
   draft.value = text;
   stickBottom.value = false;
 }
-
 function cancelFork() {
   forkFrom.value = null;
 }
@@ -450,6 +461,13 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
             <LuX :size="11" />
           </button>
         </span>
+      </div>
+      <div v-if="previewing" class="preview-banner">
+        <LuListTree :size="12" />
+        <span>{{ t('previewBanner') }}</span>
+        <button type="button" class="preview-back" @click="chat.followCurrent()">
+          {{ t('backToLatest') }}
+        </button>
       </div>
       <div v-if="forkFrom !== null" class="fork-banner">
         <LuGitBranch :size="12" />
@@ -675,8 +693,10 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
 .stream {
   flex: 1;
   overflow-y: auto;
-  /* 左右对称：右侧为竖线导航让位，同时保持消息列与输入框列同轴居中 */
-  padding: 14px 24px 8px;
+  /* 左右对称：右侧为竖线导航让位，同时保持消息列与输入框列同轴居中；
+     底部不预留内边距——输入框容器自身已有上边距，两边叠加会让消息
+     到此的距离比流式图标上方的间距大一倍 */
+  padding: 14px 24px 0;
   scrollbar-gutter: stable both-edges;
 }
 .hero {
@@ -738,7 +758,13 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
 }
 .live-row {
   color: var(--accent);
-  padding-bottom: 4px;
+  /* 与上方回复内容拉开距离；与下方到输入框的间距（消息底边距 + 输入框上边距）
+     取值一致，图标上下留白相等 */
+  margin-top: 16px;
+}
+/* 加载动画：与完成态标签同一高度感，不把行高撑出多余的空白 */
+.live-row svg {
+  display: block;
 }
 .fork {
   display: inline-flex;
@@ -803,6 +829,23 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   max-width: calc(var(--chat-col) + 20px);
   width: 100%;
   margin: 0 auto;
+}
+.preview-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--accent);
+}
+.preview-back {
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  text-decoration: underline;
 }
 .fork-banner {
   display: flex;
