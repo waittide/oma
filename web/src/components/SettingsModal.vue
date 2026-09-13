@@ -710,12 +710,8 @@ const mcpDrafts = ref<McpDraft[]>([]);
 const savingMcp = ref(false);
 
 function toMcpDraft(name: string, cfg: McpServerConfig): McpDraft {
-  const envText = Object.entries(cfg.type === 'local' ? (cfg.env ?? {}) : {})
-    .map(([k, v]) => `${k}=${v}`)
-    .join('\n');
-  const headersText = Object.entries(cfg.type === 'remote' ? (cfg.headers ?? {}) : {})
-    .map(([k, v]) => `${k}=${v}`)
-    .join('\n');
+  const envText = formatKvText(cfg.type === 'local' ? cfg.env : undefined);
+  const headersText = formatKvText(cfg.type === 'remote' ? cfg.headers : undefined);
   return {
     origName: name,
     name,
@@ -761,10 +757,10 @@ function formatJsonText(value: unknown): string {
 }
 
 /**
- * 解析请求体文本。
+ * 解析请求覆写文本（请求头与请求体同格式）。
  *
  * 返回 null 表示格式非法（调用方据此阻断保存）；空文本视为未填写，返回 `{}`。
- * 只接受 JSON 对象：请求体字段是合并目标，数组/标量无法与内置载荷合并。
+ * 只接受 JSON 对象：覆写字段是合并目标，数组/标量无法与内置请求合并。
  */
 function parseJsonText(text: string): Record<string, unknown> | null {
   const trimmed = text.trim();
@@ -777,6 +773,23 @@ function parseJsonText(text: string): Record<string, unknown> | null {
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
   return parsed as Record<string, unknown>;
+}
+
+/**
+ * 解析请求头文本。
+ *
+ * 在后端请求头是 `Map<String, String>`，取值非字符串会让整份配置校验失败，
+ * 故这里提前收紧：非法 JSON 或取值非字符串一律返回 null 阻断保存。
+ */
+function parseHeaderText(text: string): Record<string, string> | null {
+  const obj = parseJsonText(text);
+  if (obj === null) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v !== 'string') return null;
+    out[k] = v;
+  }
+  return out;
 }
 
 /** 是否含有实际字段：空对象不写入配置，保持配置文件干净。 */
@@ -849,7 +862,7 @@ interface ModelDraft {
   /** 推理等级 → 厂商自定义字符串；空串表示按等级名下发 */
   reasoning_map: Record<string, string>;
   capabilities: ModelCapability[];
-  /** 模型级请求头（每行 KEY=value） */
+  /** 模型级请求头（JSON 对象文本） */
   headersText: string;
   /** 模型级请求体覆写（JSON 文本） */
   bodyText: string;
@@ -873,7 +886,7 @@ interface ProviderDraft {
   keyMasked: boolean;
   /** 真实密钥字符数，供脱敏占位渲染等长掩码 */
   keyLen: number;
-  /** 提供商级请求头（每行 KEY=value） */
+  /** 提供商级请求头（JSON 对象文本） */
   headersText: string;
   /** 提供商级请求体覆写（JSON 文本） */
   bodyText: string;
@@ -902,7 +915,7 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
     api_key: p.api_key === API_KEY_MASK ? '' : p.api_key,
     keyMasked: p.api_key === API_KEY_MASK,
     keyLen: p.api_key === API_KEY_MASK ? (p.api_key_len ?? API_KEY_MASK.length) : 0,
-    headersText: formatKvText(p.headers),
+    headersText: formatJsonText(p.headers),
     bodyText: formatJsonText(p.body),
     requestOpen: false,
     models: (p.models ?? []).map((m) => ({
@@ -912,7 +925,7 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
       max_output: m.max_output === undefined ? '' : String(m.max_output),
       reasoning_map: { ...(m.reasoning_map ?? {}) },
       capabilities: [...(m.capabilities ?? [])],
-      headersText: formatKvText(m.headers),
+      headersText: formatJsonText(m.headers),
       bodyText: formatJsonText(m.body),
       reasoningOpen: false,
       requestOpen: false,
@@ -1136,9 +1149,13 @@ async function saveProviders() {
 
     const providers: Record<string, ProviderConfig> = {};
     for (const d of providerDrafts.value) {
-      // 校验 JSON/键值文本：格式错误应阻断保存，而不是静默写进配置
-      const headers = parseKvText(d.headersText);
+      // 校验覆写文本：格式错误应阻断保存，而不是静默写进配置
+      const headers = parseHeaderText(d.headersText);
       const body = parseJsonText(d.bodyText);
+      if (headers === null) {
+        toast.error(t('requestHeadersInvalid', { name: d.name || t('providerName') }));
+        return;
+      }
       if (body === null) {
         toast.error(t('requestBodyInvalid', { name: d.name || t('providerName') }));
         return;
@@ -1149,6 +1166,11 @@ async function saveProviders() {
         const ctx = parseInt(m.context_len, 10);
         const mo = parseInt(m.max_output, 10);
         const modelBody = parseJsonText(m.bodyText);
+        const modelHeaders = parseHeaderText(m.headersText);
+        if (modelHeaders === null) {
+          toast.error(t('requestHeadersInvalid', { name: m.name || m.id }));
+          return;
+        }
         if (modelBody === null) {
           toast.error(t('requestBodyInvalid', { name: m.name || m.id }));
           return;
@@ -1167,7 +1189,7 @@ async function saveProviders() {
                 ),
               }
             : {}),
-          ...(Object.keys(parseKvText(m.headersText)).length ? { headers: parseKvText(m.headersText) } : {}),
+          ...(hasJsonKeys(modelHeaders) ? { headers: modelHeaders } : {}),
           ...(hasJsonKeys(modelBody) ? { body: modelBody } : {}),
         });
       }
@@ -1175,8 +1197,8 @@ async function saveProviders() {
         api_type: d.api_type,
         base_url: d.base_url.trim(),
         api_key: d.keyMasked ? API_KEY_MASK : d.api_key,
-        headers: parseKvText(d.headersText),
-        body: parseJsonText(d.bodyText) ?? {},
+        headers,
+        body,
         models,
       };
     }
@@ -1568,9 +1590,19 @@ function pickLocale(v: Locale) {
                     <template v-if="d.requestOpen">
                       <p class="cfg-hint">{{ t('requestOverrideHint') }}</p>
                       <label class="cfg-sub-label">{{ t('requestHeaders') }}</label>
-                      <textarea v-model="d.headersText" rows="3" spellcheck="false" />
+                      <textarea
+                        v-model="d.headersText"
+                        rows="5"
+                        spellcheck="false"
+                        placeholder='{ "X-Header": "value" }'
+                      />
                       <label class="cfg-sub-label">{{ t('requestBody') }}</label>
-                      <textarea v-model="d.bodyText" rows="5" spellcheck="false" />
+                      <textarea
+                        v-model="d.bodyText"
+                        rows="5"
+                        spellcheck="false"
+                        placeholder='{ "temperature": 0.2 }'
+                      />
                     </template>
                   </div>
                 </div>
@@ -1665,9 +1697,19 @@ function pickLocale(v: Locale) {
                     <template v-if="m.requestOpen">
                       <p class="cfg-hint">{{ t('requestOverrideHint') }}</p>
                       <label class="cfg-sub-label">{{ t('requestHeaders') }}</label>
-                      <textarea v-model="m.headersText" rows="3" spellcheck="false" />
+                      <textarea
+                        v-model="m.headersText"
+                        rows="5"
+                        spellcheck="false"
+                        placeholder='{ "X-Header": "value" }'
+                      />
                       <label class="cfg-sub-label">{{ t('requestBody') }}</label>
-                      <textarea v-model="m.bodyText" rows="5" spellcheck="false" />
+                      <textarea
+                        v-model="m.bodyText"
+                        rows="5"
+                        spellcheck="false"
+                        placeholder='{ "temperature": 0.2 }'
+                      />
                     </template>
                   </div>
                 </div>
