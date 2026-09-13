@@ -4,8 +4,11 @@ use std::{
 };
 
 use anyhow::Result;
+use oma_contract::ToolImage;
 pub use oma_contract::ToolOutput;
 use serde::Deserialize;
+
+pub mod image;
 
 /// 最大工具输出字符数限制
 pub const RESULT_MAX_CHARS: usize = 24_000;
@@ -30,6 +33,60 @@ pub fn resolve_path(workspace: &Path, raw_path: &str) -> PathBuf {
     }
 }
 
+/// 非图片二进制文件的 MIME 判定（仅靠扩展名与文件头特征）。
+/// 用于告诉模型「这是个二进制文件」而不是直接报 UTF-8 错误。
+fn binary_mime(path: &str, bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"%PDF-") {
+        return Some("application/pdf");
+    }
+    if bytes.starts_with(b"\x1F\x8B") {
+        return Some("application/gzip");
+    }
+    if bytes.starts_with(b"PK\x03\x04") {
+        return Some("application/zip");
+    }
+    if bytes.starts_with(&[0x7F, b'E', b'L', b'F']) {
+        return Some("application/x-elf");
+    }
+    if bytes.contains(&0) {
+        return Some("application/octet-stream");
+    }
+    // 扩展名已知但没有 NUL 字节：仍按文本处理，交给 UTF-8 校验
+    let ext = path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase())?;
+    match ext.as_str() {
+        "woff" | "woff2" => Some("font/woff"),
+        "ttf" => Some("font/ttf"),
+        "zip" => Some("application/zip"),
+        "pdf" => Some("application/pdf"),
+        _ => None,
+    }
+}
+
+/// 标准 base64（无外部依赖，图片内联用）
+pub fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 /// 子 Agent 执行委托 Trait
 #[async_trait::async_trait]
 pub trait SubagentRunner: Send + Sync {
@@ -49,12 +106,44 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> serde_json::Value;
+
     async fn execute(&self, workspace: &Path, input: serde_json::Value) -> ToolOutput;
+
+    /// 带运行环境的执行入口；默认忽略环境，与 [`Tool::execute`] 一致。
+    ///
+    /// 只有需要感知模型能力的工具（如 `read`）才需要覆写。
+    async fn execute_with(&self, workspace: &Path, input: serde_json::Value, _ctx: &dyn ToolContext) -> ToolOutput {
+        self.execute(workspace, input).await
+    }
+}
+
+/// 工具执行期可用的运行环境。
+///
+/// 工具本身不应感知会话与模型配置；确实需要感知的（当前只有 `read` 判断
+/// 「要不要把图片交给模型」）通过这一层显式传入，避免把 Trait 扩散成大杂烩。
+pub trait ToolContext: Send + Sync {
+    /// 当前模型能否直接接收图片输入
+    fn supports_vision(&self) -> bool;
+}
+
+/// 默认上下文：视为不支持图片，工具据此只回元数据文本。
+pub struct NoVision;
+
+impl ToolContext for NoVision {
+    fn supports_vision(&self) -> bool {
+        false
+    }
 }
 
 // ==========================================
 // 1. Read Tool
 // ==========================================
+/// read 返回给模型的图片体积上限（base64 后）。
+///
+/// 超过上限的图片即使模型支持视觉也不内联：单张图就能吃掉整个窗口，
+/// 降级为元数据至少让模型知道文件存在且规模多大。
+pub const READ_IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
+
 pub struct ReadTool;
 
 #[derive(Debug, Deserialize)]
@@ -80,7 +169,8 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read file content with line slicing."
+        "Read file content with line slicing. Image files return the image itself when the active \
+         model can view images, otherwise a metadata summary (dimensions, channels, alpha, MIME)."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -93,11 +183,11 @@ impl Tool for ReadTool {
                 },
                 "offset": {
                     "type": "integer",
-                    "description": "1-based starting line number (default: 1)"
+                    "description": "1-based starting line number (default: 1), text files only"
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of lines to read (default: 1000)"
+                    "description": "Maximum number of lines to read (default: 1000), text files only"
                 }
             },
             "required": ["path"]
@@ -105,6 +195,10 @@ impl Tool for ReadTool {
     }
 
     async fn execute(&self, workspace: &Path, input: serde_json::Value) -> ToolOutput {
+        self.execute_with(workspace, input, &NoVision).await
+    }
+
+    async fn execute_with(&self, workspace: &Path, input: serde_json::Value, ctx: &dyn ToolContext) -> ToolOutput {
         let input: ReadInput = match serde_json::from_value(input) {
             Ok(v) => v,
             Err(e) => return ToolOutput::error(format!("Invalid arguments for read: {}", e)),
@@ -115,9 +209,30 @@ impl Tool for ReadTool {
             return ToolOutput::error(format!("File not found: {:?}", target_path));
         }
 
-        let content = match tokio::fs::read_to_string(&target_path).await {
-            Ok(c) => c,
+        // 先按字节读：图片是二进制，按文本读会直接失败
+        let bytes = match tokio::fs::read(&target_path).await {
+            Ok(b) => b,
             Err(e) => return ToolOutput::error(format!("Failed to read file: {}", e)),
+        };
+
+        if let Some(meta) = image::parse(&bytes) {
+            return read_image(&meta, &bytes, ctx);
+        }
+
+        // 已识别的二进制格式（能看出 MIME 但解析不出元数据）：说明读的不是文本
+        if let Some(mime) = binary_mime(&input.path, &bytes) {
+            return ToolOutput::success(format!(
+                "Binary file (not readable as text): {} bytes, MIME {}",
+                bytes.len(),
+                mime
+            ));
+        }
+
+        let content = match String::from_utf8(bytes) {
+            Ok(c) => c,
+            Err(_) => {
+                return ToolOutput::error(format!("File is not valid UTF-8 text: {:?}", target_path));
+            }
         };
 
         let lines: Vec<&str> = content.lines().collect();
@@ -141,6 +256,43 @@ impl Tool for ReadTool {
 
         ToolOutput::success(truncate_output(&slice))
     }
+}
+
+/// 按「模型能不能看图」选择图片回给模型，或降级成元数据块。
+///
+/// 元数据块保证模型总能知道文件是什么、多大、什么色彩模式，即使它看不见图。
+fn read_image(meta: &image::ImageMeta, bytes: &[u8], ctx: &dyn ToolContext) -> ToolOutput {
+    let meta_block = format!(
+        "mime: {}\ndimensions: {}x{}\nchannels: {}\nalpha: {}\ncolor_mode: {}\nsize_bytes: {}",
+        meta.mime_type,
+        meta.width,
+        meta.height,
+        meta.channels,
+        if meta.has_alpha { "yes" } else { "no" },
+        meta.color_mode(),
+        bytes.len(),
+    );
+
+    if !ctx.supports_vision() {
+        return ToolOutput::success(format!(
+            "Image metadata (the active model cannot view images):\n{meta_block}"
+        ));
+    }
+    if bytes.len() > READ_IMAGE_MAX_BYTES {
+        return ToolOutput::success(format!(
+            "Image metadata (too large to attach; over {READ_IMAGE_MAX_BYTES} bytes):\n{meta_block}"
+        ));
+    }
+
+    ToolOutput::success_with_images(
+        format!(
+            "Image attached below. Read it from the tool result image, then answer based on what it shows.\n{meta_block}"
+        ),
+        vec![ToolImage {
+            mime_type: meta.mime_type.clone(),
+            data:      base64_encode(bytes),
+        }],
+    )
 }
 
 // ==========================================
@@ -491,10 +643,11 @@ impl Tool for ShellTool {
                 if output.status.success() {
                     ToolOutput::success(truncated)
                 } else {
-                    ToolOutput {
-                        output:   format!("Command exited with code {:?}:\n{}", output.status.code(), truncated),
-                        is_error: true,
-                    }
+                    ToolOutput::error(format!(
+                        "Command exited with code {:?}:\n{}",
+                        output.status.code(),
+                        truncated
+                    ))
                 }
             }
             Ok(Err(e)) => {
@@ -757,6 +910,25 @@ impl ToolRegistry {
 mod tests {
     use super::*;
 
+    /// 可切换视觉能力的测试上下文
+    struct Ctx(bool);
+    impl ToolContext for Ctx {
+        fn supports_vision(&self) -> bool {
+            self.0
+        }
+    }
+
+    /// 最小 PNG：签名 + IHDR（宽 2、高 1、色彩类型 2 = RGB）
+    fn png_fixture() -> Vec<u8> {
+        let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        v.extend_from_slice(&13u32.to_be_bytes());
+        v.extend_from_slice(b"IHDR");
+        v.extend_from_slice(&2u32.to_be_bytes());
+        v.extend_from_slice(&1u32.to_be_bytes());
+        v.extend_from_slice(&[8, 2, 0, 0, 0]);
+        v
+    }
+
     #[tokio::test]
     async fn test_read_and_write() -> Result<()> {
         let tmp = tempfile::tempdir()?;
@@ -790,6 +962,123 @@ mod tests {
         assert!(out_read.output.contains("line 3"));
         assert!(!out_read.output.contains("line 1"));
 
+        Ok(())
+    }
+
+    /// 视觉模型：read 顺手把图片带回去，元数据仍随文本一起给出。
+    #[tokio::test]
+    async fn test_read_image_for_vision_model() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        tokio::fs::write(tmp.path().join("shot.png"), png_fixture()).await?;
+
+        let out = ReadTool
+            .execute_with(tmp.path(), serde_json::json!({ "path": "shot.png" }), &Ctx(true))
+            .await;
+
+        assert!(!out.is_error, "{}", out.output);
+        assert_eq!(out.images.len(), 1, "vision model must receive the image");
+        assert_eq!(out.images[0].mime_type, "image/png");
+        assert!(!out.images[0].data.is_empty());
+        // 元数据与图片同在，模型既能看图也能引用尺寸
+        assert!(out.output.contains("dimensions: 2x1"), "{}", out.output);
+        assert!(out.output.contains("mime: image/png"), "{}", out.output);
+        assert!(out.output.contains("alpha: no"), "{}", out.output);
+        Ok(())
+    }
+
+    /// 非视觉模型：只给元数据块，不携带任何图片数据。
+    #[tokio::test]
+    async fn test_read_image_metadata_only_without_vision() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let bytes = png_fixture();
+        tokio::fs::write(tmp.path().join("shot.png"), &bytes).await?;
+
+        let out = ReadTool
+            .execute_with(tmp.path(), serde_json::json!({ "path": "shot.png" }), &Ctx(false))
+            .await;
+
+        assert!(!out.is_error, "{}", out.output);
+        assert!(out.images.is_empty(), "non-vision model must not get image bytes");
+        assert!(out.output.contains("cannot view images"), "{}", out.output);
+        for field in [
+            "dimensions: 2x1",
+            "channels: 3",
+            "alpha: no",
+            "color_mode: RGB",
+            "mime: image/png",
+        ] {
+            assert!(out.output.contains(field), "missing {field} in: {}", out.output);
+        }
+        assert!(
+            out.output.contains(&format!("size_bytes: {}", bytes.len())),
+            "{}",
+            out.output
+        );
+        // 不能把图片内容当作文本回传
+        assert!(!out.output.contains("base64"), "{}", out.output);
+        Ok(())
+    }
+
+    /// 裸 `execute` 不得透出图片：默认上下文视为看不见图（TUI 等回退路径）。
+    #[tokio::test]
+    async fn test_read_image_plain_execute_stays_text_only() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        tokio::fs::write(tmp.path().join("shot.png"), png_fixture()).await?;
+
+        let out = ReadTool
+            .execute(tmp.path(), serde_json::json!({ "path": "shot.png" }))
+            .await;
+        assert!(!out.is_error);
+        assert!(out.images.is_empty());
+        assert!(out.output.contains("dimensions: 2x1"));
+        Ok(())
+    }
+
+    /// 二进制非图片文件给出 MIME 与体积，而不是 UTF-8 报错。
+    #[tokio::test]
+    async fn test_read_binary_file_reports_mime() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        tokio::fs::write(tmp.path().join("doc.pdf"), b"%PDF-1.7\x00\x01binary").await?;
+        tokio::fs::write(tmp.path().join("blob.bin"), [0u8, 159, 146, 150]).await?;
+
+        let pdf = ReadTool
+            .execute(tmp.path(), serde_json::json!({ "path": "doc.pdf" }))
+            .await;
+        assert!(!pdf.is_error, "{}", pdf.output);
+        assert!(pdf.output.contains("application/pdf"), "{}", pdf.output);
+
+        // 无已知文件头但含 NUL：仍应识别为二进制而不是报“非 UTF-8”错误
+        let blob = ReadTool
+            .execute(tmp.path(), serde_json::json!({ "path": "blob.bin" }))
+            .await;
+        assert!(!blob.is_error, "{}", blob.output);
+        assert!(blob.output.contains("Binary file"), "{}", blob.output);
+        Ok(())
+    }
+
+    /// 普通文本读取行为不变（分片、行号、错误分支）。
+    #[tokio::test]
+    async fn test_read_text_regressions() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        tokio::fs::write(tmp.path().join("a.txt"), "one\ntwo\nthree\n").await?;
+
+        let all = ReadTool
+            .execute(tmp.path(), serde_json::json!({ "path": "a.txt" }))
+            .await;
+        assert!(all.output.contains("   1 | one"));
+        assert!(all.output.contains("   3 | three"));
+
+        let missing = ReadTool
+            .execute(tmp.path(), serde_json::json!({ "path": "nope.txt" }))
+            .await;
+        assert!(missing.is_error);
+        assert!(missing.output.contains("File not found"));
+
+        let out_of_range = ReadTool
+            .execute(tmp.path(), serde_json::json!({ "path": "a.txt", "offset": 99 }))
+            .await;
+        assert!(out_of_range.is_error);
+        assert!(out_of_range.output.contains("out of range"));
         Ok(())
     }
 
