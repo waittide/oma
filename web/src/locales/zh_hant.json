@@ -9,7 +9,7 @@
   "sidebar": {
     "newSession": "新建工作區",
     "empty": "尚無會話，點擊右上角建立",
-    "rename": "重新命名",
+    "rename": "重新命名該會話",
     "deleteAria": "刪除",
     "settings": "設定",
     "workspacePath": "工作區路徑",

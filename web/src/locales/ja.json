@@ -9,7 +9,7 @@
   "sidebar": {
     "newSession": "新しいワークスペース",
     "empty": "セッションがありません。上の「新しいセッション」から作成してください。",
-    "rename": "名前を変更",
+    "rename": "このセッションの名前を変更",
     "deleteAria": "削除",
     "settings": "設定",
     "workspacePath": "ワークスペースのパス",

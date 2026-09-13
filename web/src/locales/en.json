@@ -9,7 +9,7 @@
   "sidebar": {
     "newSession": "New workspace",
     "empty": "No sessions yet. Click New Session above.",
-    "rename": "Rename",
+    "rename": "Rename this session",
     "deleteAria": "Delete",
     "settings": "Settings",
     "workspacePath": "Workspace Path",
