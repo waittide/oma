@@ -88,11 +88,17 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
      （凭证会被访问日志、浏览器历史与 Referer 留存）；
    - WebSocket 握手因浏览器无法为 WS 请求设置自定义头，额外接受 `?token=<token>`；
    - 鉴权失败统一返回 HTTP `401 Unauthorized`，且不建立连接。
-2. **Token 生成与存储**：
-   - 启动时优先读取环境变量 `OMA_AUTH_TOKEN`、命令行 `--token` 或配置文件 `auth.token`；
-   - 若未配置，首次启动在 `~/.local/share/oma/auth.token` 自动生成安全随机 Token 并持久化；
-   - 本地客户端（TUI / 本机 Tauri）启动时自动读取该文件获取 Token；
-   - 远程客户端（Web / 远程 Tauri）首次输入成功后，在客户端本地持久化（`localStorage`）。
+2. **Token 配置与存储**：
+   - 唯一存放在配置文件 `config.toml` 的 `[server].token`，用户可直接查看与修改；
+   - 优先级：命令行 `--token` > 环境变量 `OMA_AUTH_TOKEN` > 配置文件；
+   - 配置中缺省或为空时，启动时向配置文件补写默认值 `admin` 并落盘
+     （不再生成 `auth.token` 随机密钥文件）；
+   - 本地客户端（TUI / status）启动时读取同一配置文件获取 Token；
+   - 远程客户端（Web / 远程 Tauri）在设置界面的「连接」页填写地址与 Token，
+     保存在客户端本地（`localStorage`）。
+
+> 默认只监听回环地址，因此默认 token 仅用于「装完即用」；
+> 将 Daemon 暴露到局域网或公网前，必须先在设置界面或配置文件中改成强密钥。
 
 ---
 

@@ -7,19 +7,31 @@ import Sidebar from './components/Sidebar.vue';
 import ChatView from './components/ChatView.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import { loadConfig } from './stores/theme';
+import { reset as resetChat } from './stores/chat';
 
 const settingsOpen = ref(false);
 const online = ref(false);
 
-onMounted(async () => {
-  await loadConfig();
+async function probe() {
   try {
     await api.status();
     online.value = true;
   } catch {
     online.value = false;
   }
+}
+
+onMounted(async () => {
+  await loadConfig();
+  await probe();
 });
+
+/** 设置里改完连接后重新握手：否则界面仍停在旧 Daemon 的数据上。 */
+async function onReconnect() {
+  resetChat();
+  settingsOpen.value = false;
+  await probe();
+}
 </script>
 
 <template>
@@ -28,7 +40,12 @@ onMounted(async () => {
     <main class="main">
       <ChatView :online="online" @need-settings="settingsOpen = true" />
     </main>
-    <SettingsModal :open="settingsOpen" @close="settingsOpen = false" />
+    <SettingsModal
+      :open="settingsOpen"
+      :online="online"
+      @close="settingsOpen = false"
+      @reconnect="onReconnect"
+    />
   </div>
   <Toaster
     position="bottom-right"

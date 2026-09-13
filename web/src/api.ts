@@ -1,3 +1,4 @@
+import { hasToken, resolveUrl, resolveWsUrl, token } from './stores/connection';
 import type {
   AgentFile,
   ChatMessage,
@@ -10,35 +11,22 @@ import type {
   UploadAttachmentResp,
 } from './types';
 
-/** 鉴权 Token：优先 URL ?token=，其次 localStorage。 */
-const TOKEN_KEY = 'oma.token';
-
+/** 鉴权 Token：由连接配置提供（URL ?token= 优先，其次 localStorage）。 */
 export function getToken(): string {
-  const url = new URL(location.href);
-  const fromUrl = url.searchParams.get('token');
-  if (fromUrl) {
-    localStorage.setItem(TOKEN_KEY, fromUrl);
-    // 凭证不应长期停留在地址栏（会被历史记录、Referer 与日志留存）
-    url.searchParams.delete('token');
-    const query = url.searchParams.toString();
-    history.replaceState(null, '', url.pathname + (query ? `?${query}` : '') + url.hash);
-    return fromUrl;
-  }
-  return localStorage.getItem(TOKEN_KEY) ?? '';
+  return token.value;
 }
 
 export function wsUrl(sessionQuery: Record<string, string>): string {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const params = new URLSearchParams({ token: getToken(), ...sessionQuery });
-  return `${proto}://${location.host}/ws?${params.toString()}`;
+  return resolveWsUrl(`/ws?${params.toString()}`);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  headers.set('Authorization', `Bearer ${getToken()}`);
+  if (hasToken()) headers.set('Authorization', `Bearer ${getToken()}`);
   if (init?.body) headers.set('Content-Type', 'application/json');
 
-  const resp = await fetch(path, { ...init, headers });
+  const resp = await fetch(resolveUrl(path), { ...init, headers });
   if (!resp.ok) {
     const detail = await resp.text().catch(() => '');
     throw new Error(detail || `HTTP ${resp.status}`);
@@ -164,7 +152,7 @@ export const api = {
     const form = new FormData();
     for (const file of files) form.append('file', file, file.name);
     const resp = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/attachments`,
+      resolveUrl(`/api/sessions/${encodeURIComponent(sessionId)}/attachments`),
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${getToken()}` },
@@ -181,7 +169,9 @@ export const api = {
   /** 取附件字节（需鉴权，故不能直接用 <img src>）。 */
   fetchAttachment: async (sessionId: string, name: string): Promise<Blob> => {
     const resp = await fetch(
-      `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(name)}`,
+      resolveUrl(
+        `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(name)}`,
+      ),
       { headers: { Authorization: `Bearer ${getToken()}` } },
     );
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

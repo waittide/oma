@@ -204,6 +204,16 @@ fn format_host(host: &str, port: u16) -> String {
 async fn web_asset_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
 
+    // 本服务不提供任何 API：若收到这类请求，说明前端把访问地址配到了
+    // `oma web` 自己头上。回 404 并说清楚原因，比回一个 HTML 页面好排查得多。
+    if path.starts_with("api/") || path == "ws" {
+        return (
+            StatusCode::NOT_FOUND,
+            "此端口只提供前端静态资源，不含 API；请把界面上的「访问地址」指向 oma daemon",
+        )
+            .into_response();
+    }
+
     if path.is_empty() || path == INDEX_HTML {
         return index_html();
     }
@@ -303,4 +313,50 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+
+    use super::*;
+
+    /// 资产自带 MIME 与强缓存；含扩展名的缺失资源必须是 404，不能回落成 HTML。
+    #[tokio::test]
+    async fn test_serves_index_and_assets() {
+        let resp = index_html();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache",
+            "入口页必须每次回源校验，否则前端发版后用户会卡在旧页面"
+        );
+
+        let missing = web_asset_handler("/definitely-missing.js".parse().unwrap()).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// SPA 路由必须回落入口；API 路径必须 404，避免用户把访问地址配到 web 端口上时
+    /// 拿到一个看似正常的 HTML 页面而难排查。
+    #[tokio::test]
+    async fn test_spa_fallback_and_api_rejection() {
+        let deep = web_asset_handler("/sessions/abc".parse().unwrap()).await;
+        assert_eq!(deep.status(), StatusCode::OK);
+
+        for path in ["/api/server/status", "/api/config", "/ws"] {
+            let resp = web_asset_handler(path.parse().unwrap()).await;
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{path} must not fall back");
+            let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+            let text = String::from_utf8_lossy(&body);
+            assert!(text.contains("oma daemon"), "{path} should explain where the API lives");
+        }
+    }
+
+    #[test]
+    fn test_format_host_replaces_unspecified_bind() {
+        // 绑定 0.0.0.0/:: 时打印的应是可点击的 localhost
+        assert_eq!(format_host("0.0.0.0", 5173), "localhost:5173");
+        assert_eq!(format_host("::", 5173), "localhost:5173");
+        assert_eq!(format_host("127.0.0.1", 5173), "127.0.0.1:5173");
+    }
 }

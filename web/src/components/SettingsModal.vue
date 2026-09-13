@@ -2,16 +2,20 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
 import {
+  LuCheck,
   LuEye,
   LuEyeOff,
   LuLanguages,
+  LuLoader,
   LuPalette,
   LuPlug,
+  LuPlugZap,
   LuPlus,
   LuServer,
   LuSparkles,
   LuSquareUserRound,
   LuTrash2,
+  LuX,
 } from 'vue-icons-plus/lu';
 import OButton from './ui/OButton.vue';
 import OInput from './ui/OInput.vue';
@@ -24,25 +28,35 @@ import OModelSelect from './ui/OModelSelect.vue';
 import OMultiSelect from './ui/OMultiSelect.vue';
 import { ACCENTS, NEUTRAL_TOKENS, PALETTE_TOKENS, config, darkPalettes, lightPalettes, loadConfig, palettes, refreshPalettes, saveConfig, saveTheme, theme, type Palette } from '../stores/theme';
 import { agents } from '../stores/chat';
+import { baseUrl, normalizeBaseUrl, setConnection, token } from '../stores/connection';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
-import { activeSession } from '../stores/sessions';
+import { activeSession, refresh as refreshSessions } from '../stores/sessions';
 import type { AgentFile, AgentSummary, ToolInfo, McpServerConfig, ModelInfo, OmaConfig, PaletteMode, ProviderConfig, SkillFile, Theme } from '../types';
 import { useTranslations } from '../composables/i18n';
 
-const props = defineProps<{ open: boolean }>();
-const emit = defineEmits<{ close: [] }>();
+const props = defineProps<{ open: boolean; online?: boolean }>();
+const emit = defineEmits<{ close: []; reconnect: [] }>();
 
 const { t } = useTranslations('settings');
 const { t: tc } = useTranslations('common');
 
-type SectionId = 'theme' | 'language' | 'defaults' | 'providers' | 'presets' | 'skills' | 'mcp';
-const section = ref<SectionId>('theme');
+type SectionId =
+  | 'connection'
+  | 'theme'
+  | 'language'
+  | 'defaults'
+  | 'providers'
+  | 'presets'
+  | 'skills'
+  | 'mcp';
+const section = ref<SectionId>('connection');
 
 /** 参照 opencode 设置弹窗：导航按分组小标题聚类，底部展示应用版本。 */
 const navGroups = computed(() => [
   {
     title: t('navSectionPersonal'),
     items: [
+      { id: 'connection' as SectionId, label: t('navConnection'), icon: LuPlugZap },
       { id: 'theme' as SectionId, label: t('navTheme'), icon: LuPalette },
       { id: 'language' as SectionId, label: t('navLanguage'), icon: LuLanguages },
     ],
@@ -60,6 +74,64 @@ const navGroups = computed(() => [
 ]);
 
 const version = ref('');
+
+// ---------- 连接 ----------
+// 前端是独立静态服务，目标 Daemon 与凭证属于「本浏览器的设置」，存 localStorage。
+const conn = reactive({ baseUrl: baseUrl.value, token: token.value });
+const connTesting = ref(false);
+// 首次进入时自动探测一次，让用户不用手动点就知道当前配得对不对
+const connState = ref<'unknown' | 'ok' | 'fail'>('unknown');
+const connDetail = ref('');
+
+/** 探测目标 Daemon：需要用表单里的值（而不是已保存的值）即时验证。 */
+async function testConnection(): Promise<boolean> {
+  connTesting.value = true;
+  try {
+    const base = normalizeBaseUrl(conn.baseUrl);
+    const resp = await fetch(`${base}/api/server/status`, {
+      headers: { Authorization: `Bearer ${conn.token.trim()}` },
+    });
+    if (resp.ok) {
+      const info = (await resp.json()) as { version?: string; active_sessions?: number };
+      connState.value = 'ok';
+      connDetail.value = t('connReachable', {
+        version: info.version ?? '?',
+        sessions: info.active_sessions ?? 0,
+      });
+      return true;
+    }
+    connState.value = 'fail';
+    connDetail.value =
+      resp.status === 401
+        ? t('connUnauthorized')
+        : t('connHttpError', { status: resp.status });
+    return false;
+  } catch (e) {
+    connState.value = 'fail';
+    connDetail.value = t('connUnreachable', { message: (e as Error).message });
+    return false;
+  } finally {
+    connTesting.value = false;
+  }
+}
+
+async function saveConnection() {
+  setConnection(conn.baseUrl, conn.token);
+  conn.baseUrl = baseUrl.value;
+  conn.token = token.value;
+  if (await testConnection()) {
+    toast.success(t('connSaved'));
+    // 地址/凭证换了之后，旧数据（会话、消息、主题、配置）都属于上一个 Daemon，
+    // 必须整体重载；由 App 统一做：会话列表 + 配置主题 + 重新建立 WS
+    await reloadAll();
+  }
+}
+
+/** 重新拉取属于「某个 Daemon」的全部状态（会话、主题/配置、调色板）。 */
+async function reloadAll() {
+  await Promise.allSettled([refreshSessions(), loadConfig()]);
+  emit('reconnect');
+}
 
 // ---------- 主题 ----------
 const mode = ref<Theme['mode']>(theme.value.mode);
@@ -586,6 +658,8 @@ watch(
   () => [props.open, section.value] as const,
   ([o, s]) => {
     if (!o) return;
+    // 进入连接页先探一次：用户开箱即见当前是否连得上，不用先点「测试」
+    if (s === 'connection') void testConnection();
     if (s === 'presets') void loadPresets();
     if (s === 'skills') void loadSkills();
   },
@@ -1087,6 +1161,73 @@ function pickLocale(v: Locale) {
       </nav>
 
       <div class="content">
+        <!-- 连接 -->
+        <section v-if="section === 'connection'" class="pane">
+          <header class="pane-head">
+            <h2 class="pane-title">{{ t('navConnection') }}</h2>
+          </header>
+          <div class="pane-scroll">
+            <div class="list">
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('connBaseUrl') }}</span>
+                  <span class="srow-desc">{{ t('connBaseUrlDesc') }}</span>
+                </div>
+                <div class="srow-ctl wide">
+                  <OInput
+                    v-model="conn.baseUrl"
+                    class="conn-input"
+                    :placeholder="t('connBaseUrlPlaceholder')"
+                  />
+                </div>
+              </div>
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('connToken') }}</span>
+                  <span class="srow-desc">{{ t('connTokenDesc') }}</span>
+                </div>
+                <div class="srow-ctl wide">
+                  <OInput
+                    v-model="conn.token"
+                    class="conn-input"
+                    type="password"
+                    :placeholder="t('connTokenPlaceholder')"
+                  />
+                </div>
+              </div>
+              <div class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('connStatus') }}</span>
+                  <span class="srow-desc">{{ connDetail || t('connStatusUnknown') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <span class="conn-badge" :class="connState">
+                    <component
+                      :is="connState === 'ok' ? LuCheck : connState === 'fail' ? LuX : LuLoader"
+                      :size="12"
+                    />
+                    {{
+                      connState === 'ok'
+                        ? t('connOk')
+                        : connState === 'fail'
+                          ? t('connFailed')
+                          : t('connUnknown')
+                    }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <footer class="pane-foot">
+            <OButton variant="ghost" size="sm" :loading="connTesting" @click="testConnection">
+              {{ t('connTest') }}
+            </OButton>
+            <OButton variant="primary" size="sm" :loading="connTesting" @click="saveConnection">
+              {{ t('connSave') }}
+            </OButton>
+          </footer>
+        </section>
+
         <!-- 外观 -->
         <section v-if="section === 'theme'" class="pane">
           <header class="pane-head">
@@ -1994,6 +2135,31 @@ function pickLocale(v: Locale) {
 }
 .srow-ctl.wide {
   flex-shrink: 1;
+}
+/* 连接页输入框：地址与 token 都需要足够宽度展示，窄屏时允许收缩 */
+.conn-input {
+  width: 300px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+.conn-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 99px;
+  font-size: 11.5px;
+  font-weight: 500;
+  background: var(--surface-strong);
+  color: var(--text-tertiary);
+}
+.conn-badge.ok {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.conn-badge.fail {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 .color-grid {
   display: grid;
