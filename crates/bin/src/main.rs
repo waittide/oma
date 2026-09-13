@@ -159,7 +159,7 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
 
     // 与 `oma web` 保持同一种输出形式：只报监听地址，不打印 token，
     // 避免凭证留在终端回滚、CI 日志或 screen/tmux 记录里。
-    println!("daemon 监听地址: http://{}", addr);
+    tracing::info!("daemon 监听地址: http://{}", addr);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -187,7 +187,7 @@ async fn run_web(host: &str, port: u16, open: bool) -> Result<()> {
 
     // 只报监听地址：这是用户唯一需要的信息；不打印 token，避免凭证进入
     // 终端回滚、CI 日志或 screen/tmux 记录。
-    println!("web 监听地址: {}", url);
+    tracing::info!("web 监听地址: {}", url);
 
     if open {
         let _ = tokio::process::Command::new("xdg-open").arg(&url).spawn();
