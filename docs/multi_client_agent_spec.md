@@ -633,7 +633,19 @@ headers = { Authorization = "Bearer secret_token" }
 
 ## 7. 工具集与执行环境 (Tools & MCP)
 
-所有工具返回统一契约：`ToolOutput { output: String, is_error: bool }`。
+所有工具返回统一契约：
+
+```rust
+ToolOutput {
+    output:   String,
+    is_error: bool,
+    /// 随输出回到模型的图片（mime + base64）；默认空
+    images:   Vec<ToolImage>,
+}
+```
+
+`images` 由上层交付给模型：Anthropic 内联进 `tool_result.content`，其余协议
+拆为紧随回执的用户消息；模型不支持视觉时工具本身就不会产出图片。
 
 ### 7.1 执行安全防护
 1. **输出字符截断 (`RESULT_MAX_CHARS = 24_000`)**：
@@ -645,8 +657,14 @@ headers = { Authorization = "Bearer secret_token" }
 
 ### 7.2 5 大核心内置工具
 1. **`read`**：
-   - 参数：`{ "path": "...", "offset": 1, "limit": 1000 }`（offset 为 1 起始行号）
-   - 按行分片安全读取文件。
+   - 参数：`{ "path": "...", "offset": 1, "limit": 1000 }`（offset 为 1 起始行号，仅对文本生效）
+   - 按行分片安全读取文本文件。
+   - **图片文件**：按文件头识别 PNG / JPEG / GIF / WebP / BMP / TIFF（不引入解码器，
+     仅解析头部取得宽高、通道数、alpha 与 MIME）：
+     - 当前模型 `supports_vision = true` 时，图片经 `ToolOutput.images` 随工具回执
+       回到模型（Anthropic 内联在 `tool_result.content`；其余协议作为紧随回执的
+       用户消息），文本部分同时给出尺寸、通道、alpha、MIME 与体积；
+     - 模型不支持视觉、或图片超过 5 MiB 时，只返回元数据块，不下发图片字节。
 2. **`write`**：
    - 参数：`{ "path": "...", "content": "..." }`
    - 覆盖写入或新建文件。
