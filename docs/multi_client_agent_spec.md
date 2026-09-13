@@ -349,6 +349,8 @@ pub enum ModelCapability {
     ImageGeneration,     // 图像生成
     VideoUnderstanding,  // 视频理解
     VideoGeneration,     // 视频生成
+    AudioUnderstanding,  // 音频理解
+    AudioGeneration,     // 音频生成
     Embedding,           // 向量生成
 }
 
