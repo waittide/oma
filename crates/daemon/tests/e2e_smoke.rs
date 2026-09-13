@@ -36,7 +36,12 @@ struct Observed {
     reasoning_effort: Option<String>,
     /// 是否为自动命名请求（system prompt 含命名指令）
     is_naming:        bool,
+    /// 工具回执后携带的图片 data URL
+    tool_image_urls:  Vec<String>,
 }
+
+/// 触发 read 读图片（而非默认的文本文件）
+const READ_IMAGE_TRIGGER: &str = "READ_IMAGE";
 
 #[derive(Clone, Default)]
 struct MockState {
@@ -74,6 +79,15 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
         .filter(|m| m["role"] == "tool")
         .map(|m| m["content"].as_str().unwrap_or("").to_string())
         .collect();
+    // 工具回执之后追加的带图用户消息（completion 协议用这种方式交付图片）
+    let tool_image_urls: Vec<String> = messages
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .filter_map(|m| m["content"].as_array())
+        .flatten()
+        .filter(|p| p["type"] == "image_url")
+        .filter_map(|p| p["image_url"]["url"].as_str().map(str::to_string))
+        .collect();
 
     // 命名请求：system prompt 标识为命名任务（放在观测前，供断言区分）
     let is_naming = req["messages"]
@@ -95,6 +109,7 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
         tool_contents,
         reasoning_effort: req["reasoning_effort"].as_str().map(str::to_string),
         is_naming,
+        tool_image_urls,
     });
 
     // 每次响应都上报用量：agent loop 会据此回填权威上下文锚点
@@ -128,6 +143,8 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
                 .as_str()
                 .is_some_and(|c| c.contains("User answers:"))
     });
+    // 图像场景只跑一轮工具：多轮会让同一张图被 read 多次，断言就不再确定
+    let wants_image = user_text.contains(READ_IMAGE_TRIGGER);
     let mut chunks: Vec<String> = if ask_wanted && tool_names.iter().any(|t| t == "ask") && !ask_answered {
         vec![
             sse(
@@ -135,7 +152,7 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
             ),
             sse(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
         ]
-    } else if tool_rounds >= 2 {
+    } else if tool_rounds >= 2 || (wants_image && tool_rounds >= 1) {
         // 已有回执：产出最终文本并收尾
         vec![
             sse(r#"{"choices":[{"delta":{"content":"done"}}]}"#),
@@ -150,11 +167,14 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
             sse(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
         ]
     } else if tool_names.iter().any(|t| t == "read") {
-        // 子 Agent：读取文件
+        // 读到图片时回图像工具调用（见 READ_IMAGE_TRIGGER），否则读文本文件
+        let path = if wants_image { "pic.png" } else { "note.txt" };
+        let args = format!(r#"{{"path":"{path}"}}"#);
         vec![
-            sse(
-                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read","arguments":"{\"path\":\"note.txt\"}"}}]}}]}"#,
-            ),
+            sse(&format!(
+                r#"{{"choices":[{{"delta":{{"tool_calls":[{{"index":0,"id":"call_read","function":{{"name":"read","arguments":{}}}}}]}}}}]}}"#,
+                serde_json::json!(args)
+            )),
             sse(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
         ]
     } else {
@@ -189,10 +209,19 @@ struct Harness {
 }
 
 async fn start_harness() -> Result<Harness> {
-    start_harness_with_context(100_000).await
+    start_harness_with(100_000, true).await
+}
+
+/// 只改模型的视觉能力，其余与默认 harness 一致
+async fn start_harness_with_vision(supports_vision: bool) -> Result<Harness> {
+    start_harness_with(100_000, supports_vision).await
 }
 
 async fn start_harness_with_context(context_len: usize) -> Result<Harness> {
+    start_harness_with(context_len, true).await
+}
+
+async fn start_harness_with(context_len: usize, supports_vision: bool) -> Result<Harness> {
     let tmp = tempfile::tempdir()?;
     // 测试进程存活期间保留目录（data dir 需要跨请求稳定）
     let data_dir = tmp.keep();
@@ -224,6 +253,7 @@ api_key = "test-key"
 id = "model-x"
 name = "Mock Model"
 context_len = {context_len}
+supports_vision = {supports_vision}
 
 [providers.mock.models.reasoning_map]
 low = "think-low"
@@ -237,6 +267,8 @@ ultra = "think-ultra"
     let workspace = data_dir.join("ws");
     std::fs::create_dir_all(&workspace)?;
     std::fs::write(workspace.join("note.txt"), "hello from note\n")?;
+    // 一张最小 PNG（宽 2、高 1、RGB），供 read 工具的图像回传链路使用
+    std::fs::write(workspace.join("pic.png"), tiny_png())?;
 
     let storage = StorageManager::new(&data_dir).await?;
     let token = "smoke-token".to_string();
@@ -256,6 +288,37 @@ ultra = "think-ultra"
         mock,
         workspace,
     })
+}
+
+/// 最小 PNG：签名 + IHDR，尺寸 2x1、色彩类型 2（RGB）
+fn tiny_png() -> Vec<u8> {
+    let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    v.extend_from_slice(&13u32.to_be_bytes());
+    v.extend_from_slice(b"IHDR");
+    v.extend_from_slice(&2u32.to_be_bytes());
+    v.extend_from_slice(&1u32.to_be_bytes());
+    v.extend_from_slice(&[8, 2, 0, 0, 0]);
+    v
+}
+
+/// 读取会话全部消息（HTTP，含非当前分支）
+async fn fetch_messages(h: &Harness, session_id: &str) -> Result<Vec<serde_json::Value>> {
+    Ok(reqwest::Client::new()
+        .get(format!("http://{}/api/sessions/{}/messages/tree", h.base, session_id))
+        .bearer_auth(&h.token)
+        .send()
+        .await?
+        .json()
+        .await?)
+}
+
+/// 统计历史中的图片块数量
+fn count_image_blocks(messages: &[serde_json::Value]) -> usize {
+    messages
+        .iter()
+        .flat_map(|m| m["content"].as_array().cloned().unwrap_or_default())
+        .filter(|b| b["type"] == "image")
+        .count()
 }
 
 /// 收集事件直到**主**轮次结束。
@@ -1015,7 +1078,138 @@ async fn test_user_title_is_not_overwritten() -> Result<()> {
     Ok(())
 }
 
-/// 推理等级映射：会话选中的等级经模型映射表转换后才发给厂商。
+/// read 读图片：视觉模型拿到图，且图片随回执落库（重载后不丢）。
+#[tokio::test]
+async fn test_read_image_reaches_provider_and_persists() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("img")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "imager".into(),
+    })
+    .await?;
+
+    // 固定为带 read 的角色：默认 agent 模板的白名单差异会让 mock 走到别的分支
+    client
+        .send_command(AgentCommand::SetAgent {
+            agent: "explore".into(),
+        })
+        .await?;
+    drain_for_event(&mut client, Duration::from_secs(10), |e| {
+        matches!(e, AgentEvent::AgentChanged { .. })
+    })
+    .await?;
+
+    // 触发链路：主 Agent → read(pic.png) → 图片随回执回到模型
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     format!("{READ_IMAGE_TRIGGER} 看一下这张图"),
+            attachments: vec![],
+        })
+        .await?;
+    drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    // mock 模型 supports_vision = true（默认），因此图片必须以 data URL 交付
+    let observed = h.mock.observed.lock().clone();
+    let with_image = observed
+        .iter()
+        .find(|o| !o.tool_image_urls.is_empty())
+        .expect("the image read by the tool must be sent to the model");
+    assert!(
+        with_image.tool_image_urls[0].starts_with("data:image/png;base64,"),
+        "image must be inlined as a data URL: {}",
+        with_image.tool_image_urls[0]
+    );
+
+    // 工具回执的文本里必须带上元数据（看到图的同时也看得到尺寸）
+    assert!(
+        with_image
+            .tool_contents
+            .iter()
+            .any(|c| c.contains("dimensions: 2x1")),
+        "metadata must accompany the image: {:?}",
+        with_image.tool_contents
+    );
+
+    // 图片块必须随回执落库：重读历史后仍然存在（否则重连后模型就“失忆”了）
+    let msgs = fetch_messages(&h, &session.session_id).await?;
+    let images = count_image_blocks(&msgs);
+    assert_eq!(images, 1, "tool result image must be persisted: {msgs:#?}");
+    Ok(())
+}
+
+/// read 读图片但模型不支持视觉：只回元数据，不把图片发给厂商。
+#[tokio::test]
+async fn test_read_image_metadata_only_for_text_model() -> Result<()> {
+    let h = start_harness_with_vision(false).await?;
+    let session = h.api.create_session(&h.workspace, Some("img-text")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "text-only".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::SetAgent {
+            agent: "explore".into(),
+        })
+        .await?;
+    drain_for_event(&mut client, Duration::from_secs(10), |e| {
+        matches!(e, AgentEvent::AgentChanged { .. })
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     format!("{READ_IMAGE_TRIGGER} 这张图里面有什么"),
+            attachments: vec![],
+        })
+        .await?;
+    drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    let observed = h.mock.observed.lock().clone();
+    assert!(
+        observed.iter().all(|o| o.tool_image_urls.is_empty()),
+        "text-only model must never receive image parts"
+    );
+    let metadata = observed
+        .iter()
+        .find(|o| {
+            o.tool_contents
+                .iter()
+                .any(|c| c.contains("cannot view images"))
+        })
+        .expect("metadata block must be returned instead of the image");
+    assert!(
+        metadata
+            .tool_contents
+            .iter()
+            .any(|c| c.contains("dimensions: 2x1")),
+        "metadata must include dimensions: {:?}",
+        metadata.tool_contents
+    );
+
+    // 历史里不得出现图片块（否则下次换视觉模型会把旧图重发给厂商）
+    let msgs = fetch_messages(&h, &session.session_id).await?;
+    assert_eq!(
+        count_image_blocks(&msgs),
+        0,
+        "no image block for a text-only model: {msgs:#?}"
+    );
+    Ok(())
+}
+
+/// read 读图片但模型不支持视觉：只回元数据，不把图片发给厂商。
 #[tokio::test]
 async fn test_reasoning_level_is_mapped_before_request() -> Result<()> {
     let h = start_harness().await?;
