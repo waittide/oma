@@ -439,7 +439,7 @@ pub struct ResolvedTheme {
 /// `supports_thinking` / `input_types` 三个字段。
 ///
 /// 单一枚举兼顾「输入模态」与「产出形态」：文本理解与文本生成是所有模型
-/// 的底线能力，图像/视频理解与生成、向量生成则按模型差异声明。
+/// 的底线能力，图像/视频/音频的理解与生成、向量生成则按模型差异声明。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelCapability {
@@ -457,13 +457,17 @@ pub enum ModelCapability {
     VideoUnderstanding,
     /// 视频生成
     VideoGeneration,
+    /// 音频理解
+    AudioUnderstanding,
+    /// 音频生成
+    AudioGeneration,
     /// 向量生成
     Embedding,
 }
 
 impl ModelCapability {
     /// 全部能力，顺序即界面展示顺序
-    pub const ALL: [ModelCapability; 8] = [
+    pub const ALL: [ModelCapability; 10] = [
         ModelCapability::Thinking,
         ModelCapability::TextUnderstanding,
         ModelCapability::TextGeneration,
@@ -471,6 +475,8 @@ impl ModelCapability {
         ModelCapability::ImageGeneration,
         ModelCapability::VideoUnderstanding,
         ModelCapability::VideoGeneration,
+        ModelCapability::AudioUnderstanding,
+        ModelCapability::AudioGeneration,
         ModelCapability::Embedding,
     ];
 
@@ -484,6 +490,8 @@ impl ModelCapability {
             ModelCapability::ImageGeneration => "image_generation",
             ModelCapability::VideoUnderstanding => "video_understanding",
             ModelCapability::VideoGeneration => "video_generation",
+            ModelCapability::AudioUnderstanding => "audio_understanding",
+            ModelCapability::AudioGeneration => "audio_generation",
             ModelCapability::Embedding => "embedding",
         }
     }
@@ -850,6 +858,37 @@ impl ToolOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 能力集合在协议上序列化为 snake_case 字符串数组，且顺序由 BTreeSet 决定。
+    #[test]
+    fn test_model_capability_serde() {
+        let caps = default_model_capabilities();
+        assert_eq!(
+            serde_json::to_value(&caps).unwrap(),
+            serde_json::json!(["text_understanding", "text_generation"])
+        );
+
+        let parsed: BTreeSet<ModelCapability> = serde_json::from_str(
+            r#"["thinking", "text_understanding", "text_generation", "image_understanding", "audio_understanding", "audio_generation", "embedding"]"#,
+        )
+        .unwrap();
+        assert!(parsed.contains(&ModelCapability::Thinking));
+        assert!(parsed.contains(&ModelCapability::AudioUnderstanding));
+        assert!(parsed.contains(&ModelCapability::AudioGeneration));
+        assert!(parsed.contains(&ModelCapability::Embedding));
+        assert!(!parsed.contains(&ModelCapability::VideoUnderstanding));
+    }
+
+    /// 字符串表示与 serde 保持一致，且能被 `parse` 反向解析（供前后端共享取值）。
+    #[test]
+    fn test_model_capability_str_roundtrip() {
+        for cap in ModelCapability::ALL {
+            assert_eq!(ModelCapability::parse(cap.as_str()), Some(cap));
+            assert_eq!(serde_json::to_value(cap).unwrap(), serde_json::json!(cap.as_str()));
+        }
+        assert_eq!(ModelCapability::parse("vision"), None);
+        assert_eq!(ModelCapability::ALL.len(), 10);
+    }
 
     #[test]
     fn test_client_message_serde() {
