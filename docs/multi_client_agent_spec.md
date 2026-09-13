@@ -743,12 +743,18 @@ pub struct Palette {
 ## 9. 命令行入口与 Web 前端工程
 
 ### 9.1 统一 `oma` 命令行入口 (`crates/bin`)
-- `oma daemon`：独立启动后台 Daemon 服务（仅 API，默认监听 `127.0.0.1:17431`）；
-- `oma web`：仅启动内嵌前端静态服务，**不会**顺便拉起 Daemon，也不再依赖 Vite/pnpm；
+- `oma daemon`：独立启动后台 Daemon 服务（默认监听 `127.0.0.1:17431`）；
+- `oma web`：启动 web 客户端（仅内嵌前端静态服务，**不会**顺便拉起 Daemon，也不再依赖 Vite/pnpm）；
   构建产物经 `rust-embed` 内嵌进二进制（release 下不依赖任何外部目录），
   仅打印 `web 监听地址: http://…`（不打印 token），需 `--open` 才自动打开浏览器；
-- `oma tui`：启动/连接 Daemon 并进入 Ratatui 终端交互界面；
-- 不带子命令（`oma`）：等价于 `oma -h`，仅打印帮助，不自动启动任何界面。
+- `oma tui`：启动 tui 客户端（连接 Daemon 并进入 Ratatui 终端交互界面）；
+- `oma status` / `oma help [子命令]`：查看服务端状态 / 打印帮助；
+- 不带子命令（`oma`）：等价于 `oma -h`，仅打印帮助，不自动启动任何界面；
+- **输出全中文**：clap 的固定文案（`Usage:`/`Options:`/`Commands:` 标题、`[default: …]`
+  与 `[OPTIONS]` 占位符、内建 `-h/--help`、`-V/--version`、`help` 子命令、解析错误）
+  都是硬编码英文且没有 i18n 接口，故 `crates/bin/src/cli.rs` 在派生出的命令树上统一改写：
+  自建帮助项与 `help` 子命令、用 `help_template` 接管版式、按 `ErrorKind` 与上下文
+  重渲染解析错误（默认值现读自参数本身，不与帮助文案各写一份）。
 
 ### 9.2 原生 Web 前端工程 (`web/`)
 - 技术选型：**纯原生 Vue 3 + TypeScript + 手写 CSS**（不引入 Tailwind、UnoCSS、Element Plus、NaiveUI 等任何第三方 UI 或样式库）；

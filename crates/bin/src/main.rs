@@ -9,13 +9,15 @@ use axum::{
     http::{StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
-use clap::{CommandFactory, Parser, Subcommand};
+use cli::Commands;
 use oma_config::OmaConfig;
 use oma_daemon::{DaemonState, create_router, resolve_token};
 use oma_mcp::McpManager;
 use oma_storage::StorageManager;
 use rust_embed::Embed;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+mod cli;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:17431";
 /// 前端默认监听端口：独立于 Daemon 端口，避免两者互相抢占
@@ -30,60 +32,6 @@ const INDEX_HTML: &str = "index.html";
 #[derive(Embed)]
 #[folder = "$OMA_WEB_DIST"]
 struct WebAssets;
-
-#[derive(Parser)]
-#[command(
-    name = "oma",
-    about = "Oma: Multi-client Collaborative AI Agent",
-    long_about = "Oma: Multi-client Collaborative AI Agent\n\n不带子命令时等价于 `oma -h`，不会自动启动任何界面。",
-    version = "0.1.0"
-)]
-struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    /// 独立启动后台 Daemon 服务（仅 API，界面由 `oma web` 提供）
-    Daemon {
-        #[arg(long, default_value = DEFAULT_ADDR)]
-        addr:   String,
-        #[arg(long)]
-        token:  Option<String>,
-        #[arg(long)]
-        config: Option<PathBuf>,
-    },
-    /// 启动内嵌前端静态服务（不启动 Daemon）
-    Web {
-        /// 前端监听地址
-        #[arg(long, default_value = "127.0.0.1")]
-        host: String,
-        /// 前端监听端口
-        #[arg(long, default_value_t = DEFAULT_WEB_PORT)]
-        port: u16,
-        /// 就绪后自动调用浏览器打开页面（默认仅打印访问地址）
-        #[arg(long)]
-        open: bool,
-    },
-    /// 连接 Daemon 启动 TUI 终端客户端
-    Tui {
-        #[arg(long, default_value = DEFAULT_ADDR)]
-        addr:      String,
-        #[arg(long)]
-        token:     Option<String>,
-        /// 目标工作区；缺省为当前目录
-        #[arg(long)]
-        workspace: Option<String>,
-    },
-    /// 查看 Daemon 服务端运行状态
-    Status {
-        #[arg(long, default_value = DEFAULT_ADDR)]
-        addr:  String,
-        #[arg(long)]
-        token: Option<String>,
-    },
-}
 
 fn get_data_dir() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
@@ -105,7 +53,7 @@ fn config_path(config_opt: Option<&Path>) -> PathBuf {
 /// 静默回退到默认配置会丢掉全部 provider 与模型设置，比直接启动失败更难排查。
 fn load_config(path: &Path) -> Result<OmaConfig> {
     if path.exists() {
-        OmaConfig::load_from_file(path).with_context(|| format!("Invalid config file {}", path.display()))
+        OmaConfig::load_from_file(path).with_context(|| format!("配置文件 {} 内容无效", path.display()))
     } else {
         Ok(OmaConfig::default())
     }
@@ -120,7 +68,7 @@ fn resolve_and_persist_token(cli_token: Option<&str>, config: &mut OmaConfig, pa
         config.server.token = oma_config::DEFAULT_AUTH_TOKEN.to_string();
         config
             .save_to_file_atomic(path)
-            .with_context(|| format!("Failed to write default token into {}", path.display()))?;
+            .with_context(|| format!("无法把默认 token 写入 {}", path.display()))?;
     }
     Ok(resolve_token(cli_token, config))
 }
@@ -207,7 +155,7 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .with_context(|| format!("Failed to bind to {}", addr))?;
+        .with_context(|| format!("无法监听 {addr}"))?;
 
     // 与 `oma web` 保持同一种输出形式：只报监听地址，不打印 token，
     // 避免凭证留在终端回滚、CI 日志或 screen/tmux 记录里。
@@ -230,7 +178,7 @@ async fn run_web(host: &str, port: u16, open: bool) -> Result<()> {
 
     let listener = tokio::net::TcpListener::bind((host, port))
         .await
-        .with_context(|| format!("Failed to bind to {host}:{port}"))?;
+        .with_context(|| format!("无法监听 {host}:{port}"))?;
     // 端口传 0 时由系统分配，打印真实端口而不是用户传的 0
     let actual = listener.local_addr()?;
 
@@ -326,28 +274,36 @@ async fn run_status(addr: &str, token_opt: Option<&str>) -> Result<()> {
         .header("Authorization", format!("Bearer {}", token))
         .send()
         .await
-        .context("Failed to connect to Oma Daemon")?;
+        .context("无法连接 Oma Daemon")?;
 
     if resp.status().is_success() {
         let json: serde_json::Value = resp.json().await?;
-        println!("Oma Daemon is healthy on {}:", addr);
+        println!("Oma Daemon 运行正常（{addr}）:");
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
-        eprintln!("Oma Daemon returned status: {}", resp.status());
+        eprintln!("Oma Daemon 返回状态: {}", resp.status());
     }
     Ok(())
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let cli = Cli::parse();
+    // 不用 `main() -> Result`：那会让 anyhow 打出英文的 `Error: ` 前缀
+    if let Err(err) = run().await {
+        eprintln!("错误: {err:#}");
+        std::process::exit(1);
+    }
+}
 
-    match cli.command {
+async fn run() -> Result<()> {
+    let args = cli::parse();
+
+    match args.command {
         Some(Commands::Daemon { addr, token, config }) => {
             start_daemon(&addr, token.as_deref(), config.as_deref()).await?;
         }
@@ -365,10 +321,10 @@ async fn main() -> Result<()> {
         Some(Commands::Status { addr, token }) => {
             run_status(&addr, token.as_deref()).await?;
         }
+        Some(Commands::Help { subcommand }) => cli::print_help(subcommand.as_deref())?,
         None => {
-            // 默认不启动任何界面，仅打印帮助，交由用户显式选择 `oma tui` / `oma web`
-            Cli::command().print_help()?;
-            println!();
+            // 默认不启动任何界面，仅打印帮助，交由用户显式选择 `oma daemon` / `oma web` / `oma tui`
+            cli::print_help(None)?;
         }
     }
 
