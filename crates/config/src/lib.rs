@@ -388,8 +388,8 @@ impl OmaConfig {
                 // 会话等级在请求期解析后填入，模型配置不再持有默认等级
                 reasoning_effort:  String::new(),
                 reasoning_map:     m.reasoning_map.clone(),
-                headers:           BTreeMap::new(),
-                body:              serde_json::json!({}),
+                headers:           m.headers.clone(),
+                body:              m.body.clone(),
             })?;
         Some((provider, model_cfg))
     }
@@ -1097,6 +1097,38 @@ mod tests {
         assert!(prompt.contains("Active Model: my_anthropic/claude-3-7"));
         // ask 使用准则必须随系统提示下发，否则模型不知道何时该提问
         assert!(prompt.contains("<ask_tool>"));
+    }
+
+    #[test]
+    fn test_model_headers_and_body_reach_model_config() {
+        let toml_str = r#"
+[providers.p1]
+api_type = "completion"
+base_url = "http://localhost/v1"
+api_key = "k"
+headers = { "X-Provider" = "p" }
+body = { temperature = 0.2 }
+
+[[providers.p1.models]]
+id = "m1"
+headers = { "X-Model" = "m", "X-Provider" = "override" }
+body = { temperature = 0.9, top_p = 0.5 }
+
+[[providers.p1.models]]
+id = "m2"
+"#;
+        let config: OmaConfig = toml::from_str(toml_str).unwrap();
+
+        // 模型级配置必须落到 ModelConfig，否则会静默丢失（请求仍按 Provider 级发出）
+        let (_, m1) = config.find_model("p1/m1").unwrap();
+        assert_eq!(m1.headers.get("X-Model").map(String::as_str), Some("m"));
+        assert_eq!(m1.body["temperature"], 0.9);
+        assert_eq!(m1.body["top_p"], 0.5);
+
+        // 未配置的模型不受其他模型配置影响
+        let (_, m2) = config.find_model("p1/m2").unwrap();
+        assert!(m2.headers.is_empty());
+        assert_eq!(m2.body, serde_json::json!({}));
     }
 
     #[test]

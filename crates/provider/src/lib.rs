@@ -327,6 +327,12 @@ pub struct ModelEntry {
     /// 支持的输入模态: text / image / video
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_types:       Vec<String>,
+    /// 该模型附加的请求头：同名覆盖 Provider 级配置
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers:           BTreeMap<String, String>,
+    /// 该模型附加的请求体字段：递归深合并，覆盖 Provider 级配置
+    #[serde(default = "empty_json_object", deserialize_with = "deserialize_json_body")]
+    pub body:              serde_json::Value,
 }
 
 fn model_entry_default_name() -> String {
