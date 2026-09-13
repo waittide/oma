@@ -215,14 +215,10 @@ fn build_openai_messages(messages: &[ChatMessage], system_prompt: Option<&str>) 
                 openai_messages.push(obj);
             }
             Role::User => {
-                // 若 User 消息全为 ToolResult，则解构为独立的 role: "tool" 消息
-                let tool_results: Vec<&Block> = msg
-                    .content
-                    .iter()
-                    .filter(|b| matches!(b, Block::ToolResult { .. }))
-                    .collect();
-                if !tool_results.is_empty() && tool_results.len() == msg.content.len() {
-                    for b in tool_results {
+                // 工具回执：role: tool 的 content 只能是字符串，图片无法内联，
+                // 因此把回执发完后另起一条带图的用户消息（紧跟其后，保持配对顺序）
+                if is_tool_result_message(msg) {
+                    for b in &msg.content {
                         if let Block::ToolResult {
                             tool_use_id, content, ..
                         } = b
@@ -234,45 +230,90 @@ fn build_openai_messages(messages: &[ChatMessage], system_prompt: Option<&str>) 
                             }));
                         }
                     }
+                    push_tool_image_message(&mut openai_messages, &tool_result_images(msg), |m, d| {
+                        serde_json::json!({
+                            "type": "image_url",
+                            "image_url": { "url": image_data_url(m, d) }
+                        })
+                    });
+                    continue;
+                }
+
+                // 普通用户消息：带图使用 parts 数组形态，纯文本仍走字符串形态
+                let mut parts = Vec::new();
+                for b in &msg.content {
+                    match b {
+                        Block::Text { text } => parts.push(serde_json::json!({
+                            "type": "text",
+                            "text": text
+                        })),
+                        Block::Image { mime_type, data } => parts.push(serde_json::json!({
+                            "type": "image_url",
+                            "image_url": { "url": image_data_url(mime_type, data) }
+                        })),
+                        _ => {}
+                    }
+                }
+                let has_image = msg.content.iter().any(|b| matches!(b, Block::Image { .. }));
+                if has_image {
+                    openai_messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": parts
+                    }));
                 } else {
-                    // 带图消息使用 parts 数组形态，纯文本仍走字符串形态
-                    let mut parts = Vec::new();
-                    for b in &msg.content {
-                        match b {
-                            Block::Text { text } => parts.push(serde_json::json!({
-                                "type": "text",
-                                "text": text
-                            })),
-                            Block::Image { mime_type, data } => parts.push(serde_json::json!({
-                                "type": "image_url",
-                                "image_url": { "url": image_data_url(mime_type, data) }
-                            })),
-                            _ => {}
-                        }
-                    }
-                    let has_image = msg.content.iter().any(|b| matches!(b, Block::Image { .. }));
-                    if has_image {
-                        openai_messages.push(serde_json::json!({
-                            "role": "user",
-                            "content": parts
-                        }));
-                    } else {
-                        let text = parts
-                            .iter()
-                            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        openai_messages.push(serde_json::json!({
-                            "role": "user",
-                            "content": text
-                        }));
-                    }
+                    let text = parts
+                        .iter()
+                        .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    openai_messages.push(serde_json::json!({
+                        "role": "user",
+                        "content": text
+                    }));
                 }
             }
         }
     }
 
     openai_messages
+}
+
+/// 当前用户消息是否为「纯工具回执」（含紧跟其后的图片）
+fn is_tool_result_message(msg: &ChatMessage) -> bool {
+    msg.role == Role::User
+        && msg
+            .content
+            .first()
+            .is_some_and(|b| matches!(b, Block::ToolResult { .. }))
+}
+
+/// 回执里附带的图片，按出现顺序（一条消息可能对应多个工具调用）
+fn tool_result_images(msg: &ChatMessage) -> Vec<(&str, &str)> {
+    msg.content
+        .iter()
+        .filter_map(|b| match b {
+            Block::Image { mime_type, data } => Some((mime_type.as_str(), data.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 把「工具回执里带回的图片」补成一条紧随其后的用户消息。
+///
+/// 仅用于回执无法携带图片的协议（completion / response / google）：各厂商都允许
+/// 在工具结果之后追加用户消息，图片放这里既不破坏 tool_call↔tool_result 的配对，
+/// 也能让模型在同一轮里看到图。返回 true 表示确实追加了消息。
+fn push_tool_image_message(
+    out: &mut Vec<serde_json::Value>,
+    images: &[(&str, &str)],
+    build_part: impl Fn(&str, &str) -> serde_json::Value,
+) -> bool {
+    if images.is_empty() {
+        return false;
+    }
+    let parts: Vec<serde_json::Value> = images.iter().map(|(m, d)| build_part(m, d)).collect();
+    out.push(serde_json::json!({ "role": "user", "content": parts }));
+    true
 }
 
 /// 图片块 → 可直接投递的 data URL（已是 URL/data URI 时原样透传）
@@ -282,6 +323,28 @@ fn image_data_url(mime_type: &str, data: &str) -> String {
     } else {
         format!("data:{};base64,{}", mime_type, data)
     }
+}
+
+/// 剥掉可能存在的 data URI 前缀：内联图片在不同厂商协议里分别要 base64 或 URL
+fn base64_payload(data: &str) -> &str {
+    data.rsplit_once(",").map_or(
+        data,
+        |(prefix, rest)| {
+            if prefix.starts_with("data:") { rest } else { data }
+        },
+    )
+}
+
+/// Anthropic 图片内容块
+fn anthropic_image_block(mime_type: &str, data: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": mime_type,
+            "data": base64_payload(data)
+        }
+    })
 }
 
 /// 统一 Provider 流式事件
@@ -542,8 +605,9 @@ impl UniversalProvider {
             };
 
             let mut content_blocks = Vec::new();
-            for b in &msg.content {
-                match b {
+            let mut i = 0;
+            while i < msg.content.len() {
+                match &msg.content[i] {
                     Block::Text { text } => {
                         content_blocks.push(serde_json::json!({
                             "type": "text",
@@ -557,14 +621,7 @@ impl UniversalProvider {
                         }));
                     }
                     Block::Image { mime_type, data } => {
-                        content_blocks.push(serde_json::json!({
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": mime_type,
-                                "data": data
-                            }
-                        }));
+                        content_blocks.push(anthropic_image_block(mime_type, data));
                     }
                     Block::ToolUse { id, name, input } => {
                         content_blocks.push(serde_json::json!({
@@ -579,14 +636,29 @@ impl UniversalProvider {
                         content,
                         is_error,
                     } => {
+                        // 紧跟在回执后的图片属于该回执（如 read 读图片）：
+                        // Anthropic 允许 tool_result.content 为内容块数组，
+                        // 图片因此可以留在原位，不必另起一条用户消息。
+                        let mut inner = vec![serde_json::json!({
+                            "type": "text",
+                            "text": content
+                        })];
+                        let mut j = i + 1;
+                        while let Some(Block::Image { mime_type, data }) = msg.content.get(j) {
+                            inner.push(anthropic_image_block(mime_type, data));
+                            j += 1;
+                        }
+                        i = j;
                         content_blocks.push(serde_json::json!({
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
-                            "content": content,
+                            "content": inner,
                             "is_error": is_error
                         }));
+                        continue;
                     }
                 }
+                i += 1;
             }
 
             if !content_blocks.is_empty() {
@@ -855,13 +927,10 @@ impl UniversalProvider {
                     }
                 }
                 Role::User => {
-                    let tool_results: Vec<&Block> = msg
-                        .content
-                        .iter()
-                        .filter(|b| matches!(b, Block::ToolResult { .. }))
-                        .collect();
-                    if !tool_results.is_empty() && tool_results.len() == msg.content.len() {
-                        for b in tool_results {
+                    // 工具回执：function_call_output 的 output 只能是字符串，
+                    // 图片另起一条带 input_image 的用户消息
+                    if is_tool_result_message(msg) {
+                        for b in &msg.content {
                             if let Block::ToolResult {
                                 tool_use_id,
                                 content,
@@ -880,31 +949,38 @@ impl UniversalProvider {
                                 }));
                             }
                         }
-                    } else {
-                        let mut content_parts = Vec::new();
-                        for b in &msg.content {
-                            match b {
-                                Block::Text { text } => content_parts.push(serde_json::json!({
-                                    "type": "input_text",
-                                    "text": text
-                                })),
-                                Block::Image { mime_type, data } => {
-                                    content_parts.push(serde_json::json!({
-                                        "type": "input_image",
-                                        "image_url": image_data_url(mime_type, data)
-                                    }));
-                                }
-                                _ => {}
-                            }
-                        }
-                        if content_parts.is_empty() {
-                            content_parts.push(serde_json::json!({ "type": "input_text", "text": "" }));
-                        }
-                        input.push(serde_json::json!({
-                            "role": "user",
-                            "content": content_parts
-                        }));
+                        push_tool_image_message(&mut input, &tool_result_images(msg), |m, d| {
+                            serde_json::json!({
+                                "type": "input_image",
+                                "image_url": image_data_url(m, d)
+                            })
+                        });
+                        continue;
                     }
+
+                    let mut content_parts = Vec::new();
+                    for b in &msg.content {
+                        match b {
+                            Block::Text { text } => content_parts.push(serde_json::json!({
+                                "type": "input_text",
+                                "text": text
+                            })),
+                            Block::Image { mime_type, data } => {
+                                content_parts.push(serde_json::json!({
+                                    "type": "input_image",
+                                    "image_url": image_data_url(mime_type, data)
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                    if content_parts.is_empty() {
+                        content_parts.push(serde_json::json!({ "type": "input_text", "text": "" }));
+                    }
+                    input.push(serde_json::json!({
+                        "role": "user",
+                        "content": content_parts
+                    }));
                 }
             }
         }
@@ -1684,6 +1760,121 @@ mod tests {
                 },
             ],
             created_at: 0,
+        }
+    }
+
+    /// 工具回执 + 图片：与 read 读图片后写入历史的形态一致
+    fn tool_result_with_image() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage {
+                id:         "a1".into(),
+                parent_id:  None,
+                role:       Role::Assistant,
+                content:    vec![Block::ToolUse {
+                    id:    "call_1".into(),
+                    name:  "read".into(),
+                    input: serde_json::json!({ "path": "shot.png" }),
+                }],
+                created_at: 0,
+            },
+            ChatMessage {
+                id:         "u1".into(),
+                parent_id:  Some("a1".into()),
+                role:       Role::User,
+                content:    vec![
+                    Block::ToolResult {
+                        tool_use_id: "call_1".into(),
+                        content:     "mime: image/png".into(),
+                        is_error:    false,
+                    },
+                    Block::Image {
+                        mime_type: "image/png".into(),
+                        data:      "QUJD".into(),
+                    },
+                ],
+                created_at: 0,
+            },
+        ]
+    }
+
+    /// Anthropic 原生支持：图片留在 tool_result.content 数组里，
+    /// 既不拆消息也不破坏 tool_use ↔ tool_result 配对。
+    #[test]
+    fn test_anthropic_tool_result_carries_image_inline() {
+        let msgs = tool_result_with_image();
+        let block = anthropic_image_block("image/png", "QUJD");
+        assert_eq!(block["source"]["type"], "base64");
+        assert_eq!(block["source"]["media_type"], "image/png");
+        assert_eq!(block["source"]["data"], "QUJD", "raw base64 must not be re-wrapped");
+
+        // data URI 形式输入要剥掉前缀，否则厂商会报非法 base64
+        let stripped = anthropic_image_block("image/png", "data:image/png;base64,QUJD");
+        assert_eq!(stripped["source"]["data"], "QUJD");
+
+        // 回执消息里必须仍然只有一条 user 消息（图片不能另起一条）
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1].content.len(), 2);
+    }
+
+    /// OpenAI 兼容协议：role: tool 只能带字符串，图片改为紧跟其后的用户消息。
+    #[test]
+    fn test_openai_tool_images_become_followup_user_message() {
+        let msgs = build_openai_messages(&tool_result_with_image(), None);
+        assert_eq!(msgs.len(), 3, "tool message plus image follow-up: {msgs:#?}");
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[1]["role"], "tool");
+        assert_eq!(msgs[1]["tool_call_id"], "call_1");
+        assert_eq!(msgs[1]["content"], "mime: image/png");
+        assert_eq!(msgs[2]["role"], "user", "images ride a trailing user message");
+        assert_eq!(msgs[2]["content"][0]["type"], "image_url");
+        assert_eq!(msgs[2]["content"][0]["image_url"]["url"], "data:image/png;base64,QUJD");
+    }
+
+    /// 没有图片回执时不得多出空白的用户消息（避免无谓的上下文污染）。
+    #[test]
+    fn test_openai_tool_result_without_image_stays_compact() {
+        let mut msgs = tool_result_with_image();
+        msgs[1]
+            .content
+            .retain(|b| !matches!(b, Block::Image { .. }));
+        let built = build_openai_messages(&msgs, None);
+        assert_eq!(built.len(), 2, "{built:#?}");
+        assert_eq!(built[1]["role"], "tool");
+    }
+
+    /// Gemini：图片与 functionResponse 落进同一轮 parts（同角色合并），无需拆分。
+    #[test]
+    fn test_gemini_tool_result_image_shares_turn() {
+        let body = build_gemini_body(&tool_result_with_image(), None, &[], &model_for_tests());
+        let contents = body["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 2, "{contents:#?}");
+        let user_parts = contents[1]["parts"].as_array().unwrap();
+        assert!(
+            user_parts
+                .iter()
+                .any(|p| p.get("functionResponse").is_some()),
+            "functionResponse must survive: {user_parts:#?}"
+        );
+        let inline = user_parts
+            .iter()
+            .find_map(|p| p.get("inlineData"))
+            .expect("image must be inlined into the same user turn");
+        assert_eq!(inline["mimeType"], "image/png");
+        assert_eq!(inline["data"], "QUJD");
+    }
+
+    fn model_for_tests() -> ModelConfig {
+        ModelConfig {
+            id:                "m".into(),
+            name:              "m".into(),
+            context_len:       1000,
+            supports_vision:   true,
+            supports_thinking: true,
+            max_output:        None,
+            reasoning_effort:  String::new(),
+            reasoning_map:     BTreeMap::new(),
+            headers:           BTreeMap::new(),
+            body:              serde_json::json!({}),
         }
     }
 
