@@ -767,7 +767,9 @@ pub struct Palette {
   3. Tool 执行过程与参数/Diff 展示、Subagent 嵌套折叠；
   4. 权限审批模态框（AllowOnce, AllowSession, Deny）；
   5. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）；
-  6. 设置面板（外观/主题与调色板、语言、默认参数、Provider、预设、技能、MCP）。
+  6. 设置面板（连接、外观/主题与调色板、语言、默认参数、Provider、预设、技能、MCP）；
+  7. 界面 i18n 支持简体中文 / 繁体中文 / English / 日本語，缺键回退为键名；
+     首次访问时按浏览器语言自动选择（`zh-Hans` / `zh-Hant` / `ja` / 其余为 `en`）。
 
 ---
 

@@ -4,11 +4,13 @@ import { localeTag, settingStore } from '../stores/setting';
 import zhHansMessages from '../locales/zh_hans.json';
 import zhHantMessages from '../locales/zh_hant.json';
 import enMessages from '../locales/en.json';
+import jaMessages from '../locales/ja.json';
 
 const messages: Record<string, unknown> = {
   zh_hans: zhHansMessages,
   zh_hant: zhHantMessages,
   en: enMessages,
+  ja: jaMessages,
 };
 
 // 在命名空间字典内按点路径逐级取值（如 'pagination.total'）。
