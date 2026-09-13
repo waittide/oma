@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import {
   LuBot,
   LuBrain,
@@ -13,6 +13,7 @@ import {
 } from 'vue-icons-plus/lu';
 import type { Block } from '../types';
 import { prettyJson, renderMarkdown } from '../lib/format';
+import { enhanceCodeBlocks } from '../lib/codeCopy';
 import { imageSrc } from '../lib/attachments';
 import { currentSessionId } from '../stores/chat';
 import { useTranslations } from '../composables/i18n';
@@ -165,10 +166,27 @@ function toolSubtitle(it: Item): string {
   const text = String(raw).replace(/\s+/g, ' ').trim();
   return text.length > 64 ? `${text.slice(0, 64)}…` : text;
 }
+
+// ---------- 代码块右上角复制按钮 ----------
+// v-html 注入的 DOM 里挂不了组件，因此在每次渲染后由脚本补按钮（幂等）
+const blocksRoot = ref<HTMLElement | null>(null);
+
+function syncCodeCopy() {
+  enhanceCodeBlocks(blocksRoot.value);
+}
+
+// 内容或流式状态一变就补：新增的代码块要跟上，已处理过的会自行跳过
+watch(
+  () => [props.blocks, props.streaming, manual.value] as const,
+  () => void nextTick(syncCodeCopy),
+  { deep: true },
+);
+
+onMounted(() => void nextTick(syncCodeCopy));
 </script>
 
 <template>
-  <div class="blocks">
+  <div ref="blocksRoot" class="blocks">
     <template v-for="it in items" :key="it.key">
       <div v-if="it.kind === 'text' && it.text" class="md" v-html="renderMarkdown(it.text)" />
       <div v-else-if="it.kind === 'thinking'" class="fold" :class="{ open: isOpen(it) }">
@@ -312,6 +330,47 @@ function toolSubtitle(it: Item): string {
   padding: 5px 10px;
 }
 
+/* 代码块 + 右上角复制按钮：pre 自身仍负责横向滚动，
+   按钮挂在外层包裹上才不会随代码横向滚动而跑掉 */
+.blocks :deep(.code-block) {
+  position: relative;
+}
+.blocks :deep(.code-copy) {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--overlay0);
+  cursor: pointer;
+  /* 默认淡出，鼠标进入代码块才显现，不干扰阅读 */
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    color 0.12s ease,
+    background-color 0.12s ease,
+    border-color 0.12s ease;
+}
+.blocks :deep(.code-block:hover .code-copy),
+.blocks :deep(.code-copy:focus-visible) {
+  opacity: 1;
+}
+.blocks :deep(.code-copy:hover) {
+  background: var(--surface-hover);
+  border-color: var(--line);
+  color: var(--ink);
+}
+.blocks :deep(.code-copy.copied) {
+  opacity: 1;
+  color: var(--success);
+}
+
 /* 折叠行：无边框扁平形态（参照 opencode basic-tool） */
 .fold {
   display: flex;
@@ -369,7 +428,6 @@ function toolSubtitle(it: Item): string {
   flex: 1;
 }
 .caret {
-  margin-left: auto;
   color: var(--overlay0);
   flex-shrink: 0;
   transition: transform 0.15s ease;
@@ -378,6 +436,9 @@ function toolSubtitle(it: Item): string {
   transform: rotate(90deg);
 }
 .tstatus {
+  /* 推到最右，紧贴折叠箭头：无副标题的工具（如 ask）才与有副标题的一致；
+     auto 只能留在这里，若箭头也带 auto 会把空白平分，反而回不去最右 */
+  margin-left: auto;
   flex-shrink: 0;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
