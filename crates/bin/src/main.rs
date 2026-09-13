@@ -140,12 +140,35 @@ async fn run_web(addr: &str, token_opt: Option<&str>, dev: bool, port: u16, open
         println!("🚀 Oma Daemon 未在 {} 运行，正在本地启动后台服务...", addr);
         let addr_clone = addr.to_string();
         let token_clone = token.clone();
-        tokio::spawn(async move {
-            if let Err(e) = start_daemon(&addr_clone, Some(&token_clone), None).await {
-                eprintln!("Daemon error: {}", e);
+        let daemon = tokio::spawn(async move { start_daemon(&addr_clone, Some(&token_clone), None).await });
+
+        // 必须等到 Daemon 真正监听端口：启动失败（配置解析错误、端口占用等）
+        // 时直接冒泡退出，否则前端会把请求代理到死端口刷 ECONNREFUSED，
+        // 把真正的失败原因埋掉
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let ready = client
+                .get(&test_url)
+                .header("Authorization", format!("Bearer {}", token))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+            if ready {
+                break;
             }
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if daemon.is_finished() {
+                return match daemon.await {
+                    Ok(Err(e)) => Err(e),
+                    Ok(Ok(())) => Err(anyhow::anyhow!("Daemon 未监听 {} 便退出", addr)),
+                    Err(e) => Err(anyhow::anyhow!("Daemon 任务异常终止: {e}")),
+                };
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(anyhow::anyhow!("等待 Daemon 就绪超时: {}", addr));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
     let daemon_url = format!("http://{}?token={}", addr, token);
     let web_url = format!("http://localhost:{}?token={}", port, token);
