@@ -192,7 +192,6 @@
     "capabilityVideoGeneration": "動画生成",
     "capabilityAudioUnderstanding": "音声理解",
     "capabilityAudioGeneration": "音声生成",
-    "capabilityEmbedding": "埋め込み生成",
     "requestOverride": "リクエスト上書き",
     "requestOverrideToggle": "ヘッダーとボディを展開",
     "requestOverrideHint": "ヘッダーは 1 行 1 件の KEY=value。ボディは JSON オブジェクトで、組み込みペイロードに再帰的にマージされ同名キーを上書きします。",

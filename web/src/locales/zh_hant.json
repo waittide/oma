@@ -192,7 +192,6 @@
     "capabilityVideoGeneration": "影片生成",
     "capabilityAudioUnderstanding": "音訊理解",
     "capabilityAudioGeneration": "音訊生成",
-    "capabilityEmbedding": "向量生成",
     "requestOverride": "請求覆寫",
     "requestOverrideToggle": "展開請求標頭與請求內容",
     "requestOverrideHint": "請求標頭每行 KEY=value；請求內容為 JSON 物件，欄位會遞迴合併到內建請求內容上，同名覆蓋。",

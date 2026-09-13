@@ -192,7 +192,6 @@
     "capabilityVideoGeneration": "Video Generation",
     "capabilityAudioUnderstanding": "Audio Understanding",
     "capabilityAudioGeneration": "Audio Generation",
-    "capabilityEmbedding": "Embedding",
     "requestOverride": "Request overrides",
     "requestOverrideToggle": "Expand headers and body",
     "requestOverrideHint": "Headers: one KEY=value per line. Body: a JSON object deep-merged into the built-in payload, overriding duplicate keys.",

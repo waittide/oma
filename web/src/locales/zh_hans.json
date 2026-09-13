@@ -192,7 +192,6 @@
     "capabilityVideoGeneration": "视频生成",
     "capabilityAudioUnderstanding": "音频理解",
     "capabilityAudioGeneration": "音频生成",
-    "capabilityEmbedding": "向量生成",
     "requestOverride": "请求覆写",
     "requestOverrideToggle": "展开请求头与请求体",
     "requestOverrideHint": "请求头每行 KEY=value；请求体为 JSON 对象，字段会递归合并到内置请求体上，同名覆盖。",
