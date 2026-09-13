@@ -60,6 +60,29 @@ export const pendingApproval = ref<PermissionRequestedData | null>(null);
 /** 待作答的提问（ask 工具）；null 表示无待办 */
 export const pendingAsk = ref<AskRequestedData | null>(null);
 export const currentLeafId = ref<string | null>(null);
+/**
+ * 视图截断点。
+ *
+ * - `null`：跟随服务端当前叶子（默认）；
+ * - 消息 id：只显示到该消息为止；
+ * - [`EMPTY_VIEW`]：空视图（预览首条消息之前——它前面没有内容）。
+ *
+ * 历史树预览某条分支时设置，不写入服务端（写服务端会让下次普通发送挂错分支）。
+ */
+export const viewLeafId = ref<string | null>(null);
+
+/**
+ * 空视图哨兵。
+ *
+ * 不能用空串：接口层会把假值当成“未指定 leaf_id”，服务端于是回退到已存的当前叶子，
+ * 显示的是最新分支而不是空视图。而服务端对**未知** leaf 会返回空列表，因此用一个
+ * 不可能与真实消息 id（UUID）碰撞的值来表达“没有内容”。
+ */
+const EMPTY_VIEW = '__empty_view__';
+/** 输入框草稿；放在 store 里，历史树切换对话时需回填 */
+export const draft = ref('');
+/** 非空表示下一条发送将从该消息处分叉重跑（编辑重发） */
+export const forkFrom = ref<string | null>(null);
 /** 本轮已结束、正在回读持久化消息：期间保留流式缓冲，避免内容先消失再出现造成跳动 */
 export const finalizing = ref(false);
 
@@ -112,12 +135,12 @@ async function reload() {
   if (!sessionId) return;
   try {
     const [linear, all] = await Promise.all([
-      api.messages(sessionId, currentLeafId.value),
+      api.messages(sessionId, viewLeafId.value === EMPTY_VIEW ? EMPTY_VIEW : (viewLeafId.value ?? currentLeafId.value)),
       api.messageTree(sessionId),
     ]);
     messages.value = linear;
     tree.value = all;
-    if (currentLeafId.value === null && linear.length > 0) {
+    if (viewLeafId.value === null && currentLeafId.value === null && linear.length > 0) {
       currentLeafId.value = linear[linear.length - 1]!.id;
     }
   } catch (e) {
@@ -380,6 +403,9 @@ export function reset() {
   running.value = false;
   finalizing.value = false;
   currentLeafId.value = null;
+  viewLeafId.value = null;
+  draft.value = '';
+  forkFrom.value = null;
   lastUsage.value = null;
   contextUsage.value = null;
   queued.value = 0;
@@ -403,6 +429,8 @@ function close() {
 export function submit(content: string, attachments: string[] = []): boolean {
   if (!content.trim() && attachments.length === 0) return false;
   if (!command({ type: 'user_input', data: { content, attachments } })) return false;
+  // 发送即回到最新分支：预览态的截断点不应影响新消息的落位
+  viewLeafId.value = null;
   const blocks: Block[] = [];
   if (content) blocks.push({ type: 'text', text: content });
   for (const ref of attachments) blocks.push({ type: 'image', mime_type: '', data: ref });
@@ -473,16 +501,51 @@ export async function deleteMessage(messageId: string) {
   }
 }
 
-export function switchBranch(leafId: string) {
-  command({ type: 'switch_branch', data: { leaf_message_id: leafId } });
+/**
+ * 只在本端预览到某条消息（不告诉服务端）。
+ *
+ * `leafId` 为 null 表示空视图（如预览首条用户消息时，它之前没有内容）。
+ * 服务端当前叶子保持不动，因此下次发送时 `append_message` 会按用户消息的 parent
+ * 重新落位；这也是“在某个中间点分叉后继续对话”能正常追加新分支的原因。
+ */
+export function showAt(leafId: string | null) {
+  viewLeafId.value = leafId ?? EMPTY_VIEW;
+  void reload();
+}
+
+/** 回到服务端当前叶子，退出预览状态。 */
+export function followCurrent() {
+  if (viewLeafId.value === null) return;
+  viewLeafId.value = null;
+  void reload();
+}
+
+/** 用户消息之前的截断点：它的父节点；无父节点（首条）时返回 null 空视图。 */
+export function truncatePointFor(messageId: string): string | null {
+  const msg = messages.value.find((m) => m.id === messageId) ?? tree.value.find((m) => m.id === messageId);
+  return msg?.parent_id ?? null;
+}
+
+/**
+ * 进入编辑重发（分叉）模式：下一条发送从 `messageId` 处分叉。
+ *
+ * `messageId` 为 null 表示无处可分叉（例如被点的是会话首条用户消息，它前面没有节点），
+ * 此时只保留草稿、退出分叉模式。
+ * `content` 省略时保留当前草稿（点助手回复的场景）。
+ */
+export function startForkFrom(messageId: string | null, content?: string) {
+  forkFrom.value = messageId;
+  if (content !== undefined) draft.value = content;
 }
 
 /** 从某条消息处分叉重跑（编辑重发）。返回是否已送达服务端。 */
 export function forkAndRun(parentMessageId: string, newContent: string): boolean {
-  return command({
+  const sent = command({
     type: 'fork_and_run',
     data: { parent_message_id: parentMessageId, new_content: newContent },
   });
+  if (sent) viewLeafId.value = null;
+  return sent;
 }
 
 /** 全树 tool_use_id → tool_result 映射：跨消息配对，重载后工具卡片仍为完成态。 */

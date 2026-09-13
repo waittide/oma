@@ -143,16 +143,43 @@ function snippet(m: ChatMessage): string {
   return t('emptySnippet');
 }
 
+/** 回填输入框用的原文：保留换行，只去首尾空白 */
+function snippetFull(m: ChatMessage): string {
+  const text = m.content.find((b) => b.type === 'text');
+  return text && text.type === 'text' ? text.text.trim() : '';
+}
+
 /** 轮次进行中禁止切换分支，避免撕裂运行状态 */
-function pick(m: ChatMessage) {
-  if (chat.running.value) return;
-  chat.switchBranch(m.id);
+const busy = computed(() => chat.running.value);
+
+/**
+ * 点击节点切换当前对话。
+ *
+ * - 点用户消息 U：把 U 的文本放回输入框、视图截断到 **U 之前**（即 U 的父节点），
+ *   再发送就是重发这条消息 —— 等价于气泡上的「编辑重发」；
+ * - 点助手回复 A：视图截断到 A，输入框内容保持不动，分叉目标指向 A，
+ *   再输入发送就从 A 处长出新分支。
+ *
+ * 两种都不写入服务端当前叶子：服务端已按 parent 自行落位，提前写入反而会
+ * 把一条普通发送挂到旧分支上。
+ */
+function pick(r: Row) {
+  if (busy.value) return;
+  if (r.msg.role === 'user') {
+    // 分叉目标是该消息的父节点：新消息才会与它成为兄弟分支
+    const parentId = chat.truncatePointFor(r.msg.id);
+    chat.showAt(parentId);
+    chat.startForkFrom(parentId, snippetFull(r.msg));
+  } else {
+    chat.showAt(r.msg.id);
+    chat.startForkFrom(r.msg.id);
+  }
   emit('close');
 }
 </script>
 
 <template>
-  <OModal :open="props.open" :title="t('title')" width="560px" @close="emit('close')">
+  <OModal :open="props.open" :title="t('title')" width="760px" @close="emit('close')">
     <div class="tree">
       <button
         v-for="r in rows"
@@ -161,8 +188,9 @@ function pick(m: ChatMessage) {
         class="node"
         :class="{ selected: r.leaf, off: !r.active }"
         :style="{ paddingLeft: `${CURSOR_CHARS + r.indent * LEVEL_CHARS}ch` }"
-        :disabled="chat.running.value"
-        @click="pick(r.msg)"
+        :disabled="busy"
+        :title="snippet(r.msg)"
+        @click="pick(r)"
       >
         <!-- 光标槽 -->
         <span v-if="r.leaf" class="cursor"><LuChevronRight :size="12" /></span>
@@ -191,8 +219,9 @@ function pick(m: ChatMessage) {
             />
           </template>
         </template>
-        <!-- 激活分支圆点：固定 2ch 槽位，保证后续文字落在字符网格上 -->
-        <span v-if="r.active" class="bullet"><i /></span>
+        <!-- 激活分支圆点：无论是否激活都占活 2ch 槽位，
+             否则未选中分支会比选中分支少缩进一个圆点的宽度，两者无法左对齐 -->
+        <span class="bullet"><i v-if="r.active" /></span>
         <span class="role" :class="r.msg.role">{{ r.msg.role }}:&nbsp;</span>
         <span class="text">{{ snippet(r.msg) }}</span>
       </button>
@@ -247,7 +276,7 @@ function pick(m: ChatMessage) {
   align-items: center;
   color: var(--accent);
 }
-/* 圆点槽：固定 2ch，避免 ● 字形回退导致网格偏移 */
+/* 圆点槽：固定 2ch，避免 ● 字形回退导致网格偏移；未激活时留空占位 */
 .bullet {
   display: inline-flex;
   align-items: center;

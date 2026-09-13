@@ -52,6 +52,8 @@
     "editResendHint": "Edit and fork a new branch from here",
     "editResendBanner": "Edit & resend: will fork a new branch from the previous message",
     "historyTree": "History tree",
+    "previewBanner": "Viewing a historical branch",
+    "backToLatest": "Back to latest",
     "messageRail": "Message navigation",
     "placeholder": "Type a message. Enter to send, Shift+Enter for newline",
     "placeholderNoSession": "Select or create a session first",
