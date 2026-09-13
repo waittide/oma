@@ -35,6 +35,8 @@ const renameValue = ref('');
 const confirmDelete = ref<string | null>(null);
 /** 待清空的工作区分组（null 表示未打开确认框） */
 const clearTarget = ref<WorkspaceGroup | null>(null);
+/** 待删除的空工作区分组（null 表示未打开确认框） */
+const removeTarget = ref<WorkspaceGroup | null>(null);
 const clearing = ref(false);
 
 onMounted(() => store.refresh());
@@ -102,6 +104,13 @@ async function clearSessions() {
   }
 }
 
+/** 删除空工作区：仅移除本地分组记录（此时已无会话可删）。 */
+function removeWorkspace() {
+  const target = removeTarget.value;
+  if (target) store.forgetWorkspace(target.workspace);
+  removeTarget.value = null;
+}
+
 const deleteTarget = computed(
   () => store.sessions.value.find((s) => s.session_id === confirmDelete.value) ?? null,
 );
@@ -145,20 +154,23 @@ const deleteTarget = computed(
                 <LuPlus :size="14" />
               </button>
             </OTooltip>
-            <OTooltip :label="t('clearWorkspace')" align="end">
+            <!-- 有会话时清空会话；已空的工作区则直接删除该工作区分组 -->
+            <OTooltip :label="g.items.length > 0 ? t('clearWorkspace') : t('deleteWorkspace')" align="end">
               <button
                 type="button"
                 class="gh-add danger"
-                :aria-label="t('clearWorkspace')"
-                @click="clearTarget = g"
+                :aria-label="g.items.length > 0 ? t('clearWorkspace') : t('deleteWorkspace')"
+                @click="g.items.length > 0 ? (clearTarget = g) : (removeTarget = g)"
               >
-                <LuEraser :size="14" />
+                <LuEraser v-if="g.items.length > 0" :size="14" />
+                <LuTrash2 v-else :size="14" />
               </button>
             </OTooltip>
           </div>
         </div>
 
         <div v-if="!store.collapsed.value[g.workspace]" class="group-body">
+          <div v-if="g.items.length === 0" class="group-empty">{{ t('noSessions') }}</div>
           <div
             v-for="s in g.items"
             :key="s.session_id"
@@ -244,6 +256,21 @@ const deleteTarget = computed(
         <OButton variant="danger" :loading="clearing" @click="clearSessions">
           {{ tc('delete') }}
         </OButton>
+      </template>
+    </OModal>
+
+    <OModal
+      :open="removeTarget !== null"
+      :title="t('deleteWorkspace')"
+      width="380px"
+      @close="removeTarget = null"
+    >
+      <p class="confirm-text">
+        {{ t('deleteWorkspaceConfirm', { label: removeTarget?.label ?? '' }) }}
+      </p>
+      <template #footer>
+        <OButton variant="ghost" @click="removeTarget = null">{{ tc('cancel') }}</OButton>
+        <OButton variant="danger" @click="removeWorkspace">{{ tc('delete') }}</OButton>
       </template>
     </OModal>
 
@@ -398,6 +425,13 @@ const deleteTarget = computed(
 }
 .group-body {
   padding: 1px 0 4px;
+}
+/* 已无会话但仍保留的工作区：占位提示，避免分组看起来像加载失败 */
+.group-empty {
+  padding: 6px 8px 6px 26px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--overlay0);
 }
 .session {
   display: flex;

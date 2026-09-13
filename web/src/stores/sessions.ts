@@ -5,6 +5,8 @@ import { tr } from '../composables/i18n';
 import type { SessionRecord } from '../types';
 
 const COLLAPSED_KEY = 'oma.sidebar.collapsed';
+/** 已发现过的工作区路径：会话全部删除后分组仍保留，供新建/删除整个工作区 */
+const WORKSPACES_KEY = 'oma.workspaces';
 
 /** 会话列表状态：按工作区路径分组、折叠持久化。 */
 export const sessions = ref<SessionRecord[]>([]);
@@ -27,6 +29,37 @@ export const collapsed = ref<Record<string, boolean>>(
   })(),
 );
 
+/** 已知工作区集合（含已无会话者）；只在本地记录，不占服务端 schema。 */
+export const knownWorkspaces = ref<string[]>(
+  (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(WORKSPACES_KEY) ?? '[]') as unknown;
+      return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : [];
+    } catch {
+      return [];
+    }
+  })(),
+);
+
+function persistWorkspaces() {
+  localStorage.setItem(WORKSPACES_KEY, JSON.stringify(knownWorkspaces.value));
+}
+
+/** 记住某个工作区：新建会话（含服务端返回的已有会话）时调用。 */
+export function rememberWorkspace(workspace: string) {
+  if (!workspace || knownWorkspaces.value.includes(workspace)) return;
+  knownWorkspaces.value.push(workspace);
+  persistWorkspaces();
+}
+
+/** 彻底移除工作区记录：仅在用户显式删除工作区时调用。 */
+export function forgetWorkspace(workspace: string) {
+  knownWorkspaces.value = knownWorkspaces.value.filter((w) => w !== workspace);
+  persistWorkspaces();
+  delete collapsed.value[workspace];
+  persistCollapsed();
+}
+
 function persistCollapsed() {
   localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed.value));
 }
@@ -42,7 +75,10 @@ export interface WorkspaceGroup {
   items: SessionRecord[];
 }
 
-/** 按 workspace 分组；组按最近活跃时间排序，组内按 updated_at 倒序（服务端已排序）。 */
+/**
+ * 分组工作区：会话按 workspace 聚合，再并入「已知但已无会话」的工作区。
+ * 后者没有条目可排序，追加在末尾，保证空分组不会因排序消失。
+ */
 export const groups = computed<WorkspaceGroup[]>(() => {
   const map = new Map<string, SessionRecord[]>();
   for (const s of sessions.value) {
@@ -50,17 +86,20 @@ export const groups = computed<WorkspaceGroup[]>(() => {
     if (list) list.push(s);
     else map.set(s.workspace, [s]);
   }
-  return [...map.entries()]
-    .map(([workspace, items]) => ({
-      workspace,
-      label: basename(workspace),
-      items,
-    }))
-    .sort((a, b) => {
-      const ta = a.items[0]?.updated_at ?? 0;
-      const tb = b.items[0]?.updated_at ?? 0;
-      return tb - ta;
-    });
+  const groupList = [...map.entries()].map(([workspace, items]) => ({
+    workspace,
+    label: basename(workspace),
+    items,
+  }));
+  groupList.sort((a, b) => {
+    const ta = a.items[0]?.updated_at ?? 0;
+    const tb = b.items[0]?.updated_at ?? 0;
+    return tb - ta;
+  });
+  for (const workspace of knownWorkspaces.value) {
+    if (!map.has(workspace)) groupList.push({ workspace, label: basename(workspace), items: [] });
+  }
+  return groupList;
 });
 
 export function basename(p: string): string {
@@ -77,6 +116,8 @@ export async function refresh() {
   loading.value = true;
   try {
     sessions.value = await api.listSessions();
+    // 服务端存在的会话所属工作区也计入已知集合：换浏览器后仍能看到其分组
+    sessions.value.forEach((s) => rememberWorkspace(s.workspace));
   } catch (e) {
     toast.error(tr('sessions.loadListFailed', { message: (e as Error).message }));
   } finally {
@@ -88,6 +129,7 @@ export async function create(workspace: string, title: string): Promise<SessionR
   try {
     const { session } = await api.createSession({ workspace, title });
     sessions.value.unshift(session);
+    rememberWorkspace(workspace);
     collapsed.value[workspace] = false;
     persistCollapsed();
     toast.success(tr('sessions.created'));

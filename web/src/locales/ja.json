@@ -21,6 +21,9 @@
     "clearWorkspace": "このワークスペースのセッションを消去",
     "clearWorkspaceTitle": "ワークスペースのセッションを消去",
     "clearConfirm": "「{label}」の {count} 件のセッションを削除しますか？元に戻せません。",
+    "deleteWorkspace": "ワークスペースを削除",
+    "deleteWorkspaceConfirm": "ワークスペース「{label}」を削除しますか？一覧からグループを外すだけで、ディスク上のファイルは削除されません。",
+    "noSessions": "このワークスペースにセッションはありません",
     "untitled": "無題",
     "titleAutoPlaceholder": "空欄にするとモデルが自動で命名します"
   },

@@ -21,6 +21,9 @@
     "clearWorkspace": "清空该工作区的会话",
     "clearWorkspaceTitle": "清空工作区会话",
     "clearConfirm": "确定删除「{label}」下的 {count} 个会话？该操作不可撤销。",
+    "deleteWorkspace": "删除工作区",
+    "deleteWorkspaceConfirm": "确定删除工作区「{label}」？仅从列表中移除该分组，不会删除磁盘上的任何文件。",
+    "noSessions": "该工作区暂无会话",
     "untitled": "未命名",
     "titleAutoPlaceholder": "留空则由模型自动命名"
   },
