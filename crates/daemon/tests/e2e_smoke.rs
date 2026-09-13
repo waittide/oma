@@ -34,6 +34,8 @@ struct Observed {
     tool_contents:    Vec<String>,
     /// 请求体里下发的 reasoning_effort（未下发为 None）
     reasoning_effort: Option<String>,
+    /// 是否为自动命名请求（system prompt 含命名指令）
+    is_naming:        bool,
 }
 
 #[derive(Clone, Default)]
@@ -73,21 +75,7 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
         .map(|m| m["content"].as_str().unwrap_or("").to_string())
         .collect();
 
-    state.observed.lock().push(Observed {
-        tool_names: tool_names.clone(),
-        has_image,
-        role_sequence: role_sequence.clone(),
-        tool_contents,
-        reasoning_effort: req["reasoning_effort"].as_str().map(str::to_string),
-    });
-
-    // 每次响应都上报用量：agent loop 会据此回填权威上下文锚点
-    let usage = format!(
-        r#"{{"choices":[{{"delta":{{}}}}],"usage":{{"prompt_tokens":{},"completion_tokens":5}}}}"#,
-        messages.len() * 100 + 50
-    );
-
-    // 命名请求：system prompt 标识为命名任务时，直接回一个短标题
+    // 命名请求：system prompt 标识为命名任务（放在观测前，供断言区分）
     let is_naming = req["messages"]
         .as_array()
         .map(|arr| {
@@ -99,6 +87,22 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
             })
         })
         .unwrap_or(false);
+
+    state.observed.lock().push(Observed {
+        tool_names: tool_names.clone(),
+        has_image,
+        role_sequence: role_sequence.clone(),
+        tool_contents,
+        reasoning_effort: req["reasoning_effort"].as_str().map(str::to_string),
+        is_naming,
+    });
+
+    // 每次响应都上报用量：agent loop 会据此回填权威上下文锚点
+    let usage = format!(
+        r#"{{"choices":[{{"delta":{{}}}}],"usage":{{"prompt_tokens":{},"completion_tokens":5}}}}"#,
+        messages.len() * 100 + 50
+    );
+
     if is_naming {
         let mut payload = String::new();
         payload.push_str(&sse(r#"{"choices":[{"delta":{"content":"数据库查询优化"}}]}"#));
@@ -919,6 +923,55 @@ async fn test_session_autonamed_after_first_turn() -> Result<()> {
         .find(|s| s.session_id == session.session_id)
         .expect("session present");
     assert_eq!(rec.title, "数据库查询优化");
+    Ok(())
+}
+
+/// 自动命名在模型首次回复后立即触发：不等带工具的整轮结束。
+#[tokio::test]
+async fn test_session_autonamed_before_turn_finishes() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, None).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "namer-early".into(),
+    })
+    .await?;
+
+    // 该输入会走「主 Agent 调 task → 子 Agent 读文件 → 主 Agent 收尾」的多轮链路，
+    // 若命名仍挂在轮次收尾，session_renamed 必然排在 turn_finished 之后
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "帮我看看 note.txt".into(),
+            attachments: vec![],
+        })
+        .await?;
+
+    let events = drain_for_event(&mut client, Duration::from_secs(30), |e| {
+        matches!(e, AgentEvent::SessionRenamed { .. })
+    })
+    .await?;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::SessionRenamed { .. })),
+        "autoname must broadcast session_renamed: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::TurnFinished { subagent_id: None, .. })),
+        "autoname must fire before the whole turn finishes: {events:?}"
+    );
+    assert!(
+        h.mock.observed.lock().iter().any(|o| o.is_naming),
+        "autoname must issue its own provider request"
+    );
     Ok(())
 }
 

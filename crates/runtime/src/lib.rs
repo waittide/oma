@@ -459,6 +459,8 @@ pub struct SessionRoom {
     pub circuit_breaker: Mutex<CircuitBreaker>,
     /// 轮次占用权：由 CAS 抢占，确保同一房间任意时刻至多一个执行中的轮次
     pub is_running:      AtomicBool,
+    /// 本进程内是否已发起过自动命名：标题一旦生成就不再重复请求模型
+    named:               AtomicBool,
 }
 
 impl SessionRoom {
@@ -494,6 +496,7 @@ impl SessionRoom {
             cancel_token: RwLock::new(CancellationToken::new()),
             circuit_breaker: Mutex::new(CircuitBreaker::new()),
             is_running: AtomicBool::new(false),
+            named: AtomicBool::new(false),
         })
     }
 
@@ -1026,6 +1029,18 @@ impl SessionRoom {
         let cancel_token = self.cancel_token.read().clone();
         let mut turn_usage = TokenUsage::default();
 
+        // 标题为空说明本会话从未成功命名过，允许本轮在首次回复后进行命名；
+        // 标题非空（用户已填或此前已生成）则本次轮次内不再浪费一次模型请求
+        self.named.store(
+            self.storage
+                .get_session(&self.session_id)
+                .await
+                .ok()
+                .flatten()
+                .is_none_or(|r| !r.title.trim().is_empty()),
+            Ordering::SeqCst,
+        );
+
         let outcome = self
             .agent_loop(&mut history, &cancel_token, &mut turn_usage)
             .await;
@@ -1048,6 +1063,8 @@ impl SessionRoom {
         cancel_token: &CancellationToken,
         turn_usage: &mut TokenUsage,
     ) -> TurnOutcome {
+        // 首次模型回复落库后即可命名：不等整轮结束，界面侧栏标题尽早出现
+        let mut naming_attempted = self.named.load(Ordering::SeqCst);
         // 最近一次请求的权威输入 token 锚点：让后续轮次的预算检查以厂商上报的
         // 真实占用为基准，只对新增消息做启发式增量（见 TokenAnchor）。
         let mut anchor: Option<TokenAnchor> = None;
@@ -1245,6 +1262,14 @@ impl SessionRoom {
                 }
                 history.push(assistant_msg);
                 assistant_msg_id = Some(msg_id);
+
+                // 首次回复已完成：立刻后台命名，不再等整轮（含工具调用）结束
+                if !naming_attempted {
+                    naming_attempted = true;
+                    let room = self.clone();
+                    let snapshot = history.clone();
+                    tokio::spawn(async move { room.maybe_autoname(snapshot).await });
+                }
             }
 
             if !run_tools {
@@ -1360,29 +1385,12 @@ impl SessionRoom {
         }
     }
 
-    /// 轮次结束后自动命名：标题为空时用小模型根据首轮对话生成一次。
+    /// 首次模型回复落库后自动命名：标题为空时用小模型生成一次。
     ///
+    /// 传入的 `messages` 是本轮已有的线性历史快照，避免再全量回读存储。
     /// 用户在创建时已填写或自己重命名过则跳过（由 `set_title_if_empty` 原子校验）。
     /// 任何失败都只记录不影响轮次结果。
-    async fn maybe_autoname(self: &Arc<Self>) {
-        let Some(record) = self
-            .storage
-            .get_session(&self.session_id)
-            .await
-            .ok()
-            .flatten()
-        else {
-            return;
-        };
-        if !record.title.trim().is_empty() {
-            return;
-        }
-
-        let messages = self
-            .storage
-            .get_linear_messages(&self.session_id, None)
-            .await
-            .unwrap_or_default();
+    async fn maybe_autoname(self: &Arc<Self>, messages: Vec<ChatMessage>) {
         let Some(prompt) = build_naming_prompt(&messages) else {
             return;
         };
@@ -1451,19 +1459,8 @@ impl SessionRoom {
             subagent_id: None,
         });
 
-        // 空标题的会话在首轮结束后自动命名：后台执行，不阻塞轮次收尾与队列入队
-        if self
-            .storage
-            .get_session(&self.session_id)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|r| r.title.trim().is_empty())
-        {
-            let room = self.clone();
-            tokio::spawn(async move { room.maybe_autoname().await });
-        }
-
+        // 自动命名不在此处触发：模型首次回复落库时已后台发起（见 agent_loop），
+        // 单靠工具调用、没有文本产出的轮次自然也没有可命名的对话内容
         self.pump_queue().await;
     }
 
