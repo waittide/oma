@@ -12,7 +12,7 @@ use axum::{
         DefaultBodyLimit, Multipart, Path as AxumPath, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Json, Response},
     routing::{delete, get, post, put},
 };
@@ -27,7 +27,10 @@ use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachme
 use oma_tool::{RunnerSlot, ToolRegistry, resolve_path};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tower_http::{compression::CompressionLayer, cors::CorsLayer};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::{Any, CorsLayer},
+};
 
 /// 附件上传体积上限（单请求）
 const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
@@ -1461,7 +1464,7 @@ use tokio::sync::broadcast;
 
 /// 组装 Axum 路由
 pub fn create_router(state: DaemonState) -> Router {
-    let mut router = Router::new()
+    let router = Router::new()
         .route("/api/server/status", get(handle_server_status))
         .route("/api/sessions", get(handle_list_sessions).post(handle_create_session))
         .route(
@@ -1504,62 +1507,29 @@ pub fn create_router(state: DaemonState) -> Router {
         )
         .route("/ws", get(handle_ws_upgrade));
 
-    let dist_path = Path::new("web/dist");
-    if dist_path.exists() {
-        let serve_dir = tower_http::services::ServeDir::new(dist_path)
-            .fallback(tower_http::services::ServeFile::new(dist_path.join("index.html")));
-        router = router.fallback_service(serve_dir);
-    }
-
-    // 同源前端由本服务直出，跨源仅放行本地开发端口，避免任意站点携带 token 调用
+    // Daemon 保持 Headless：不内置也不直出任何前端资产，
+    // 界面统一由 `oma web` 提供（见 crates/bin）。
     router
-        .layer(CorsLayer::new())
-        .layer(axum::middleware::from_fn(dev_cors))
+        //
+        // 跨源开放：前端与 Daemon 是分离的两个服务，浏览器会直接跨源发请求。
+        // token 是唯一凭证且不走 cookie，因此任意站点既拿不到凭证也无法冒用。
+        //
+        // 不能图省事用 permissive()：它会把 `Access-Control-Allow-Headers` 写成 `*`，
+        // 而 Authorization 属于规范里的 “CORS non-wildcard request-header name”，
+        // 通配符不覆盖它，浏览器会直接拒绝预检。必须显式列出。
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+                // 预检结果缓存 10 分钟：上面两个头都是非简单头，每个请求都会先发
+                // OPTIONS，不缓存会让跨源下的请求数翻倍
+                .max_age(std::time::Duration::from_secs(600)),
+        )
         // 消息历史可达数 MB，压缩后可降至 1/4 左右，远端/公网访问收益明显。
         // 取默认级别：Fastest 压缩率偏低，Best CPU 代价过高，默认级为折中
         .layer(CompressionLayer::new())
         .with_state(state)
-}
-
-/// 开发期 CORS：仅放行本机来源（localhost / 127.0.0.1 任意端口）
-async fn dev_cors(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    let origin = req
-        .headers()
-        .get(axum::http::header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let mut resp = next.run(req).await;
-
-    if let Some(origin) = origin.filter(|o| is_local_origin(o)) {
-        let headers = resp.headers_mut();
-        headers.insert(
-            axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
-            origin
-                .parse()
-                .unwrap_or_else(|_| axum::http::HeaderValue::from_static("null")),
-        );
-        headers.insert(
-            axum::http::header::ACCESS_CONTROL_ALLOW_METHODS,
-            axum::http::HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE, OPTIONS"),
-        );
-        headers.insert(
-            axum::http::header::ACCESS_CONTROL_ALLOW_HEADERS,
-            axum::http::HeaderValue::from_static("authorization, content-type"),
-        );
-    }
-    resp
-}
-
-fn is_local_origin(origin: &str) -> bool {
-    let Some(rest) = origin
-        .strip_prefix("http://")
-        .or_else(|| origin.strip_prefix("https://"))
-    else {
-        return false;
-    };
-    let host = rest.split('/').next().unwrap_or("");
-    let host = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
 }
 
 #[cfg(test)]
@@ -2147,14 +2117,43 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn test_origin_allowlist() {
-        assert!(is_local_origin("http://localhost:5173"));
-        assert!(is_local_origin("http://127.0.0.1:5173"));
-        assert!(is_local_origin("https://localhost"));
-        assert!(!is_local_origin("https://evil.example.com"));
-        assert!(!is_local_origin("http://localhost.evil.com"));
-        assert!(!is_local_origin("null"));
+    #[tokio::test]
+    async fn test_cors_allows_any_origin() -> Result<()> {
+        // 前端与 Daemon 是分离服务，浏览器从任意前端地址跨源请求都应被允许；
+        // 凭证仅靠 Authorization 头，预检必须放行它，否则浏览器不会发出真实请求。
+        let tmp = tempfile::tempdir()?;
+        let state = test_state(tmp.path()).await?;
+        let base = spawn_app(state).await?;
+        let http = reqwest::Client::new();
+
+        for origin in ["http://localhost:5173", "https://web.example.com"] {
+            let resp = http
+                .request(reqwest::Method::OPTIONS, format!("{}/api/server/status", base))
+                .header("Origin", origin)
+                .header("Access-Control-Request-Method", "GET")
+                .header("Access-Control-Request-Headers", "authorization")
+                .send()
+                .await?;
+            assert!(resp.status().is_success(), "preflight failed for {origin}");
+            let headers = resp.headers();
+            assert_eq!(
+                headers
+                    .get("access-control-allow-origin")
+                    .and_then(|v| v.to_str().ok()),
+                Some("*"),
+                "preflight must allow any origin ({origin})"
+            );
+            let allow_headers = headers
+                .get("access-control-allow-headers")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            assert!(
+                allow_headers.contains("authorization"),
+                "preflight must allow the Authorization header ({origin})"
+            );
+        }
+        Ok(())
     }
 
     #[test]
