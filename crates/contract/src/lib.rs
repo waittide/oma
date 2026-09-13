@@ -733,11 +733,25 @@ pub enum ServerMessage {
     },
 }
 
+/// 工具产出的图片附件。
+///
+/// 工具输出默认只有文本；能“看见”图片的工具（如 `read` 读图片文件）把图片
+/// 另附在这里，由上层决定是内联给模型还是降级成元数据文本。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolImage {
+    pub mime_type: String,
+    /// 图片字节的 base64 编码（不含 data URI 前缀）
+    pub data:      String,
+}
+
 /// 工具输出结果统一结构
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolOutput {
     pub output:   String,
     pub is_error: bool,
+    /// 随工具输出一并回到模型的图片；默认空
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images:   Vec<ToolImage>,
 }
 
 impl ToolOutput {
@@ -745,6 +759,7 @@ impl ToolOutput {
         Self {
             output:   output.into(),
             is_error: false,
+            images:   Vec::new(),
         }
     }
 
@@ -752,6 +767,16 @@ impl ToolOutput {
         Self {
             output:   output.into(),
             is_error: true,
+            images:   Vec::new(),
+        }
+    }
+
+    /// 附带图片的成功输出（文本作为图片说明一并发给模型）。
+    pub fn success_with_images(output: impl Into<String>, images: Vec<ToolImage>) -> Self {
+        Self {
+            output: output.into(),
+            is_error: false,
+            images,
         }
     }
 }
