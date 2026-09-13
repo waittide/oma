@@ -151,7 +151,7 @@ watch(open, async (v) => {
 }
 .trigger {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   width: 100%;
@@ -167,6 +167,7 @@ watch(open, async (v) => {
   text-align: left;
   transition: border-color 0.15s ease;
 }
+/* 无选中项时触发器仅一行高度，居中后提示文字自然垂直居中 */
 .trigger:hover:not(:disabled) {
   border-color: var(--overlay0);
 }
@@ -176,11 +177,13 @@ watch(open, async (v) => {
 }
 .placeholder {
   color: var(--overlay0);
+  line-height: 1.4;
 }
-/* 标签随宽度换行，触发器随之增高 */
+/* 标签随宽度换行，触发器随之增高；行内元素在交叉轴居中 */
 .chips {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
   min-width: 0;
 }
@@ -206,7 +209,6 @@ watch(open, async (v) => {
 }
 .chevron {
   flex-shrink: 0;
-  margin-top: 4px;
   color: var(--text-tertiary);
   transition: transform 0.15s ease;
 }

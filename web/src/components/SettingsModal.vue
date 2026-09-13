@@ -2146,6 +2146,7 @@ function pickLocale(v: Locale) {
 .srow-ctl {
   flex-shrink: 0;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
 }
 .srow-ctl.wide {
