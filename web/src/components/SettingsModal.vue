@@ -32,7 +32,20 @@ import { agents } from '../stores/chat';
 import { baseUrl, normalizeBaseUrl, setConnection, token } from '../stores/connection';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
 import { activeSession, refresh as refreshSessions } from '../stores/sessions';
-import type { AgentFile, AgentSummary, ToolInfo, McpServerConfig, ModelInfo, OmaConfig, PaletteMode, ProviderConfig, SkillFile, Theme } from '../types';
+import { MODEL_CAPABILITIES } from '../types';
+import type {
+  AgentFile,
+  AgentSummary,
+  ToolInfo,
+  McpServerConfig,
+  ModelCapability,
+  ModelInfo,
+  OmaConfig,
+  PaletteMode,
+  ProviderConfig,
+  SkillFile,
+  Theme,
+} from '../types';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ open: boolean; online?: boolean }>();
@@ -835,9 +848,7 @@ interface ModelDraft {
   max_output: string;
   /** 推理等级 → 厂商自定义字符串；空串表示按等级名下发 */
   reasoning_map: Record<string, string>;
-  supports_thinking: boolean;
-  supports_vision: boolean;
-  input_types: string[];
+  capabilities: ModelCapability[];
   /** 模型级请求头（每行 KEY=value） */
   headersText: string;
   /** 模型级请求体覆写（JSON 文本） */
@@ -900,9 +911,7 @@ function toDraft(origId: string, p: ProviderConfig): ProviderDraft {
       context_len: String(m.context_len),
       max_output: m.max_output === undefined ? '' : String(m.max_output),
       reasoning_map: { ...(m.reasoning_map ?? {}) },
-      supports_thinking: m.supports_thinking,
-      supports_vision: m.supports_vision,
-      input_types: [...(m.input_types ?? [])],
+      capabilities: [...(m.capabilities ?? [])],
       headersText: formatKvText(m.headers),
       bodyText: formatJsonText(m.body),
       reasoningOpen: false,
@@ -1022,35 +1031,10 @@ function setApiKey(d: ProviderDraft, value: string) {
   d.keyMasked = false;
 }
 
-const INPUT_TYPES = ['text', 'image', 'video'] as const;
-const INPUT_TYPE_LABELS: Record<string, string> = {
-  text: 'inputText',
-  image: 'inputImage',
-  video: 'inputVideo',
-};
-
-/** 与预设可用工具一致的多选下拉选项 */
-const inputTypeOptions = computed(() =>
-  INPUT_TYPES.map((v) => ({ value: v, label: t(INPUT_TYPE_LABELS[v]!) })),
+/** 能力多选下拉：取值与展示顺序来自共享的 MODEL_CAPABILITIES 定义 */
+const capabilityOptions = computed(() =>
+  MODEL_CAPABILITIES.map((c) => ({ value: c.value, label: t(c.label) })),
 );
-
-const capabilityOptions = computed(() => [
-  { value: 'thinking', label: t('supportsThinking') },
-  { value: 'vision', label: t('supportsVision') },
-]);
-
-/** 能力在草稿中以两个布尔字段保存，这里与多选下拉的 string[] 互转。 */
-function capabilityKeys(m: ModelDraft): string[] {
-  const out: string[] = [];
-  if (m.supports_thinking) out.push('thinking');
-  if (m.supports_vision) out.push('vision');
-  return out;
-}
-
-function setCapabilities(m: ModelDraft, keys: string[]) {
-  m.supports_thinking = keys.includes('thinking');
-  m.supports_vision = keys.includes('vision');
-}
 
 /** 当前展示的提供商 tab；草稿列表变化时兜底选中第一个 */
 const activeProviderUid = ref<number | null>(null);
@@ -1098,9 +1082,7 @@ function addModel(d: ProviderDraft) {
     context_len: '128000',
     max_output: '',
     reasoning_map: {},
-    supports_thinking: true,
-    supports_vision: true,
-    input_types: ['text', 'image'],
+    capabilities: ['text_understanding', 'text_generation'],
     headersText: '',
     bodyText: '',
     reasoningOpen: false,
@@ -1175,18 +1157,16 @@ async function saveProviders() {
           id: m.id.trim(),
           name: m.name.trim(),
           context_len: Number.isFinite(ctx) && ctx > 0 ? ctx : 128000,
-          supports_vision: m.supports_vision,
-          supports_thinking: m.supports_thinking,
+          capabilities: [...m.capabilities],
           ...(Number.isFinite(mo) && mo > 0 ? { max_output: mo } : {}),
           // 只回写非空映射项，避免把整表空值写进配置
-          ...(m.supports_thinking && Object.keys(m.reasoning_map).length
+          ...(m.capabilities.includes('thinking') && Object.keys(m.reasoning_map).length
             ? {
                 reasoning_map: Object.fromEntries(
                   Object.entries(m.reasoning_map).filter(([, v]) => v.trim() !== ''),
                 ),
               }
             : {}),
-          ...(m.input_types.length ? { input_types: [...m.input_types] } : {}),
           ...(Object.keys(parseKvText(m.headersText)).length ? { headers: parseKvText(m.headersText) } : {}),
           ...(hasJsonKeys(modelBody) ? { body: modelBody } : {}),
         });
@@ -1638,15 +1618,11 @@ function pickLocale(v: Locale) {
 
                   <label class="cfg-label">{{ t('capabilities') }}</label>
                   <div class="cfg-ctl">
-                    <OMultiSelect
-                      :model-value="capabilityKeys(m)"
-                      :options="capabilityOptions"
-                      @update:model-value="(v) => setCapabilities(m, v)"
-                    />
+                    <OMultiSelect v-model="m.capabilities" :options="capabilityOptions" />
                   </div>
 
                   <!-- 推理映射仅在模型支持思考时才有意义；默认收起 -->
-                  <template v-if="m.supports_thinking">
+                  <template v-if="m.capabilities.includes('thinking')">
                     <label class="cfg-label">{{ t('reasoningMap') }}</label>
                     <div class="cfg-ctl cfg-stack">
                       <button
@@ -1673,11 +1649,6 @@ function pickLocale(v: Locale) {
                       </template>
                     </div>
                   </template>
-
-                  <label class="cfg-label">{{ t('inputTypes') }}</label>
-                  <div class="cfg-ctl">
-                    <OMultiSelect v-model="m.input_types" :options="inputTypeOptions" />
-                  </div>
 
                   <!-- 模型级请求头/请求体覆写：默认收起 -->
                   <label class="cfg-label">{{ t('requestOverride') }}</label>

@@ -6,6 +6,32 @@ export type ApprovalMode = 'normal' | 'strict' | 'auto';
 export type ApprovalDecision = 'allow_once' | 'allow_session' | 'deny';
 export type StopReason = 'end_turn' | 'tool_use' | 'max_tokens' | 'cancelled' | 'error';
 
+/**
+ * 模型能力：既能描述输入模态，也覆盖产出形态。
+ * 取值与后端 oma-contract 的 ModelCapability 一一对应。
+ */
+export type ModelCapability =
+  | 'thinking'
+  | 'text_understanding'
+  | 'text_generation'
+  | 'image_understanding'
+  | 'image_generation'
+  | 'video_understanding'
+  | 'video_generation'
+  | 'embedding';
+
+/** 全部能力及其 i18n 文案键，顺序即界面展示顺序（与后端 ALL 一致） */
+export const MODEL_CAPABILITIES: { value: ModelCapability; label: string }[] = [
+  { value: 'thinking', label: 'capabilityThinking' },
+  { value: 'text_understanding', label: 'capabilityTextUnderstanding' },
+  { value: 'text_generation', label: 'capabilityTextGeneration' },
+  { value: 'image_understanding', label: 'capabilityImageUnderstanding' },
+  { value: 'image_generation', label: 'capabilityImageGeneration' },
+  { value: 'video_understanding', label: 'capabilityVideoUnderstanding' },
+  { value: 'video_generation', label: 'capabilityVideoGeneration' },
+  { value: 'embedding', label: 'capabilityEmbedding' },
+];
+
 export type Block =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string }
@@ -32,12 +58,11 @@ export interface ModelInfo {
   id: string;
   name: string;
   context_len: number;
-  supports_vision: boolean;
-  supports_thinking: boolean;
+  /** 模型能力集合；与后端 ModelCapability 取值一致 */
+  capabilities: ModelCapability[];
   max_output?: number;
   /** 推理等级 → 厂商自定义字符串；未配置的等级按等级名下发 */
   reasoning_map?: Record<string, string>;
-  input_types?: string[];
 }
 
 export interface AgentSummary {
@@ -386,14 +411,12 @@ export interface ModelEntry {
   id: string;
   name: string;
   context_len: number;
-  supports_vision: boolean;
-  supports_thinking: boolean;
+  /** 模型能力集合；缺省时后端仅补文本理解与文本生成 */
+  capabilities: ModelCapability[];
   /** 最大输出 Token；未设置时各协议使用内置默认 */
   max_output?: number;
   /** 推理等级 → 厂商自定义字符串；未配置的等级按等级名下发 */
   reasoning_map?: Record<string, string>;
-  /** 支持的输入模态：text / image / video */
-  input_types?: string[];
   /** 模型级请求头：同名覆盖提供商级 */
   headers?: Record<string, string>;
   /** 模型级请求体字段：递归合并，覆盖提供商级 */

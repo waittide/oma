@@ -122,15 +122,15 @@ pub trait Tool: Send + Sync {
 /// 工具本身不应感知会话与模型配置；确实需要感知的（当前只有 `read` 判断
 /// 「要不要把图片交给模型」）通过这一层显式传入，避免把 Trait 扩散成大杂烩。
 pub trait ToolContext: Send + Sync {
-    /// 当前模型能否直接接收图片输入
-    fn supports_vision(&self) -> bool;
+    /// 当前模型能否直接接收图片输入（即具备图像理解能力）
+    fn supports_image_input(&self) -> bool;
 }
 
-/// 默认上下文：视为不支持图片，工具据此只回元数据文本。
-pub struct NoVision;
+/// 默认上下文：视为不具备图像理解能力，工具据此只回元数据文本。
+pub struct NoImageInput;
 
-impl ToolContext for NoVision {
-    fn supports_vision(&self) -> bool {
+impl ToolContext for NoImageInput {
+    fn supports_image_input(&self) -> bool {
         false
     }
 }
@@ -195,7 +195,7 @@ impl Tool for ReadTool {
     }
 
     async fn execute(&self, workspace: &Path, input: serde_json::Value) -> ToolOutput {
-        self.execute_with(workspace, input, &NoVision).await
+        self.execute_with(workspace, input, &NoImageInput).await
     }
 
     async fn execute_with(&self, workspace: &Path, input: serde_json::Value, ctx: &dyn ToolContext) -> ToolOutput {
@@ -273,7 +273,7 @@ fn read_image(meta: &image::ImageMeta, bytes: &[u8], ctx: &dyn ToolContext) -> T
         bytes.len(),
     );
 
-    if !ctx.supports_vision() {
+    if !ctx.supports_image_input() {
         return ToolOutput::success(format!(
             "Image metadata (the active model cannot view images):\n{meta_block}"
         ));
@@ -910,10 +910,10 @@ impl ToolRegistry {
 mod tests {
     use super::*;
 
-    /// 可切换视觉能力的测试上下文
+    /// 可切换图像理解能力的测试上下文
     struct Ctx(bool);
     impl ToolContext for Ctx {
-        fn supports_vision(&self) -> bool {
+        fn supports_image_input(&self) -> bool {
             self.0
         }
     }

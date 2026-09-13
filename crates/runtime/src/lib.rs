@@ -892,7 +892,7 @@ impl SessionRoom {
             );
         };
         // 先取出模型能力再进 select：临时值不能在 select 分支里悬空
-        let vision_ctx = VisionCtx(self.model_supports_vision());
+        let vision_ctx = ImageInputCtx(self.model_supports_vision());
         let output = tokio::select! {
             biased;
             _ = cancel.cancelled() => ToolOutput::error("Tool execution cancelled."),
@@ -1587,10 +1587,10 @@ enum TurnOutcome {
 }
 
 /// 把「当前模型能不能看图」包成工具可用的上下文
-struct VisionCtx(bool);
+struct ImageInputCtx(bool);
 
-impl ToolContext for VisionCtx {
-    fn supports_vision(&self) -> bool {
+impl ToolContext for ImageInputCtx {
+    fn supports_image_input(&self) -> bool {
         self.0
     }
 }

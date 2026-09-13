@@ -284,7 +284,7 @@ const supportsThinking = computed(() => {
   const [pid, ...rest] = wanted.split('/');
   const mid = rest.join('/');
   const list = chat.modelCatalog.value[pid ?? ''] ?? [];
-  return list.find((m) => m.id === mid)?.supports_thinking ?? false;
+  return list.find((m) => m.id === mid)?.capabilities.includes('thinking') ?? false;
 });
 
 const reasoningOptions = computed(() =>

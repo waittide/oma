@@ -212,7 +212,7 @@ async fn start_harness() -> Result<Harness> {
     start_harness_with(100_000, true).await
 }
 
-/// 只改模型的视觉能力，其余与默认 harness 一致
+/// 只改模型的图像理解能力，其余与默认 harness 一致
 async fn start_harness_with_vision(supports_vision: bool) -> Result<Harness> {
     start_harness_with(100_000, supports_vision).await
 }

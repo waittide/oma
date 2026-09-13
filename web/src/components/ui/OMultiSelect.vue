@@ -1,25 +1,30 @@
-<script setup lang="ts">
+<script setup lang="ts" generic="T extends string = string">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { LuChevronDown, LuX } from 'vue-icons-plus/lu';
 import { useTranslations } from '../../composables/i18n';
 
-export interface MultiOption {
-  value: string;
+export interface MultiOption<T extends string = string> {
+  value: T;
   label: string;
   hint?: string;
 }
 
+/**
+ * 多选下拉。默认按 `string` 工作（工具白名单等自由文本场景），
+ * 传入字面量联合类型（如 `ModelCapability`）时由泛型推断收窄，
+ * 让 `modelValue` 与 `options` 的取值在编译期一致。
+ */
 const props = withDefaults(
   defineProps<{
-    modelValue: string[];
-    options: MultiOption[];
+    modelValue: T[];
+    options: MultiOption<T>[];
     placeholder?: string;
     disabled?: boolean;
   }>(),
   { placeholder: undefined, disabled: false },
 );
 
-const emit = defineEmits<{ 'update:modelValue': [string[]] }>();
+const emit = defineEmits<{ 'update:modelValue': [T[]] }>();
 
 const { t } = useTranslations('select');
 
@@ -50,7 +55,7 @@ function updatePosition() {
   popupStyle.value = { top: `${top}px`, left: `${left}px`, width: `${width}px` };
 }
 
-function toggleValue(value: string) {
+function toggleValue(value: T) {
   const has = props.modelValue.includes(value);
   emit(
     'update:modelValue',
@@ -58,7 +63,7 @@ function toggleValue(value: string) {
   );
 }
 
-function remove(value: string, e: Event) {
+function remove(value: T, e: Event) {
   e.stopPropagation();
   emit('update:modelValue', props.modelValue.filter((v) => v !== value));
 }
