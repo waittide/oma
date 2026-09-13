@@ -30,7 +30,14 @@ onMounted(async () => {
     </main>
     <SettingsModal :open="settingsOpen" @close="settingsOpen = false" />
   </div>
-  <Toaster position="bottom-right" :expand="false" :theme="isDark ? 'dark' : 'light'" rich-colors close-button />
+  <Toaster
+    position="bottom-right"
+    :expand="false"
+    :theme="isDark ? 'dark' : 'light'"
+    :toast-options="{ style: { fontFamily: 'var(--font-sans)' } }"
+    rich-colors
+    close-button
+  />
 </template>
 
 <style scoped>

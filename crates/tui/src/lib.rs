@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use oma_client::{ConnectOptions, OmaClient, SessionApi};
 use oma_contract::{
-    AgentCommand, AgentEvent, ApprovalDecision, AskAnswer, AskQuestion, AskResponse, ClientType, StopReason,
+    AgentCommand, AgentEvent, ApprovalDecision, AskAnswer, AskQuestion, AskResponse, ClientType, Palette,
+    ResolvedTheme, StopReason, ThemeMode,
 };
 use ratatui::{
     Frame,
@@ -26,6 +27,92 @@ const INPUT_HEIGHT: u16 = 3;
 const MAX_LINES: usize = 4000;
 /// 无事件时的重绘间隔（保持状态栏与光标响应）
 const TICK: Duration = Duration::from_millis(80);
+
+/// 由握手下发的调色板导出的语义配色。
+///
+/// 全部字段都是 `Color`（`Copy`），因此可按值传进绘制函数，无需处理借用。
+/// 令牌到角色的映射与 Web 端保持一致：中性色管文字与边框，强调色管交互高亮。
+#[derive(Debug, Clone, Copy)]
+struct TuiTheme {
+    /// 正文文字（text）
+    text:     Color,
+    /// 次要文字（subtext0）
+    subtext:  Color,
+    /// 注释、分隔说明与边框（overlay0）
+    muted:    Color,
+    /// 用户输入的强调色：来自 theme.accent 选定的令牌
+    accent:   Color,
+    /// 成功 / 助手正文（green）
+    success:  Color,
+    /// 错误（red）
+    error:    Color,
+    /// 警告 / 工具调用（yellow）
+    warning:  Color,
+    /// 思考内容（mauve）
+    thinking: Color,
+}
+
+impl TuiTheme {
+    /// 测试用零值配色：全部 `Reset`，与实际令牌无关
+    #[cfg(test)]
+    fn test() -> Self {
+        Self {
+            text:     Color::Reset,
+            subtext:  Color::Reset,
+            muted:    Color::Reset,
+            accent:   Color::Reset,
+            success:  Color::Reset,
+            error:    Color::Reset,
+            warning:  Color::Reset,
+            thinking: Color::Reset,
+        }
+    }
+
+    fn new(theme: &ResolvedTheme) -> Self {
+        // system 模式无法可靠探测终端背景色，而终端底色以深色为主，
+        // 故只有显式选择 light 时才用浅色调色板。
+        let palette = match theme.mode {
+            ThemeMode::Light => &theme.light,
+            _ => &theme.dark,
+        };
+        Self {
+            text:     token_color(palette, "text"),
+            subtext:  token_color(palette, "subtext0"),
+            muted:    token_color(palette, "overlay0"),
+            accent:   token_color(palette, &theme.accent),
+            success:  token_color(palette, "green"),
+            error:    token_color(palette, "red"),
+            warning:  token_color(palette, "yellow"),
+            thinking: token_color(palette, "mauve"),
+        }
+    }
+}
+
+/// 取令牌对应的终端颜色；令牌缺失或非十六进制时回落 `Reset`（继承终端本身配色）。
+fn token_color(palette: &Palette, token: &str) -> Color {
+    palette
+        .token(token)
+        .and_then(parse_hex_color)
+        .unwrap_or(Color::Reset)
+}
+
+fn parse_hex_color(value: &str) -> Option<Color> {
+    let hex = value.strip_prefix('#')?;
+    let byte = |s: &str| u8::from_str_radix(s, 16).ok();
+    match hex.len() {
+        3 => {
+            // #abc 每位重复一次即 #aabbcc
+            let dup = |c: char| {
+                let v = c.to_digit(16)? as u8;
+                Some(v * 16 + v)
+            };
+            let mut it = hex.chars();
+            Some(Color::Rgb(dup(it.next()?)?, dup(it.next()?)?, dup(it.next()?)?))
+        }
+        6 => Some(Color::Rgb(byte(&hex[0..2])?, byte(&hex[2..4])?, byte(&hex[4..6])?)),
+        _ => None,
+    }
+}
 
 /// 一条已渲染的内容行
 struct Entry {
@@ -105,10 +192,12 @@ struct App {
     ask:       Option<PendingAsk>,
     /// 最近一次请求的上下文占用（tokens, context_len）
     context:   Option<(usize, usize)>,
+    /// 由握手下发主题导出的语义配色
+    theme:     TuiTheme,
 }
 
 impl App {
-    fn new(workspace: String, model: String, agent: String) -> Self {
+    fn new(workspace: String, model: String, agent: String, theme: TuiTheme) -> Self {
         Self {
             workspace,
             model,
@@ -124,6 +213,7 @@ impl App {
             approval: None,
             ask: None,
             context: None,
+            theme,
         }
     }
 
@@ -273,21 +363,23 @@ pub async fn run(addr: &str, token: &str, workspace: &str) -> Result<()> {
 
     let mut app = {
         let ready = client.ready();
+        let theme = TuiTheme::new(&ready.active_theme);
         let mut app = App::new(
             ready.workspace.clone(),
             ready.active_model.clone(),
             ready.active_agent.clone(),
+            theme,
         );
         app.push(
             "·",
             format!("会话 {} 已连接", short_id(&ready.session_id)),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted),
         );
         if let Some(leaf) = &ready.current_leaf_id {
             app.push(
                 "·",
                 format!("当前分支叶子 {}", short_id(leaf)),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.muted),
             );
         }
         app
@@ -391,7 +483,7 @@ async fn handle_ask_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) ->
                     is_cancelled: true,
                 })
                 .await?;
-            app.push("·", "已取消提问", Style::default().fg(Color::Yellow));
+            app.push("·", "已取消提问", Style::default().fg(app.theme.warning));
         }
         KeyCode::Enter => {
             let answers = ask.to_answers();
@@ -404,7 +496,7 @@ async fn handle_ask_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) ->
                     is_cancelled: false,
                 })
                 .await?;
-            app.push("·", "已回答提问", Style::default().fg(Color::Green));
+            app.push("·", "已回答提问", Style::default().fg(app.theme.success));
         }
         KeyCode::Char('n') | KeyCode::Right => {
             ask.index = (ask.index + 1).min(total.saturating_sub(1));
@@ -470,7 +562,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
             app.push(
                 "·",
                 format!("审批 {} → {}", tool_name, decision_label(decision)),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(app.theme.warning),
             );
         }
         return Ok(false);
@@ -493,7 +585,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.clear(),
         KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             client.cancel().await?;
-            app.push("·", "已请求中止", Style::default().fg(Color::Yellow));
+            app.push("·", "已请求中止", Style::default().fg(app.theme.warning));
         }
         KeyCode::Enter => {
             let text = app.input.trim().to_string();
@@ -501,7 +593,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
                 return Ok(false);
             }
             app.input.clear();
-            app.push("你", text.clone(), Style::default().fg(Color::Cyan));
+            app.push("你", text.clone(), Style::default().fg(app.theme.accent));
             app.stick = true;
             if let Err(e) = client
                 .send_command(AgentCommand::UserInput {
@@ -510,7 +602,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
                 })
                 .await
             {
-                app.push("!", format!("发送失败: {}", e), Style::default().fg(Color::Red));
+                app.push("!", format!("发送失败: {}", e), Style::default().fg(app.theme.error));
             }
         }
         KeyCode::Char(c) => app.input.push(c),
@@ -537,9 +629,9 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::TurnFinished { stop_reason, usage, .. } => {
             app.busy = false;
             let style = if matches!(stop_reason, StopReason::Error) {
-                Style::default().fg(Color::Red)
+                Style::default().fg(app.theme.error)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(app.theme.muted)
             };
             app.push(
                 "·",
@@ -563,7 +655,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
                 app.push(
                     "·",
                     format!("{} 的消息已排队: {}", client_name, truncate(&content, 60)),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(app.theme.muted),
                 );
             }
         }
@@ -575,20 +667,20 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             app.append_stream(
                 if subagent_id.is_some() { "↳思" } else { "思" },
                 &delta,
-                Style::default().fg(Color::Magenta),
+                Style::default().fg(app.theme.thinking),
             );
         }
         AgentEvent::TextDelta { delta, subagent_id } => {
             app.append_stream(
                 if subagent_id.is_some() { "↳" } else { "AI" },
                 &delta,
-                Style::default().fg(Color::Green),
+                Style::default().fg(app.theme.success),
             );
         }
         AgentEvent::ToolCallStarted(data) => app.push(
             if data.subagent_id.is_some() { "↳⚙" } else { "⚙" },
             format!("{} {}", data.tool_name, summarize_tool_input(&data.input)),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(app.theme.warning),
         ),
         AgentEvent::ToolCallFinished {
             tool_name,
@@ -597,9 +689,9 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             ..
         } => {
             let style = if is_error {
-                Style::default().fg(Color::Red)
+                Style::default().fg(app.theme.error)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(app.theme.muted)
             };
             let head: String = output.lines().take(6).collect::<Vec<_>>().join("\n");
             let suffix = if output.lines().count() > 6 { "\n…" } else { "" };
@@ -614,7 +706,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
                 app.push(
                     "·",
                     format!("提问由 {} 处理", resolved_by),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(app.theme.muted),
                 );
             }
         }
@@ -640,23 +732,27 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             app.push(
                 "·",
                 format!("审批由 {} 处理", resolved_by),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(app.theme.muted),
             );
         }
         AgentEvent::ModelChanged { active_model } => app.model = active_model,
         AgentEvent::AgentChanged { active_agent } => app.agent = active_agent,
         AgentEvent::ActiveTurnCatchUp(snapshot) => {
             if !snapshot.accumulated_thinking.is_empty() {
-                app.push("思", snapshot.accumulated_thinking, Style::default().fg(Color::Magenta));
+                app.push(
+                    "思",
+                    snapshot.accumulated_thinking,
+                    Style::default().fg(app.theme.thinking),
+                );
             }
             if !snapshot.accumulated_text.is_empty() {
-                app.push("AI", snapshot.accumulated_text, Style::default().fg(Color::Green));
+                app.push("AI", snapshot.accumulated_text, Style::default().fg(app.theme.success));
             }
             if let Some(call) = snapshot.active_tool_call {
                 app.push(
                     "⚙",
                     format!("{} {}", call.tool_name, summarize_tool_input(&call.input)),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(app.theme.warning),
                 );
             }
             app.approval = snapshot.pending_approval.map(|p| PendingApproval {
@@ -673,28 +769,28 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::SyncRequired {} => app.push(
             "·",
             "事件流出现缺口，状态可能不完整",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(app.theme.warning),
         ),
-        AgentEvent::Error { message } => app.push("!", message, Style::default().fg(Color::Red)),
+        AgentEvent::Error { message } => app.push("!", message, Style::default().fg(app.theme.error)),
         AgentEvent::SessionRenamed { title, .. } => app.push(
             "·",
             format!("会话已重命名为 {}", title),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.muted),
         ),
         AgentEvent::MessagesDeleted { deleted_ids, .. } => app.push(
             "·",
             format!("已删除 {} 条消息", deleted_ids.len()),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.muted),
         ),
         AgentEvent::ActiveBranchChanged { current_leaf_id } => app.push(
             "·",
             format!("切换到分支 {}", short_id(&current_leaf_id)),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.muted),
         ),
         AgentEvent::ApprovalModeChanged { mode } => app.push(
             "·",
             format!("审批模式 → {}", approval_mode_label(mode)),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.muted),
         ),
         AgentEvent::ContextUsage { tokens, context_len } => {
             app.context = Some((tokens, context_len));
@@ -706,7 +802,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             } else {
                 format!("推理等级 → {}", level)
             },
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(app.theme.muted),
         ),
     }
 }
@@ -737,14 +833,16 @@ fn draw(frame: &mut Frame, app: &App) {
     ])
     .areas(frame.area());
 
-    draw_header(frame, app, header);
-    draw_transcript(frame, app, body);
-    draw_input(frame, app, input);
+    // 配色按值拷入各绘制函数：TuiTheme 全为 Copy 字段，且 Draw 内 app 已不可变借用
+    let theme = app.theme;
+    draw_header(frame, app, header, theme);
+    draw_transcript(frame, app, body, theme);
+    draw_input(frame, app, input, theme);
 
     if let Some(pending) = &app.ask {
-        draw_ask(frame, pending, frame.area());
+        draw_ask(frame, pending, frame.area(), theme);
     } else if let Some(pending) = &app.approval {
-        draw_approval(frame, pending, frame.area());
+        draw_approval(frame, pending, frame.area(), theme);
     }
 }
 
@@ -763,7 +861,7 @@ fn context_gauge(tokens: usize, window: usize) -> String {
     )
 }
 
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     let dot = if app.connected { "●" } else { "○" };
     let state = if app.busy { "运行中" } else { app.status.as_str() };
     let queue = if app.queue > 0 {
@@ -778,20 +876,23 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let line = Line::from(vec![
         Span::styled(
             format!("{} ", dot),
-            Style::default().fg(if app.connected { Color::Green } else { Color::Red }),
+            Style::default().fg(if app.connected { theme.success } else { theme.error }),
         ),
-        Span::styled(app.workspace.clone(), Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            app.workspace.clone(),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
         Span::styled(
             format!("{} · {}{}", state, app.model, queue),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted),
         ),
-        Span::styled(ctx, Style::default().fg(Color::DarkGray)),
+        Span::styled(ctx, Style::default().fg(theme.muted)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     let lines = app.wrapped_lines(area.width.saturating_sub(2) as usize);
     let visible = area.height.saturating_sub(2) as usize;
     let total = lines.len();
@@ -805,10 +906,10 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(theme.muted))
         .title(Span::styled(
             format!(" oma · {} 行 ", total),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted),
         ));
     frame.render_widget(
         Paragraph::new(Text::from(lines))
@@ -819,7 +920,7 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     let hint = if app.connected {
         " Enter 发送 · Ctrl+X 中止 · Ctrl+U 清空 · PgUp/PgDn 滚动 · Esc 退出 "
     } else {
@@ -828,14 +929,17 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(if app.connected { Color::Cyan } else { Color::Red }))
-        .title(Span::styled(hint, Style::default().fg(Color::DarkGray)));
-    frame.render_widget(Paragraph::new(app.input.clone()).block(block), area);
+        .border_style(Style::default().fg(if app.connected { theme.accent } else { theme.error }))
+        .title(Span::styled(hint, Style::default().fg(theme.muted)));
+    frame.render_widget(
+        Paragraph::new(Span::styled(app.input.clone(), Style::default().fg(theme.text))).block(block),
+        area,
+    );
     let cursor_x = area.x + 1 + display_width(&app.input).min(area.width.saturating_sub(2) as usize) as u16;
     frame.set_cursor_position((cursor_x, area.y + 1));
 }
 
-fn draw_approval(frame: &mut Frame, pending: &PendingApproval, area: Rect) {
+fn draw_approval(frame: &mut Frame, pending: &PendingApproval, area: Rect, theme: TuiTheme) {
     let width = area.width.saturating_sub(8).min(90);
     let height = 7.min(area.height);
     let popup = Rect {
@@ -848,31 +952,34 @@ fn draw_approval(frame: &mut Frame, pending: &PendingApproval, area: Rect) {
 
     let body = Text::from(vec![
         Line::from(vec![
-            Span::styled("工具 ", Style::default().fg(Color::DarkGray)),
-            Span::styled(pending.tool_name.clone(), Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("工具 ", Style::default().fg(theme.muted)),
+            Span::styled(
+                pending.tool_name.clone(),
+                Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::raw(""),
         Line::styled(
             truncate(&summarize_tool_input(&pending.input), width.saturating_sub(4) as usize),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.subtext),
         ),
         Line::raw(""),
         Line::from(vec![
-            Span::styled("[y/Enter] 本次允许  ", Style::default().fg(Color::Green)),
-            Span::styled("[a] 本会话允许  ", Style::default().fg(Color::Cyan)),
-            Span::styled("[n/Esc] 拒绝", Style::default().fg(Color::Red)),
+            Span::styled("[y/Enter] 本次允许  ", Style::default().fg(theme.success)),
+            Span::styled("[a] 本会话允许  ", Style::default().fg(theme.accent)),
+            Span::styled("[n/Esc] 拒绝", Style::default().fg(theme.error)),
         ]),
     ]);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(Style::default().fg(theme.warning))
         .title("权限审批");
     frame.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: false }), popup);
 }
 
 /// 渲染 ask 弹窗：一题一行选项，多选用 [x]、单选用 (x) 标记。
-fn draw_ask(frame: &mut Frame, pending: &PendingAsk, area: Rect) {
+fn draw_ask(frame: &mut Frame, pending: &PendingAsk, area: Rect, theme: TuiTheme) {
     let width = area.width.saturating_sub(8).min(90);
     let inner_width = width.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -882,9 +989,9 @@ fn draw_ask(frame: &mut Frame, pending: &PendingAsk, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("问题 {}/{} ", pending.index + 1, pending.questions.len()),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.muted),
             ),
-            Span::styled(format!("[{}]", mode), Style::default().fg(Color::Cyan)),
+            Span::styled(format!("[{}]", mode), Style::default().fg(theme.accent)),
         ]));
         lines.push(Line::raw(""));
         for (li, seg) in wrap_text(&q.question, inner_width.saturating_sub(2))
@@ -897,7 +1004,7 @@ fn draw_ask(frame: &mut Frame, pending: &PendingAsk, area: Rect) {
                 } else {
                     format!("    {}", seg)
                 },
-                Style::default().add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
             ));
         }
         lines.push(Line::raw(""));
@@ -914,36 +1021,33 @@ fn draw_ask(frame: &mut Frame, pending: &PendingAsk, area: Rect) {
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {}{} ", oi + 1, mark),
-                    Style::default().fg(if checked { Color::Green } else { Color::Gray }),
+                    Style::default().fg(if checked { theme.success } else { theme.muted }),
                 ),
                 Span::styled(
                     opt.label.clone(),
-                    Style::default().fg(if recommended { Color::Yellow } else { Color::White }),
+                    Style::default().fg(if recommended { theme.warning } else { theme.text }),
                 ),
                 Span::styled(
                     if recommended { " (推荐)" } else { "" },
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.muted),
                 ),
             ]));
             if !opt.description.is_empty() {
                 for seg in wrap_text(&opt.description, inner_width.saturating_sub(7)) {
-                    lines.push(Line::styled(
-                        format!("      {}", seg),
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                    lines.push(Line::styled(format!("      {}", seg), Style::default().fg(theme.muted)));
                 }
             }
         }
         lines.push(Line::raw(""));
         if pending.custom_for == Some(pending.index) {
             lines.push(Line::from(vec![
-                Span::styled("  自定义> ", Style::default().fg(Color::Magenta)),
-                Span::raw(pending.custom.clone()),
+                Span::styled("  自定义> ", Style::default().fg(theme.thinking)),
+                Span::styled(pending.custom.clone(), Style::default().fg(theme.text)),
             ]));
         } else if !pending.custom.is_empty() && pending.custom_for.is_none() {
             lines.push(Line::styled(
                 format!("  自定义: {}", pending.custom),
-                Style::default().fg(Color::Magenta),
+                Style::default().fg(theme.thinking),
             ));
         }
     }
@@ -954,7 +1058,7 @@ fn draw_ask(frame: &mut Frame, pending: &PendingAsk, area: Rect) {
     } else {
         "数字选择  o 自定义  n/p 切题  Enter 提交  Esc 取消"
     };
-    lines.push(Line::styled(hint, Style::default().fg(Color::DarkGray)));
+    lines.push(Line::styled(hint, Style::default().fg(theme.muted)));
 
     let height = (lines.len() as u16 + 2).min(area.height);
     let popup = Rect {
@@ -967,7 +1071,7 @@ fn draw_ask(frame: &mut Frame, pending: &PendingAsk, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Magenta))
+        .border_style(Style::default().fg(theme.thinking))
         .title("提问");
     frame.render_widget(
         Paragraph::new(Text::from(lines))
@@ -1019,11 +1123,77 @@ mod tests {
 
     #[test]
     fn test_append_stream_groups_same_kind() {
-        let mut app = App::new("/w".into(), "m".into(), "task".into());
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
         app.append_stream("AI", "hello ", Style::default().fg(Color::Green));
         app.append_stream("AI", "world", Style::default().fg(Color::Green));
         app.append_stream("思", "thinking", Style::default().fg(Color::Magenta));
         assert_eq!(app.entries.len(), 2);
         assert_eq!(app.entries[0].text, "hello world");
+    }
+
+    #[test]
+    fn test_parse_hex_color() {
+        assert_eq!(parse_hex_color("#89b4fa"), Some(Color::Rgb(137, 180, 250)));
+        // #abc 缩写展开为 #aabbcc
+        assert_eq!(parse_hex_color("#abc"), Some(Color::Rgb(170, 187, 204)));
+        assert_eq!(parse_hex_color("89b4fa"), None);
+        assert_eq!(parse_hex_color("#xyz"), None);
+        assert_eq!(parse_hex_color("#12345"), None);
+    }
+
+    #[test]
+    fn test_tui_theme_maps_tokens_and_accents() {
+        // 浅色模式取 light 调色板，且 accent 随 theme.accent 令牌选择
+        let theme = ResolvedTheme {
+            mode:   ThemeMode::Light,
+            accent: "mauve".into(),
+            light:  palette_with("latte", "#111111", "#222222"),
+            dark:   palette_with("mocha", "#eeeeee", "#dddddd"),
+        };
+        let tui = TuiTheme::new(&theme);
+        assert_eq!(tui.text, Color::Rgb(0x11, 0x11, 0x11));
+        assert_eq!(tui.accent, Color::Rgb(0x22, 0x22, 0x22));
+
+        // 深色模式（含 system：终端底色以深色为主）取 dark 调色板
+        let dark = ResolvedTheme {
+            mode: ThemeMode::Dark,
+            ..theme
+        };
+        assert_eq!(TuiTheme::new(&dark).text, Color::Rgb(0xEE, 0xEE, 0xEE));
+    }
+
+    /// 构造只填充 text/mauve 的调色板：其余令牌缺省，应回落 Reset 而非报错
+    fn palette_with(id: &str, text: &str, mauve: &str) -> Palette {
+        Palette {
+            id:        id.into(),
+            name:      id.into(),
+            mode:      oma_contract::PaletteMode::Dark,
+            crust:     String::new(),
+            mantle:    String::new(),
+            base:      String::new(),
+            surface0:  String::new(),
+            surface1:  String::new(),
+            surface2:  String::new(),
+            overlay0:  String::new(),
+            overlay1:  String::new(),
+            overlay2:  String::new(),
+            subtext0:  String::new(),
+            subtext1:  String::new(),
+            text:      text.into(),
+            lavender:  String::new(),
+            blue:      String::new(),
+            sapphire:  String::new(),
+            sky:       String::new(),
+            teal:      String::new(),
+            green:     String::new(),
+            yellow:    String::new(),
+            peach:     String::new(),
+            maroon:    String::new(),
+            red:       String::new(),
+            mauve:     mauve.into(),
+            pink:      String::new(),
+            flamingo:  String::new(),
+            rosewater: String::new(),
+        }
     }
 }

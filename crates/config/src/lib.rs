@@ -4,7 +4,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use oma_contract::{AgentSummary, ApprovalMode, ModelInfo};
+use oma_contract::{ACCENTS, AgentSummary, ApprovalMode, ModelInfo, Palette, PaletteMode, ResolvedTheme, Theme};
+pub use oma_contract::{PALETTE_TOKENS, is_valid_hex_color};
 use oma_mcp::McpServerConfig;
 use oma_provider::ModelConfig;
 pub use oma_provider::{ModelEntry, ProviderConfig};
@@ -32,142 +33,210 @@ impl Default for ServerConfig {
     }
 }
 
-/// Catppuccin 全部 accent label (供主题设置校验)
-pub const THEME_ACCENTS: [&str; 14] = [
-    "rosewater",
-    "flamingo",
-    "pink",
-    "mauve",
-    "red",
-    "maroon",
-    "peach",
-    "yellow",
-    "green",
-    "teal",
-    "sky",
-    "sapphire",
-    "blue",
-    "lavender",
+/// 内置调色板源码：与 `AgentLoader` 的内嵌模板同理，打包进二进制作为兜底，
+/// 用户目录只放自己的调色板，不需要任何初始化写入。
+pub const BUILTIN_PALETTES: [(&str, &str); 4] = [
+    ("latte", include_str!("themes/latte.toml")),
+    ("frappe", include_str!("themes/frappe.toml")),
+    ("macchiato", include_str!("themes/macchiato.toml")),
+    ("mocha", include_str!("themes/mocha.toml")),
 ];
 
-/// 前端主题设置 (Catppuccin 体系；浅色/深色均可选内置或自定义主题)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Theme {
-    /// 显示模式: "light" | "dark" | "system"
-    #[serde(default = "default_theme_mode")]
-    pub mode:        String,
-    /// 深色主题 id: 内置 "frappe"|"macchiato"|"mocha"，或自定义主题 id
-    #[serde(default = "default_dark_flavor")]
-    pub dark_flavor: String,
-    /// 浅色主题 id: 内置 "latte"，或自定义主题 id
-    #[serde(default = "default_light_theme")]
-    pub light_theme: String,
-    /// 强调色 label (THEME_ACCENTS 之一)
-    #[serde(default = "default_accent")]
-    pub accent:      String,
+/// 校验调色板 id 是否为合法 slug（同时决定文件名，故不允许路径分隔符）。
+pub fn is_valid_palette_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn default_theme_mode() -> String {
-    "dark".to_string()
-}
-fn default_dark_flavor() -> String {
-    "mocha".to_string()
-}
-fn default_light_theme() -> String {
-    "latte".to_string()
-}
-fn default_accent() -> String {
-    "blue".to_string()
-}
+/// 调色板加载器。
+///
+/// 内置调色板编译期内嵌；用户调色板位于 `<配置目录>/oma/themes/<id>.toml`。
+/// 内置 id 为保留位（同名文件既不会加载也无法写入，见 `is_builtin`），
+/// 因此列表顺序稳定：四个内置在前，用户自定义按目录枚举顺序追加在后。
+pub struct PaletteLoader;
 
-impl Default for Theme {
-    fn default() -> Self {
-        Self {
-            mode:        default_theme_mode(),
-            dark_flavor: default_dark_flavor(),
-            light_theme: default_light_theme(),
-            accent:      default_accent(),
+impl PaletteLoader {
+    /// 用户调色板目录 (~/.config/oma/themes)
+    pub fn user_themes_dir() -> Option<PathBuf> {
+        dirs_config_dir().map(|d| d.join("oma").join("themes"))
+    }
+
+    /// 解析单份调色板 TOML；`fallback_id` 为文件名派生的 id（TOML 可省略 id）。
+    fn parse(raw: &str, fallback_id: &str) -> Result<Palette> {
+        let mut palette: Palette =
+            toml::from_str(raw).with_context(|| format!("failed to parse palette '{}'", fallback_id))?;
+        if palette.id.trim().is_empty() {
+            palette.id = fallback_id.to_string();
+        }
+        Ok(palette)
+    }
+
+    /// 全部内置调色板（按 BUILTIN_PALETTES 声明顺序）。
+    pub fn builtin_all() -> Vec<Palette> {
+        BUILTIN_PALETTES
+            .iter()
+            .filter_map(|(id, raw)| match Self::parse(raw, id) {
+                // 内置数据是编译期常量，解析失败只可能是构建产物损坏
+                Ok(p) => Some(p),
+                Err(e) => {
+                    tracing::error!(palette = id, error = %e, "bundled palette is unparsable");
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// 列出全部可用调色板：内置 + 用户目录，用户同名覆盖内置。
+    ///
+    /// 单个损坏文件只跳过并告警，不使整个列表不可用。
+    pub fn list() -> Vec<Palette> {
+        let mut palettes = Self::builtin_all();
+        if let Some(dir) = Self::user_themes_dir() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                        continue;
+                    }
+                    let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    let Ok(raw) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    match Self::parse(&raw, id) {
+                        Ok(p) => match palettes.iter_mut().find(|e| e.id == p.id) {
+                            // 已存在的 id 只可能是内置（save 拒绝了内置 id 的落盘），
+                            // 此处不得覆盖：否则手写一个 mocha.toml 就能改掉内置配色。
+                            Some(_) => tracing::warn!(palette = id, "ignoring user palette that shadows a bundled id"),
+                            None => palettes.push(p),
+                        },
+                        Err(e) => tracing::warn!(palette = id, error = %e, "skipping unparsable user palette"),
+                    }
+                }
+            }
+        }
+        palettes
+    }
+
+    /// 按 id 取单套调色板。
+    pub fn get(id: &str) -> Option<Palette> {
+        Self::list().into_iter().find(|p| p.id == id)
+    }
+
+    /// 是否为内置（打包进二进制）调色板 id。
+    ///
+    /// 内置 id 是保留位：`save`/`delete` 均以它拒绝写入，因此用户**无法**真正覆写内置
+    /// 调色板，只能新增自己的 id。前端也据此禁用内置项的删除按钮，两处语义一致。
+    pub fn is_builtin(id: &str) -> bool {
+        BUILTIN_PALETTES.iter().any(|(n, _)| *n == id)
+    }
+
+    /// 写入用户调色板文件；写入前完成全部字段校验。
+    pub fn save(palette: &Palette) -> Result<()> {
+        Self::validate_palette(palette)?;
+        anyhow::ensure!(
+            !Self::is_builtin(&palette.id),
+            "palette id {:?} is reserved by a bundled palette",
+            palette.id
+        );
+        let dir = Self::user_themes_dir().context("cannot locate config directory for themes")?;
+        std::fs::create_dir_all(&dir).with_context(|| format!("failed to create themes dir {}", dir.display()))?;
+        let path = dir.join(format!("{}.toml", palette.id));
+        let content = toml::to_string_pretty(palette).context("failed to serialize palette")?;
+        std::fs::write(&path, content).with_context(|| format!("failed to write palette {}", path.display()))?;
+        Ok(())
+    }
+
+    /// 删除用户调色板文件；内置调色板拒绝删除。
+    pub fn delete(id: &str) -> Result<()> {
+        anyhow::ensure!(is_valid_palette_id(id), "invalid palette id {:?}", id);
+        anyhow::ensure!(!Self::is_builtin(id), "bundled palette {:?} cannot be deleted", id);
+        let dir = Self::user_themes_dir().context("cannot locate config directory for themes")?;
+        let path = dir.join(format!("{}.toml", id));
+        anyhow::ensure!(path.exists(), "palette {:?} not found", id);
+        std::fs::remove_file(&path).map_err(|e| {
+            // 已被并发删除时同样视为「不存在」，让客户端得到 404 而不是 500
+            if e.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!("palette {:?} not found", id)
+            } else {
+                anyhow::Error::new(e).context(format!("failed to delete palette {}", path.display()))
+            }
+        })?;
+        Ok(())
+    }
+
+    /// 把主题的两套引用解析为完整调色板。
+    ///
+    /// 调用方须先用 `Theme::validate` 保证引用可用；缺失时回退内置默认，
+    /// 避免因用户手改配置文件就让客户端拿不到主题。
+    pub fn resolve(theme: &Theme) -> ResolvedTheme {
+        let light = Self::get(&theme.light_palette)
+            .filter(|p| p.mode == PaletteMode::Light)
+            .or_else(|| Self::get("latte"))
+            .expect("bundled latte palette must exist");
+        let dark = Self::get(&theme.dark_palette)
+            .filter(|p| p.mode == PaletteMode::Dark)
+            .or_else(|| Self::get("mocha"))
+            .expect("bundled mocha palette must exist");
+        ResolvedTheme {
+            mode: theme.mode,
+            accent: if ACCENTS.contains(&theme.accent.as_str()) {
+                theme.accent.clone()
+            } else {
+                Theme::default().accent
+            },
+            light,
+            dark,
         }
     }
 }
 
-impl Theme {
-    /// 校验全部 label；custom 为用户自定义主题清单 (写入侧闸门)
-    pub fn validate(&self, custom: &[CustomTheme]) -> Result<()> {
-        if !matches!(self.mode.as_str(), "light" | "dark" | "system") {
-            anyhow::bail!("invalid theme.mode {:?}: expect light|dark|system", self.mode);
-        }
-        let dark_ok = matches!(self.dark_flavor.as_str(), "frappe" | "macchiato" | "mocha")
-            || custom
-                .iter()
-                .any(|t| t.id == self.dark_flavor && t.mode == "dark");
-        if !dark_ok {
-            anyhow::bail!("invalid theme.dark_flavor {:?}", self.dark_flavor);
-        }
-        let light_ok = matches!(self.light_theme.as_str(), "latte")
-            || custom
-                .iter()
-                .any(|t| t.id == self.light_theme && t.mode == "light");
-        if !light_ok {
-            anyhow::bail!("invalid theme.light_theme {:?}", self.light_theme);
-        }
-        if !THEME_ACCENTS.contains(&self.accent.as_str()) {
-            anyhow::bail!(
-                "invalid theme.accent {:?}: expect one of {:?}",
-                self.accent,
-                THEME_ACCENTS
+impl PaletteLoader {
+    /// 校验调色板：id 可用于文件名、名称非空、26 个令牌均为合法十六进制色值。
+    pub fn validate_palette(p: &Palette) -> Result<()> {
+        anyhow::ensure!(is_valid_palette_id(&p.id), "invalid palette id {:?}", p.id);
+        // 同样以 “invalid” 前缀保持与 daemon 的 400 映射一致
+        anyhow::ensure!(!p.name.trim().is_empty(), "invalid palette '{}': name is empty", p.id);
+        for (token, value) in p.tokens() {
+            // 错误文案统一带 “invalid” 前缀：daemon 据此映射 400（见 /api/palettes 处理）
+            anyhow::ensure!(
+                is_valid_hex_color(value),
+                "invalid palette '{}' token '{}': expect a hex color, got {:?}",
+                p.id,
+                token,
+                value
             );
         }
         Ok(())
     }
-}
 
-/// 用户自定义主题：以内置 flavor 为基底的调色板覆盖（浅色/深色均可多套）
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CustomTheme {
-    /// 稳定 slug，被 theme.dark_flavor / theme.light_theme 引用
-    pub id:     String,
-    pub name:   String,
-    /// light | dark：决定该主题归属的候选组
-    pub mode:   String,
-    /// 继承的内置 flavor：light 系 latte；dark 系 frappe|macchiato|mocha
-    pub base:   String,
-    /// Catppuccin 令牌覆盖（键不含 "--"，如 base/mantle/text/surface0…）
-    #[serde(default)]
-    pub colors: BTreeMap<String, String>,
-}
-
-impl CustomTheme {
-    pub fn validate(&self) -> Result<()> {
+    /// 校验主题引用：两套调色板必须存在且明暗属性能对上，强调色须在 ACCENTS 内。
+    /// `palettes` 为当前可用调色板清单 (启动期读取一次)。
+    pub fn validate_theme(theme: &Theme, palettes: &[Palette]) -> Result<()> {
+        let light_ok = palettes
+            .iter()
+            .any(|p| p.id == theme.light_palette && p.mode == PaletteMode::Light);
         anyhow::ensure!(
-            self.id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                && !self.id.is_empty(),
-            "invalid custom theme id {:?}",
-            self.id
+            light_ok,
+            "invalid theme.light_palette {:?}: expect a light palette id",
+            theme.light_palette
         );
-        anyhow::ensure!(!self.name.trim().is_empty(), "custom theme '{}' name is empty", self.id);
+        let dark_ok = palettes
+            .iter()
+            .any(|p| p.id == theme.dark_palette && p.mode == PaletteMode::Dark);
         anyhow::ensure!(
-            matches!(self.mode.as_str(), "light" | "dark"),
-            "invalid custom theme '{}' mode {:?}: expect light|dark",
-            self.id,
-            self.mode
+            dark_ok,
+            "invalid theme.dark_palette {:?}: expect a dark palette id",
+            theme.dark_palette
         );
-        let allowed = match self.mode.as_str() {
-            "light" => "latte",
-            _ => "frappe|macchiato|mocha",
-        };
-        let base_ok = match self.mode.as_str() {
-            "light" => self.base == "latte",
-            _ => matches!(self.base.as_str(), "frappe" | "macchiato" | "mocha"),
-        };
         anyhow::ensure!(
-            base_ok,
-            "invalid custom theme '{}' base {:?}: expect {}",
-            self.id,
-            self.base,
-            allowed
+            ACCENTS.contains(&theme.accent.as_str()),
+            "invalid theme.accent {:?}: expect one of {:?}",
+            theme.accent,
+            ACCENTS
         );
         Ok(())
     }
@@ -197,8 +266,6 @@ pub struct OmaConfig {
     pub providers:               BTreeMap<String, ProviderConfig>,
     #[serde(default)]
     pub mcp_servers:             BTreeMap<String, McpServerConfig>,
-    #[serde(default)]
-    pub custom_themes:           Vec<CustomTheme>,
 }
 
 fn default_model_str() -> String {
@@ -223,7 +290,6 @@ impl Default for OmaConfig {
             server:                  ServerConfig::default(),
             providers:               BTreeMap::new(),
             mcp_servers:             BTreeMap::new(),
-            custom_themes:           Vec::new(),
         }
     }
 }
@@ -915,53 +981,98 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_custom_theme_validation() {
-        let mut custom = vec![CustomTheme {
-            id:     "nord-dark".into(),
-            name:   "Nord Dark".into(),
-            mode:   "dark".into(),
-            base:   "mocha".into(),
-            colors: BTreeMap::new(),
-        }];
+    fn test_bundled_palettes_are_valid() {
+        let palettes = PaletteLoader::builtin_all();
+        assert_eq!(palettes.len(), 4, "four bundled palettes expected");
+        for p in &palettes {
+            PaletteLoader::validate_palette(p).unwrap_or_else(|e| panic!("bundled palette {} invalid: {e}", p.id));
+            assert_eq!(p.tokens().len(), PALETTE_TOKENS.len());
+        }
+        // 浅色/深色基底：latte 为唯一浅色
+        let light: Vec<&str> = palettes
+            .iter()
+            .filter(|p| p.mode == PaletteMode::Light)
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(light, vec!["latte"]);
+    }
 
-        // 深色引用自定义主题合法；浅色引用深色主题非法
-        let dark = Theme {
-            mode: "dark".into(),
-            dark_flavor: "nord-dark".into(),
-            ..Theme::default()
-        };
-        assert!(dark.validate(&custom).is_ok());
+    #[test]
+    fn test_theme_validation() {
+        let palettes = PaletteLoader::builtin_all();
+
+        // 默认主题引用的均为内置调色板
+        assert!(PaletteLoader::validate_theme(&Theme::default(), &palettes).is_ok());
+
+        // 浅色引用深色调色板非法
         let wrong_mode = Theme {
-            mode: "light".into(),
-            light_theme: "nord-dark".into(),
+            light_palette: "mocha".into(),
             ..Theme::default()
         };
-        assert!(wrong_mode.validate(&custom).is_err());
+        assert!(PaletteLoader::validate_theme(&wrong_mode, &palettes).is_err());
 
-        // 浅色自定义主题被 light_theme 引用合法
-        custom.push(CustomTheme {
-            id:     "nord-light".into(),
-            name:   "Nord Light".into(),
-            mode:   "light".into(),
-            base:   "latte".into(),
-            colors: BTreeMap::new(),
-        });
-        let light = Theme {
-            mode: "light".into(),
-            light_theme: "nord-light".into(),
+        let unknown = Theme {
+            dark_palette: "nord-dark".into(),
             ..Theme::default()
         };
-        assert!(light.validate(&custom).is_ok());
+        assert!(PaletteLoader::validate_theme(&unknown, &palettes).is_err());
 
-        // 非法 base 被拒绝
-        custom.push(CustomTheme {
-            id:     "bad".into(),
-            name:   "Bad".into(),
-            mode:   "dark".into(),
-            base:   "latte".into(),
-            colors: BTreeMap::new(),
-        });
-        assert!(custom.last().unwrap().validate().is_err());
+        let bad_accent = Theme {
+            accent: "teal-ish".into(),
+            ..Theme::default()
+        };
+        assert!(PaletteLoader::validate_theme(&bad_accent, &palettes).is_err());
+    }
+
+    #[test]
+    fn test_custom_palette_validation() {
+        let mocha = PaletteLoader::get("mocha").unwrap();
+
+        // 改名不影响引用：id 稳定，name 仅展示
+        let renamed = Palette {
+            name: "My Mocha".into(),
+            ..mocha.clone()
+        };
+        PaletteLoader::validate_palette(&renamed).unwrap();
+
+        // 非法 id / 非十六进制色值 / 空名称均被拒绝
+        let bad_id = Palette {
+            id: "../escape".into(),
+            ..mocha.clone()
+        };
+        assert!(PaletteLoader::validate_palette(&bad_id).is_err());
+
+        let bad_color = Palette {
+            base: "not-a-color".into(),
+            ..mocha.clone()
+        };
+        assert!(PaletteLoader::validate_palette(&bad_color).is_err());
+
+        let empty_name = Palette {
+            name: "  ".into(),
+            ..mocha.clone()
+        };
+        assert!(PaletteLoader::validate_palette(&empty_name).is_err());
+
+        // 内置调色板 id 为保留位，不允许落盘覆盖
+        let mut shadow = mocha.clone();
+        shadow.name = "Shadow".into();
+        let err = PaletteLoader::save(&shadow).unwrap_err().to_string();
+        assert!(err.contains("reserved"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_resolve_theme_falls_back_to_bundled() {
+        // 引用已被删除的调色板时仍能解析出可用主题，而不是把界面搞成空白
+        let dangling = Theme {
+            dark_palette: "gone".into(),
+            light_palette: "also-gone".into(),
+            ..Theme::default()
+        };
+        let resolved = PaletteLoader::resolve(&dangling);
+        assert_eq!(resolved.dark.id, "mocha");
+        assert_eq!(resolved.light.id, "latte");
+        assert_eq!(resolved.accent, "blue");
     }
 
     #[test]

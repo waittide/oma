@@ -2,6 +2,7 @@ import type {
   AgentFile,
   ChatMessage,
   OmaConfig,
+  Palette,
   ServerStatus,
   SessionRecord,
   SkillFile,
@@ -195,5 +196,20 @@ export const api = {
     request<{ success: boolean }>('/api/config', {
       method: 'PUT',
       body: JSON.stringify(config),
+    }),
+
+  /** 全部可用调色板（内置 + 用户 themes 目录），含 builtin 标记。 */
+  palettes: () => request<Palette[]>('/api/palettes'),
+
+  /** 写入用户调色板；id 为文件名，内置 id 会被服务端拒绝 (403)。 */
+  putPalette: (palette: Palette) =>
+    request<{ success: boolean }>(`/api/palettes/${encodeURIComponent(palette.id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(palette),
+    }),
+
+  deletePalette: (id: string) =>
+    request<{ success: boolean }>(`/api/palettes/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
     }),
 };

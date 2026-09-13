@@ -1907,6 +1907,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "toml",
+ "tracing",
  "url",
 ]
 

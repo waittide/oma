@@ -14,11 +14,13 @@ use axum::{
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use futures_util::{SinkExt, StreamExt};
-use oma_config::{AgentLoader, OmaConfig, SkillLoader};
-use oma_contract::{AgentEvent, ApprovalMode, ChatMessage, ClientMessage, McpServerSummary, Ready, ServerMessage};
+use oma_config::{AgentLoader, OmaConfig, PaletteLoader, SkillLoader};
+use oma_contract::{
+    AgentEvent, ApprovalMode, ChatMessage, ClientMessage, McpServerSummary, Palette, Ready, ServerMessage,
+};
 use oma_mcp::McpManager;
 use oma_runtime::{RoomError, RoomSubagentRunner, SessionRoom, estimate_tokens};
 use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachment_name};
@@ -902,6 +904,78 @@ async fn handle_delete_preset(
 }
 
 // =========================================================================
+// 调色板 REST API (/api/palettes)
+// =========================================================================
+/// 可写的调色板响应：附带 builtin 标记，前端据此禁用删除／编辑
+#[derive(Serialize)]
+struct PaletteView {
+    #[serde(flatten)]
+    palette: Palette,
+    /// 是否为内置调色板（内置不可删改，但可被用户新增的同 id 文件遮蔽）
+    builtin: bool,
+}
+
+impl PaletteView {
+    fn of(palette: Palette) -> Self {
+        Self {
+            builtin: PaletteLoader::is_builtin(&palette.id),
+            palette,
+        }
+    }
+}
+
+async fn handle_list_palettes(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<PaletteView>>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    Ok(Json(
+        PaletteLoader::list()
+            .into_iter()
+            .map(PaletteView::of)
+            .collect(),
+    ))
+}
+
+/// 写入调色板：id 取自路径（也是文件名），须先做 slug 校验防止路径穿越
+async fn handle_put_palette(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(palette_id): AxumPath<String>,
+    Json(mut payload): Json<Palette>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    payload.id = palette_id;
+    match PaletteLoader::save(&payload) {
+        Ok(()) => Ok(Json(serde_json::json!({ "success": true }))),
+        Err(e) if e.to_string().contains("reserved") => Err((StatusCode::FORBIDDEN, e.to_string())),
+        Err(e) if e.to_string().contains("invalid") => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn handle_delete_palette(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(palette_id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    match PaletteLoader::delete(&palette_id) {
+        Ok(()) => Ok(Json(serde_json::json!({ "success": true }))),
+        Err(e) if e.to_string().contains("cannot be deleted") => Err((StatusCode::FORBIDDEN, e.to_string())),
+        Err(e) if e.to_string().contains("not found") => Err((StatusCode::NOT_FOUND, e.to_string())),
+        Err(e) if e.to_string().contains("invalid") => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+// =========================================================================
 // 技能 REST API (/api/skills)
 // =========================================================================
 
@@ -1049,9 +1123,8 @@ async fn handle_put_config(
         }
     }
 
-    // 主题 label 在写入侧校验（含自定义主题），防止非法值污染前端
-    cfg.theme
-        .validate(&cfg.custom_themes)
+    // 主题引用在写入侧校验（调色板存在且明暗属性匹配），防止非法值污染客户端
+    PaletteLoader::validate_theme(&cfg.theme, &PaletteLoader::list())
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid theme config: {e}")))?;
 
     // 默认推理等级必项：模型支持思考时一定有等级，空值会让会话拿不到初始值
@@ -1184,7 +1257,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     };
 
     // 3. 发送 Ready 握手确认（model_catalog 携带配置的真实模型清单）
-    let (model_catalog, active_model, active_agent, approval_mode, reasoning_level) = {
+    let (model_catalog, active_model, active_agent, approval_mode, reasoning_level, active_theme) = {
         let cfg = state.config.read();
         (
             cfg.model_catalog(),
@@ -1192,6 +1265,8 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
             room.active_agent.read().clone(),
             *room.approval_mode.read(),
             room.reasoning_level.read().clone(),
+            // 已解析主题随握手下发：终端客户端无需自读配置或内置色值
+            PaletteLoader::resolve(&cfg.theme),
         )
     };
     // 上下文占用：用上次记录值 + 其后新增部分的估算，与 TokenAnchor 的做法一致。
@@ -1247,10 +1322,11 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
             .map(|(name, tool_count)| McpServerSummary { name, tool_count })
             .collect(),
         context_usage,
+        active_theme,
     };
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    if send_server_message(&mut ws_sender, &ServerMessage::Ready { ready })
+    if send_server_message(&mut ws_sender, &ServerMessage::Ready { ready: Box::new(ready) })
         .await
         .is_err()
     {
@@ -1262,7 +1338,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         let _ = send_server_message(
             &mut ws_sender,
             &ServerMessage::Event {
-                event: AgentEvent::ActiveTurnCatchUp(catch_up),
+                event: Box::new(AgentEvent::ActiveTurnCatchUp(catch_up)),
             },
         )
         .await;
@@ -1282,7 +1358,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
                     if send_server_message(
                         &mut ws_sender,
                         &ServerMessage::Event {
-                            event: AgentEvent::SyncRequired {},
+                            event: Box::new(AgentEvent::SyncRequired {}),
                         },
                     )
                     .await
@@ -1294,7 +1370,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             };
-            if send_server_message(&mut ws_sender, &ServerMessage::Event { event })
+            if send_server_message(&mut ws_sender, &ServerMessage::Event { event: Box::new(event) })
                 .await
                 .is_err()
             {
@@ -1403,6 +1479,11 @@ pub fn create_router(state: DaemonState) -> Router {
                 .delete(handle_delete_skill),
         )
         .route("/api/config", get(handle_get_config).put(handle_put_config))
+        .route("/api/palettes", get(handle_list_palettes))
+        .route(
+            "/api/palettes/{palette_id}",
+            put(handle_put_palette).delete(handle_delete_palette),
+        )
         .route("/ws", get(handle_ws_upgrade));
 
     let dist_path = Path::new("web/dist");

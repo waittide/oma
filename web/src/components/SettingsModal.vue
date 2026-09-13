@@ -22,11 +22,11 @@ import OSelect from './ui/OSelect.vue';
 import OTooltip from './ui/OTooltip.vue';
 import OModelSelect from './ui/OModelSelect.vue';
 import OMultiSelect from './ui/OMultiSelect.vue';
-import { ACCENTS, PALETTES, config, customThemes, loadConfig, saveConfig, saveTheme, theme, type Flavor } from '../stores/theme';
+import { ACCENTS, NEUTRAL_TOKENS, PALETTE_TOKENS, config, darkPalettes, lightPalettes, loadConfig, palettes, refreshPalettes, saveConfig, saveTheme, theme, type Palette } from '../stores/theme';
 import { agents } from '../stores/chat';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
 import { activeSession } from '../stores/sessions';
-import type { AgentFile, AgentSummary, ToolInfo, CustomTheme, McpServerConfig, ModelInfo, OmaConfig, ProviderConfig, SkillFile, Theme } from '../types';
+import type { AgentFile, AgentSummary, ToolInfo, McpServerConfig, ModelInfo, OmaConfig, PaletteMode, ProviderConfig, SkillFile, Theme } from '../types';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ open: boolean }>();
@@ -63,7 +63,6 @@ const version = ref('');
 
 // ---------- 主题 ----------
 const mode = ref<Theme['mode']>(theme.value.mode);
-const flavor = ref<Theme['dark_flavor']>(theme.value.dark_flavor);
 const accent = ref<string>(theme.value.accent);
 const savingTheme = ref(false);
 
@@ -73,27 +72,24 @@ const modeOptions = computed<{ value: Theme['mode']; label: string }[]>(() => [
   { value: 'system', label: t('modeSystem') },
 ]);
 
-// 浅色/深色各自的主题 id 选择（内置 + 自定义）
+// 浅色/深色各自引用的调色板 id。
+// 两个下拉框只在同一明暗组内选择，从根上避免「浅色引用了深色调色板」。
 const themeSel = reactive({ light: 'latte', dark: 'mocha' });
 
-const lightThemeOptions = computed(() => [
-  { value: 'latte', label: 'Latte' },
-  ...customThemes.value.filter((t) => t.mode === 'light').map((t) => ({ value: t.id, label: t.name })),
-]);
-const darkThemeOptions = computed(() => [
-  { value: 'frappe', label: 'Frappé' },
-  { value: 'macchiato', label: 'Macchiato' },
-  { value: 'mocha', label: 'Mocha' },
-  ...customThemes.value.filter((t) => t.mode === 'dark').map((t) => ({ value: t.id, label: t.name })),
-]);
+const lightPaletteOptions = computed(() =>
+  lightPalettes.value.map((p) => ({ value: p.id, label: p.name })),
+);
+const darkPaletteOptions = computed(() =>
+  darkPalettes.value.map((p) => ({ value: p.id, label: p.name })),
+);
 
 async function applyTheme() {
   savingTheme.value = true;
   try {
     const next: Theme = {
       mode: mode.value,
-      dark_flavor: themeSel.dark,
-      light_theme: themeSel.light,
+      dark_palette: themeSel.dark,
+      light_palette: themeSel.light,
       accent: accent.value,
     };
     await saveTheme(next);
@@ -105,20 +101,17 @@ async function applyTheme() {
   }
 }
 
-// ---------- 自定义主题编辑 ----------
-const THEME_TOKENS = [
-  'base', 'mantle', 'crust', 'text', 'subtext1', 'subtext0',
-  'surface0', 'surface1', 'surface2', 'overlay0', 'overlay1', 'overlay2',
-] as const;
-
-const themeEdit = reactive<{
+// ---------- 调色板编辑 ----------
+// 调色板是一整组色值（26 个令牌），而非「基底 + 覆盖表」：
+// 因此编辑器始终持有一份完整拷贝，保存时整份落盘。
+const paletteEdit = reactive<{
   open: boolean;
   isNew: boolean;
   id: string;
   name: string;
-  mode: 'light' | 'dark';
-  base: Flavor;
-  colors: Record<string, string>;
+  mode: PaletteMode;
+  base: string;
+  values: Record<string, string>;
 }>({
   open: false,
   isNew: false,
@@ -126,85 +119,121 @@ const themeEdit = reactive<{
   name: '',
   mode: 'dark',
   base: 'mocha',
-  colors: {},
+  values: {},
 });
 
-const themeBaseOptions = computed(() =>
-  themeEdit.mode === 'light'
-    ? [{ value: 'latte' as Flavor, label: 'Latte' }]
-    : [
-        { value: 'frappe' as Flavor, label: 'Frappé' },
-        { value: 'macchiato' as Flavor, label: 'Macchiato' },
-        { value: 'mocha' as Flavor, label: 'Mocha' },
-      ],
+/** 当前编辑模式下可作基底的调色板。 */
+const paletteBaseOptions = computed(() =>
+  (paletteEdit.mode === 'light' ? lightPalettes.value : darkPalettes.value).map((p) => ({
+    value: p.id,
+    label: p.name,
+  })),
 );
 
-function effectiveColor(token: string): string {
-  const c = themeEdit.colors[token];
-  if (c && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c)) return c;
-  return PALETTES[themeEdit.base]?.[token] ?? '#000000';
+function paletteById(id: string): Palette | undefined {
+  return palettes.value.find((p) => p.id === id);
 }
 
-function newTheme() {
-  themeEdit.open = true;
-  themeEdit.isNew = true;
-  themeEdit.id = '';
-  themeEdit.name = '';
-  themeEdit.mode = mode.value === 'light' ? 'light' : 'dark';
-  themeEdit.base = themeEdit.mode === 'light' ? 'latte' : 'mocha';
-  themeEdit.colors = {};
+function isHexColor(v: string): boolean {
+  return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v.trim());
 }
 
-function editTheme(t: CustomTheme) {
-  themeEdit.open = true;
-  themeEdit.isNew = false;
-  themeEdit.id = t.id;
-  themeEdit.name = t.name;
-  themeEdit.mode = t.mode;
-  themeEdit.base = (PALETTES[t.base as Flavor] ? t.base : 'mocha') as Flavor;
-  themeEdit.colors = { ...t.colors };
+/** 切换基底时整份拷贝一份，避免旧基底颜色残留造成「看起来没换」。 */
+function applyBase(id: string) {
+  const base = paletteById(id);
+  if (!base) return;
+  paletteEdit.base = id;
+  paletteEdit.values = Object.fromEntries(PALETTE_TOKENS.map((tk) => [tk, base[tk]]));
 }
 
-function slugifyThemeName(name: string): string {
+/** 切换明暗：基底候选随之更换，否则会出现深色基底配浅色主题。 */
+function newPaletteMode(next: PaletteMode) {
+  paletteEdit.mode = next;
+  const group = next === 'light' ? lightPalettes.value : darkPalettes.value;
+  applyBase(group[0]?.id ?? (next === 'light' ? 'latte' : 'mocha'));
+}
+
+function newPalette() {
+  paletteEdit.open = true;
+  paletteEdit.isNew = true;
+  paletteEdit.id = '';
+  paletteEdit.name = '';
+  paletteEdit.mode = mode.value === 'light' ? 'light' : 'dark';
+  const group = paletteEdit.mode === 'light' ? lightPalettes.value : darkPalettes.value;
+  applyBase(group[0]?.id ?? (paletteEdit.mode === 'light' ? 'latte' : 'mocha'));
+}
+
+function editPalette(p: Palette) {
+  paletteEdit.open = true;
+  paletteEdit.isNew = false;
+  paletteEdit.id = p.id;
+  paletteEdit.name = p.name;
+  paletteEdit.mode = p.mode;
+  paletteEdit.base = p.id;
+  paletteEdit.values = Object.fromEntries(PALETTE_TOKENS.map((tk) => [tk, p[tk]]));
+}
+
+/** 展示名 → 稳定 id（文件名）；非 ASCII 名称无法 slug 时回退时间戳。 */
+function slugifyPaletteName(name: string): string {
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return slug || `custom-${Date.now()}`;
+  return slug || `palette-${Date.now()}`;
 }
 
-async function saveThemeEdit() {
-  const name = themeEdit.name.trim();
+async function savePaletteEdit() {
+  const name = paletteEdit.name.trim();
   if (!name) {
-    toast.error(t('themeNameRequired'));
+    toast.error(t('paletteNameRequired'));
     return;
   }
-  const id = themeEdit.isNew ? slugifyThemeName(name) : themeEdit.id;
-  const colors: Record<string, string> = {};
-  for (const tok of THEME_TOKENS) {
-    const v = (themeEdit.colors[tok] ?? '').trim();
-    if (v && v !== PALETTES[themeEdit.base]?.[tok]) colors[tok] = v;
+  const invalid = PALETTE_TOKENS.filter((tk) => !isHexColor(paletteEdit.values[tk] ?? ''));
+  if (invalid.length > 0) {
+    toast.error(t('paletteInvalidColor', { token: invalid[0] }));
+    return;
   }
-  const entry: CustomTheme = { id, name, mode: themeEdit.mode, base: themeEdit.base, colors };
-  const list = [...(config.value?.custom_themes ?? [])];
-  const idx = list.findIndex((t) => t.id === id);
-  if (idx >= 0) list[idx] = entry;
-  else list.push(entry);
+
+  const id = paletteEdit.isNew ? slugifyPaletteName(name) : paletteEdit.id;
+  if (paletteEdit.isNew && palettes.value.some((p) => p.id === id)) {
+    toast.error(t('paletteIdExists', { id }));
+    return;
+  }
+
+  const payload = {
+    id,
+    name,
+    mode: paletteEdit.mode,
+    ...Object.fromEntries(PALETTE_TOKENS.map((tk) => [tk, paletteEdit.values[tk].trim()])),
+  } as Palette;
+
   try {
-    await saveConfig({ ...(config.value as OmaConfig), custom_themes: list });
-    // 编辑/新建后让选择跟随新主题
-    if (entry.mode === 'light') themeSel.light = id;
+    await api.putPalette(payload);
+    await refreshPalettes();
+    // 新建/编辑后让主题选择跟随它，否则保存完看不到效果
+    if (payload.mode === 'light') themeSel.light = id;
     else themeSel.dark = id;
-    themeEdit.open = false;
+    paletteEdit.open = false;
     toast.success(t('themeSaved'));
   } catch (e) {
     toast.error(t('saveFailed', { message: (e as Error).message }));
   }
 }
 
-async function removeTheme(id: string) {
-  const list = (config.value?.custom_themes ?? []).filter((t) => t.id !== id);
+async function removePalette(id: string) {
   try {
-    await saveConfig({ ...(config.value as OmaConfig), custom_themes: list });
-    if (themeSel.light === id) themeSel.light = 'latte';
-    if (themeSel.dark === id) themeSel.dark = 'mocha';
+    await api.deletePalette(id);
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+    return;
+  }
+  await refreshPalettes();
+
+  // 被删的调色板若正被主题引用，必须立即把新选择写回服务端：
+  // 否则 config.toml 里会留有悬空 id，下次启动/刷新时主题直接失效。
+  const referenced = theme.value.light_palette === id || theme.value.dark_palette === id;
+  if (themeSel.light === id) themeSel.light = lightPalettes.value[0]?.id ?? 'latte';
+  if (themeSel.dark === id) themeSel.dark = darkPalettes.value[0]?.id ?? 'mocha';
+
+  try {
+    if (referenced) await applyTheme();
     toast.success(t('themeDeleted'));
   } catch (e) {
     toast.error(t('saveFailed', { message: (e as Error).message }));
@@ -232,8 +261,8 @@ watch(
       defaults.reasoning = config.value.default_reasoning_level || DEFAULT_REASONING_LEVEL;
     }
     mode.value = theme.value.mode;
-    themeSel.light = theme.value.light_theme || 'latte';
-    themeSel.dark = theme.value.dark_flavor || 'mocha';
+    themeSel.light = theme.value.light_palette || 'latte';
+    themeSel.dark = theme.value.dark_palette || 'mocha';
     accent.value = theme.value.accent;
     if (!version.value) {
       version.value = await api.status().then((s) => s.version).catch(() => '');
@@ -1079,7 +1108,7 @@ function pickLocale(v: Locale) {
                   <span class="srow-desc">{{ t('themeDesc') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <ORadio v-model="themeSel.light" :options="lightThemeOptions" />
+                  <OSelect v-model="themeSel.light" :options="lightPaletteOptions" width="200px" />
                 </div>
               </div>
               <div class="srow">
@@ -1087,7 +1116,7 @@ function pickLocale(v: Locale) {
                   <span class="srow-title">{{ t('themeRowDark') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <ORadio v-model="themeSel.dark" :options="darkThemeOptions" />
+                  <OSelect v-model="themeSel.dark" :options="darkPaletteOptions" width="200px" />
                 </div>
               </div>
               <div class="srow">
@@ -1106,7 +1135,7 @@ function pickLocale(v: Locale) {
                         type="button"
                         class="dot"
                         :class="{ active: a === accent }"
-                        :style="{ '--dot': `var(--${a === 'green' ? 'green-color' : a})` }"
+                        :style="{ '--dot-color': `var(--${a})` }"
                         @click="accent = a"
                       />
                     </OTooltip>
@@ -1119,17 +1148,36 @@ function pickLocale(v: Locale) {
                   <span class="srow-desc">{{ t('manageThemesDesc') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <OButton size="sm" variant="soft" @click="newTheme">{{ t('newTheme') }}</OButton>
+                  <OButton size="sm" variant="soft" @click="newPalette">{{ t('newTheme') }}</OButton>
                 </div>
               </div>
-              <div v-for="ct in customThemes" :key="ct.id" class="srow">
+              <div v-for="p in palettes" :key="p.id" class="srow">
                 <div class="srow-main">
-                  <span class="srow-title">{{ ct.name }} <span class="scope-tag">{{ ct.mode === 'light' ? t('modeLight') : t('modeDark') }}</span></span>
-                  <span class="srow-desc">{{ t('themeBaseLabel') }}: {{ ct.base }}</span>
+                  <span class="srow-title">
+                    {{ p.name }}
+                    <span class="scope-tag">{{ p.mode === 'light' ? t('modeLight') : t('modeDark') }}</span>
+                    <span v-if="p.builtin" class="scope-tag">{{ t('paletteBuiltin') }}</span>
+                  </span>
+                  <span class="srow-desc">{{ t('paletteTokens', { count: PALETTE_TOKENS.length }) }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <OButton size="sm" variant="ghost" @click="editTheme(ct)">{{ t('edit') }}</OButton>
-                  <OButton size="sm" variant="ghost" @click="removeTheme(ct.id)">{{ tc('delete') }}</OButton>
+                  <span class="swatches" aria-hidden="true">
+                    <span v-for="tok in ['base', 'text', 'blue', 'mauve']" :key="tok" :style="{ background: p[tok] }" />
+                  </span>
+                  <OButton size="sm" variant="ghost" @click="editPalette(p)">{{ t('edit') }}</OButton>
+                  <OTooltip :label="p.builtin ? t('paletteBuiltinLocked') : tc('delete')">
+                    <span>
+                      <OButton
+                        size="sm"
+                        variant="ghost"
+                        :disabled="p.builtin"
+                        :ariaLabel="tc('delete')"
+                        @click="removePalette(p.id)"
+                      >
+                        {{ tc('delete') }}
+                      </OButton>
+                    </span>
+                  </OTooltip>
                 </div>
               </div>
             </div>
@@ -1675,42 +1723,62 @@ function pickLocale(v: Locale) {
   </OModal>
 
   <OModal
-    :open="themeEdit.open"
-    :title="themeEdit.isNew ? t('newTheme') : t('editTheme')"
-    width="560px"
-    @close="themeEdit.open = false"
+    :open="paletteEdit.open"
+    :title="paletteEdit.isNew ? t('newTheme') : t('editTheme')"
+    width="620px"
+    @close="paletteEdit.open = false"
   >
     <div class="skill-form">
-      <div class="field">
-        <label>{{ t('themeName') }}</label>
-        <OInput v-model="themeEdit.name" placeholder="Nord Dark" />
-      </div>
       <div class="sk-grid">
+        <div class="field">
+          <label>{{ t('themeName') }}</label>
+          <OInput v-model="paletteEdit.name" placeholder="Nord Dark" />
+        </div>
         <div class="field">
           <label>{{ t('themeModeLabel') }}</label>
           <ORadio
-            v-model="themeEdit.mode"
+            v-model="paletteEdit.mode"
             :options="[{ value: 'light', label: t('modeLight') }, { value: 'dark', label: t('modeDark') }]"
+            :disabled="!paletteEdit.isNew"
+            @update:model-value="newPaletteMode"
           />
-        </div>
-        <div class="field">
-          <label>{{ t('themeBaseLabel') }}</label>
-          <ORadio v-model="themeEdit.base" :options="themeBaseOptions" />
         </div>
       </div>
       <div class="field">
-        <label>{{ t('themeColors') }}</label>
+        <label>{{ t('themeBaseLabel') }}</label>
+        <OSelect
+          :model-value="paletteEdit.base"
+          :options="paletteBaseOptions"
+          width="100%"
+          @update:model-value="applyBase"
+        />
+        <span class="field-hint">{{ t('paletteBaseHint') }}</span>
+      </div>
+      <div class="field">
+        <label>{{ t('paletteNeutralColors') }}</label>
         <div class="color-grid">
-          <div v-for="tok in THEME_TOKENS" :key="tok" class="color-cell">
-            <span class="color-swatch" :style="{ background: effectiveColor(tok) }" />
-            <input v-model="themeEdit.colors[tok]" class="color-input" :placeholder="effectiveColor(tok)" spellcheck="false" />
+          <div v-for="tok in NEUTRAL_TOKENS" :key="tok" class="color-cell">
+            <span class="color-swatch" :style="{ background: paletteEdit.values[tok] }" />
+            <span class="color-name">{{ tok }}</span>
+            <OInput v-model="paletteEdit.values[tok]" class="color-input" placeholder="#89b4fa" />
+          </div>
+        </div>
+      </div>
+      <div class="field">
+        <label>{{ t('paletteAccentColors') }}</label>
+        <div class="color-grid">
+          <div v-for="tok in ACCENTS" :key="tok" class="color-cell">
+            <span class="color-swatch" :style="{ background: paletteEdit.values[tok] }" />
+            <span class="color-name">{{ tok }}</span>
+            <OInput v-model="paletteEdit.values[tok]" class="color-input" placeholder="#89b4fa" />
           </div>
         </div>
       </div>
     </div>
     <template #footer>
-      <OButton variant="ghost" size="sm" @click="themeEdit.colors = {}">{{ t('themeReset') }}</OButton>
-      <OButton variant="primary" size="sm" @click="saveThemeEdit">{{ tc('save') }}</OButton>
+      <OButton variant="ghost" size="sm" @click="applyBase(paletteEdit.base)">{{ t('themeReset') }}</OButton>
+      <OButton variant="ghost" size="sm" @click="paletteEdit.open = false">{{ tc('cancel') }}</OButton>
+      <OButton variant="primary" size="sm" @click="savePaletteEdit">{{ tc('save') }}</OButton>
     </template>
   </OModal>
 
@@ -1937,6 +2005,14 @@ function pickLocale(v: Locale) {
   align-items: center;
   gap: 8px;
 }
+.color-name {
+  /* 令牌名定宽：长短不一的名字会让后面的色值输入框左右错位 */
+  width: 62px;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--overlay1);
+}
 .color-swatch {
   width: 20px;
   height: 20px;
@@ -1955,10 +2031,23 @@ function pickLocale(v: Locale) {
   color: var(--ink);
   font-family: var(--font-mono);
   font-size: 12px;
-  outline: none;
 }
-.color-input:focus {
-  border-color: var(--accent);
+.field-hint {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--overlay0);
+}
+/* 调色板列表里的迷你色卡：一眼看出配色走向，不占太多横向空间 */
+.swatches {
+  display: inline-flex;
+  gap: 3px;
+  margin-right: 4px;
+}
+.swatches > span {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
 }
 .scope-tag {
   display: inline-block;
@@ -2020,7 +2109,9 @@ function pickLocale(v: Locale) {
   padding: 0;
   border: none;
   border-radius: 99px;
-  background: var(--dot);
+  /* 用独立变量名：--dot 与类名同名容易被误当作类选择器，
+     也会和调色板令牌的命名空间混在一起 */
+  background: var(--dot-color);
   cursor: pointer;
   transition:
     box-shadow 0.12s ease,
@@ -2032,7 +2123,7 @@ function pickLocale(v: Locale) {
 .dot.active {
   box-shadow:
     0 0 0 2px var(--paper),
-    0 0 0 4px var(--dot);
+    0 0 0 4px var(--dot-color);
 }
 .grid {
   display: grid;

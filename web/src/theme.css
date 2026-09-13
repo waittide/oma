@@ -1,5 +1,3 @@
-@import '@catppuccin/palette/css/catppuccin.css';
-
 :root {
   --font-sans:
     Inter, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
@@ -7,213 +5,52 @@
   font-family: var(--font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-}
 
-:root.theme-latte {
-  --rosewater: var(--ctp-latte-rosewater);
-  --flamingo: var(--ctp-latte-flamingo);
-  --pink: var(--ctp-latte-pink);
-  --mauve: var(--ctp-latte-mauve);
-  --red: var(--ctp-latte-red);
-  --maroon: var(--ctp-latte-maroon);
-  --peach: var(--ctp-latte-peach);
-  --yellow: var(--ctp-latte-yellow);
-  --green-color: var(--ctp-latte-green);
-  --teal: var(--ctp-latte-teal);
-  --sky: var(--ctp-latte-sky);
-  --sapphire: var(--ctp-latte-sapphire);
-  --blue: var(--ctp-latte-blue);
-  --lavender: var(--ctp-latte-lavender);
-  --text: var(--ctp-latte-text);
-  --subtext1: var(--ctp-latte-subtext1);
-  --subtext0: var(--ctp-latte-subtext0);
-  --overlay2: var(--ctp-latte-overlay2);
-  --overlay1: var(--ctp-latte-overlay1);
-  --overlay0: var(--ctp-latte-overlay0);
-  --surface2: var(--ctp-latte-surface2);
-  --surface1: var(--ctp-latte-surface1);
-  --surface0: var(--ctp-latte-surface0);
-  --base: var(--ctp-latte-base);
-  --mantle: var(--ctp-latte-mantle);
-  --crust: var(--ctp-latte-crust);
-  color-scheme: light;
-}
-
-:root.theme-frappe {
-  --rosewater: var(--ctp-frappe-rosewater);
-  --flamingo: var(--ctp-frappe-flamingo);
-  --pink: var(--ctp-frappe-pink);
-  --mauve: var(--ctp-frappe-mauve);
-  --red: var(--ctp-frappe-red);
-  --maroon: var(--ctp-frappe-maroon);
-  --peach: var(--ctp-frappe-peach);
-  --yellow: var(--ctp-frappe-yellow);
-  --green-color: var(--ctp-frappe-green);
-  --teal: var(--ctp-frappe-teal);
-  --sky: var(--ctp-frappe-sky);
-  --sapphire: var(--ctp-frappe-sapphire);
-  --blue: var(--ctp-frappe-blue);
-  --lavender: var(--ctp-frappe-lavender);
-  --text: var(--ctp-frappe-text);
-  --subtext1: var(--ctp-frappe-subtext1);
-  --subtext0: var(--ctp-frappe-subtext0);
-  --overlay2: var(--ctp-frappe-overlay2);
-  --overlay1: var(--ctp-frappe-overlay1);
-  --overlay0: var(--ctp-frappe-overlay0);
-  --surface2: var(--ctp-frappe-surface2);
-  --surface1: var(--ctp-frappe-surface1);
-  --surface0: var(--ctp-frappe-surface0);
-  --base: var(--ctp-frappe-base);
-  --mantle: var(--ctp-frappe-mantle);
-  --crust: var(--ctp-frappe-crust);
-  color-scheme: dark;
-}
-
-:root.theme-macchiato {
-  --rosewater: var(--ctp-macchiato-rosewater);
-  --flamingo: var(--ctp-macchiato-flamingo);
-  --pink: var(--ctp-macchiato-pink);
-  --mauve: var(--ctp-macchiato-mauve);
-  --red: var(--ctp-macchiato-red);
-  --maroon: var(--ctp-macchiato-maroon);
-  --peach: var(--ctp-macchiato-peach);
-  --yellow: var(--ctp-macchiato-yellow);
-  --green-color: var(--ctp-macchiato-green);
-  --teal: var(--ctp-macchiato-teal);
-  --sky: var(--ctp-macchiato-sky);
-  --sapphire: var(--ctp-macchiato-sapphire);
-  --blue: var(--ctp-macchiato-blue);
-  --lavender: var(--ctp-macchiato-lavender);
-  --text: var(--ctp-macchiato-text);
-  --subtext1: var(--ctp-macchiato-subtext1);
-  --subtext0: var(--ctp-macchiato-subtext0);
-  --overlay2: var(--ctp-macchiato-overlay2);
-  --overlay1: var(--ctp-macchiato-overlay1);
-  --overlay0: var(--ctp-macchiato-overlay0);
-  --surface2: var(--ctp-macchiato-surface2);
-  --surface1: var(--ctp-macchiato-surface1);
-  --surface0: var(--ctp-macchiato-surface0);
-  --base: var(--ctp-macchiato-base);
-  --mantle: var(--ctp-macchiato-mantle);
-  --crust: var(--ctp-macchiato-crust);
-  color-scheme: dark;
-}
-
-:root.theme-mocha {
-  --rosewater: var(--ctp-mocha-rosewater);
-  --flamingo: var(--ctp-mocha-flamingo);
-  --pink: var(--ctp-mocha-pink);
-  --mauve: var(--ctp-mocha-mauve);
-  --red: var(--ctp-mocha-red);
-  --maroon: var(--ctp-mocha-maroon);
-  --peach: var(--ctp-mocha-peach);
-  --yellow: var(--ctp-mocha-yellow);
-  --green-color: var(--ctp-mocha-green);
-  --teal: var(--ctp-mocha-teal);
-  --sky: var(--ctp-mocha-sky);
-  --sapphire: var(--ctp-mocha-sapphire);
-  --blue: var(--ctp-mocha-blue);
-  --lavender: var(--ctp-mocha-lavender);
-  --text: var(--ctp-mocha-text);
-  --subtext1: var(--ctp-mocha-subtext1);
-  --subtext0: var(--ctp-mocha-subtext0);
-  --overlay2: var(--ctp-mocha-overlay2);
-  --overlay1: var(--ctp-mocha-overlay1);
-  --overlay0: var(--ctp-mocha-overlay0);
-  --surface2: var(--ctp-mocha-surface2);
-  --surface1: var(--ctp-mocha-surface1);
-  --surface0: var(--ctp-mocha-surface0);
-  --base: var(--ctp-mocha-base);
-  --mantle: var(--ctp-mocha-mantle);
-  --crust: var(--ctp-mocha-crust);
-  color-scheme: dark;
-}
-
-:root.accent-rosewater {
-  --accent: var(--rosewater);
-}
-:root.accent-flamingo {
-  --accent: var(--flamingo);
-}
-:root.accent-pink {
-  --accent: var(--pink);
-}
-:root.accent-mauve {
-  --accent: var(--mauve);
-}
-:root.accent-red {
-  --accent: var(--red);
-}
-:root.accent-maroon {
-  --accent: var(--maroon);
-}
-:root.accent-peach {
-  --accent: var(--peach);
-}
-:root.accent-yellow {
-  --accent: var(--yellow);
-}
-:root.accent-green {
-  --accent: var(--green-color);
-}
-:root.accent-teal {
-  --accent: var(--teal);
-}
-:root.accent-sky {
-  --accent: var(--sky);
-}
-:root.accent-sapphire {
-  --accent: var(--sapphire);
-}
-:root.accent-blue {
-  --accent: var(--blue);
-}
-:root.accent-lavender {
-  --accent: var(--lavender);
-}
-
-:root {
-  --ink: var(--text);
-  --muted: var(--overlay1);
-  --line: var(--surface1);
-  --paper: var(--base);
-  --surface: var(--mantle);
-  --surface-strong: var(--surface0);
-  --surface-hover: var(--surface1);
+  /*
+   * 语义别名层：组件只使用这一层变量，不直接引用调色板令牌。
+   * 调色板令牌（--base/--text/--blue…）由 stores/theme.ts 在运行时按
+   * 当前调色板写入 <html> 的行内样式；这里的字面量仅作为首帧兜底，
+   * 避免样式表执行与主题应用之间出现无配色的一瞬。
+   */
+  --ink: var(--text, #cdd6f4);
+  --muted: var(--overlay1, #7f849c);
+  --line: var(--surface1, #45475a);
+  --paper: var(--base, #1e1e2e);
+  --surface: var(--mantle, #181825);
+  --surface-strong: var(--surface0, #313244);
+  --surface-hover: var(--surface1, #45475a);
+  --accent: var(--blue, #89b4fa);
   --surface-active: color-mix(in srgb, var(--accent) 18%, var(--surface));
-  --sidebar: var(--mantle);
-  --control-border: var(--surface2);
-  --text-secondary: var(--subtext1);
-  --text-tertiary: var(--subtext0);
-  --danger: var(--red);
-  --danger-soft: color-mix(in srgb, var(--red) 16%, var(--surface));
-  --success: var(--green-color);
-  --success-soft: color-mix(in srgb, var(--green-color) 16%, var(--surface));
-  --warning: var(--yellow);
-  --warning-soft: color-mix(in srgb, var(--yellow) 16%, var(--surface));
-  --overlay-scrim: color-mix(in srgb, var(--crust) 78%, transparent);
-  --shadow: color-mix(in srgb, var(--crust) 42%, transparent);
+  --sidebar: var(--mantle, #181825);
+  --control-border: var(--surface2, #585b70);
+  --text-secondary: var(--subtext1, #bac2de);
+  --text-tertiary: var(--subtext0, #a6adc8);
+  --danger: var(--red, #f38ba8);
+  --danger-soft: color-mix(in srgb, var(--danger) 16%, var(--surface));
+  --success: var(--green, #a6e3a1);
+  --success-soft: color-mix(in srgb, var(--success) 16%, var(--surface));
+  --warning: var(--yellow, #f9e2af);
+  --warning-soft: color-mix(in srgb, var(--warning) 16%, var(--surface));
+  --overlay-scrim: color-mix(in srgb, var(--crust, #11111b) 78%, transparent);
+  --shadow: color-mix(in srgb, var(--crust, #11111b) 42%, transparent);
   /* 参照 opencode 的复合阴影：0.5px 描边 ring + 分层投影，避免普通模糊阴影发虚 */
-  --ring: color-mix(in srgb, var(--crust) 30%, transparent);
+  --ring: color-mix(in srgb, var(--crust, #11111b) 30%, transparent);
   --shadow-raised:
-    0 2px 4px color-mix(in srgb, var(--crust) 10%, transparent),
-    0 1px 2px -1px color-mix(in srgb, var(--crust) 18%, transparent),
+    0 2px 4px color-mix(in srgb, var(--crust, #11111b) 10%, transparent),
+    0 1px 2px -1px color-mix(in srgb, var(--crust, #11111b) 18%, transparent),
     0 0 0 0.5px var(--ring);
   --shadow-floating:
-    0 8px 16px color-mix(in srgb, var(--crust) 10%, transparent),
-    0 4px 8px color-mix(in srgb, var(--crust) 16%, transparent),
+    0 8px 16px color-mix(in srgb, var(--crust, #11111b) 10%, transparent),
+    0 4px 8px color-mix(in srgb, var(--crust, #11111b) 16%, transparent),
     0 0 0 0.5px var(--ring);
   --shadow-overlay:
-    0 16px 32px color-mix(in srgb, var(--crust) 10%, transparent),
-    0 8px 16px color-mix(in srgb, var(--crust) 16%, transparent),
+    0 16px 32px color-mix(in srgb, var(--crust, #11111b) 10%, transparent),
+    0 8px 16px color-mix(in srgb, var(--crust, #11111b) 16%, transparent),
     0 0 0 0.5px var(--ring);
 }
 
-/* ---- vue-sonner 通知主题化：随 flavor class 作用于 [data-sonner-toaster] ---- */
-:root.theme-latte [data-sonner-toaster],
-:root.theme-frappe [data-sonner-toaster],
-:root.theme-macchiato [data-sonner-toaster],
-:root.theme-mocha [data-sonner-toaster] {
+/* ---- vue-sonner 通知主题化：变量继承自 :root，无需随调色板切换类名 ---- */
+[data-sonner-toaster] {
   --border-radius: 10px;
   --normal-bg: var(--surface-strong);
   --normal-text: var(--ink);

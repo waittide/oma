@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { toast } from 'vue-sonner';
 import {
   LuAlertTriangle,
+  LuArrowDownToLine,
   LuArrowUp,
   LuBot,
   LuCheck,
@@ -141,6 +142,12 @@ async function pickFiles(ev: Event) {
   const files = Array.from(input.files ?? []);
   input.value = '';
   if (files.length === 0) return;
+  await uploadFiles(files);
+}
+
+/** 上传选中的文件并把引用挂到待发送列表。 */
+async function uploadFiles(files: File[]) {
+  if (files.length === 0) return;
   uploading.value = true;
   try {
     const refs = await chat.upload(files);
@@ -150,6 +157,44 @@ async function pickFiles(ev: Event) {
   } finally {
     uploading.value = false;
   }
+}
+
+// ---- 拖拽上传：自实现落点提示，不借助浏览器默认行为 ----
+const dragging = ref(false);
+// 拖拽经过子元素时会连续触发 dragleave，用计数器避免指示器闪烁
+let dragDepth = 0;
+
+function onDragEnter(ev: DragEvent) {
+  if (!ready.value || !hasFiles(ev)) return;
+  ev.preventDefault();
+  dragDepth += 1;
+  dragging.value = true;
+}
+
+function onDragOver(ev: DragEvent) {
+  if (!ready.value || !hasFiles(ev)) return;
+  // 必须阻止默认行为，否则浏览器会直接打开被拖入的文件
+  ev.preventDefault();
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+}
+
+function onDragLeave() {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dragging.value = false;
+}
+
+async function onDrop(ev: DragEvent) {
+  dragDepth = 0;
+  dragging.value = false;
+  if (!ready.value) return;
+  ev.preventDefault();
+  const files = Array.from(ev.dataTransfer?.files ?? []);
+  if (files.length > 0) await uploadFiles(files);
+}
+
+/** 仅接受携带文件的拖拽（拖动选中文字不应触发落点提示）。 */
+function hasFiles(ev: DragEvent): boolean {
+  return Array.from(ev.dataTransfer?.types ?? []).includes('Files');
 }
 
 function send() {
@@ -386,9 +431,18 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
       <div
         ref="boxEl"
         class="box"
-        :class="{ disabled: !ready }"
+        :class="{ disabled: !ready, dragging }"
         :style="boxHeight ? { height: `${boxHeight}px` } : undefined"
+        @dragenter="onDragEnter"
+        @dragover="onDragOver"
+        @dragleave="onDragLeave"
+        @drop="onDrop"
       >
+        <!-- 拖拽落点提示：自实现浮层，不依赖浏览器默认高亮 -->
+        <div v-if="dragging" class="drop-hint" aria-hidden="true">
+          <LuArrowDownToLine :size="18" />
+          <span>{{ t('dropToAttach') }}</span>
+        </div>
         <div
           class="resize-handle"
           role="separator"
@@ -408,6 +462,10 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
           :disabled="!ready"
           @keydown.enter.exact.prevent="send"
         />
+        <!--
+          隐藏的原生 file input 仅充当“文件选择器通道”（浏览器不允许
+          自绘系统文件对话框）；可见的按钮、拖拽区与附件列表全部自实现。
+        -->
         <input
           ref="fileInput"
           type="file"
@@ -417,7 +475,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         />
         <div class="c-toolbar">
           <div class="c-controls">
-            <OTooltip :label="t('attach')">
+            <OTooltip :label="t('attachHint')">
               <button
                 type="button"
                 class="icon-btn"
@@ -791,6 +849,30 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
 }
 .box.disabled {
   opacity: 0.6;
+}
+.box.dragging {
+  border-color: var(--accent);
+}
+/* 拖拽落点提示：覆盖整个输入区，虚线与图标均由 CSS + 图标组件绘制 */
+.drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--paper));
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 500;
+  /* 覆盖层不参与命中测试：拖拽事件始终按未覆盖时的路径命中 .box，
+     免得浮层自身引发额外的 dragenter/dragleave 抖动 */
+  pointer-events: none;
+  outline: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: -6px;
 }
 /* 上边沿拖拽热区：悬停时浮现把手图标 */
 .resize-handle {

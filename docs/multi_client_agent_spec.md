@@ -308,7 +308,7 @@ pub enum ApprovalMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerMessage {
-    Ready { ready: Ready },
+    Ready { ready: Box<Ready> },   // 载荷内嵌两套完整调色板，体积远大于其他变体
     Event { event: AgentEvent },
     Error { message: String },
 }
@@ -321,10 +321,13 @@ pub struct Ready {
     pub active_model:     String,
     pub active_agent:     String,
     pub approval_mode:    ApprovalMode,
+    pub reasoning_level:  String,
     pub current_leaf_id:  Option<String>,
-    pub providers:        std::collections::BTreeMap<String, Vec<ModelInfo>>,
+    pub model_catalog:    std::collections::BTreeMap<String, Vec<ModelInfo>>,
     pub agents:           Vec<AgentSummary>,
-    pub mcp_servers:      Vec<McpServerSummary>,
+    pub mcp_summaries:    Vec<McpServerSummary>,
+    pub context_usage:    Option<ContextUsage>,
+    pub active_theme:     ResolvedTheme,   // 已解析主题（两套完整调色板）
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -688,7 +691,46 @@ headers = { Authorization = "Bearer secret_token" }
 | `GET` | `/api/skills?workspace=...` | 列出技能（global / agent / project） |
 | `GET`/`PUT`/`DELETE` | `/api/skills/{skill_id}` | 读取 / 写入 / 删除技能 |
 | `GET`/`PUT` | `/api/config` | 读取（默认脱敏 `api_key`，`?reveal=1` 返回明文）/ 写入服务端配置 |
+| `GET` | `/api/palettes` | 列出全部调色板（内置 + 用户目录），带 `builtin` 标记 |
+| `PUT`/`DELETE` | `/api/palettes/{palette_id}` | 写入 / 删除用户调色板；内置调色板只读（403），id 非法（含路径穿越）拒绝（400） |
 | `GET` | `/ws` | WebSocket 升级（Bearer 头或 `?token=`，承载全部实时事件与指令） |
+
+### 8.1 主题与调色板 (`oma-contract::Theme` / `Palette`)
+
+调色板是**一整组 26 个色值**（12 个中性色 + 14 个强调色），而非「基底 + 覆盖表」：
+`Theme` 只持有两个 id 引用与一个强调色令牌，浅色/深色各自独立选择。
+
+```rust
+pub struct Theme {
+    pub mode:          ThemeMode,   // light | dark | system
+    pub dark_palette:  String,      // 必须是 mode == dark  的调色板 id
+    pub light_palette: String,      // 必须是 mode == light 的调色板 id
+    pub accent:        String,      // ACCENTS 之一（对应 Palette 的强调色字段）
+}
+
+pub struct Palette {
+    pub id:   String,   // 稳定 slug：引用键 + 文件名（改名不影响引用）
+    pub name: String,   // 仅展示，可自由修改
+    pub mode: PaletteMode, // light | dark
+    pub crust: String, pub mantle: String, pub base: String,
+    // …surface0-2 / overlay0-2 / subtext0-1 / text
+    // …lavender / blue / sapphire / sky / teal / green / yellow / peach
+    // …maroon / red / mauve / pink / flamingo / rosewater
+}
+```
+
+- **存储**：内置 4 套（latte / frappé / macchiato / mocha）编译期以 `include_str!` 嵌入二进制
+  （与 Agent 模板同理，无启动写入）；用户调色板存于 `<配置目录>/oma/themes/<id>.toml`，
+  同名文件可覆盖内置。`config.toml` 只保留 `[theme]`，其中引用的 id 必须在调色板集合内。
+- **下发**：`Ready.active_theme` 携带已解析的 `ResolvedTheme { mode, accent, light, dark }`，
+  即两套完整调色板。终端与浏览器因此共用同一份配色数据，客户端不需要读取配置目录，
+  也不需要在各自语言里再内置一份色值。
+- **校验**：`PUT /api/config` 校验引用存在且明暗属性匹配（浅色不得引用深色调色板），
+  强调色须在 `ACCENTS` 内；调色板写入时逐令牌校验为 `#rgb`/`#rrggbb`，id 须为安全 slug
+  （同时决定文件名，故拒绝路径分隔符）。
+- **前端**：调色板令牌由 `stores/theme.ts` 在运行时写入 `<html>` 的行内 CSS 变量，
+  样式表内只定义语义别名层（`--ink`/`--paper`/`--accent`…）供组件引用，
+  因此不依赖任何第三方配色包，也不随调色板数量增长而注入多张样式表。
 
 ---
 
@@ -702,13 +744,22 @@ headers = { Authorization = "Bearer secret_token" }
 
 ### 9.2 原生 Web 前端工程 (`web/`)
 - 技术选型：**纯原生 Vue 3 + TypeScript + 手写 CSS**（不引入 Tailwind、UnoCSS、Element Plus、NaiveUI 等任何第三方 UI 或样式库）；
+- 工程约束：
+  1. 包管理器统一使用 **pnpm**；
+  2. 通知统一走 **vue-sonner**；
+  3. 图标统一使用 **vue-icons-plus**（禁止用文字/字符充当图标）；
+  4. 不使用浏览器原生控件（`<select>`/`<dialog>`/`<details>` 等），改用 `components/ui/` 下
+     自实现组件，以保证各浏览器呈现一致；仅附件上传保留隐藏的 `<input type="file">`
+     作为“文件选择器通道”，其按钮与拖拽区均为自实现并在界面上同时标注两条入口；
+  5. 调色板不内置在前端：由服务端 `GET /api/palettes` 与 `Ready.active_theme` 提供，
+     运行时注入 CSS 变量（见 8.1）。
 - 具备功能：
   1. 会话列表管理与工作区选择；
   2. 树状对话流展示、Markdown 渲染、Thinking 思维链折叠；
   3. Tool 执行过程与参数/Diff 展示、Subagent 嵌套折叠；
   4. 权限审批模态框（AllowOnce, AllowSession, Deny）；
   5. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）；
-  6. 设置面板（Token 配置、Model 切换、Agent 切换、Approval Mode 切换）。
+  6. 设置面板（外观/主题与调色板、语言、默认参数、Provider、预设、技能、MCP）。
 
 ---
 

@@ -206,7 +206,7 @@ impl OmaClient {
         let ready = loop {
             match stream.next().await {
                 Some(Ok(Message::Text(txt))) => match serde_json::from_str::<ServerMessage>(&txt) {
-                    Ok(ServerMessage::Ready { ready }) => break ready,
+                    Ok(ServerMessage::Ready { ready }) => break *ready,
                     Ok(ServerMessage::Error { message }) => bail!("server rejected connection: {}", message),
                     // Ready 之前不应有事件，忽略以保持健壮
                     Ok(ServerMessage::Event { .. }) => continue,
@@ -312,7 +312,7 @@ async fn pump<S, R>(
                         };
                         match parsed {
                             ServerMessage::Event { event } => {
-                                if event_tx.send(event).await.is_err() {
+                                if event_tx.send(*event).await.is_err() {
                                     return; // 消费端已退出
                                 }
                             }

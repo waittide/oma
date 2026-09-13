@@ -102,7 +102,7 @@ const tip = computed(() => {
 }
 /* 分档配色：绿 → 黄 → 橙 → 红（对齐参考实现的四级） */
 .ctx.normal .cell.on {
-  background: var(--green-color);
+  background: var(--green);
 }
 .ctx.warning .cell.on {
   background: var(--yellow);

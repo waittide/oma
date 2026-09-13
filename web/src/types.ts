@@ -188,6 +188,8 @@ export interface Ready {
   mcp_summaries: McpServerSummary[];
   /** 上次记录的上下文占用；用于重连/重启后立即恢复进度条 */
   context_usage?: ContextUsage | null;
+  /** 已解析主题：终端与浏览器共用同一份配色数据 */
+  active_theme: ResolvedTheme;
 }
 
 /** 上下文占用快照 */
@@ -244,21 +246,133 @@ export interface SessionRecord {
   is_running?: boolean;
 }
 
-/** 用户自定义主题：以内置 flavor 为基底的调色板覆盖 */
-export interface CustomTheme {
+/** 调色板自身的明暗属性：决定它归属浅色组还是深色组候选。 */
+export type PaletteMode = 'light' | 'dark';
+
+/** 主题显示模式；system 时由前端按 prefers-color-scheme 选择浅色或深色调色板。 */
+export type ThemeMode = 'light' | 'dark' | 'system';
+
+/** 调色板令牌名：对应 Palette 的 26 个字段，也是 CSS 变量的键。 */
+export const PALETTE_TOKENS = [
+  'crust',
+  'mantle',
+  'base',
+  'surface0',
+  'surface1',
+  'surface2',
+  'overlay0',
+  'overlay1',
+  'overlay2',
+  'subtext0',
+  'subtext1',
+  'text',
+  'lavender',
+  'blue',
+  'sapphire',
+  'sky',
+  'teal',
+  'green',
+  'yellow',
+  'peach',
+  'maroon',
+  'red',
+  'mauve',
+  'pink',
+  'flamingo',
+  'rosewater',
+] as const;
+export type PaletteToken = (typeof PALETTE_TOKENS)[number];
+
+/** 令牌分组：编辑器按「中性色 / 强调色」分区渲染，也用于语义提示。 */
+export const NEUTRAL_TOKENS: PaletteToken[] = [
+  'crust',
+  'mantle',
+  'base',
+  'surface0',
+  'surface1',
+  'surface2',
+  'overlay0',
+  'overlay1',
+  'overlay2',
+  'subtext0',
+  'subtext1',
+  'text',
+];
+export const ACCENT_TOKENS: PaletteToken[] = [
+  'rosewater',
+  'flamingo',
+  'pink',
+  'mauve',
+  'red',
+  'maroon',
+  'peach',
+  'yellow',
+  'green',
+  'teal',
+  'sky',
+  'sapphire',
+  'blue',
+  'lavender',
+];
+
+/** 可被 theme.accent 选中的强调色令牌。 */
+export const ACCENTS = ACCENT_TOKENS;
+export type Accent = (typeof ACCENT_TOKENS)[number];
+
+/** 一套完整调色板 (GET /api/palettes)。 */
+export interface Palette {
+  /** 稳定 slug：主题引用键，也是服务端 themes/<id>.toml 的文件名 */
   id: string;
+  /** 仅用于展示，可自由改名而不影响引用 */
   name: string;
-  mode: 'light' | 'dark';
+  mode: PaletteMode;
+  /** 内置调色板不可删改（由服务端判定） */
+  builtin?: boolean;
+
+  crust: string;
+  mantle: string;
   base: string;
-  colors: Record<string, string>;
+
+  surface0: string;
+  surface1: string;
+  surface2: string;
+  overlay0: string;
+  overlay1: string;
+  overlay2: string;
+  subtext0: string;
+  subtext1: string;
+  text: string;
+
+  lavender: string;
+  blue: string;
+  sapphire: string;
+  sky: string;
+  teal: string;
+  green: string;
+  yellow: string;
+  peach: string;
+  maroon: string;
+  red: string;
+  mauve: string;
+  pink: string;
+  flamingo: string;
+  rosewater: string;
 }
 
-/** 后端主题设置 (config::Theme)；浅色/深色均可引用内置或自定义主题 id */
+/** 主题设置 (config::Theme)：浅色/深色各引用一套调色板 id。 */
 export interface Theme {
-  mode: 'light' | 'dark' | 'system';
-  dark_flavor: string;
-  light_theme: string;
+  mode: ThemeMode;
+  dark_palette: string;
+  light_palette: string;
   accent: string;
+}
+
+/** 服务端解析好的主题：握手下发，含两套完整调色板。 */
+export interface ResolvedTheme {
+  mode: ThemeMode;
+  accent: string;
+  light: Palette;
+  dark: Palette;
 }
 
 export interface ModelEntry {
@@ -297,7 +411,6 @@ export interface OmaConfig {
   server: { listen_addr: string };
   providers: Record<string, ProviderConfig>;
   mcp_servers: Record<string, McpServerConfig>;
-  custom_themes: CustomTheme[];
 }
 
 export interface FileNode {

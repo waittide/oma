@@ -21,6 +21,7 @@ import type {
 } from '../types';
 import { tr } from '../composables/i18n';
 import { activeSessionId, applyRemoteRename, applyRemoteRunning } from './sessions';
+import { applyResolvedTheme } from './theme';
 import { releaseAll } from '../lib/attachments';
 
 /** 流式轮次缓冲：按到达顺序排列的实时段（thinking/text/tool 交错）。 */
@@ -317,6 +318,9 @@ function connect() {
     }
     if (msg.kind === 'ready') {
       const r = msg.ready;
+      // 握手下发的是服务端已解析的主题：优先于 GET /api/config 的缓存，
+      // 保证终端与浏览器看到的配色完全一致
+      if (r.active_theme) applyResolvedTheme(r.active_theme);
       activeModel.value = r.active_model;
       activeAgent.value = r.active_agent;
       approvalMode.value = r.approval_mode;

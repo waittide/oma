@@ -198,6 +198,239 @@ pub fn is_valid_reasoning_level(level: &str) -> bool {
     REASONING_LEVELS.contains(&level)
 }
 
+/// 规范化的强调色令牌集合（对应 `Palette` 中的强调色字段）。
+///
+/// `Theme.accent` 只能取其中之一：前端据此挑 CSS 变量，终端客户端据此挑前景色。
+pub const ACCENTS: [&str; 14] = [
+    "rosewater",
+    "flamingo",
+    "pink",
+    "mauve",
+    "red",
+    "maroon",
+    "peach",
+    "yellow",
+    "green",
+    "teal",
+    "sky",
+    "sapphire",
+    "blue",
+    "lavender",
+];
+
+/// 调色板自身的明暗属性：决定它归属浅色组还是深色组候选。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaletteMode {
+    Light,
+    Dark,
+}
+
+impl PaletteMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PaletteMode::Light => "light",
+            PaletteMode::Dark => "dark",
+        }
+    }
+}
+
+/// 主题显示模式：跟随系统时由客户端按 `prefers-color-scheme` 在
+/// `light_palette` / `dark_palette` 之间切换。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeMode {
+    Light,
+    #[default]
+    Dark,
+    System,
+}
+
+impl ThemeMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ThemeMode::Light => "light",
+            ThemeMode::Dark => "dark",
+            ThemeMode::System => "system",
+        }
+    }
+}
+
+/// 主题设置：浅色与深色各引用一套调色板 id，另叠加一个强调色令牌。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Theme {
+    #[serde(default)]
+    pub mode:          ThemeMode,
+    /// 深色模式使用的调色板 id（须为 `PaletteMode::Dark` 的调色板）
+    #[serde(default = "default_dark_palette")]
+    pub dark_palette:  String,
+    /// 浅色模式使用的调色板 id（须为 `PaletteMode::Light` 的调色板）
+    #[serde(default = "default_light_palette")]
+    pub light_palette: String,
+    /// 强调色令牌名，ACCENTS 之一
+    #[serde(default = "default_accent")]
+    pub accent:        String,
+}
+
+fn default_dark_palette() -> String {
+    "mocha".to_string()
+}
+
+fn default_light_palette() -> String {
+    "latte".to_string()
+}
+
+fn default_accent() -> String {
+    "blue".to_string()
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            mode:          ThemeMode::Dark,
+            dark_palette:  default_dark_palette(),
+            light_palette: default_light_palette(),
+            accent:        default_accent(),
+        }
+    }
+}
+
+/// 一套完整调色板。
+///
+/// 26 个令牌的划分对齐 Catppuccin：中性色由暗到亮（crust → text）用于背景与文字，
+/// 14 个强调色用于语义高亮。`id` 是稳定引用键（被 `Theme` 引用、即文件名），
+/// `name` 仅用于展示，可随用户改名而不破坏引用。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Palette {
+    /// 稳定 slug：主题引用键，也是 `<配置目录>/oma/themes/<id>.toml` 的文件名
+    pub id:   String,
+    pub name: String,
+    pub mode: PaletteMode,
+
+    pub crust:  String,
+    pub mantle: String,
+    pub base:   String,
+
+    pub surface0: String,
+    pub surface1: String,
+    pub surface2: String,
+    pub overlay0: String,
+    pub overlay1: String,
+    pub overlay2: String,
+    pub subtext0: String,
+    pub subtext1: String,
+    pub text:     String,
+
+    pub lavender:  String,
+    pub blue:      String,
+    pub sapphire:  String,
+    pub sky:       String,
+    pub teal:      String,
+    pub green:     String,
+    pub yellow:    String,
+    pub peach:     String,
+    pub maroon:    String,
+    pub red:       String,
+    pub mauve:     String,
+    pub pink:      String,
+    pub flamingo:  String,
+    pub rosewater: String,
+}
+
+impl Palette {
+    /// 按令牌名取色值；令牌名即 `Theme.accent` 与前端 CSS 变量的键。
+    pub fn token(&self, token: &str) -> Option<&str> {
+        let value = match token {
+            "crust" => &self.crust,
+            "mantle" => &self.mantle,
+            "base" => &self.base,
+            "surface0" => &self.surface0,
+            "surface1" => &self.surface1,
+            "surface2" => &self.surface2,
+            "overlay0" => &self.overlay0,
+            "overlay1" => &self.overlay1,
+            "overlay2" => &self.overlay2,
+            "subtext0" => &self.subtext0,
+            "subtext1" => &self.subtext1,
+            "text" => &self.text,
+            "lavender" => &self.lavender,
+            "blue" => &self.blue,
+            "sapphire" => &self.sapphire,
+            "sky" => &self.sky,
+            "teal" => &self.teal,
+            "green" => &self.green,
+            "yellow" => &self.yellow,
+            "peach" => &self.peach,
+            "maroon" => &self.maroon,
+            "red" => &self.red,
+            "mauve" => &self.mauve,
+            "pink" => &self.pink,
+            "flamingo" => &self.flamingo,
+            "rosewater" => &self.rosewater,
+            _ => return None,
+        };
+        Some(value)
+    }
+
+    /// 全部 26 个令牌的 (名称, 色值) 对，供校验与逐令牌下发。
+    pub fn tokens(&self) -> Vec<(&'static str, &str)> {
+        PALETTE_TOKENS
+            .iter()
+            .filter_map(|t| self.token(t).map(|v| (*t, v)))
+            .collect()
+    }
+}
+
+/// 调色板令牌的规范顺序（与前端 CSS 变量、自定义编辑器渲染顺序一致）。
+pub const PALETTE_TOKENS: [&str; 26] = [
+    "crust",
+    "mantle",
+    "base",
+    "surface0",
+    "surface1",
+    "surface2",
+    "overlay0",
+    "overlay1",
+    "overlay2",
+    "subtext0",
+    "subtext1",
+    "text",
+    "lavender",
+    "blue",
+    "sapphire",
+    "sky",
+    "teal",
+    "green",
+    "yellow",
+    "peach",
+    "maroon",
+    "red",
+    "mauve",
+    "pink",
+    "flamingo",
+    "rosewater",
+];
+
+/// 校验调色板色值是否为合法的 `#rgb` / `#rrggbb` 十六进制颜色。
+pub fn is_valid_hex_color(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix('#') else {
+        return false;
+    };
+    matches!(hex.len(), 3 | 6) && hex.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// 已解析的主题：把 `Theme` 的两套引用展开成真实调色板，直接下发给客户端。
+///
+/// 客户端无需读配置目录、也无需内置任何色值 —— 终端与浏览器拿到的是同一份数据。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedTheme {
+    pub mode:   ThemeMode,
+    /// 强调色令牌名（ACCENTS 之一）
+    pub accent: String,
+    pub light:  Palette,
+    pub dark:   Palette,
+}
+
 /// 模型元数据
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -252,6 +485,9 @@ pub struct Ready {
     /// 上次记录的上下文占用与模型窗口，供重连后立即恢复进度条；无记录时为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_usage:   Option<ContextUsage>,
+    /// 已解析的主题（含两套完整调色板）：终端客户端据此直接上色，
+    /// 无需自行读取配置目录或内置任何色值
+    pub active_theme:    ResolvedTheme,
 }
 
 /// 上下文占用快照
@@ -479,9 +715,18 @@ pub enum AgentEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerMessage {
-    Ready { ready: Ready },
-    Event { event: AgentEvent },
-    Error { message: String },
+    /// 握手载荷内嵌两套完整调色板，体积远大于其他变体，故做 Box 间接
+    Ready {
+        ready: Box<Ready>,
+    },
+    /// `AgentEvent` 使用外部 tag 风格声明了 `data` 字段，
+    /// 与另外两个变体同时存在时仍会撑大整个枚举；同样做 Box 间接
+    Event {
+        event: Box<AgentEvent>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// 工具输出结果统一结构
@@ -556,7 +801,7 @@ mod tests {
             pending_ask:          None,
         };
         let server_msg = ServerMessage::Event {
-            event: AgentEvent::ActiveTurnCatchUp(catch_up),
+            event: Box::new(AgentEvent::ActiveTurnCatchUp(catch_up)),
         };
         let json = serde_json::to_string(&server_msg).unwrap();
         let de: ServerMessage = serde_json::from_str(&json).unwrap();
