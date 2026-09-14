@@ -3,6 +3,9 @@ name = "oma-daemon"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Axum 网关：REST API、WebSocket 与 Bearer 鉴权"
 
 [dependencies]
 anyhow = { workspace = true }

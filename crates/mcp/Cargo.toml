@@ -3,6 +3,9 @@ name = "oma-mcp"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "MCP 客户端：本地 stdio 与远程 SSE，工具按命名空间注册"
 
 [dependencies]
 anyhow = { workspace = true }

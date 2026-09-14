@@ -3,6 +3,9 @@ name = "oma-contract"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "纯类型与协议契约：消息块、事件与跨端共享数据模型"
 
 [dependencies]
 serde = { workspace = true }

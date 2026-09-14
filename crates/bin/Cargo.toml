@@ -3,6 +3,9 @@ name = "oma-bin"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "统一命令行入口 oma：daemon / web / tui / status"
 
 [[bin]]
 name = "oma"

@@ -3,6 +3,9 @@ name = "oma-config"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "config.toml 解析、内置 Agent 模板与调色板加载"
 
 [dependencies]
 anyhow = { workspace = true }

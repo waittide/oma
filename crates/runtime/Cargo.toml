@@ -3,6 +3,9 @@ name = "oma-runtime"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Agent 运行时：会话房间、命令队列、审批仲裁与上下文压缩"
 
 [dependencies]
 anyhow = { workspace = true }

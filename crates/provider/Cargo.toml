@@ -3,6 +3,9 @@ name = "oma-provider"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "多厂商流式协议归一化（Anthropic / OpenAI / Responses / Gemini）"
 
 [dependencies]
 anyhow = { workspace = true }
