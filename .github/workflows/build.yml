@@ -48,13 +48,13 @@ jobs:
             target: x86_64-pc-windows-msvc
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 前端资产在 cargo build 时经 rust-embed 内嵌进二进制，必须先构建前端
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -99,7 +99,7 @@ jobs:
           rm -rf "dist/${pkg}"
           ls -l dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: oma-${{ matrix.target }}
           path: dist/*
@@ -113,11 +113,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
