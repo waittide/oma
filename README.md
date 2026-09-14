@@ -5,6 +5,7 @@
 > 多端协同的 AI Agent 工作台：一个 Rust 内核 Daemon，同时服务终端、浏览器与桌面客户端。
 
 [![License](https://img.shields.io/badge/license-MIT-89b4fa.svg)](LICENSE)
+[![build](https://github.com/waittide/oma/actions/workflows/build.yml/badge.svg)](https://github.com/waittide/oma/actions/workflows/build.yml)
 [![Rust](https://img.shields.io/badge/rust-nightly-cba6f7.svg)](rust-toolchain.toml)
 [![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](web/package.json)
 [![Spec](https://img.shields.io/badge/技术规格书-42KB-f9e2af.svg)](docs/multi_client_agent_spec.md)
@@ -168,6 +169,34 @@ flowchart TB
 | pnpm | ≥ 9 | 前端包管理器 |
 
 平台：Linux 与 macOS 为日常开发环境；Windows 具备对应 `cfg` 回退分支，但未做验证。
+
+### 直接下载预编译产物
+
+不想自己搭工具链时，直接用 GitHub Actions 构建好的二进制：
+
+| 方式 | 位置 | 说明 |
+|---|---|---|
+| 已发布版本 | [Releases](https://github.com/waittide/oma/releases) | 推送 `v*` 标签后自动创建，一次性给出全部平台产物 |
+| 某次构建 | [Actions](https://github.com/waittide/oma/actions/workflows/build.yml) → 选中一条 run → 页面底部 **Artifacts** | 每次 push / PR 都会构建，产物默认保留 90 天 |
+| 手动触发 | 同一页面 → **Run workflow** | 不改代码即可重新构建并取产物 |
+
+仓库为公开仓库，Artifacts 无需登录即可下载。产物命名 `oma-<版本>-<target>.tar.gz`（Windows 为 `.zip`），
+解包后是自包含的 `oma` 可执行文件 + `README.md` + `LICENSE`——前端资产已在编译期内嵌，**运行时不需要 Node，也不需要 `web/dist`**：
+
+| 平台 | target |
+|---|---|
+| Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux aarch64 | `aarch64-unknown-linux-gnu` |
+| macOS Apple Silicon | `aarch64-apple-darwin` |
+| macOS Intel | `x86_64-apple-darwin` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` |
+
+```bash
+tar xzf oma-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+cd oma-0.1.0-x86_64-unknown-linux-gnu
+./oma daemon     # 终端 A：内核
+./oma web        # 终端 B：Web 控制台
+```
 
 ### 构建
 

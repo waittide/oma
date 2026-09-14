@@ -5,6 +5,7 @@
 > マルチクライアント対応の AI エージェント・ワークベンチ。1 つの Rust デーモンが、ターミナル・ブラウザ・デスクトップの各クライアントに同時にサービスを提供します。
 
 [![License](https://img.shields.io/badge/license-MIT-89b4fa.svg)](LICENSE)
+[![build](https://github.com/waittide/oma/actions/workflows/build.yml/badge.svg)](https://github.com/waittide/oma/actions/workflows/build.yml)
 [![Rust](https://img.shields.io/badge/rust-nightly-cba6f7.svg)](rust-toolchain.toml)
 [![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](web/package.json)
 [![Spec](https://img.shields.io/badge/spec-42KB-f9e2af.svg)](docs/multi_client_agent_spec.md)
@@ -182,6 +183,36 @@ flowchart TB
 | pnpm | ≥ 9 | フロントエンドのパッケージマネージャ |
 
 対応プラットフォーム：Linux と macOS が日常の開発環境です。Windows には対応する `cfg` フォールバックがありますが未検証です。
+
+### ビルド済みバイナリをダウンロードする
+
+ツールチェーンを用意したくない場合は、GitHub Actions がビルドしたバイナリをそのまま使えます。
+
+| 入手方法 | 場所 | 補足 |
+|---|---|---|
+| リリース版 | [Releases](https://github.com/waittide/oma/releases) | `v*` タグを push すると自動作成され、全プラットフォームの成果物が並びます |
+| 特定のビルド | [Actions](https://github.com/waittide/oma/actions/workflows/build.yml) → run を選択 → ページ下部の **Artifacts** | push / PR ごとにビルドされ、成果物は 90 日保持されます |
+| 手動実行 | 同じページの **Run workflow** | コードを変更せずに再ビルドして取得できます |
+
+リポジトリは公開のため、Artifacts はサインインなしでダウンロードできます。ファイル名は
+`oma-<バージョン>-<target>.tar.gz`（Windows は `.zip`）で、中身は自己完結した `oma` 実行ファイルと
+`README.md` / `LICENSE` です。フロントエンド資産はコンパイル時に埋め込まれるため、**実行時に Node も
+`web/dist` も不要**です。
+
+| プラットフォーム | target |
+|---|---|
+| Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux aarch64 | `aarch64-unknown-linux-gnu` |
+| macOS Apple Silicon | `aarch64-apple-darwin` |
+| macOS Intel | `x86_64-apple-darwin` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` |
+
+```bash
+tar xzf oma-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+cd oma-0.1.0-x86_64-unknown-linux-gnu
+./oma daemon     # ターミナル A：コア
+./oma web        # ターミナル B：Web コンソール
+```
 
 ### ビルド
 

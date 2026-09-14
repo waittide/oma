@@ -5,6 +5,7 @@
 > A multi-client AI agent workbench: one Rust daemon serving terminal, browser and desktop clients at the same time.
 
 [![License](https://img.shields.io/badge/license-MIT-89b4fa.svg)](LICENSE)
+[![build](https://github.com/waittide/oma/actions/workflows/build.yml/badge.svg)](https://github.com/waittide/oma/actions/workflows/build.yml)
 [![Rust](https://img.shields.io/badge/rust-nightly-cba6f7.svg)](rust-toolchain.toml)
 [![Vue](https://img.shields.io/badge/Vue-3-42b883.svg)](web/package.json)
 [![Spec](https://img.shields.io/badge/spec-42KB-f9e2af.svg)](docs/multi_client_agent_spec.md)
@@ -185,6 +186,36 @@ flowchart TB
 
 Platforms: Linux and macOS are the day-to-day development environments; Windows has the corresponding
 `cfg` fallbacks but is untested.
+
+### Download a prebuilt binary
+
+If you would rather not set up the toolchain, grab a binary built by GitHub Actions:
+
+| Route | Where | Notes |
+|---|---|---|
+| Published releases | [Releases](https://github.com/waittide/oma/releases) | Created automatically when a `v*` tag is pushed; all platforms at once |
+| A specific build | [Actions](https://github.com/waittide/oma/actions/workflows/build.yml) → pick a run → **Artifacts** at the bottom | Every push / PR builds; artifacts are kept for 90 days |
+| Manual run | Same page → **Run workflow** | Rebuild and download without touching the code |
+
+The repository is public, so artifacts can be downloaded without signing in. Archives are named
+`oma-<version>-<target>.tar.gz` (`.zip` on Windows) and contain a self-contained `oma` executable plus
+`README.md` and `LICENSE` — the frontend assets are embedded at compile time, so **no Node and no
+`web/dist` directory are needed at runtime**:
+
+| Platform | Target |
+|---|---|
+| Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux aarch64 | `aarch64-unknown-linux-gnu` |
+| macOS Apple Silicon | `aarch64-apple-darwin` |
+| macOS Intel | `x86_64-apple-darwin` |
+| Windows x86_64 | `x86_64-pc-windows-msvc` |
+
+```bash
+tar xzf oma-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+cd oma-0.1.0-x86_64-unknown-linux-gnu
+./oma daemon     # terminal A: the core
+./oma web        # terminal B: the web console
+```
 
 ### Build
 
