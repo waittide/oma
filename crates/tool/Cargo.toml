@@ -10,13 +10,17 @@ description = "内置工具集：read / write / edit / shell / task"
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-libc = { workspace = true }
 oma-contract = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 similar = { workspace = true }
 
 tokio = { workspace = true }
+
+# 进程组守卫（killpg / setpgid）只在 unix 上有实现，Windows 走 kill_on_drop 回落，
+# 因此把 libc 限定在 unix 目标，避免非 unix 构建里出现「未使用依赖」。
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [lints]
 workspace = true
