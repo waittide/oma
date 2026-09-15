@@ -197,11 +197,17 @@ function buildNextConfig(next: ClientConnection): ClientConfig | null {
 
 async function saveConnection() {
   const name = conn.name.trim();
-  if (!name) {
+  // 仅当能落盘 client.toml 时才要求名称；无接口时退回旧的 localStorage 行为
+  if (clientConfigReady.value && !name) {
     toast.error(t('connNameRequired'));
     return;
   }
   const url = normalizeBaseUrl(conn.baseUrl);
+  // 保存的连接必须带地址（服务器端也会校验）；空地址只对当前会话的「同源」有意义
+  if (clientConfigReady.value && !url) {
+    toast.error(t('connUrlRequired'));
+    return;
+  }
   setConnection(url, conn.token);
   conn.baseUrl = baseUrl.value;
   conn.token = token.value;

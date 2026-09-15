@@ -228,6 +228,7 @@
     "connNameDesc": "用于区分与切换多个连接。",
     "connNamePlaceholder": "本地",
     "connNameRequired": "请先填写连接名称",
+    "connUrlRequired": "请先填写服务器地址",
     "connAdd": "新增连接",
     "connEmpty": "暂无已保存的连接，填写下方信息后点击「保存并连接」。",
     "connRemoved": "连接已删除",

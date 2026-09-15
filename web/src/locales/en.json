@@ -228,6 +228,7 @@
     "connNameDesc": "Used to tell connections apart and switch between them.",
     "connNamePlaceholder": "Local",
     "connNameRequired": "Enter a connection name first",
+    "connUrlRequired": "Enter the server address first",
     "connAdd": "Add connection",
     "connEmpty": "No saved connections yet. Fill in the fields below and click Save & Connect.",
     "connRemoved": "Connection removed",

@@ -228,6 +228,7 @@
     "connNameDesc": "複数の接続を区別して切り替えるための名前です。",
     "connNamePlaceholder": "ローカル",
     "connNameRequired": "先に接続名を入力してください",
+    "connUrlRequired": "先にサーバーのアドレスを入力してください",
     "connAdd": "接続を追加",
     "connEmpty": "保存済みの接続はありません。下の項目を入力して「保存して接続」を押してください。",
     "connRemoved": "接続を削除しました",

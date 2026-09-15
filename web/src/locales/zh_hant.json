@@ -228,6 +228,7 @@
     "connNameDesc": "用於區分與切換多個連線。",
     "connNamePlaceholder": "本機",
     "connNameRequired": "請先填寫連線名稱",
+    "connUrlRequired": "請先填寫伺服器位址",
     "connAdd": "新增連線",
     "connEmpty": "尚無已儲存的連線，填寫下方資訊後點選「儲存並連線」。",
     "connRemoved": "連線已刪除",
