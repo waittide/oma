@@ -382,13 +382,17 @@ async fn run() -> Result<()> {
         Some(Commands::Web { host, port, open }) => {
             run_web(host.as_deref(), port, open).await?;
         }
-        Some(Commands::Tui { addr, token, workspace }) => {
-            let token = read_token(token.as_deref(), &config_path(None))?;
+        Some(Commands::Tui {
+            addr,
+            token,
+            connection,
+            workspace,
+        }) => {
             let workspace = match workspace {
                 Some(w) => w,
                 None => std::env::current_dir()?.to_string_lossy().to_string(),
             };
-            oma_tui::run(&addr, &token, &workspace).await?;
+            run_tui(addr, token, connection, workspace).await?;
         }
         Some(Commands::Status { addr, token }) => {
             run_status(&addr, token.as_deref()).await?;
@@ -400,6 +404,82 @@ async fn run() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// 启动 TUI：连接来源优先级为 命令行 > client.toml 指定连接 > 活动连接 > 默认地址。
+///
+/// TUI 内切换连接后回写 client.toml 的 active，下次启动仍在同一连接上。
+async fn run_tui(
+    addr: Option<String>,
+    token: Option<String>,
+    connection: Option<String>,
+    workspace: String,
+) -> Result<()> {
+    let path = client_config_path();
+    let mut client = load_client_config(&path)?;
+
+    // 显式指定的连接名必须存在，避免静默换到别的地址
+    let named = match connection.as_deref() {
+        Some(name) => Some(
+            client
+                .connections
+                .iter()
+                .find(|c| c.name == name)
+                .with_context(|| format!("client.toml 中不存在名为「{name}」的连接"))?,
+        ),
+        None => None,
+    };
+
+    let addr = addr
+        .or_else(|| named.map(|c| c.url.clone()))
+        .or_else(|| client.active_connection().map(|c| c.url.clone()))
+        .unwrap_or_else(|| DEFAULT_ADDR.to_string());
+
+    let token = match token {
+        Some(t) => t,
+        // token 优先取与地址匹配的连接；否则退回命名/活动连接，最后才读 config.toml
+        None => client
+            .connections
+            .iter()
+            .find(|c| c.url == addr)
+            .or(named)
+            .or_else(|| client.active_connection())
+            .map(|c| c.token.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or(read_token(None, &config_path(None))?),
+    };
+
+    let active = client
+        .connections
+        .iter()
+        .find(|c| c.url == addr)
+        .map(|c| c.name.clone());
+
+    let options = oma_tui::TuiOptions {
+        addr,
+        token,
+        workspace,
+        connections: client
+            .connections
+            .iter()
+            .map(|c| oma_tui::TuiConnection {
+                name:  c.name.clone(),
+                url:   c.url.clone(),
+                token: c.token.clone(),
+            })
+            .collect(),
+        active,
+    };
+
+    if let Some(name) = oma_tui::run(options).await? {
+        if client.active != name {
+            client.active = name;
+            client
+                .save_to_file_atomic(&path)
+                .with_context(|| format!("无法把活动连接写入 {}", path.display()))?;
+        }
+    }
     Ok(())
 }
 

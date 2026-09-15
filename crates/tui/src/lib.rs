@@ -59,6 +59,36 @@ fn notify_terminal(title: &str, body: &str) {
     let _ = out.flush();
 }
 
+/// 一条可切换的已保存连接（来自 client.toml）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TuiConnection {
+    pub name:  String,
+    pub url:   String,
+    pub token: String,
+}
+
+/// `oma tui` 的启动参数。
+pub struct TuiOptions {
+    /// 初始连接地址与 token（来自 client.toml 的活动连接或命令行覆盖）
+    pub addr:        String,
+    pub token:       String,
+    pub workspace:   String,
+    /// 可切换的连接列表；空则不提供切换入口
+    pub connections: Vec<TuiConnection>,
+    /// 初始活动连接名（用于切换列表高亮）
+    pub active:      Option<String>,
+}
+
+/// 会话循环的出口：退出，或切换到另一条连接后重建会话。
+enum Outcome {
+    Quit,
+    Switch {
+        addr:  String,
+        token: String,
+        name:  String,
+    },
+}
+
 /// 由握手下发的调色板导出的语义配色。
 ///
 /// 全部字段都是 `Color`（`Copy`），因此可按值传进绘制函数，无需处理借用。
@@ -208,23 +238,29 @@ impl PendingAsk {
 }
 
 struct App {
-    workspace: String,
-    model:     String,
-    agent:     String,
-    connected: bool,
-    busy:      bool,
-    queue:     usize,
-    status:    String,
-    entries:   Vec<Entry>,
-    input:     String,
-    scroll:    u16,
-    stick:     bool,
-    approval:  Option<PendingApproval>,
-    ask:       Option<PendingAsk>,
+    workspace:   String,
+    model:       String,
+    agent:       String,
+    connected:   bool,
+    busy:        bool,
+    queue:       usize,
+    status:      String,
+    entries:     Vec<Entry>,
+    input:       String,
+    scroll:      u16,
+    stick:       bool,
+    approval:    Option<PendingApproval>,
+    ask:         Option<PendingAsk>,
     /// 最近一次请求的上下文占用（tokens, context_len）
-    context:   Option<(usize, usize)>,
+    context:     Option<(usize, usize)>,
+    /// 可切换的已保存连接
+    connections: Vec<TuiConnection>,
+    /// 当前活动连接名
+    active_conn: Option<String>,
+    /// 连接切换弹窗的高亮下标；None = 未打开
+    picker:      Option<usize>,
     /// 由握手下发主题导出的语义配色
-    theme:     TuiTheme,
+    theme:       TuiTheme,
 }
 
 impl App {
@@ -244,6 +280,9 @@ impl App {
             approval: None,
             ask: None,
             context: None,
+            connections: Vec::new(),
+            active_conn: None,
+            picker: None,
             theme,
         }
     }
@@ -372,7 +411,57 @@ fn summarize_tool_input(input: &serde_json::Value) -> String {
 }
 
 /// 启动 TUI 客户端：复用当前工作区最近的会话，没有则新建。
-pub async fn run(addr: &str, token: &str, workspace: &str) -> Result<()> {
+///
+/// 支持在界面内切换到 client.toml 里保存的其他连接：切换时重建会话与事件流。
+/// 返回最终使用的连接名（未使用已保存连接时为 None），供调用方回写 active。
+pub async fn run(options: TuiOptions) -> Result<Option<String>> {
+    // crossterm 的阻塞读放在独立线程；切换连接只是重建会话，
+    // 不重新开线程，避免多个 reader 竞争同一 tty。
+    let (key_tx, mut key_rx) = mpsc::channel::<KeyEvent>(64);
+    std::thread::spawn(move || {
+        while let Ok(ev) = event::read() {
+            if let Event::Key(key) = ev {
+                if key_tx.blocking_send(key).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let mut addr = options.addr.clone();
+    let mut token = options.token.clone();
+    let mut active = options.active.clone();
+
+    let mut terminal = ratatui::init();
+    let result = loop {
+        match run_session(&mut terminal, &addr, &token, &options, active.clone(), &mut key_rx).await {
+            Ok(Outcome::Quit) => break Ok(active),
+            Ok(Outcome::Switch {
+                addr: next_addr,
+                token: next_token,
+                name,
+            }) => {
+                addr = next_addr;
+                token = next_token;
+                active = Some(name);
+            }
+            Err(e) => break Err(e),
+        }
+    };
+    ratatui::restore();
+    result
+}
+
+/// 连接一次、跑一个会话，直到退出或要求切换。
+async fn run_session(
+    terminal: &mut ratatui::DefaultTerminal,
+    addr: &str,
+    token: &str,
+    options: &TuiOptions,
+    active: Option<String>,
+    key_rx: &mut mpsc::Receiver<KeyEvent>,
+) -> Result<Outcome> {
+    let workspace = options.workspace.as_str();
     let api = SessionApi::new(addr, token);
     let record = match api.list_sessions(Some(workspace)).await?.into_iter().next() {
         Some(existing) => existing,
@@ -401,6 +490,14 @@ pub async fn run(addr: &str, token: &str, workspace: &str) -> Result<()> {
             ready.active_agent.clone(),
             theme,
         );
+        app.connections = options.connections.clone();
+        // 活动连接：优先调用方给出的名字，否则按地址匹配已保存的条目
+        app.active_conn = active.or_else(|| {
+            app.connections
+                .iter()
+                .find(|c| c.url == addr)
+                .map(|c| c.name.clone())
+        });
         app.push(
             "·",
             format!("会话 {} 已连接", short_id(&ready.session_id)),
@@ -416,22 +513,7 @@ pub async fn run(addr: &str, token: &str, workspace: &str) -> Result<()> {
         app
     };
 
-    // crossterm 的阻塞读放在独立线程，主循环只处理两路事件
-    let (key_tx, mut key_rx) = mpsc::channel::<KeyEvent>(64);
-    std::thread::spawn(move || {
-        while let Ok(ev) = event::read() {
-            if let Event::Key(key) = ev {
-                if key_tx.blocking_send(key).is_err() {
-                    break;
-                }
-            }
-        }
-    });
-
-    let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, &mut app, &mut client, &mut key_rx).await;
-    ratatui::restore();
-    result
+    event_loop(terminal, &mut app, &mut client, key_rx).await
 }
 
 async fn event_loop(
@@ -439,7 +521,7 @@ async fn event_loop(
     app: &mut App,
     client: &mut OmaClient,
     key_rx: &mut mpsc::Receiver<KeyEvent>,
-) -> Result<()> {
+) -> Result<Outcome> {
     let mut last_draw = Instant::now();
     loop {
         if last_draw.elapsed() >= TICK {
@@ -458,16 +540,16 @@ async fn event_loop(
                     app.connected = false;
                     app.status = "连接已断开".into();
                     terminal.draw(|frame| draw(frame, app))?;
-                    return Ok(());
+                    return Ok(Outcome::Quit);
                 }
             },
             key = key_rx.recv() => {
-                let Some(key) = key else { return Ok(()) };
+                let Some(key) = key else { return Ok(Outcome::Quit) };
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if handle_key(app, client, key).await? {
-                    return Ok(());
+                if let Some(outcome) = handle_key(app, client, key).await? {
+                    return Ok(outcome);
                 }
                 terminal.draw(|frame| draw(frame, app))?;
                 last_draw = Instant::now();
@@ -570,11 +652,11 @@ async fn handle_ask_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) ->
     Ok(())
 }
 
-/// 处理按键；返回 true 表示退出
-async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Result<bool> {
+/// 处理按键；返回 Some 表示离开当前会话（退出或切换连接）。
+async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Result<Option<Outcome>> {
     // ask 弹窗优先级最高：采纳答案前不应误发消息
     if app.ask.is_some() {
-        return handle_ask_key(app, client, key).await.map(|_| false);
+        return handle_ask_key(app, client, key).await.map(|_| None);
     }
 
     // 审批弹窗优先消费按键
@@ -596,12 +678,20 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
                 Style::default().fg(app.theme.warning),
             );
         }
-        return Ok(false);
+        return Ok(None);
+    }
+
+    // 连接切换弹窗（无 ask/审批时）：先于普通输入消费按键
+    if app.picker.is_some() {
+        return Ok(handle_picker_key(app, key));
     }
 
     match key.code {
-        KeyCode::Esc => return Ok(true),
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
+        KeyCode::Esc => return Ok(Some(Outcome::Quit)),
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Ok(Some(Outcome::Quit));
+        }
+        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => open_picker(app),
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
             app.stick = false;
@@ -621,7 +711,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
         KeyCode::Enter => {
             let text = app.input.trim().to_string();
             if text.is_empty() {
-                return Ok(false);
+                return Ok(None);
             }
             app.input.clear();
             app.push("你", text.clone(), Style::default().fg(app.theme.accent));
@@ -639,7 +729,50 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
         KeyCode::Char(c) => app.input.push(c),
         _ => {}
     }
-    Ok(false)
+    Ok(None)
+}
+
+/// 打开连接切换弹窗；无已保存连接时仅提示，不进入空列表。
+fn open_picker(app: &mut App) {
+    if app.connections.is_empty() {
+        app.push(
+            "·",
+            "没有已保存的连接（可在设置页或 client.toml 中添加）",
+            Style::default().fg(app.theme.muted),
+        );
+        return;
+    }
+    let index = app
+        .active_conn
+        .as_ref()
+        .and_then(|name| app.connections.iter().position(|c| &c.name == name))
+        .unwrap_or(0);
+    app.picker = Some(index);
+}
+
+/// 连接切换弹窗按键：上下选择、Enter 切换、Esc 取消。
+fn handle_picker_key(app: &mut App, key: KeyEvent) -> Option<Outcome> {
+    let index = app.picker?;
+    let last = app.connections.len().saturating_sub(1);
+    match key.code {
+        KeyCode::Esc => app.picker = None,
+        KeyCode::Up | KeyCode::Char('k') => app.picker = Some(index.saturating_sub(1)),
+        KeyCode::Down | KeyCode::Char('j') => app.picker = Some((index + 1).min(last)),
+        KeyCode::Enter => {
+            let Some(conn) = app.connections.get(index) else {
+                app.picker = None;
+                return None;
+            };
+            let outcome = Outcome::Switch {
+                addr:  conn.url.clone(),
+                token: conn.token.clone(),
+                name:  conn.name.clone(),
+            };
+            return Some(outcome);
+        }
+        _ => {}
+    }
+    None
 }
 
 fn decision_label(decision: ApprovalDecision) -> &'static str {
@@ -738,6 +871,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             app.push("  ", format!("{}: {}{}", tool_name, head, suffix), style);
         }
         AgentEvent::AskRequested(data) => {
+            app.picker = None;
             if let Some(question) = data.questions.first() {
                 notify_terminal("Oma", &format!("需要确认：{}", question.question));
             }
@@ -754,6 +888,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             }
         }
         AgentEvent::PermissionRequested(data) => {
+            app.picker = None;
             notify_terminal("Oma", &format!("待授权：{}", data.tool_name));
             app.approval = Some(PendingApproval {
                 request_id: data.request_id,
@@ -870,12 +1005,13 @@ fn approval_mode_label(mode: oma_contract::ApprovalMode) -> &'static str {
 }
 
 fn draw(frame: &mut Frame, app: &App) {
+    let area = frame.area();
     let [header, body, input] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(INPUT_HEIGHT),
     ])
-    .areas(frame.area());
+    .areas(area);
 
     // 配色按值拷入各绘制函数：TuiTheme 全为 Copy 字段，且 Draw 内 app 已不可变借用
     let theme = app.theme;
@@ -884,10 +1020,71 @@ fn draw(frame: &mut Frame, app: &App) {
     draw_input(frame, app, input, theme);
 
     if let Some(pending) = &app.ask {
-        draw_ask(frame, pending, frame.area(), theme);
+        draw_ask(frame, pending, area, theme);
     } else if let Some(pending) = &app.approval {
-        draw_approval(frame, pending, frame.area(), theme);
+        draw_approval(frame, pending, area, theme);
+    } else if let Some(index) = app.picker {
+        draw_picker(frame, app, index, area, theme);
     }
+}
+
+/// 连接切换弹窗：列出已保存连接，高亮当前选中项。
+fn draw_picker(frame: &mut Frame, app: &App, index: usize, area: Rect, theme: TuiTheme) {
+    if app.connections.is_empty() {
+        return;
+    }
+    let height = (app.connections.len() as u16 + 3).min(area.height);
+    let width = area.width.saturating_sub(8).min(64);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " 切换连接 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
+            Style::default().fg(theme.muted),
+        ));
+    frame.render_widget(block, popup);
+
+    let inner = Rect {
+        x:      popup.x + 1,
+        y:      popup.y + 1,
+        width:  popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let lines: Vec<Line<'static>> = app
+        .connections
+        .iter()
+        .enumerate()
+        .map(|(i, conn)| {
+            let selected = i == index;
+            let marker = if selected { "> " } else { "  " };
+            let name = if app.active_conn.as_deref() == Some(conn.name.as_str()) {
+                format!("{} ✓", conn.name)
+            } else {
+                conn.name.clone()
+            };
+            let style = if selected {
+                Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.subtext)
+            };
+            Line::from(vec![
+                Span::styled(marker, Style::default().fg(theme.accent)),
+                Span::styled(name, style),
+                Span::raw("  "),
+                Span::styled(conn.url.clone(), Style::default().fg(theme.muted)),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
 /// 上下文占用进度条：10 格 + 百分比，参照 oh-my-pi 的 contextGauge。
@@ -966,7 +1163,7 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     let hint = if app.connected {
-        " Enter 发送 · Ctrl+X 中止 · Ctrl+U 清空 · PgUp/PgDn 滚动 · Esc 退出 "
+        " Enter 发送 · Ctrl+X 中止 · Ctrl+O 切换连接 · Ctrl+U 清空 · Esc 退出 "
     } else {
         " 连接已断开 "
     };
@@ -1192,6 +1389,55 @@ mod tests {
         assert!(seq.starts_with("\x1b]9;Oma: a b c\x07"));
         assert!(seq.contains("\x1b]777;notify;Oma;a b c\x07"));
         assert!(seq.ends_with('\x07'));
+    }
+
+    /// 连接切换弹窗：打开时定位活动连接，上下选择不越界，Enter 返回切换目标。
+    #[test]
+    fn test_picker_navigation_and_switch() {
+        let theme = TuiTheme::new(&ResolvedTheme {
+            mode:   ThemeMode::Dark,
+            accent: "blue".into(),
+            light:  palette_with("latte", "#111111", "#222222"),
+            dark:   palette_with("mocha", "#eeeeee", "#dddddd"),
+        });
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), theme);
+        app.connections = vec![
+            TuiConnection {
+                name:  "a".into(),
+                url:   "http://a".into(),
+                token: "ta".into(),
+            },
+            TuiConnection {
+                name:  "b".into(),
+                url:   "http://b".into(),
+                token: "tb".into(),
+            },
+        ];
+        app.active_conn = Some("b".into());
+
+        // 打开时高亮活动连接；向上不越界
+        open_picker(&mut app);
+        assert_eq!(app.picker, Some(1));
+        handle_picker_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.picker, Some(0));
+        handle_picker_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.picker, Some(0));
+
+        // Enter 返回切换目标
+        match handle_picker_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+            Some(Outcome::Switch { addr, token, name }) => {
+                assert_eq!(name, "a");
+                assert_eq!(addr, "http://a");
+                assert_eq!(token, "ta");
+            }
+            _ => panic!("Enter 应返回切换目标"),
+        }
+
+        // 没有已保存连接时仅提示，不进入空列表
+        app.connections.clear();
+        app.picker = None;
+        open_picker(&mut app);
+        assert_eq!(app.picker, None);
     }
 
     #[test]

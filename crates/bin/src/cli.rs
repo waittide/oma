@@ -61,15 +61,18 @@ pub enum Commands {
     },
     /// 启动 tui 客户端
     Tui {
-        /// Daemon 地址
-        #[arg(long, default_value = DEFAULT_ADDR)]
-        addr:      String,
+        /// Daemon 地址（覆盖 client.toml 中的连接）
+        #[arg(long)]
+        addr:       Option<String>,
         /// 覆盖配置文件中的访问 token
         #[arg(long)]
-        token:     Option<String>,
+        token:      Option<String>,
+        /// 使用 client.toml 中指定名称的连接
+        #[arg(long)]
+        connection: Option<String>,
         /// 目标工作区（默认当前目录）
         #[arg(long)]
-        workspace: Option<String>,
+        workspace:  Option<String>,
     },
     /// 查看 Daemon 服务端运行状态
     Status {
