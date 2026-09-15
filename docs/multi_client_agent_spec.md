@@ -779,7 +779,11 @@ pub struct Palette {
 - `oma web`：启动 web 客户端（仅内嵌前端静态服务，**不会**顺便拉起 Daemon，也不再依赖 Vite/pnpm）；
   构建产物经 `rust-embed` 内嵌进二进制（release 下不依赖任何外部目录），
   仅打印 `web 监听地址: http://…`（不打印 token），需 `--open` 才自动打开浏览器；
+  监听地址与端口未由 `--host/--port` 指定时读自 `client.toml` 的 `[web]`，
+  并向页面提供同源接口 `GET/PUT /api/client/config`（见 9.3）；
 - `oma tui`：启动 tui 客户端（连接 Daemon 并进入 Ratatui 终端交互界面）；
+  连接来源优先级为 `--addr/--token` > `--connection <名称>` > `client.toml` 活动连接
+  > 默认地址，界面内 `Ctrl+O` 可在已保存连接间切换（回写 `client.toml` 的 `active`）；
 - `oma status` / `oma help [子命令]`：查看服务端状态 / 打印帮助；
 - 不带子命令（`oma`）：等价于 `oma -h`，仅打印帮助，不自动启动任何界面；
 - **输出全中文**：clap 的固定文案（`Usage:`/`Options:`/`Commands:` 标题、`[default: …]`
@@ -806,8 +810,20 @@ pub struct Palette {
   4. 权限审批模态框（AllowOnce, AllowSession, Deny）；
   5. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）；
   6. 设置面板（连接、外观/主题与调色板、语言、默认参数、Provider、预设、技能、MCP）；
+     其中「连接」页读写 `oma web` 同源接口的 `client.toml`：列表可切换、增删连接，
+     保存时 upsert 当前连接并置为 `active`；接口不可用（如 vite dev）时退回 localStorage；
   7. 界面 i18n 支持简体中文 / 繁体中文 / English / 日本語，缺键回退为键名；
-     首次访问时按浏览器语言自动选择（`zh-Hans` / `zh-Hant` / `ja` / 其余为 `en`）。
+     首次访问时按浏览器语言自动选择（`zh-Hans` / `zh-Hant` / `ja` / 其余为 `en`）；
+  8. 用户消息操作区提供「复制」（与代码块复制共用降级到 `execCommand` 的剪贴板实现）；
+  9. 需要人参与的事件（任务完成、提问、审批）到达时发出通知：应用内走 vue-sonner，
+     页面处于后台时再补一条浏览器系统通知（TUI 则改发终端 OSC 9/777 通知）。
+
+### 9.3 客户端本地配置 `client.toml`
+- 路径：`<配置目录>/oma/client.toml`，与 Daemon 的 `config.toml` 分离，属「这台机器上的客户端」信息；
+- 内容：`[web]` 段（`host`/`port`，仅 `oma web` 启动时使用）、`[[connections]]` 连接列表
+  （`name`/`url`/`token`，用户可在客户端保存与切换）、`active`（当前活动连接名，空则取列表首个）；
+- 读写：`oma web` 提供同源接口 `GET/PUT /api/client/config`（写入前校验名称/地址非空且不重名，
+  经写锁串行化后原子落盘）；TUI 只读取连接列表，切换后回写 `active`。
 
 ---
 
