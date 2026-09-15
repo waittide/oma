@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures_util::StreamExt;
 use oma_contract::{Block, ChatMessage, ModelCapability, Role, StopReason};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// 三级递归合并 JSON 辅助函数
 pub fn deep_merge_json(target: &mut serde_json::Value, source: &serde_json::Value) {
@@ -555,7 +555,10 @@ impl UniversalProvider {
         }
     }
 
-    /// 针对各厂商组装并发送请求
+    /// 针对各厂商组装请求并开始流式接收
+    ///
+    /// 传输层中断（网关/厂商中途断流）由 [`relay`] 在内容下发之前透明重发，
+    /// 调用方只在重发穷尽或内容已下发时收到 `ProviderStreamEvent::Error`。
     pub async fn send_stream(
         &self,
         messages: &[ChatMessage],
@@ -565,44 +568,49 @@ impl UniversalProvider {
     ) -> Result<mpsc::Receiver<ProviderStreamEvent>> {
         let (tx, rx) = mpsc::channel(128);
 
-        match self.config.api_type.as_str() {
-            "anthropic" => {
-                self.stream_anthropic(messages, system_prompt, tools, model, tx)
-                    .await?;
-            }
-            "completion" => {
-                self.stream_openai_completion(messages, system_prompt, tools, model, tx)
-                    .await?;
-            }
-            "response" => {
-                self.stream_responses(messages, system_prompt, tools, model, tx)
-                    .await?;
-            }
-            "google" => {
-                self.stream_google(messages, system_prompt, tools, model, tx)
-                    .await?;
-            }
-            other => {
-                let _ = tx
-                    .send(ProviderStreamEvent::Error(format!("Unsupported api_type: {}", other)))
-                    .await;
-            }
-        }
+        let Some(api) = ApiType::parse(&self.config.api_type) else {
+            let _ = tx
+                .send(ProviderStreamEvent::Error(format!(
+                    "Unsupported api_type: {}",
+                    self.config.api_type
+                )))
+                .await;
+            return Ok(rx);
+        };
 
+        let plan = self.build_plan(api, messages, system_prompt, tools, model);
+        tokio::spawn(relay(plan, tx));
         Ok(rx)
+    }
+
+    /// 按协议组装请求：请求体在此一次性序列化，重发时复用同一份字节
+    fn build_plan(
+        &self,
+        api: ApiType,
+        messages: &[ChatMessage],
+        system_prompt: Option<&str>,
+        tools: &[serde_json::Value],
+        model: &ModelConfig,
+    ) -> RequestPlan {
+        let builder = match api {
+            ApiType::Anthropic => self.build_anthropic_request(messages, system_prompt, tools, model),
+            ApiType::OpenAi => self.build_openai_request(messages, system_prompt, tools, model),
+            ApiType::Responses => self.build_responses_request(messages, system_prompt, tools, model),
+            ApiType::Gemini => self.build_gemini_request(messages, system_prompt, tools, model),
+        };
+        RequestPlan { api, builder }
     }
 
     // -------------------------------------------------------------
     // Anthropic Messages API
     // -------------------------------------------------------------
-    async fn stream_anthropic(
+    fn build_anthropic_request(
         &self,
         messages: &[ChatMessage],
         system_prompt: Option<&str>,
         tools: &[serde_json::Value],
         model: &ModelConfig,
-        tx: mpsc::Sender<ProviderStreamEvent>,
-    ) -> Result<()> {
+    ) -> reqwest::RequestBuilder {
         let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
         let api_key = self.config.resolved_api_key();
 
@@ -724,42 +732,19 @@ impl UniversalProvider {
             req = req.header(k, v);
         }
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to send request to Anthropic")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let err_text = resp.text().await.unwrap_or_default();
-            let _ = tx
-                .send(ProviderStreamEvent::Error(format!(
-                    "Anthropic API error {}: {}",
-                    status, err_text
-                )))
-                .await;
-            return Ok(());
-        }
-
-        // 启动后台解析 SSE
-        tokio::spawn(async move {
-            parse_anthropic_sse(resp.bytes_stream(), tx).await;
-        });
-
-        Ok(())
+        req.json(&body)
     }
 
     // -------------------------------------------------------------
     // OpenAI / DeepSeek Chat Completion API
     // -------------------------------------------------------------
-    async fn stream_openai_completion(
+    fn build_openai_request(
         &self,
         messages: &[ChatMessage],
         system_prompt: Option<&str>,
         tools: &[serde_json::Value],
         model: &ModelConfig,
-        tx: mpsc::Sender<ProviderStreamEvent>,
-    ) -> Result<()> {
+    ) -> reqwest::RequestBuilder {
         let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
         let api_key = self.config.resolved_api_key();
 
@@ -810,41 +795,19 @@ impl UniversalProvider {
             req = req.header(k, v);
         }
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to send request to OpenAI/DeepSeek")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let err_text = resp.text().await.unwrap_or_default();
-            let _ = tx
-                .send(ProviderStreamEvent::Error(format!(
-                    "API error {}: {}",
-                    status, err_text
-                )))
-                .await;
-            return Ok(());
-        }
-
-        tokio::spawn(async move {
-            parse_openai_sse(resp.bytes_stream(), tx).await;
-        });
-
-        Ok(())
+        req.json(&body)
     }
 
     // -------------------------------------------------------------
     // Google Gemini API
     // -------------------------------------------------------------
-    async fn stream_google(
+    fn build_gemini_request(
         &self,
         messages: &[ChatMessage],
         system_prompt: Option<&str>,
         tools: &[serde_json::Value],
         model: &ModelConfig,
-        tx: mpsc::Sender<ProviderStreamEvent>,
-    ) -> Result<()> {
+    ) -> reqwest::RequestBuilder {
         let api_key = self.config.resolved_api_key();
         let url = format!(
             "{}/v1beta/models/{}:streamGenerateContent?alt=sse&key={}",
@@ -858,32 +821,19 @@ impl UniversalProvider {
         deep_merge_json(&mut body, &self.config.body);
         deep_merge_json(&mut body, &model.body);
 
-        let resp = self.client.post(&url).json(&body).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let err_text = resp.text().await.unwrap_or_default();
-            let _ = tx
-                .send(ProviderStreamEvent::Error(format!(
-                    "Gemini API error {}: {}",
-                    status, err_text
-                )))
-                .await;
-            return Ok(());
-        }
-
-        tokio::spawn(async move {
-            parse_gemini_sse(resp.bytes_stream(), tx).await;
-        });
-        Ok(())
+        self.client.post(&url).json(&body)
     }
-    async fn stream_responses(
+
+    // -------------------------------------------------------------
+    // OpenAI Responses API
+    // -------------------------------------------------------------
+    fn build_responses_request(
         &self,
         messages: &[ChatMessage],
         system_prompt: Option<&str>,
         tools: &[serde_json::Value],
         model: &ModelConfig,
-        tx: mpsc::Sender<ProviderStreamEvent>,
-    ) -> Result<()> {
+    ) -> reqwest::RequestBuilder {
         let url = format!("{}/responses", self.config.base_url.trim_end_matches('/'));
         let api_key = self.config.resolved_api_key();
 
@@ -1039,29 +989,174 @@ impl UniversalProvider {
             req = req.header(k, v);
         }
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to send request to Responses API")?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let err_text = resp.text().await.unwrap_or_default();
-            let _ = tx
-                .send(ProviderStreamEvent::Error(format!(
-                    "Responses API error {}: {}",
-                    status, err_text
-                )))
-                .await;
-            return Ok(());
-        }
-
-        tokio::spawn(async move {
-            parse_responses_sse(resp.bytes_stream(), tx).await;
-        });
-
-        Ok(())
+        req.json(&body)
     }
+}
+
+// =========================================================================
+// 流式请求驱动：传输层中断的透明重发
+// =========================================================================
+
+/// 传输层中断时的尝试次数上限（首次 + 重发）
+const STREAM_MAX_ATTEMPTS: usize = 3;
+/// 重发前的等待：给网关换渠道、上游恢复留出时间
+const STREAM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// 厂商协议：决定请求组装方式与响应解析器
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApiType {
+    Anthropic,
+    OpenAi,
+    Responses,
+    Gemini,
+}
+
+impl ApiType {
+    /// 配置里的 `api_type` 取值
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "anthropic" => Some(Self::Anthropic),
+            "completion" => Some(Self::OpenAi),
+            "response" => Some(Self::Responses),
+            "google" => Some(Self::Gemini),
+            _ => None,
+        }
+    }
+
+    /// 错误信息前缀：让用户看得出是哪一侧协议报的错
+    fn label(self) -> &'static str {
+        match self {
+            Self::Anthropic => "Anthropic",
+            Self::OpenAi => "OpenAI",
+            Self::Responses => "Responses",
+            Self::Gemini => "Gemini",
+        }
+    }
+}
+
+/// 组装完成、可重复发送的流式请求
+struct RequestPlan {
+    api:     ApiType,
+    builder: reqwest::RequestBuilder,
+}
+
+/// 一次尝试的结局
+enum Attempt {
+    /// 请求已结束：正常收尾，或厂商返回了错误正文（重发无意义）
+    Settled,
+    /// 传输层中断且尚未下发任何内容：可以安全重发
+    Retryable(String),
+    /// 传输层中断但已下发过内容：重发会造成重复，不得重发
+    Interrupted(String),
+}
+
+/// 发送请求并驱动响应，传输层中断时在**内容下发之前**重发
+///
+/// 网关与厂商偶发在响应中途断开连接，且常发生在正文尚未开始的第一个分片之后
+/// （排查中实测某聚合网关的主渠道断流率接近三成）。这类中断与请求内容无关，
+/// 重发即可恢复；而一旦有增量下发，它已经流向界面与历史，重发只会造成重复，
+/// 故只报错不重发。
+async fn relay(plan: RequestPlan, tx: mpsc::Sender<ProviderStreamEvent>) {
+    for attempt in 1..=STREAM_MAX_ATTEMPTS {
+        match attempt_once(&plan, &tx).await {
+            Attempt::Settled => return,
+            Attempt::Interrupted(err) => {
+                let _ = tx.send(ProviderStreamEvent::Error(err)).await;
+                return;
+            }
+            Attempt::Retryable(err) if attempt == STREAM_MAX_ATTEMPTS => {
+                let _ = tx
+                    .send(ProviderStreamEvent::Error(format!(
+                        "Stream failed before any content after {} attempts: {}",
+                        attempt, err
+                    )))
+                    .await;
+                return;
+            }
+            Attempt::Retryable(_) => tokio::time::sleep(STREAM_RETRY_DELAY).await,
+        }
+    }
+}
+
+/// 单次尝试：发送、校验状态、转发增量，并回报本次连接是否中途断开
+async fn attempt_once(plan: &RequestPlan, tx: &mpsc::Sender<ProviderStreamEvent>) -> Attempt {
+    // 请求体是 Bytes：克隆只增加引用计数，重发不会重新序列化
+    let Some(builder) = plan.builder.try_clone() else {
+        return Attempt::Interrupted("request body cannot be replayed".to_string());
+    };
+
+    let resp = match builder.send().await {
+        Ok(resp) => resp,
+        Err(e) => return Attempt::Retryable(e.to_string()),
+    };
+
+    if !resp.status().is_success() {
+        // 鉴权、参数类错误重发也不会改变结果：直接透出厂商正文
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let _ = tx
+            .send(ProviderStreamEvent::Error(format!(
+                "{} API error {}: {}",
+                plan.api.label(),
+                status,
+                body
+            )))
+            .await;
+        return Attempt::Settled;
+    }
+
+    let api = plan.api;
+    let (inner_tx, mut inner_rx) = mpsc::channel(128);
+    let (end_tx, end_rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let _ = end_tx.send(run_parser(api, resp, inner_tx).await);
+    });
+
+    // Anthropic 在首帧就上报用量：在确认不会重发之前先押着，
+    // 否则被重发的尝试会把同一份用量重复计入。
+    let mut deferred: Vec<ProviderStreamEvent> = Vec::new();
+    let mut content_seen = false;
+
+    while let Some(event) = inner_rx.recv().await {
+        match event {
+            ProviderStreamEvent::Usage { .. } if !content_seen => deferred.push(event),
+            ProviderStreamEvent::TextDelta(_)
+            | ProviderStreamEvent::ThinkingDelta(_)
+            | ProviderStreamEvent::ToolCall { .. } => {
+                content_seen = true;
+                for pending in deferred.drain(..) {
+                    if tx.send(pending).await.is_err() {
+                        return Attempt::Settled;
+                    }
+                }
+                if tx.send(event).await.is_err() {
+                    return Attempt::Settled;
+                }
+            }
+            other => {
+                if tx.send(other).await.is_err() {
+                    return Attempt::Settled;
+                }
+            }
+        }
+    }
+
+    match end_rx.await.ok().flatten() {
+        None => Attempt::Settled,
+        Some(err) if content_seen => Attempt::Interrupted(format!("Stream interrupted mid-response: {}", err)),
+        Some(err) => Attempt::Retryable(err),
+    }
+}
+
+/// 解析任务：返回传输层中断的原因（`None` 表示读到流正常结束）
+async fn run_parser(api: ApiType, resp: reqwest::Response, tx: mpsc::Sender<ProviderStreamEvent>) -> Option<String> {
+    let result = match api {
+        ApiType::Anthropic => parse_anthropic_sse(resp.bytes_stream(), tx).await,
+        ApiType::OpenAi => parse_openai_sse(resp.bytes_stream(), tx).await,
+        ApiType::Responses => parse_responses_sse(resp.bytes_stream(), tx).await,
+        ApiType::Gemini => parse_gemini_sse(resp.bytes_stream(), tx).await,
+    };
+    result.err()
 }
 
 // =========================================================================
@@ -1069,7 +1164,10 @@ impl UniversalProvider {
 // =========================================================================
 
 /// Anthropic SSE 解析
-pub async fn parse_anthropic_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>)
+///
+/// 返回传输层中断原因（`None` 语义由调用方按 `Result` 处理）：厂商在流内上报的
+/// 错误仍以 `ProviderStreamEvent::Error` 下发，两者不可混淆——前者可重发。
+pub async fn parse_anthropic_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>) -> Result<(), String>
 where
     S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
     E: std::fmt::Display,
@@ -1083,10 +1181,7 @@ where
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
-            Err(e) => {
-                let _ = tx.send(ProviderStreamEvent::Error(e.to_string())).await;
-                return;
-            }
+            Err(e) => return Err(e.to_string()),
         };
 
         buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -1223,6 +1318,8 @@ where
             }
         }
     }
+
+    Ok(())
 }
 
 /// OpenAI / DeepSeek SSE 解析
@@ -1248,7 +1345,7 @@ fn extract_reasoning_delta(delta: &serde_json::Value) -> Option<String> {
     if parts.is_empty() { None } else { Some(parts.concat()) }
 }
 
-pub async fn parse_openai_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>)
+pub async fn parse_openai_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>) -> Result<(), String>
 where
     S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
     E: std::fmt::Display,
@@ -1266,10 +1363,7 @@ where
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
-            Err(e) => {
-                let _ = tx.send(ProviderStreamEvent::Error(e.to_string())).await;
-                return;
-            }
+            Err(e) => return Err(e.to_string()),
         };
 
         buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -1314,7 +1408,7 @@ where
                             })
                             .await;
                     }
-                    return;
+                    return Ok(());
                 }
 
                 let val: serde_json::Value = match serde_json::from_str(data) {
@@ -1415,10 +1509,12 @@ where
             }
         }
     }
+
+    Ok(())
 }
 
 /// OpenAI Responses API SSE 解析（api_type = "response"）
-pub async fn parse_responses_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>)
+pub async fn parse_responses_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>) -> Result<(), String>
 where
     S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
     E: std::fmt::Display,
@@ -1432,10 +1528,7 @@ where
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
-            Err(e) => {
-                let _ = tx.send(ProviderStreamEvent::Error(e.to_string())).await;
-                return;
-            }
+            Err(e) => return Err(e.to_string()),
         };
 
         buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -1581,10 +1674,12 @@ where
             })
             .await;
     }
+
+    Ok(())
 }
 
 /// Google Gemini SSE 解析
-pub async fn parse_gemini_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>)
+pub async fn parse_gemini_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>) -> Result<(), String>
 where
     S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
     E: std::fmt::Display,
@@ -1597,10 +1692,7 @@ where
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
-            Err(e) => {
-                let _ = tx.send(ProviderStreamEvent::Error(e.to_string())).await;
-                return;
-            }
+            Err(e) => return Err(e.to_string()),
         };
 
         buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -1691,10 +1783,14 @@ where
             },
         })
         .await;
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, atomic::AtomicUsize};
+
     use super::*;
 
     /// 测试用能力集：文本输入/输出 + 思考 + 图像输入，与旧默认（vision/thinking 均 true）等价
@@ -1989,7 +2085,7 @@ mod tests {
 
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
         let (tx, mut rx) = mpsc::channel(16);
-        parse_gemini_sse(stream, tx).await;
+        parse_gemini_sse(stream, tx).await.unwrap();
 
         let mut events = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -2031,7 +2127,7 @@ data: [DONE]\n\n";
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
         let (tx, mut rx) = mpsc::channel(10);
         tokio::spawn(async move {
-            parse_openai_sse(stream, tx).await;
+            parse_openai_sse(stream, tx).await.unwrap();
         });
 
         let mut events = Vec::new();
@@ -2053,7 +2149,7 @@ data: [DONE]\n\n";
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
         let (tx, mut rx) = mpsc::channel(10);
         tokio::spawn(async move {
-            parse_anthropic_sse(stream, tx).await;
+            parse_anthropic_sse(stream, tx).await.unwrap();
         });
 
         let mut usage = None;
@@ -2074,7 +2170,7 @@ data: [DONE]\n\n";
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
         let (tx, mut rx) = mpsc::channel(10);
         tokio::spawn(async move {
-            parse_anthropic_sse(stream, tx).await;
+            parse_anthropic_sse(stream, tx).await.unwrap();
         });
 
         let mut usage = None;
@@ -2095,7 +2191,7 @@ data: [DONE]\n\n";
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
         let (tx, mut rx) = mpsc::channel(10);
         tokio::spawn(async move {
-            parse_openai_sse(stream, tx).await;
+            parse_openai_sse(stream, tx).await.unwrap();
         });
 
         let mut usage = None;
@@ -2118,7 +2214,7 @@ data: [DONE]\n\n";
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
         let (tx, mut rx) = mpsc::channel(10);
         tokio::spawn(async move {
-            parse_openai_sse(stream, tx).await;
+            parse_openai_sse(stream, tx).await.unwrap();
         });
 
         let mut events = Vec::new();
@@ -2146,7 +2242,7 @@ data: [DONE]\n\n";
         let (tx, mut rx) = mpsc::channel(10);
 
         tokio::spawn(async move {
-            parse_openai_sse(stream, tx).await;
+            parse_openai_sse(stream, tx).await.unwrap();
         });
 
         let mut events = Vec::new();
@@ -2188,7 +2284,7 @@ data: [DONE]\n\n";
 
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_data))]);
         let (tx, mut rx) = mpsc::channel(10);
-        tokio::spawn(async move { parse_openai_sse(stream, tx).await });
+        tokio::spawn(async move { parse_openai_sse(stream, tx).await.unwrap() });
 
         let mut events = Vec::new();
         while let Some(ev) = rx.recv().await {
@@ -2228,7 +2324,7 @@ data: [DONE]\n\n";
         let (tx, mut rx) = mpsc::channel(10);
 
         tokio::spawn(async move {
-            parse_responses_sse(stream, tx).await;
+            parse_responses_sse(stream, tx).await.unwrap();
         });
 
         let mut events = Vec::new();
@@ -2271,7 +2367,7 @@ data: [DONE]\n\n";
         );
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_max))]);
         let (tx, mut rx) = mpsc::channel(4);
-        parse_responses_sse(stream, tx).await;
+        parse_responses_sse(stream, tx).await.unwrap();
         let mut ev = rx.recv().await.unwrap();
         assert_eq!(
             ev,
@@ -2298,7 +2394,7 @@ data: [DONE]\n\n";
         );
         let stream = futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(sse_fail))]);
         let (tx, mut rx) = mpsc::channel(4);
-        parse_responses_sse(stream, tx).await;
+        parse_responses_sse(stream, tx).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), ProviderStreamEvent::Error("boom".into()));
         // response.failed → Error 事件，随后的 completed 事件先带 Usage 再收尾
         assert_eq!(
@@ -2361,5 +2457,185 @@ data: [DONE]\n\n";
         assert!(m.resolve_reasoning_effort("minimal").is_none());
         // 空白视为有值的自定义字符串（不清洗，原样透传）
         assert_eq!(m.resolve_reasoning_effort("ultra").as_deref(), Some("  "));
+    }
+
+    // ---------- 传输层中断的透明重发 ----------
+
+    fn completion_config(base_url: &str) -> ProviderConfig {
+        ProviderConfig {
+            api_type: "completion".into(),
+            base_url: base_url.to_string(),
+            api_key:  "test-key".into(),
+            headers:  BTreeMap::new(),
+            body:     serde_json::json!({}),
+            models:   Vec::new(),
+        }
+    }
+
+    fn user_text(text: &str) -> Vec<ChatMessage> {
+        vec![ChatMessage {
+            id:         "u1".into(),
+            parent_id:  None,
+            role:       Role::User,
+            content:    vec![Block::Text { text: text.into() }],
+            created_at: 0,
+        }]
+    }
+
+    fn sse_event(json: &str) -> String {
+        format!("data: {}\n\n", json)
+    }
+
+    /// 拼一个 chunked 响应；`terminated` 为假时不写终止分片，
+    /// 复现网关在响应中途断开（连接关闭，响应体被截断）的形态。
+    fn chunked_response(chunks: &[String], terminated: bool) -> String {
+        let mut out =
+            String::from("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n");
+        for data in chunks {
+            out.push_str(&format!("{:x}\r\n{}\r\n", data.len(), data));
+        }
+        if terminated {
+            out.push_str("0\r\n\r\n");
+        }
+        out
+    }
+
+    fn role_chunk() -> String {
+        sse_event(r#"{"choices":[{"delta":{"role":"assistant"}}]}"#)
+    }
+
+    fn text_chunk(text: &str) -> String {
+        sse_event(&format!(r#"{{"choices":[{{"delta":{{"content":"{text}"}}}}]}}"#))
+    }
+
+    fn usage_chunk() -> String {
+        sse_event(r#"{"choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":1}}"#)
+    }
+
+    fn finish_chunk() -> String {
+        sse_event(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#)
+    }
+
+    /// 起一个按脚本回放的 HTTP 服务：第 n 次连接回放 `scripts[n]`，
+    /// 用尽后重复最后一个脚本。返回 base_url 与实际接受的连接数。
+    async fn spawn_scripted_server(scripts: Vec<String>) -> (String, Arc<AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counter = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let index = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let script = scripts
+                    .get(index)
+                    .or_else(|| scripts.last())
+                    .cloned()
+                    .unwrap_or_default();
+                // 请求体不参与回放，读走即可（否则关闭连接会让客户端看到 RST）
+                let mut buf = [0u8; 65536];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket.write_all(script.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+        (format!("http://{addr}/v1"), seen)
+    }
+
+    async fn drain_events(rx: &mut mpsc::Receiver<ProviderStreamEvent>) -> Vec<ProviderStreamEvent> {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    }
+
+    /// 网关在正文开始前断流（只发出角色分片）：重发后应拿到完整结果，用户无感。
+    #[tokio::test]
+    async fn test_stream_retries_when_broken_before_any_content() {
+        let broken = chunked_response(&[role_chunk()], false);
+        let complete = chunked_response(
+            &[
+                role_chunk(),
+                text_chunk("hi"),
+                finish_chunk(),
+                "data: [DONE]\n\n".to_string(),
+            ],
+            true,
+        );
+        let (base_url, connections) = spawn_scripted_server(vec![broken, complete]).await;
+
+        let provider = UniversalProvider::new(completion_config(&base_url));
+        let mut rx = provider
+            .send_stream(&user_text("hi"), None, &[], &model_for_tests())
+            .await
+            .unwrap();
+        let events = drain_events(&mut rx).await;
+
+        assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 2, "断流必须重发");
+        assert_eq!(
+            events,
+            vec![
+                ProviderStreamEvent::TextDelta("hi".into()),
+                ProviderStreamEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                },
+            ]
+        );
+    }
+
+    /// 已经下发过内容后断流：不得重发（增量已流向界面，重发只会重复），
+    /// 但错误信息要指明是中途断流而非毫无头绪的传输错误。
+    #[tokio::test]
+    async fn test_stream_does_not_retry_after_content_delivered() {
+        let broken_midway = chunked_response(&[role_chunk(), text_chunk("hi")], false);
+        let complete = chunked_response(&[role_chunk(), text_chunk("hi"), finish_chunk()], true);
+        let (base_url, connections) = spawn_scripted_server(vec![broken_midway, complete]).await;
+
+        let provider = UniversalProvider::new(completion_config(&base_url));
+        let mut rx = provider
+            .send_stream(&user_text("hi"), None, &[], &model_for_tests())
+            .await
+            .unwrap();
+        let events = drain_events(&mut rx).await;
+
+        assert_eq!(
+            connections.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "有内容下发后不得重发"
+        );
+        assert_eq!(events[0], ProviderStreamEvent::TextDelta("hi".into()));
+        match &events[1] {
+            ProviderStreamEvent::Error(msg) => assert!(msg.contains("mid-response"), "{msg}"),
+            other => panic!("expected an error event, got {other:?}"),
+        }
+    }
+
+    /// 重发不得让失败尝试的用量被计入两次（Anthropic 在首帧就上报用量，
+    /// 该字段必须在确认不重发之后才下发）。
+    #[tokio::test]
+    async fn test_stream_retry_does_not_duplicate_usage() {
+        let broken = chunked_response(&[usage_chunk(), role_chunk()], false);
+        let complete = chunked_response(&[usage_chunk(), text_chunk("hi"), finish_chunk()], true);
+        let (base_url, connections) = spawn_scripted_server(vec![broken, complete]).await;
+
+        let provider = UniversalProvider::new(completion_config(&base_url));
+        let mut rx = provider
+            .send_stream(&user_text("hi"), None, &[], &model_for_tests())
+            .await
+            .unwrap();
+        let events = drain_events(&mut rx).await;
+
+        assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 2, "断流必须重发");
+        let usages: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, ProviderStreamEvent::Usage { .. }))
+            .collect();
+        assert_eq!(usages.len(), 1, "被重发的尝试不得把用量计入: {events:?}");
+        assert!(events.contains(&ProviderStreamEvent::TextDelta("hi".into())));
     }
 }
