@@ -28,6 +28,37 @@ const MAX_LINES: usize = 4000;
 /// 无事件时的重绘间隔（保持状态栏与光标响应）
 const TICK: Duration = Duration::from_millis(80);
 
+/// 抹掉控制字符：换行/Tab 之外的不可见字符会提前终结 OSC 序列，
+/// 让终端把后续内容当成普通输出，通知也随之中断。
+fn sanitize_notification(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// 终端系统通知序列：OSC 9（iTerm2 / Windows Terminal 等）与 OSC 777
+/// （rxvt-unicode 及其兼容终端）各发一份，不支持的终端会忽略未知序列；
+/// 末尾的响铃（BEL）作为最后兜底，确保至少能提醒到人。
+fn notification_sequence(title: &str, body: &str) -> String {
+    let title = sanitize_notification(title);
+    let body = sanitize_notification(body);
+    format!("\x1b]9;{title}: {body}\x07\x1b]777;notify;{title};{body}\x07\x07")
+}
+
+/// 发出一条终端通知。
+///
+/// 写在 stderr：stdout 由 ratatui 持有并负责重绘，混入转义序列可能被下一帧
+/// 覆盖或打乱光标；stderr 与 stdout 通常指向同一终端，通知序列同样生效。
+fn notify_terminal(title: &str, body: &str) {
+    use std::io::Write;
+
+    let mut out = std::io::stderr().lock();
+    let _ = write!(out, "{}", notification_sequence(title, body));
+    let _ = out.flush();
+}
+
 /// 由握手下发的调色板导出的语义配色。
 ///
 /// 全部字段都是 `Color`（`Copy`），因此可按值传进绘制函数，无需处理借用。
@@ -626,7 +657,12 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             app.stick = true;
             app.status = format!("运行中 · {}", short_id(&turn_id));
         }
-        AgentEvent::TurnFinished { stop_reason, usage, .. } => {
+        AgentEvent::TurnFinished {
+            stop_reason,
+            usage,
+            subagent_id,
+            ..
+        } => {
             app.busy = false;
             let style = if matches!(stop_reason, StopReason::Error) {
                 Style::default().fg(app.theme.error)
@@ -644,6 +680,10 @@ fn apply_event(app: &mut App, event: AgentEvent) {
                 style,
             );
             app.status = "就绪".into();
+            // 子代理轮次不是人的待办，且出错已单独报错，均不发系统通知
+            if subagent_id.is_none() && !matches!(stop_reason, StopReason::Error) {
+                notify_terminal("Oma", &format!("任务完成（{}）", stop_reason_label(stop_reason)));
+            }
         }
         AgentEvent::UserMessage {
             client_name,
@@ -698,6 +738,9 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             app.push("  ", format!("{}: {}{}", tool_name, head, suffix), style);
         }
         AgentEvent::AskRequested(data) => {
+            if let Some(question) = data.questions.first() {
+                notify_terminal("Oma", &format!("需要确认：{}", question.question));
+            }
             app.ask = Some(PendingAsk::new(data.request_id, data.questions));
         }
         AgentEvent::AskResolved { resolved_by, .. } => {
@@ -711,6 +754,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             }
         }
         AgentEvent::PermissionRequested(data) => {
+            notify_terminal("Oma", &format!("待授权：{}", data.tool_name));
             app.approval = Some(PendingApproval {
                 request_id: data.request_id,
                 tool_name:  data.tool_name,
@@ -1139,6 +1183,15 @@ mod tests {
         assert_eq!(parse_hex_color("89b4fa"), None);
         assert_eq!(parse_hex_color("#xyz"), None);
         assert_eq!(parse_hex_color("#12345"), None);
+    }
+
+    #[test]
+    fn test_notification_sequence_strips_control_chars() {
+        // 控制字符会被换成空格，避免提前终结 OSC 序列
+        let seq = notification_sequence("Oma", "a\x07b\nc");
+        assert!(seq.starts_with("\x1b]9;Oma: a b c\x07"));
+        assert!(seq.contains("\x1b]777;notify;Oma;a b c\x07"));
+        assert!(seq.ends_with('\x07'));
     }
 
     #[test]
