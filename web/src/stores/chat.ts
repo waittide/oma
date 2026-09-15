@@ -20,7 +20,8 @@ import type {
   TokenUsage,
 } from '../types';
 import { tr } from '../composables/i18n';
-import { activeSessionId, applyRemoteRename, applyRemoteRunning } from './sessions';
+import { notifyHumanEvent } from '../lib/notify';
+import { activeSession, activeSessionId, applyRemoteRename, applyRemoteRunning } from './sessions';
 import { applyResolvedTheme } from './theme';
 import { releaseAll } from '../lib/attachments';
 import {
@@ -117,6 +118,11 @@ let epoch = 0;
 let disposed = false;
 
 const clientId = `web_${crypto.randomUUID()}`;
+
+/** 当前会话标题：通知正文用它指代是哪个会话完成了任务。 */
+function sessionTitle(): string {
+  return activeSession.value?.title || tr('chat.noSession');
+}
 
 /** 发送一帧；未连接时返回 false，调用方据此提示而不是静默丢弃。 */
 function send(msg: ClientMessage): boolean {
@@ -245,6 +251,8 @@ function handleEvent(ev: AgentEvent) {
       if (ev.data) {
         lastUsage.value = ev.data.usage;
         if (ev.data.stop_reason === 'error') toast.error(tr('chat.turnError'));
+        // 出错时已单独报错，不再以「完成」重复打扰
+        else notifyHumanEvent('turn', sessionTitle());
       }
       currentLeafId.value = null; // 让服务端解析默认 leaf
       // 回读完成后再清空缓冲，持久化消息与流式内容同帧交接，界面不跳动
@@ -256,6 +264,7 @@ function handleEvent(ev: AgentEvent) {
     }
     case 'permission_requested':
       pendingApproval.value = ev.data ?? null;
+      if (ev.data) notifyHumanEvent('approval', ev.data.tool_name);
       break;
     case 'permission_resolved':
       if (ev.data && pendingApproval.value?.request_id === ev.data.request_id) {
@@ -264,6 +273,9 @@ function handleEvent(ev: AgentEvent) {
       break;
     case 'ask_requested':
       pendingAsk.value = ev.data ?? null;
+      if (ev.data?.questions.length) {
+        notifyHumanEvent('ask', ev.data.questions[0]!.question);
+      }
       break;
     case 'ask_resolved':
       if (ev.data && pendingAsk.value?.request_id === ev.data.request_id) {

@@ -333,5 +333,10 @@
     "prev": "上一題",
     "next": "下一題",
     "customOn": "改用自訂輸入"
+  },
+  "notify": {
+    "turnDone": "任務已完成",
+    "askNeeded": "模型需要你的確認",
+    "approvalNeeded": "工具執行待授權"
   }
 }

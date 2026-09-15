@@ -333,5 +333,10 @@
     "prev": "Previous",
     "next": "Next",
     "customOn": "Use custom input"
+  },
+  "notify": {
+    "turnDone": "Task completed",
+    "askNeeded": "The model needs your input",
+    "approvalNeeded": "Tool run needs approval"
   }
 }

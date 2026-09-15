@@ -333,5 +333,10 @@
     "prev": "上一题",
     "next": "下一题",
     "customOn": "改用自定义输入"
+  },
+  "notify": {
+    "turnDone": "任务已完成",
+    "askNeeded": "模型需要你的确认",
+    "approvalNeeded": "工具执行待授权"
   }
 }

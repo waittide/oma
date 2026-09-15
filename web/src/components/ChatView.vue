@@ -28,6 +28,7 @@ import MessageBlocks from './MessageBlocks.vue';
 import MessageRail from './MessageRail.vue';
 import { prettyJson } from '../lib/format';
 import { copyText } from '../lib/clipboard';
+import { ensureNotificationPermission } from '../lib/notify';
 import AskPanel from './AskPanel.vue';
 import ContextGauge from './ContextGauge.vue';
 import OButton from './ui/OButton.vue';
@@ -213,6 +214,9 @@ function hasFiles(ev: DragEvent): boolean {
 }
 
 function send() {
+  // 申请系统通知权限必须处于用户手势中；借首次发送顺带申请，
+  // 不阻塞发送：被拒时仅少一路系统通知，应用内 sonner 不受影响。
+  void ensureNotificationPermission();
   const text = draft.value;
   const attachments = pendingUploads.value.map((p) => p.ref);
   if (!text.trim() && attachments.length === 0) return;
