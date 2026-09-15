@@ -7,6 +7,7 @@ import {
   LuArrowUp,
   LuBot,
   LuCheck,
+  LuCopy,
   LuGitBranch,
   LuGripHorizontal,
   LuListTree,
@@ -26,6 +27,7 @@ import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
 import MessageRail from './MessageRail.vue';
 import { prettyJson } from '../lib/format';
+import { copyText } from '../lib/clipboard';
 import AskPanel from './AskPanel.vue';
 import ContextGauge from './ContextGauge.vue';
 import OButton from './ui/OButton.vue';
@@ -257,6 +259,26 @@ function userText(id: string): string {
   return b && b.type === 'text' ? b.text : '';
 }
 
+/** 刚复制过的消息 id：用于把图标短暂换成对勾作为反馈。 */
+const copiedId = ref<string | null>(null);
+let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 复制单条用户消息的文本内容。 */
+async function copyMessage(id: string) {
+  const text = userText(id);
+  if (!text) return;
+  if (!(await copyText(text))) {
+    toast.error(t('copyFailed'));
+    return;
+  }
+  toast.success(t('copied'));
+  copiedId.value = id;
+  if (copiedTimer) clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => {
+    copiedId.value = null;
+  }, 1200);
+}
+
 const agentOptions = computed(() => chat.agents.value.map((a) => ({ value: a.id, label: a.name })));
 
 const mcpToolTotal = computed(() =>
@@ -391,6 +413,16 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
                 <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
               </div>
               <div class="user-actions">
+                <button
+                  type="button"
+                  class="fork"
+                  :aria-label="t('copyHint')"
+                  @click="copyMessage(m.id)"
+                >
+                  <LuCheck v-if="copiedId === m.id" :size="11" />
+                  <LuCopy v-else :size="11" />
+                  {{ t('copy') }}
+                </button>
                 <button
                   v-if="m.parent_id"
                   type="button"
