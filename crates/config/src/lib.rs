@@ -431,6 +431,134 @@ pub fn dirs_config_dir() -> Option<PathBuf> {
 }
 
 // =========================================================================
+// 客户端本地配置 (client.toml)
+// =========================================================================
+
+/// web 客户端默认监听地址
+pub const DEFAULT_WEB_HOST: &str = "127.0.0.1";
+
+/// web 客户端默认监听端口：与 Daemon 端口分开，避免互相抢占
+pub const DEFAULT_WEB_PORT: u16 = 5173;
+
+/// web 客户端的绑定地址与端口
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebBind {
+    #[serde(default = "default_web_host")]
+    pub host: String,
+    #[serde(default = "default_web_port")]
+    pub port: u16,
+}
+
+fn default_web_host() -> String {
+    DEFAULT_WEB_HOST.to_string()
+}
+
+fn default_web_port() -> u16 {
+    DEFAULT_WEB_PORT
+}
+
+impl Default for WebBind {
+    fn default() -> Self {
+        Self {
+            host: default_web_host(),
+            port: default_web_port(),
+        }
+    }
+}
+
+/// 一条已保存的客户端连接
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Connection {
+    /// 展示名称（也是活动连接的引用键）
+    pub name:  String,
+    /// Daemon 访问地址
+    pub url:   String,
+    /// 访问 token
+    #[serde(default)]
+    pub token: String,
+}
+
+/// 客户端本地配置：`<配置目录>/oma/client.toml`。
+///
+/// 与 Daemon 的 `config.toml` 分开：这里存的是「这台机器上的客户端」信息——
+/// 已保存、可切换的连接列表，以及 web 客户端默认的绑定地址与端口。
+/// TUI 只使用连接列表，不涉及绑定地址。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientConfig {
+    /// web 客户端默认绑定地址与端口（仅 `oma web` 使用）
+    #[serde(default)]
+    pub web:         WebBind,
+    /// 已保存的连接列表
+    #[serde(default)]
+    pub connections: Vec<Connection>,
+    /// 当前选中的连接名；空或不存在时回落到列表首个
+    #[serde(default)]
+    pub active:      String,
+}
+
+impl ClientConfig {
+    /// 配置文件标准路径 (~/.config/oma/client.toml)
+    pub fn config_path() -> Option<PathBuf> {
+        dirs_config_dir().map(|d| d.join("oma").join("client.toml"))
+    }
+
+    /// 从文件加载；文件不存在时返回默认配置。
+    pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = std::fs::read_to_string(path)?;
+        Ok(toml::from_str(&content)?)
+    }
+
+    /// 从标准路径加载；定位不到配置目录时返回默认值。
+    pub fn load() -> Self {
+        match Self::config_path() {
+            Some(path) => Self::load_from_file(path).unwrap_or_default(),
+            None => Self::default(),
+        }
+    }
+
+    /// 原子回写：先落同目录临时文件并 fsync，再 rename 覆盖。
+    pub fn save_to_file_atomic(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config dir {}", parent.display()))?;
+        }
+        let content = toml::to_string_pretty(self).context("Failed to serialize client config")?;
+
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "client.toml".to_string());
+        let tmp = path.with_file_name(format!(".{}.tmp", file_name));
+        {
+            let mut file = std::fs::File::create(&tmp)
+                .with_context(|| format!("Failed to create temp config {}", tmp.display()))?;
+            std::io::Write::write_all(&mut file, content.as_bytes())
+                .with_context(|| format!("Failed to write temp config {}", tmp.display()))?;
+            file.sync_all()
+                .with_context(|| format!("Failed to sync temp config {}", tmp.display()))?;
+        }
+        std::fs::rename(&tmp, path).with_context(|| format!("Failed to replace config {}", path.display()))?;
+        Ok(())
+    }
+
+    /// 当前生效的连接：优先 active 指定的项，否则列表首个。
+    pub fn active_connection(&self) -> Option<&Connection> {
+        self.connections
+            .iter()
+            .find(|c| c.name == self.active)
+            .or_else(|| self.connections.first())
+    }
+}
+
+// =========================================================================
 // Agent 模板体系与动态环境上下文拼装
 // =========================================================================
 
@@ -1701,5 +1829,44 @@ ctx = 100
                 "unknown {level} field must not be silently ignored"
             );
         }
+    }
+
+    /// client.toml：缺省字段可省略、写读往返保持一致，active 无匹配时回落首项。
+    #[test]
+    fn test_client_config_roundtrip_and_active_fallback() {
+        // 仅写连接列表时，web 段落应使用默认绑定地址与端口
+        let minimal: ClientConfig = toml::from_str(
+            r#"
+active = "b"
+
+[[connections]]
+name = "a"
+url = "http://127.0.0.1:17431"
+token = "admin"
+
+[[connections]]
+name = "b"
+url = "http://10.0.0.5:17431"
+"#,
+        )
+        .unwrap();
+        assert_eq!(minimal.web.host, DEFAULT_WEB_HOST);
+        assert_eq!(minimal.web.port, DEFAULT_WEB_PORT);
+        assert_eq!(minimal.active_connection().unwrap().name, "b");
+
+        // active 不匹配时回落列表首个
+        let stale = ClientConfig {
+            active: "missing".into(),
+            ..minimal.clone()
+        };
+        assert_eq!(stale.active_connection().unwrap().name, "a");
+
+        // 写盘后重新加载，内容一致（含 web 绑定地址与端口）
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("oma").join("client.toml");
+        stale.save_to_file_atomic(&path).unwrap();
+        let loaded = ClientConfig::load_from_file(&path).unwrap();
+        assert_eq!(loaded.connections, minimal.connections);
+        assert_eq!(loaded.active, "missing");
     }
 }
