@@ -13,7 +13,10 @@ use oma_contract::{
 };
 use ratatui::{
     Frame,
-    crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    crossterm::{
+        event::{self, DisableFocusChange, EnableFocusChange, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+        execute,
+    },
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
@@ -57,6 +60,16 @@ fn notify_terminal(title: &str, body: &str) {
     let mut out = std::io::stderr().lock();
     let _ = write!(out, "{}", notification_sequence(title, body));
     let _ = out.flush();
+}
+
+/// 输入线程转发的终端事件：按键与焦点变化。
+///
+/// 焦点事件必须与按键走同一条通道：两者都由 [`event::read`] 从同一 tty 读出，
+/// 若只转发按键，`read()` 里取到的焦点事件会被丢弃，永远无法知道终端是否失焦。
+enum InputEvent {
+    Key(KeyEvent),
+    /// true = 终端重新获得焦点，false = 失焦
+    Focus(bool),
 }
 
 /// 一条可切换的已保存连接（来自 client.toml）。
@@ -259,6 +272,8 @@ struct App {
     active_conn: Option<String>,
     /// 连接切换弹窗的高亮下标；None = 未打开
     picker:      Option<usize>,
+    /// 终端是否处于聚焦状态；仅失焦时才发系统通知
+    focused:     bool,
     /// 由握手下发主题导出的语义配色
     theme:       TuiTheme,
 }
@@ -283,8 +298,22 @@ impl App {
             connections: Vec::new(),
             active_conn: None,
             picker: None,
+            // 终端未上报焦点事件时按聚焦处理：宁可不打扰，也不在用户正看着时弹通知
+            focused: true,
             theme,
         }
+    }
+
+    /// 仅在终端失焦时发系统通知。
+    ///
+    /// 用户正看着终端时，审批弹窗与提问面板已经把事件摆在眼前，再发通知只是噪声。
+    /// 由此推导：不支持焦点上报的终端（未开 `focus-events` 的 tmux、老终端等）
+    /// 永远不会发通知 —— 这是「只在失焦时才提示」的应有代价，宁可静默也不误扰。
+    fn notify(&self, body: String) {
+        if self.focused {
+            return;
+        }
+        notify_terminal("Oma", &body);
     }
 
     fn push(&mut self, prefix: &'static str, text: impl Into<String>, style: Style) {
@@ -417,13 +446,17 @@ fn summarize_tool_input(input: &serde_json::Value) -> String {
 pub async fn run(options: TuiOptions) -> Result<Option<String>> {
     // crossterm 的阻塞读放在独立线程；切换连接只是重建会话，
     // 不重新开线程，避免多个 reader 竞争同一 tty。
-    let (key_tx, mut key_rx) = mpsc::channel::<KeyEvent>(64);
+    let (key_tx, mut key_rx) = mpsc::channel::<InputEvent>(64);
     std::thread::spawn(move || {
         while let Ok(ev) = event::read() {
-            if let Event::Key(key) = ev {
-                if key_tx.blocking_send(key).is_err() {
-                    break;
-                }
+            let forwarded = match ev {
+                Event::Key(key) => InputEvent::Key(key),
+                Event::FocusGained => InputEvent::Focus(true),
+                Event::FocusLost => InputEvent::Focus(false),
+                _ => continue,
+            };
+            if key_tx.blocking_send(forwarded).is_err() {
+                break;
             }
         }
     });
@@ -433,6 +466,9 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
     let mut active = options.active.clone();
 
     let mut terminal = ratatui::init();
+    // 开启焦点变化上报（CSI ?1004h）：仅用于判断终端是否失焦，退出时恢复。
+    // 终端不支持该序列时会直接忽略，不会报错。
+    let _ = execute!(std::io::stdout(), EnableFocusChange);
     let result = loop {
         match run_session(&mut terminal, &addr, &token, &options, active.clone(), &mut key_rx).await {
             Ok(Outcome::Quit) => break Ok(active),
@@ -448,6 +484,8 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
             Err(e) => break Err(e),
         }
     };
+    // 先关上报再恢复终端：否则退出后终端仍会把焦点变化写成转义序列涌向 shell
+    let _ = execute!(std::io::stdout(), DisableFocusChange);
     ratatui::restore();
     result
 }
@@ -459,7 +497,7 @@ async fn run_session(
     token: &str,
     options: &TuiOptions,
     active: Option<String>,
-    key_rx: &mut mpsc::Receiver<KeyEvent>,
+    key_rx: &mut mpsc::Receiver<InputEvent>,
 ) -> Result<Outcome> {
     let workspace = options.workspace.as_str();
     let api = SessionApi::new(addr, token);
@@ -520,7 +558,7 @@ async fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     client: &mut OmaClient,
-    key_rx: &mut mpsc::Receiver<KeyEvent>,
+    key_rx: &mut mpsc::Receiver<InputEvent>,
 ) -> Result<Outcome> {
     let mut last_draw = Instant::now();
     loop {
@@ -543,8 +581,14 @@ async fn event_loop(
                     return Ok(Outcome::Quit);
                 }
             },
-            key = key_rx.recv() => {
-                let Some(key) = key else { return Ok(Outcome::Quit) };
+            input = key_rx.recv() => {
+                let Some(input) = input else { return Ok(Outcome::Quit) };
+                // 焦点事件只更新状态，不进按键处理
+                let Some(key) = classify_input(app, input) else {
+                    terminal.draw(|frame| draw(frame, app))?;
+                    last_draw = Instant::now();
+                    continue;
+                };
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
@@ -556,6 +600,17 @@ async fn event_loop(
             }
             _ = tokio::time::sleep(TICK) => {}
         }
+    }
+}
+
+/// 消化输入线程转发的事件：焦点变化更新 [`App::focused`]，按键交回调用方处理。
+fn classify_input(app: &mut App, input: InputEvent) -> Option<KeyEvent> {
+    match input {
+        InputEvent::Focus(focused) => {
+            app.focused = focused;
+            None
+        }
+        InputEvent::Key(key) => Some(key),
     }
 }
 
@@ -815,7 +870,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             app.status = "就绪".into();
             // 子代理轮次不是人的待办，且出错已单独报错，均不发系统通知
             if subagent_id.is_none() && !matches!(stop_reason, StopReason::Error) {
-                notify_terminal("Oma", &format!("任务完成（{}）", stop_reason_label(stop_reason)));
+                app.notify(format!("任务完成（{}）", stop_reason_label(stop_reason)));
             }
         }
         AgentEvent::UserMessage {
@@ -873,7 +928,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::AskRequested(data) => {
             app.picker = None;
             if let Some(question) = data.questions.first() {
-                notify_terminal("Oma", &format!("需要确认：{}", question.question));
+                app.notify(format!("需要确认：{}", question.question));
             }
             app.ask = Some(PendingAsk::new(data.request_id, data.questions));
         }
@@ -889,7 +944,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         }
         AgentEvent::PermissionRequested(data) => {
             app.picker = None;
-            notify_terminal("Oma", &format!("待授权：{}", data.tool_name));
+            app.notify(format!("待授权：{}", data.tool_name));
             app.approval = Some(PendingApproval {
                 request_id: data.request_id,
                 tool_name:  data.tool_name,
@@ -1438,6 +1493,35 @@ mod tests {
         app.picker = None;
         open_picker(&mut app);
         assert_eq!(app.picker, None);
+    }
+
+    /// 焦点上报驱动通知开关：未上报焦点时按聚焦处理（不打扰），
+    /// 失焦后才允许通知；按键不受焦点影响，照常交回处理。
+    #[test]
+    fn test_focus_tracking_gates_notifications() {
+        let theme = TuiTheme::new(&ResolvedTheme {
+            mode:   ThemeMode::Dark,
+            accent: "blue".into(),
+            light:  palette_with("latte", "#111111", "#222222"),
+            dark:   palette_with("mocha", "#eeeeee", "#dddddd"),
+        });
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), theme);
+
+        // 初始（终端未上报过焦点）视为聚焦：不发通知
+        assert!(app.focused);
+
+        // 失焦后才发通知
+        assert!(classify_input(&mut app, InputEvent::Focus(false)).is_none());
+        assert!(!app.focused);
+
+        // 重新聚焦后停止通知
+        assert!(classify_input(&mut app, InputEvent::Focus(true)).is_none());
+        assert!(app.focused);
+
+        // 按键照常交回，不改变焦点状态
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert!(classify_input(&mut app, InputEvent::Key(key)).is_some());
+        assert!(app.focused);
     }
 
     #[test]
