@@ -476,3 +476,23 @@ export interface UploadAttachmentResp {
   success: boolean;
   attachments: string[];
 }
+
+/** client.toml 中一条已保存的连接 */
+export interface ClientConnection {
+  name: string;
+  url: string;
+  token: string;
+}
+
+/**
+ * 客户端本地配置（<配置目录>/oma/client.toml）。
+ *
+ * 只有 `oma web` 的同源接口 GET/PUT /api/client/config 读写它，
+ * 与 Daemon 的 /api/config 无关。
+ */
+export interface ClientConfig {
+  web: { host: string; port: number };
+  connections: ClientConnection[];
+  /** 当前活动的连接名；空或不匹配时回落到列表首个 */
+  active: string;
+}

@@ -2,6 +2,7 @@ import { hasToken, resolveUrl, resolveWsUrl, token } from './stores/connection';
 import type {
   AgentFile,
   ChatMessage,
+  ClientConfig,
   OmaConfig,
   Palette,
   ServerStatus,
@@ -10,6 +11,34 @@ import type {
   ToolInfo,
   UploadAttachmentResp,
 } from './types';
+
+/**
+ * 同源请求：只用于 `oma web` 自身提供的客户端配置接口。
+ *
+ * 不能走 [`resolveUrl`]——它会把路径拼到「访问地址」（Daemon）上，
+ * 而 /api/client/config 属于承载页面的 web 服务，与 Daemon 无关。
+ */
+async function localRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body) headers.set('Content-Type', 'application/json');
+  const resp = await fetch(path, { ...init, headers });
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => '');
+    throw new Error(detail || `HTTP ${resp.status}`);
+  }
+  if (resp.status === 204) return undefined as T;
+  return (await resp.json()) as T;
+}
+
+/** 客户端本地配置（client.toml）：仅 `oma web` 页面可用。 */
+export const clientApi = {
+  getConfig: () => localRequest<ClientConfig>('/api/client/config'),
+  putConfig: (config: ClientConfig) =>
+    localRequest<ClientConfig>('/api/client/config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+};
 
 /** 鉴权 Token：由连接配置提供（URL ?token= 优先，其次 localStorage）。 */
 export function getToken(): string {

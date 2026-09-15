@@ -30,6 +30,7 @@ import OMultiSelect from './ui/OMultiSelect.vue';
 import { ACCENTS, NEUTRAL_TOKENS, PALETTE_TOKENS, config, darkPalettes, lightPalettes, loadConfig, palettes, refreshPalettes, saveConfig, saveTheme, theme, type Palette } from '../stores/theme';
 import { agents } from '../stores/chat';
 import { baseUrl, normalizeBaseUrl, setConnection, token } from '../stores/connection';
+import { clientConfig, clientConfigReady, saveClientConfig } from '../stores/clientConfig';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
 import { activeSession, refresh as refreshSessions } from '../stores/sessions';
 import { MODEL_CAPABILITIES } from '../types';
@@ -40,6 +41,8 @@ import type {
   McpServerConfig,
   ModelCapability,
   ModelInfo,
+  ClientConfig,
+  ClientConnection,
   OmaConfig,
   PaletteMode,
   ProviderConfig,
@@ -90,12 +93,54 @@ const navGroups = computed(() => [
 const version = ref('');
 
 // ---------- 连接 ----------
-// 前端是独立静态服务，目标 Daemon 与凭证属于「本浏览器的设置」，存 localStorage。
-const conn = reactive({ baseUrl: baseUrl.value, token: token.value });
+// 连接列表保存在 client.toml，由 oma web 的同源接口读写；接口不可用（vite dev）时
+// 退回旧的 localStorage 行为，只记住当前这一条。
+const conn = reactive({ name: '', baseUrl: baseUrl.value, token: token.value });
 const connTesting = ref(false);
 // 首次进入时自动探测一次，让用户不用手动点就知道当前配得对不对
 const connState = ref<'unknown' | 'ok' | 'fail'>('unknown');
 const connDetail = ref('');
+/** 列表中选中的连接名；null = 新建 */
+const selectedConn = ref<string | null>(null);
+
+const connections = computed(() => clientConfig.value?.connections ?? []);
+
+/** 是否为当前生效的连接（active 为空时列表首个即生效）。 */
+function isActive(name: string): boolean {
+  const cfg = clientConfig.value;
+  return !!cfg && (cfg.active === name || (!cfg.active && cfg.connections[0]?.name === name));
+}
+
+/** 选中列表中的连接并载入表单。 */
+function selectConnection(c: ClientConnection) {
+  selectedConn.value = c.name;
+  conn.name = c.name;
+  conn.baseUrl = c.url;
+  conn.token = c.token;
+  connState.value = 'unknown';
+  connDetail.value = '';
+}
+
+/** 清空表单，新建一条连接。 */
+function newConnection() {
+  selectedConn.value = null;
+  conn.name = '';
+  conn.baseUrl = '';
+  conn.token = '';
+  connState.value = 'unknown';
+  connDetail.value = '';
+}
+
+// 配置就绪后定位到活动连接（列表加载完成时自动选中）
+watch(
+  clientConfig,
+  (cfg) => {
+    if (!cfg || selectedConn.value) return;
+    const active = cfg.connections.find((c) => c.name === cfg.active) ?? cfg.connections[0];
+    if (active) selectConnection(active);
+  },
+  { immediate: true },
+);
 
 /** 探测目标 Daemon：需要用表单里的值（而不是已保存的值）即时验证。 */
 async function testConnection(): Promise<boolean> {
@@ -141,10 +186,41 @@ async function testConnection(): Promise<boolean> {
   }
 }
 
+/** 组装下一份 client.toml：upsert 当前连接并置为活动，重命名时移除旧名。 */
+function buildNextConfig(next: ClientConnection): ClientConfig | null {
+  const cfg = clientConfig.value;
+  if (!cfg) return null;
+  const list = cfg.connections.filter((c) => c.name !== next.name && c.name !== selectedConn.value);
+  list.push(next);
+  return { ...cfg, connections: list, active: next.name };
+}
+
 async function saveConnection() {
-  setConnection(conn.baseUrl, conn.token);
+  const name = conn.name.trim();
+  if (!name) {
+    toast.error(t('connNameRequired'));
+    return;
+  }
+  const url = normalizeBaseUrl(conn.baseUrl);
+  setConnection(url, conn.token);
   conn.baseUrl = baseUrl.value;
   conn.token = token.value;
+
+  // 先落盘 client.toml（接口可用时），再验证可达性：即使目标暂时连不上，
+  // 保存的连接与 token 也不应丢失。
+  if (clientConfigReady.value) {
+    const next = buildNextConfig({ name, url, token: conn.token });
+    if (next) {
+      try {
+        await saveClientConfig(next);
+        selectedConn.value = name;
+      } catch (e) {
+        toast.error(t('connSaveFailed', { message: (e as Error).message }));
+        return;
+      }
+    }
+  }
+
   if (await testConnection()) {
     toast.success(t('connSaved'));
     // 地址/凭证换了之后，旧数据（会话、消息、主题、配置）都属于上一个 Daemon，
@@ -154,6 +230,26 @@ async function saveConnection() {
     // 失败也要给出可见反馈：否则点完按钮像是「什么都没发生」，只能去翻控制台
     toast.error(connDetail.value || t('connFailed'));
   }
+}
+
+/** 删除一条已保存连接并落盘；若删的是活动连接则顺延到列表首个。 */
+async function removeConnection(name: string) {
+  const cfg = clientConfig.value;
+  if (!cfg) return;
+  const list = cfg.connections.filter((c) => c.name !== name);
+  const active = cfg.active === name ? (list[0]?.name ?? '') : cfg.active;
+  try {
+    await saveClientConfig({ ...cfg, connections: list, active });
+  } catch (e) {
+    toast.error(t('connSaveFailed', { message: (e as Error).message }));
+    return;
+  }
+  if (selectedConn.value === name) {
+    const next = list[0];
+    if (next) selectConnection(next);
+    else newConnection();
+  }
+  toast.success(t('connRemoved'));
 }
 
 /** 重新拉取属于「某个 Daemon」的全部状态（会话、主题/配置、调色板）。 */
@@ -1258,9 +1354,55 @@ function pickLocale(v: Locale) {
         <section v-if="section === 'connection'" class="pane">
           <header class="pane-head">
             <h2 class="pane-title">{{ t('navConnection') }}</h2>
+            <OButton v-if="clientConfigReady" variant="soft" size="sm" @click="newConnection">
+              <template #icon><LuPlus :size="13" /></template>
+              {{ t('connAdd') }}
+            </OButton>
           </header>
           <div class="pane-scroll">
+            <!-- 已保存的连接：点击切换，活动项带勾选标记 -->
+            <div v-if="clientConfigReady" class="list conn-list">
+              <p v-if="connections.length === 0" class="conn-empty">{{ t('connEmpty') }}</p>
+              <div
+                v-for="c in connections"
+                :key="c.name"
+                class="conn-item"
+                :class="{ on: selectedConn === c.name }"
+                role="button"
+                tabindex="0"
+                @click="selectConnection(c)"
+                @keydown.enter.prevent="selectConnection(c)"
+              >
+                <span class="conn-mark"><LuCheck v-if="isActive(c.name)" :size="11" /></span>
+                <span class="conn-main">
+                  <span class="conn-name">{{ c.name }}</span>
+                  <span class="conn-url">{{ c.url }}</span>
+                </span>
+                <button
+                  type="button"
+                  class="conn-del"
+                  :aria-label="tc('delete')"
+                  @click.stop="removeConnection(c.name)"
+                >
+                  <LuTrash2 :size="13" />
+                </button>
+              </div>
+            </div>
+
             <div class="list">
+              <div v-if="clientConfigReady" class="srow">
+                <div class="srow-main">
+                  <span class="srow-title">{{ t('connName') }}</span>
+                  <span class="srow-desc">{{ t('connNameDesc') }}</span>
+                </div>
+                <div class="srow-ctl wide">
+                  <OInput
+                    v-model="conn.name"
+                    class="conn-input"
+                    :placeholder="t('connNamePlaceholder')"
+                  />
+                </div>
+              </div>
               <div class="srow">
                 <div class="srow-main">
                   <span class="srow-title">{{ t('connBaseUrl') }}</span>
@@ -1309,6 +1451,7 @@ function pickLocale(v: Locale) {
                   </span>
                 </div>
               </div>
+              <p v-if="!clientConfigReady" class="conn-note">{{ t('connLocalOnly') }}</p>
             </div>
           </div>
           <footer class="pane-foot">
@@ -2318,6 +2461,91 @@ function pickLocale(v: Locale) {
 .conn-badge.fail {
   background: var(--danger-soft);
   color: var(--danger);
+}
+/* 已保存连接列表：与下方表单单列排列，活动项带勾选标记 */
+.conn-list {
+  margin-bottom: 12px;
+}
+.conn-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 11px;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--paper);
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease;
+}
+.conn-item:hover {
+  border-color: var(--overlay0);
+}
+.conn-item.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.conn-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--control-border);
+  border-radius: 99px;
+  color: var(--base);
+}
+.conn-item.on .conn-mark {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.conn-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+.conn-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.conn-url {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conn-del {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--overlay0);
+  cursor: pointer;
+}
+.conn-del:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.conn-empty,
+.conn-note {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+}
+.conn-empty {
+  padding: 8px 2px;
 }
 .color-grid {
   display: grid;

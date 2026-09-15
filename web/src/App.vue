@@ -7,6 +7,7 @@ import Sidebar from './components/Sidebar.vue';
 import ChatView from './components/ChatView.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import { loadConfig } from './stores/theme';
+import { initClientConfig } from './stores/clientConfig';
 import { reset as resetChat } from './stores/chat';
 
 const settingsOpen = ref(false);
@@ -22,6 +23,8 @@ async function probe() {
 }
 
 onMounted(async () => {
+  // 先应用 client.toml 里保存的活动连接，再用它去探测 Daemon
+  await initClientConfig();
   await loadConfig();
   await probe();
 });
