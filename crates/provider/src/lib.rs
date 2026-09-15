@@ -155,7 +155,17 @@ fn build_gemini_body(
 
 /// 组装 OpenAI / DeepSeek Chat Completions 的 messages 数组
 /// （ToolResult 解构为独立 role: "tool" 消息，带图消息使用 parts 数组形态）
-fn build_openai_messages(messages: &[ChatMessage], system_prompt: Option<&str>) -> Vec<serde_json::Value> {
+///
+/// `echo_reasoning` 为真（模型声明了 thinking 能力）时，带 `tool_calls` 的
+/// assistant 消息必须把思维链原样带回：DeepSeek 等推理接口在 thinking 模式下
+/// 用 `reasoning_content` 校验历史，缺失时整轮请求被拒
+/// （`The reasoning_content in the thinking mode must be passed back to the API.`）。
+/// 未记录到思维链时补空串占位，同样满足校验。
+fn build_openai_messages(
+    messages: &[ChatMessage],
+    system_prompt: Option<&str>,
+    echo_reasoning: bool,
+) -> Vec<serde_json::Value> {
     let mut openai_messages = Vec::new();
     // 组装 OpenAI 格式的 messages（解构 ToolResult 为 role: "tool"）
     if let Some(sys) = system_prompt {
@@ -184,11 +194,12 @@ fn build_openai_messages(messages: &[ChatMessage], system_prompt: Option<&str>) 
             }
             Role::Assistant => {
                 let mut text_parts = Vec::new();
+                let mut reasoning = String::new();
                 let mut tool_calls = Vec::new();
                 for b in &msg.content {
                     match b {
                         Block::Text { text } => text_parts.push(text.clone()),
-                        Block::Thinking { .. } => {}
+                        Block::Thinking { thinking } => reasoning.push_str(thinking),
                         Block::ToolUse { id, name, input } => {
                             tool_calls.push(serde_json::json!({
                                 "id": id,
@@ -208,6 +219,11 @@ fn build_openai_messages(messages: &[ChatMessage], system_prompt: Option<&str>) 
                 });
                 if !text_parts.is_empty() {
                     obj["content"] = serde_json::Value::String(text_parts.join("\n"));
+                }
+                // 思维链回传（见函数文档）：只在当前模型声明 thinking 时下发，
+                // 换成不支持推理的厂商时不能凭空多出该字段
+                if echo_reasoning && (!reasoning.is_empty() || !tool_calls.is_empty()) {
+                    obj["reasoning_content"] = serde_json::Value::String(reasoning);
                 }
                 if !tool_calls.is_empty() {
                     obj["tool_calls"] = serde_json::Value::Array(tool_calls);
@@ -748,7 +764,7 @@ impl UniversalProvider {
         let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
         let api_key = self.config.resolved_api_key();
 
-        let openai_messages = build_openai_messages(messages, system_prompt);
+        let openai_messages = build_openai_messages(messages, system_prompt, model.supports_thinking());
 
         let mut body = serde_json::json!({
             "model": model.id,
@@ -1938,7 +1954,7 @@ mod tests {
     /// OpenAI 兼容协议：role: tool 只能带字符串，图片改为紧跟其后的用户消息。
     #[test]
     fn test_openai_tool_images_become_followup_user_message() {
-        let msgs = build_openai_messages(&tool_result_with_image(), None);
+        let msgs = build_openai_messages(&tool_result_with_image(), None, false);
         assert_eq!(msgs.len(), 3, "tool message plus image follow-up: {msgs:#?}");
         assert_eq!(msgs[0]["role"], "assistant");
         assert_eq!(msgs[1]["role"], "tool");
@@ -1956,7 +1972,7 @@ mod tests {
         msgs[1]
             .content
             .retain(|b| !matches!(b, Block::Image { .. }));
-        let built = build_openai_messages(&msgs, None);
+        let built = build_openai_messages(&msgs, None, false);
         assert_eq!(built.len(), 2, "{built:#?}");
         assert_eq!(built[1]["role"], "tool");
     }
@@ -1999,7 +2015,7 @@ mod tests {
     /// OpenAI 兼容路径此前只 join 文本块，图片被静默丢弃。
     #[test]
     fn test_openai_messages_keep_images() {
-        let msgs = build_openai_messages(&[user_with_image()], None);
+        let msgs = build_openai_messages(&[user_with_image()], None, false);
         let content = &msgs[0]["content"];
         assert!(content.is_array(), "image messages must use parts form: {}", content);
         assert_eq!(content[0]["type"], "text");
@@ -2637,5 +2653,52 @@ data: [DONE]\n\n";
             .collect();
         assert_eq!(usages.len(), 1, "被重发的尝试不得把用量计入: {events:?}");
         assert!(events.contains(&ProviderStreamEvent::TextDelta("hi".into())));
+    }
+
+    // ---------- 推理模型的历史回传 ----------
+
+    fn assistant_with_thinking(thinking: Option<&str>) -> ChatMessage {
+        let mut content = Vec::new();
+        if let Some(t) = thinking {
+            content.push(Block::Thinking { thinking: t.into() });
+        }
+        content.push(Block::ToolUse {
+            id:    "call_1".into(),
+            name:  "read".into(),
+            input: serde_json::json!({ "path": "a.rs" }),
+        });
+        ChatMessage {
+            id: "a1".into(),
+            parent_id: Some("u1".into()),
+            role: Role::Assistant,
+            content,
+            created_at: 0,
+        }
+    }
+
+    /// 推理接口（DeepSeek thinking 模式）要求带 tool_calls 的 assistant 消息
+    /// 把思维链原样带回，缺失时整轮请求被拒。
+    #[test]
+    fn test_openai_echoes_reasoning_content_for_thinking_models() {
+        let messages = vec![user_text("q").remove(0), assistant_with_thinking(Some("先读文件"))];
+        let built = build_openai_messages(&messages, None, true);
+        assert_eq!(built[1]["reasoning_content"], "先读文件");
+        assert_eq!(built[1]["tool_calls"][0]["id"], "call_1");
+    }
+
+    /// 没记录到思维链时补空串：校验只要求字段存在。
+    #[test]
+    fn test_openai_reasoning_content_placeholder_without_recorded_thinking() {
+        let messages = vec![user_text("q").remove(0), assistant_with_thinking(None)];
+        let built = build_openai_messages(&messages, None, true);
+        assert_eq!(built[1]["reasoning_content"], "");
+    }
+
+    /// 未声明 thinking 能力的模型不下发该字段：多数兼容接口并不认识它。
+    #[test]
+    fn test_openai_reasoning_content_skipped_for_non_thinking_models() {
+        let messages = vec![user_text("q").remove(0), assistant_with_thinking(Some("先读文件"))];
+        let built = build_openai_messages(&messages, None, false);
+        assert!(built[1].get("reasoning_content").is_none(), "{built:#?}");
     }
 }
