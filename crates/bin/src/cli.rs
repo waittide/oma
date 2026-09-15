@@ -14,7 +14,7 @@ use clap::{
     error::{ContextKind, ErrorKind},
 };
 
-use crate::{DEFAULT_ADDR, DEFAULT_WEB_PORT};
+use crate::DEFAULT_ADDR;
 
 /// 帮助版式：结构沿用 clap 默认，仅把英文的 `Usage:` 标题换成中文。
 ///
@@ -49,12 +49,12 @@ pub enum Commands {
     },
     /// 启动 web 客户端
     Web {
-        /// web 监听地址
-        #[arg(long, default_value = "127.0.0.1")]
-        host: String,
-        /// web 监听端口
-        #[arg(long, default_value_t = DEFAULT_WEB_PORT)]
-        port: u16,
+        /// web 监听地址（默认读取 client.toml 的 web.host，缺省 127.0.0.1）
+        #[arg(long)]
+        host: Option<String>,
+        /// web 监听端口（默认读取 client.toml 的 web.port，缺省 5173）
+        #[arg(long)]
+        port: Option<u16>,
         /// 就绪后自动用浏览器打开页面（默认仅打印监听地址）
         #[arg(long)]
         open: bool,

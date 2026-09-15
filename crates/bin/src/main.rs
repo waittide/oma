@@ -5,12 +5,13 @@ use std::{
 
 use anyhow::{Context, Result};
 use axum::{
-    Router,
+    Json, Router,
+    extract::State,
     http::{StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
 use cli::Commands;
-use oma_config::OmaConfig;
+use oma_config::{ClientConfig, OmaConfig};
 use oma_daemon::{DaemonState, create_router, resolve_token};
 use oma_mcp::McpManager;
 use oma_storage::StorageManager;
@@ -20,8 +21,6 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod cli;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:17431";
-/// 前端默认监听端口：独立于 Daemon 端口，避免两者互相抢占
-const DEFAULT_WEB_PORT: u16 = 5173;
 const INDEX_HTML: &str = "index.html";
 
 /// 内嵌的前端构建产物。
@@ -170,20 +169,37 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
 /// 启动内嵌前端的静态服务。
 ///
 /// 只提供界面本身：连接哪个 Daemon、用什么 token 由用户在设置的「连接」页填写，
-/// 因此这里不需要也不应该知道 Daemon 的任何信息。
-async fn run_web(host: &str, port: u16, open: bool) -> Result<()> {
+/// 因此这里不需要也不应该知道 Daemon 的任何信息。另提供一个同源的
+/// `/api/client/config` 给界面读写本机的 client.toml（连接列表与绑定地址）。
+async fn run_web(host: Option<&str>, port: Option<u16>, open: bool) -> Result<()> {
     if WebAssets::iter().next().is_none() {
         anyhow::bail!("前端资产缺失：请在 web/ 目录执行 `pnpm build` 后重新编译（当前二进制内没有任何文件）");
     }
 
-    let listener = tokio::net::TcpListener::bind((host, port))
+    // 绑定地址优先取命令行参数；未给出时回落到 client.toml，再缺省则为内置默认值
+    let client_path = client_config_path();
+    let client = load_client_config(&client_path)?;
+    let host = host.map(str::to_string).unwrap_or(client.web.host.clone());
+    let port = port.unwrap_or(client.web.port);
+
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port))
         .await
         .with_context(|| format!("无法监听 {host}:{port}"))?;
     // 端口传 0 时由系统分配，打印真实端口而不是用户传的 0
     let actual = listener.local_addr()?;
 
-    let app = Router::new().fallback(web_asset_handler);
-    let url = format!("http://{}", format_host(host, actual.port()));
+    let state = Arc::new(ClientConfigState {
+        path: client_path,
+        lock: tokio::sync::Mutex::new(()),
+    });
+    let app = Router::new()
+        .route(
+            "/api/client/config",
+            axum::routing::get(get_client_config).put(put_client_config),
+        )
+        .with_state(state)
+        .fallback(web_asset_handler);
+    let url = format!("http://{}", format_host(&host, actual.port()));
 
     // 只报监听地址：这是用户唯一需要的信息；不打印 token，避免凭证进入
     // 终端回滚、CI 日志或 screen/tmux 记录。
@@ -196,6 +212,62 @@ async fn run_web(host: &str, port: u16, open: bool) -> Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    Ok(())
+}
+
+/// client.toml 的标准路径（定位不到配置目录时回落到数据目录）
+fn client_config_path() -> PathBuf {
+    ClientConfig::config_path().unwrap_or_else(|| get_data_dir().join("client.toml"))
+}
+
+/// 加载 client.toml；文件存在但解析失败时报错退出，理由与 config.toml 一致。
+fn load_client_config(path: &Path) -> Result<ClientConfig> {
+    ClientConfig::load_from_file(path).with_context(|| format!("客户端配置文件 {} 内容无效", path.display()))
+}
+
+/// `oma web` 读写 client.toml 所需的共享状态。
+///
+/// `lock` 串行化写入：浏览器可能并发调用 PUT，无锁时两次原子替换可能
+/// 相互覆盖（后者读到旧的临时文件状态），造成连接列表丢失。
+struct ClientConfigState {
+    path: PathBuf,
+    lock: tokio::sync::Mutex<()>,
+}
+
+/// GET /api/client/config：每次从磁盘重读，手改文件后刷新页面即可生效。
+async fn get_client_config(State(state): State<Arc<ClientConfigState>>) -> Response {
+    match load_client_config(&state.path) {
+        Ok(cfg) => Json(cfg).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
+/// PUT /api/client/config：校验后原子落盘，并回读返回规范化结果。
+async fn put_client_config(State(state): State<Arc<ClientConfigState>>, Json(cfg): Json<ClientConfig>) -> Response {
+    if let Err(e) = validate_client_config(&cfg) {
+        return (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response();
+    }
+    let _guard = state.lock.lock().await;
+    match cfg.save_to_file_atomic(&state.path) {
+        Ok(()) => Json(cfg).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
+/// 校验连接列表：名称与地址非空，名称不得重复（active 以名称为键）。
+fn validate_client_config(cfg: &ClientConfig) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for conn in &cfg.connections {
+        if conn.name.trim().is_empty() {
+            anyhow::bail!("连接名称不能为空");
+        }
+        if conn.url.trim().is_empty() {
+            anyhow::bail!("连接「{}」的地址不能为空", conn.name);
+        }
+        if !seen.insert(conn.name.as_str()) {
+            anyhow::bail!("连接名称「{}」重复", conn.name);
+        }
+    }
     Ok(())
 }
 
@@ -212,12 +284,12 @@ fn format_host(host: &str, port: u16) -> String {
 async fn web_asset_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
 
-    // 本服务不提供任何 API：若收到这类请求，说明前端把访问地址配到了
+    // 本服务不含完整 API：若收到这类请求，说明前端把访问地址配到了
     // `oma web` 自己头上。回 404 并说清楚原因，比回一个 HTML 页面好排查得多。
     if path.starts_with("api/") || path == "ws" {
         return (
             StatusCode::NOT_FOUND,
-            "此端口只提供前端静态资源，不含 API；请把界面上的「访问地址」指向 oma daemon",
+            "此端口只提供前端静态资源与客户端连接配置；请把界面上的「访问地址」指向 oma daemon",
         )
             .into_response();
     }
@@ -308,7 +380,7 @@ async fn run() -> Result<()> {
             start_daemon(&addr, token.as_deref(), config.as_deref()).await?;
         }
         Some(Commands::Web { host, port, open }) => {
-            run_web(&host, port, open).await?;
+            run_web(host.as_deref(), port, open).await?;
         }
         Some(Commands::Tui { addr, token, workspace }) => {
             let token = read_token(token.as_deref(), &config_path(None))?;
@@ -334,6 +406,7 @@ async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
+    use oma_config::Connection;
 
     use super::*;
 
@@ -374,5 +447,40 @@ mod tests {
         assert_eq!(format_host("0.0.0.0", 5173), "localhost:5173");
         assert_eq!(format_host("::", 5173), "localhost:5173");
         assert_eq!(format_host("127.0.0.1", 5173), "127.0.0.1:5173");
+    }
+
+    /// client.toml 校验：空名称、空地址与重名都要拒绝，
+    /// 否则 active 按名称引用时会歧义。
+    #[test]
+    fn test_validate_client_config() {
+        let conn = |name: &str, url: &str| Connection {
+            name:  name.into(),
+            url:   url.into(),
+            token: String::new(),
+        };
+
+        let ok = ClientConfig {
+            connections: vec![conn("a", "http://127.0.0.1:17431"), conn("b", "http://10.0.0.5:17431")],
+            ..ClientConfig::default()
+        };
+        assert!(validate_client_config(&ok).is_ok());
+
+        let empty_name = ClientConfig {
+            connections: vec![conn("  ", "http://x")],
+            ..ClientConfig::default()
+        };
+        assert!(validate_client_config(&empty_name).is_err());
+
+        let empty_url = ClientConfig {
+            connections: vec![conn("a", "")],
+            ..ClientConfig::default()
+        };
+        assert!(validate_client_config(&empty_url).is_err());
+
+        let duplicated = ClientConfig {
+            connections: vec![conn("a", "http://x"), conn("a", "http://y")],
+            ..ClientConfig::default()
+        };
+        assert!(validate_client_config(&duplicated).is_err());
     }
 }
