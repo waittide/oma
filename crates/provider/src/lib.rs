@@ -1361,10 +1361,26 @@ fn extract_reasoning_delta(delta: &serde_json::Value) -> Option<String> {
     if parts.is_empty() { None } else { Some(parts.concat()) }
 }
 
+/// 带未读数据关闭连接会导致内核发送 RST，网关（如 LLMGate）会把这条连接记成「客户端中断」。
+/// 因此读到结束标记（如 `data: [DONE]`）后，把剩余数据在后台排空读完，以正常 FIN 关闭。
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 后台排空流中的剩余字节，读到 EOF 或超时后正常释放连接
+fn drain_stream<S, E>(mut stream: S)
+where
+    S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin + Send + 'static,
+    E: Send + 'static,
+{
+    tokio::spawn(async move {
+        let drain_fut = async { while let Some(_chunk) = stream.next().await {} };
+        let _ = tokio::time::timeout(DRAIN_TIMEOUT, drain_fut).await;
+    });
+}
+
 pub async fn parse_openai_sse<S, E>(mut stream: S, tx: mpsc::Sender<ProviderStreamEvent>) -> Result<(), String>
 where
-    S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
-    E: std::fmt::Display,
+    S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
 {
     let mut buffer = String::new();
 
@@ -1424,6 +1440,7 @@ where
                             })
                             .await;
                     }
+                    drain_stream(stream);
                     return Ok(());
                 }
 
@@ -2313,6 +2330,62 @@ data: [DONE]\n\n";
                 stop_reason: StopReason::ToolUse,
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_parse_openai_sse_drains_remaining_stream_on_done() {
+        // 构造流：先给出包含 [DONE] 的分片，再给出若干后续分片
+        let chunks = vec![
+            Ok::<_, String>(bytes::Bytes::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+            )),
+            Ok::<_, String>(bytes::Bytes::from("data: [DONE]\n\n")),
+            Ok::<_, String>(bytes::Bytes::from("extra chunk 1")),
+            Ok::<_, String>(bytes::Bytes::from("extra chunk 2")),
+            Ok::<_, String>(bytes::Bytes::from("extra chunk 3")),
+        ];
+        let total_chunks = chunks.len();
+        let consumed = Arc::new(AtomicUsize::new(0));
+        let consumed_clone = Arc::clone(&consumed);
+
+        let stream = futures_util::stream::iter(chunks).map(move |item| {
+            consumed_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            item
+        });
+
+        let (tx, mut rx) = mpsc::channel(10);
+        // parse_openai_sse 遇到 [DONE] 会在后台排空并立即返回 Ok
+        let res = parse_openai_sse(stream, tx).await;
+        assert!(res.is_ok(), "parse_openai_sse 应该返回 Ok");
+
+        // 事件中应该恰好只有一个 TextDelta 和一个 Done，没有多余事件
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], ProviderStreamEvent::TextDelta("hello".to_string()));
+        assert_eq!(
+            events[1],
+            ProviderStreamEvent::Done {
+                stop_reason: StopReason::EndTurn,
+            }
+        );
+
+        // 轮询检查后台排空：稍等片刻后所有后续分片都应被消费完
+        let start = std::time::Instant::now();
+        while consumed.load(std::sync::atomic::Ordering::SeqCst) < total_chunks {
+            if start.elapsed() > std::time::Duration::from_secs(2) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(
+            consumed.load(std::sync::atomic::Ordering::SeqCst),
+            total_chunks,
+            "流中的所有后续分片都应该在后台被排空消费"
+        );
     }
 
     #[tokio::test]
