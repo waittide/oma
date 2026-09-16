@@ -696,10 +696,16 @@ impl SessionRoom {
                     .await;
             });
         } else {
-            self.command_queue
-                .lock()
-                .await
-                .push_back(AgentCommand::UserInput { content, attachments });
+            // 排队时必须连同分叉点一起存：只压一份裸的 `UserInput` 会让编辑重发
+            // 轮到执行时退化成普通追加，分叉点静默丢失。
+            let queued = match parent_id_override {
+                Some(parent_message_id) => AgentCommand::ForkAndRun {
+                    parent_message_id,
+                    new_content: Some(content),
+                },
+                None => AgentCommand::UserInput { content, attachments },
+            };
+            self.command_queue.lock().await.push_back(queued);
             self.broadcast_queue_len().await;
         }
     }
@@ -1514,17 +1520,16 @@ impl SessionRoom {
             };
 
             match next {
-                (Some(AgentCommand::UserInput { content, attachments }), pending) => {
+                (Some(cmd), pending) => {
                     self.broadcast(AgentEvent::QueueUpdated { pending });
+                    let Some((content, attachments, parent_id)) = queued_run(cmd) else {
+                        continue; // 不认识的指令就地丢弃，继续排空
+                    };
                     let room = self.clone();
                     tokio::spawn(async move {
-                        room.run_user_turn(content, attachments, None).await;
+                        room.run_user_turn(content, attachments, parent_id).await;
                     });
                     return; // 交棒给下一轮，由它负责后续排空
-                }
-                (Some(_), pending) => {
-                    // 队列中只可能存放用户输入；其余指令就地丢弃并继续
-                    self.broadcast(AgentEvent::QueueUpdated { pending });
                 }
                 (None, _) => {
                     self.is_running.store(false, Ordering::SeqCst);
@@ -1592,6 +1597,21 @@ struct ImageInputCtx(bool);
 impl ToolContext for ImageInputCtx {
     fn supports_image_input(&self) -> bool {
         self.0
+    }
+}
+
+/// 把队列指令还原为「要跑的一轮输入」。
+///
+/// 队列里只会出现用户输入类指令：普通输入，以及带分叉点的编辑重发。
+/// 其余指令不应入队，真出现了就地丢弃（返回 `None`）。
+fn queued_run(cmd: AgentCommand) -> Option<(String, Vec<String>, Option<String>)> {
+    match cmd {
+        AgentCommand::UserInput { content, attachments } => Some((content, attachments, None)),
+        AgentCommand::ForkAndRun {
+            parent_message_id,
+            new_content: Some(content),
+        } => Some((content, Vec::new(), Some(parent_message_id))),
+        _ => None,
     }
 }
 
@@ -2433,6 +2453,39 @@ mod tests {
         assert!(!room.is_busy());
         assert_eq!(room.command_queue.lock().await.len(), 0);
         Ok(())
+    }
+
+    /// 编辑重发在忙碌时排队必须连同分叉点一起保留，
+    /// 否则轮到执行时会退化成普通追加，分叉点静默丢失。
+    #[test]
+    fn test_queued_fork_keeps_parent() {
+        let queued = queued_run(AgentCommand::ForkAndRun {
+            parent_message_id: "m_parent".into(),
+            new_content:       Some("edited".into()),
+        });
+        assert_eq!(
+            queued,
+            Some(("edited".to_string(), Vec::new(), Some("m_parent".to_string())))
+        );
+
+        // 无分叉点的普通输入照旧
+        assert_eq!(
+            queued_run(AgentCommand::UserInput {
+                content:     "hi".into(),
+                attachments: vec!["a".into()],
+            }),
+            Some(("hi".to_string(), vec!["a".to_string()], None))
+        );
+
+        // 与用户输入无关的指令不入队；真出现时必须被丢弃而不是当成一轮输入
+        assert!(queued_run(AgentCommand::SetModel { model: "m".into() }).is_none());
+        assert!(
+            queued_run(AgentCommand::ForkAndRun {
+                parent_message_id: "m_parent".into(),
+                new_content:       None,
+            })
+            .is_none()
+        );
     }
 
     // ---------- 推理等级下发 ----------
