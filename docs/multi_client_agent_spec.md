@@ -45,8 +45,8 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  │               Agent Runtime Engine & Subsystems                   │  │
 │  │  - oma-provider: LLM Streaming Normalization & Deep Merge         │  │
 │  │  - oma-storage:  Dual SQLite Engine (WAL + Single-Writer Pool)    │  │
-│  │  - oma-tool:     5 Core Tools (read, write, edit, shell, task)    │  │
-│  │  - oma-mcp:      MCP Client (stdio & remote SSE, namespaced)      │  │
+│  │  - oma-tool:     6 Tools (read, write, edit, shell, task, ask)    │  │
+│  │  - oma-mcp:      MCP Client (stdio & HTTP POST, namespaced)       │  │
 │  │  - oma-config:   TOML Config & Bundled Agent Templates            │  │
 │  │  - oma-contract: Shared Wire Protocol, Events, Data Models        │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
@@ -60,8 +60,8 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | `crates/contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
 | `crates/storage` | SQLite 持久化抽象，实现全局中心库 `oma.db` 与会话专属库 `session.db`，管理 WAL 模式与串行写锁。 |
 | `crates/provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
-| `crates/tool` | 内置 5 大工具（`read`, `write`, `edit` 原子替换补丁, `shell` 进程组守卫, `task` 子任务委托），含输出截断与工具白名单。 |
-| `crates/mcp` | MCP 客户端，支持本地 stdio 子进程与远程 SSE 传输，按 `mcp__{server}__{tool}` 统一命名空间注册。 |
+| `crates/tool` | 内置 6 大工具（`read`, `write`, `edit` 原子替换补丁, `shell` 进程组守卫, `task` 子任务委托, `ask` 歧义提问），含输出截断与工具白名单。 |
+| `crates/mcp` | MCP 客户端，支持本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），按 `mcp__{server}__{tool}` 统一命名空间注册。 |
 | `crates/config` | 配置文件 `config.toml` 解析，内置 5 大 Agent 模板（`include_str!`）与本地/项目级覆盖、环境块动态注入。 |
 | `crates/runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、熔断器、70% 阈值两阶段上下文压缩与内存审批白名单。 |
 | `crates/daemon` | 基于 Axum 的 HTTP REST 与 WebSocket 网关、Bearer Token 鉴权中间件、静态路由与 CORS。 |
@@ -259,6 +259,10 @@ pub enum ClientMessage {
     Approval {
         response: ApprovalResponse,
     },
+    /// 提问回答（ask 工具）；`is_cancelled = true` 表示跳过作答
+    Ask {
+        response: AskResponse,
+    },
     Cancel {},
 }
 
@@ -278,6 +282,10 @@ pub enum AgentCommand {
     },
     SetApprovalMode {
         mode: ApprovalMode,
+    },
+    /// 设置当前会话的推理等级（必须在 REASONING_LEVELS 内，空串 = 未设置）
+    SetReasoningLevel {
+        level: String,
     },
     ForkAndRun {
         parent_message_id: String,
@@ -355,12 +363,17 @@ pub enum ModelCapability {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
-    pub id:                String,
-    pub name:              String,
-    pub context_len:       usize,
-    pub capabilities:      BTreeSet<ModelCapability>,
-    pub max_output:        Option<usize>,
-    pub reasoning_effort:  String,        // "" | low | medium | high
+    pub id:            String,
+    pub name:          String,
+    pub context_len:   usize,
+    /// 模型能力集合
+    #[serde(default = "default_model_capabilities")]
+    pub capabilities:  BTreeSet<ModelCapability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output:    Option<usize>,
+    /// 推理等级 → 厂商自定义字符串；未配置的等级按等级名下发
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reasoning_map: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -375,23 +388,81 @@ pub struct ActiveTurnCatchUp {
     pub turn_id:              String,
     pub accumulated_thinking: String,
     pub accumulated_text:     String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tool_call:     Option<ToolCallStartedData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_approval:     Option<PermissionRequestedData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_ask:          Option<AskRequestedData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallStartedData {
     pub call_id:     String,
-    pub name:        String,
+    /// 被调用的工具名
+    pub tool_name:   String,
     pub input:       serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionRequestedData {
     pub request_id: String,
-    pub name:       String,
-    pub summary:    String,
+    /// 待执行的工具名
+    pub tool_name:  String,
+    /// 工具入参原文；与 ToolCallStartedData.input 同为结构化 JSON
+    pub input:      serde_json::Value,
+}
+
+/// ask 工具的提问载荷
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskRequestedData {
+    pub request_id: String,
+    pub questions:  Vec<AskQuestion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskQuestion {
+    pub id:          String,
+    pub question:    String,
+    pub options:     Vec<AskOption>,
+    /// true = 多选（复选），false = 单选
+    #[serde(default)]
+    pub is_multi:    bool,
+    /// 推荐选项下标，供界面标注默认值；越界则忽略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskOption {
+    pub label:       String,
+    /// 补充说明：解释该选项的取舍，展示在标签下方
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+/// 提问回答（客户端上行）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskResponse {
+    pub request_id:   String,
+    /// 与请求 questions 一一对应；为空数组表示用户取消
+    #[serde(default)]
+    pub answers:      Vec<AskAnswer>,
+    /// true = 用户取消/拒绝作答
+    #[serde(default)]
+    pub is_cancelled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskAnswer {
+    /// 选中的选项标签（按选择顺序）
+    #[serde(default)]
+    pub selected:     Vec<String>,
+    /// 「其他」自定义输入；为空表示未使用
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub custom_input: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -421,6 +492,13 @@ pub enum AgentEvent {
     },
     QueueCleared {},
 
+    /// 会话轮次占用状态变化：轮次开始 / 全部结束时广播，
+    /// 所有已连接客户端据此更新侧栏运行中标记（不限当前会话）
+    SessionRunning {
+        session_id: String,
+        running:    bool,
+    },
+
     // 2b. 服务端权威队列深度；客户端不再自行累加，避免与丢弃的指令漂移
     QueueUpdated { pending: usize },
 
@@ -443,7 +521,8 @@ pub enum AgentEvent {
     ToolCallStarted(ToolCallStartedData),
     ToolCallFinished {
         call_id:  String,
-        name:     String,
+        /// 被调用的工具名
+        tool_name: String,
         output:   String,
         is_error: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -458,11 +537,28 @@ pub enum AgentEvent {
         resolved_by: String,
     },
 
+    // 5b. ask 工具提问：广播后被挂起，任一客户端作答（先到先得）
+    AskRequested(AskRequestedData),
+    AskResolved {
+        request_id:   String,
+        #[serde(default)]
+        is_cancelled: bool,
+        resolved_by:  String,
+    },
+
     // 6. 分支、模型与 Agent 动态变更
     ActiveBranchChanged { current_leaf_id: String },
     ModelChanged        { active_model: String },
     AgentChanged        { active_agent: String },
     ApprovalModeChanged { mode: ApprovalMode },
+    ReasoningLevelChanged { level: String },
+
+    // 6b. 上下文占用：每次模型请求拿到用量后广播，供界面展示进度。
+    // tokens 为提示侧总量（含缓存），context_len 为模型窗口
+    ContextUsage {
+        tokens:      usize,
+        context_len: usize,
+    },
 
     // 7. 重连快照与错误提示
     ActiveTurnCatchUp(ActiveTurnCatchUp),
@@ -485,6 +581,20 @@ pub enum StopReason {
 pub struct TokenUsage {
     pub input_tokens:  usize,
     pub output_tokens: usize,
+}
+
+/// 上下文占用快照
+pub struct ContextUsage {
+    /// 提示侧 token 总量（含缓存）
+    pub tokens:      usize,
+    /// 模型上下文窗口
+    pub context_len: usize,
+}
+
+/// MCP 服务器概览（仅名称与工具数，非完整配置）
+pub struct McpServerSummary {
+    pub name:       String,
+    pub tool_count: usize,
 }
 ```
 
@@ -666,7 +776,7 @@ ToolOutput {
 3. **宿主直跑与权限保护**：
    不做 OS 容器沙箱与路径限制，相对路径按工作区解析，绝对路径直通；依靠 Normal / Strict 模式的人机交互确认提供安全底线。
 
-### 7.2 5 大核心内置工具
+### 7.2 6 大核心内置工具
 1. **`read`**：
    - 参数：`{ "path": "...", "offset": 1, "limit": 1000 }`（offset 为 1 起始行号，仅对文本生效）
    - 按行分片安全读取文本文件。
@@ -693,10 +803,18 @@ ToolOutput {
 4. **`shell`**：
    - 参数：`{ "command": "cargo test" }`
    - 工作目录绑定当前 workspace，实时捕获标准输出与标准错误。
+   - 解释器与环境取自启动时的登录 shell 快照：Daemon 启动时以 `$SHELL -lic`
+     采集一次完整环境（含 rc 文件里的 `export` 与 `PATH`）并缓存，
+     因此命令与用户交互终端一致；采集失败时退回直接继承 Daemon 进程环境。
+     （写死的 `/bin/sh` 不会读 rc，环境也只继承 Daemon 而未必是用户终端。）
 5. **`task`**（Subagent 子任务委托）：
    - 参数：`{ "agent": "explore", "prompt": "..." }`
    - 在后台启动指定角色的子运行时，事件携带 `subagent_id` 实时广播；
    - 运行完成后的最终摘要文本作为该工具的 `output` 汇聚回主链路。
+6. **`ask`**（歧义时向用户提问）：
+   - 参数：`{ "questions": [{ "id", "question", "options": [{ "label", "description" }], "is_multi", "recommended" }] }`
+   - 广播 `AskRequested` 并挂起本轮，等待任一客户端作答（先到先得）；
+   - 结果的文本形式作为 `output` 交回模型；空 `questions` 由 schema 与运行时双重拦截。
 
 ### 7.3 MCP 扩展机制
 - Daemon 全局单例管理本地 stdio 子进程与远程 HTTP（JSON-RPC over POST）客户端；
@@ -841,6 +959,8 @@ pub struct Palette {
 | 上下文压缩 | 第一阶段只替换 `ToolResult` 内容（保持配对），第二阶段按**完整轮次**丢弃前缀；旧的「按消息条数切半」会切出孤儿回执或以 assistant 开头，长会话下必然被厂商 API 拒绝。 |
 | 工具白名单 | Agent 模板的 `tools` 声明是硬约束：既过滤下发给模型的清单，也拦截实际执行；为空表示不限制。 |
 | 会话标识 | `session_id` 会被拼接进文件系统路径，因此全局校验为 `[A-Za-z0-9_-]{1,128}`；附件名同样只允许安全字符并丢弃任何目录成分。 |
+| 版本号来源 | `Cargo.toml` 的 `version` **不会**被 CI 自动递增，只在无标签的分支 / PR 构建里作为回退值被读取；正式版用人工推送的语义化标签（`v0.2.0`），每日快照用日期标签（`v2026.09.17`）。构建标识与制品名由 `.github/workflows/build.yml` 的 `meta` job 统一计算（标签优先），不再存在单独的发布工作流。 |
+| shell 执行环境 | 解释器取 `$SHELL`（兜底 `/bin/sh`），环境取自 Daemon 启动时对登录 shell 的一次快照（`$SHELL -lic`），而非写死的 `sh` + 继承 Daemon 进程环境：后者既读不到 rc 文件里的 alias / `export`，环境也未必是用户终端的。 |
 | MCP 远程传输 | 以 JSON-RPC over HTTP POST 实现 `tools/list` 与 `tools/call`，而非 SSE。 |
 | MCP / task 工具 | 工具注册表在交给 `SessionRoom` 之前完成装配（房间持有的是快照），`TaskTool` 通过一次性槽位回填 runner 解开构造环路。 |
 | 并发写 | 会话库写路径使用 `max_connections = 1` 的连接池，读快照走独立只读池；连接池按会话缓存并提供删除前驱逐。 |
