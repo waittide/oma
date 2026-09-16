@@ -150,12 +150,23 @@ export function command(cmd: AgentCommand): boolean {
   return send({ kind: 'command', command: cmd });
 }
 
-/** 用户气泡的纯文本（仅文本块），用于乐观消息与服务端持久化消息的对账。 */
-function messageText(m: ChatMessage): string {
-  return m.content
+/**
+ * 用户消息的指纹：文本 + 附件引用。
+ *
+ * 用于乐观消息与服务端持久化消息的对账。附件也必须计入：只按文本时，
+ * 「仅附件」的消息文本为空串，会与任意一条同类消息误匹配（或永远匹配不上）。
+ * 服务端持久化的图片块存的就是 `session_attachment://` 引用，两边口径一致。
+ */
+function messageKey(m: ChatMessage): string {
+  const text = m.content
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
     .join('\n');
+  const images = m.content
+    .filter((b) => b.type === 'image')
+    .map((b) => b.data)
+    .join(',');
+  return `${text}\u{0}${images}`;
 }
 
 /**
@@ -165,8 +176,8 @@ function messageText(m: ChatMessage): string {
  */
 function pruneQueued(server: ChatMessage[]) {
   if (queuedMessages.value.length === 0) return;
-  const persisted = new Set(server.filter((m) => m.role === 'user').map(messageText));
-  queuedMessages.value = queuedMessages.value.filter((m) => !persisted.has(messageText(m)));
+  const persisted = new Set(server.filter((m) => m.role === 'user').map(messageKey));
+  queuedMessages.value = queuedMessages.value.filter((m) => !persisted.has(messageKey(m)));
 }
 
 async function reload() {
