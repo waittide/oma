@@ -4,6 +4,9 @@ members = ["crates/*"]
 default-members = ["crates/bin"]
 
 [workspace.package]
+# 版本号唯一来源：每周自动发布时由 .github/workflows/weekly-release.yml 就地递增。
+# 各 crate 通过 version.workspace = true 继承，不再各自写死。
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 authors = ["waittide <waittide@outlook.com>"]
@@ -39,16 +42,17 @@ url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 
 # --- 内部 crate ---
-oma-client = { path = "crates/client", version = "0.1.0" }
-oma-config = { path = "crates/config", version = "0.1.0" }
-oma-contract = { path = "crates/contract", version = "0.1.0" }
-oma-daemon = { path = "crates/daemon", version = "0.1.0" }
-oma-mcp = { path = "crates/mcp", version = "0.1.0" }
-oma-provider = { path = "crates/provider", version = "0.1.0" }
-oma-runtime = { path = "crates/runtime", version = "0.1.0" }
-oma-storage = { path = "crates/storage", version = "0.1.0" }
-oma-tool = { path = "crates/tool", version = "0.1.0" }
-oma-tui = { path = "crates/tui", version = "0.1.0" }
+# 不写 version：随 [workspace.package] 一起递增，避免两处版本号漂移
+oma-client = { path = "crates/client" }
+oma-config = { path = "crates/config" }
+oma-contract = { path = "crates/contract" }
+oma-daemon = { path = "crates/daemon" }
+oma-mcp = { path = "crates/mcp" }
+oma-provider = { path = "crates/provider" }
+oma-runtime = { path = "crates/runtime" }
+oma-storage = { path = "crates/storage" }
+oma-tool = { path = "crates/tool" }
+oma-tui = { path = "crates/tui" }
 
 [workspace.lints.clippy]
 collapsible_else_if = "allow"
