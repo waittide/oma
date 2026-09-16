@@ -457,6 +457,23 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
               <LuLoader :size="13" class="spin" />
             </div>
           </article>
+
+          <!--
+            排队中的输入：单独成区、紧跟在流式块下方。
+            它们还没落库，不能混进正式消息流——否则会被排在正在流式的回复**上方**，
+            看起来就像排队消息插到了上一条回复前面。
+          -->
+          <article v-for="m in chat.queuedMessages.value" :key="m.id" class="msg user queued">
+            <div class="user-bubble">
+              <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
+            </div>
+            <div class="user-actions queued-actions">
+              <span class="queued-badge">
+                <LuLoader :size="11" class="spin" />
+                {{ t('queuedPending') }}
+              </span>
+            </div>
+          </article>
         </template>
       </div>
       <MessageRail :items="railItems" @jump="jumpToMessage" />
@@ -791,6 +808,27 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
 .msg.user:hover .user-actions,
 .msg.user:focus-within .user-actions {
   opacity: 1;
+}
+/*
+ * 排队中的输入：压暗一点与已发送的消息区分，并始终展示「排队中」标签
+ * （常态下 user-actions 是悬停才显示的，排队状态必须一眼可见）。
+ */
+.msg.user.queued .user-bubble {
+  opacity: 0.72;
+}
+.queued-actions {
+  opacity: 1;
+}
+.queued-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: var(--surface);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
 }
 .live-row {
   color: var(--accent);

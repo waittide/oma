@@ -33,6 +33,13 @@ import {
 } from '../lib/liveSegments';
 
 let liveSeq = 0;
+/**
+ * 轮次代次。
+ *
+ * 排队交棒时，下一轮会在上一轮 `turn_finished` 的回读尚未返回时就已开始；
+ * 回读完成时据它判断是否已换轮，避免把新一轮刚吐出的流式内容一并抹掉。
+ */
+let turnSeq = 0;
 
 export const connected = ref(false);
 export const messages = ref<ChatMessage[]>([]);
@@ -98,6 +105,14 @@ export const lastUsage = ref<TokenUsage | null>(null);
 /** 最近一次模型请求的上下文占用（提示侧总量，含缓存） */
 export const contextUsage = ref<{ tokens: number; contextLen: number } | null>(null);
 export const queued = ref(0);
+/**
+ * 排队中的用户输入（尚未落库）。
+ *
+ * 必须与 [`messages`] 分开：`messages` 是已持久化的线性消息流，而排队输入在轮到自己
+ * 之前不会落库。混进去会让它被排在正在流式的助手回复**之前**渲染——也就是排队消息
+ * 反而跑到上一条回复上面去。它们单独渲染在流式块下方。
+ */
+export const queuedMessages = ref<ChatMessage[]>([]);
 
 export const modelList = computed(() => {
   const out: { selector: string; info: ModelInfo }[] = [];
@@ -135,6 +150,25 @@ export function command(cmd: AgentCommand): boolean {
   return send({ kind: 'command', command: cmd });
 }
 
+/** 用户气泡的纯文本（仅文本块），用于乐观消息与服务端持久化消息的对账。 */
+function messageText(m: ChatMessage): string {
+  return m.content
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n');
+}
+
+/**
+ * 排队输入一旦落库就从「排队中」区移除，改由正式消息流渲染。
+ *
+ * 排队输入要等轮到自己才开始落库，因此只能在每次回读后回来校准。
+ */
+function pruneQueued(server: ChatMessage[]) {
+  if (queuedMessages.value.length === 0) return;
+  const persisted = new Set(server.filter((m) => m.role === 'user').map(messageText));
+  queuedMessages.value = queuedMessages.value.filter((m) => !persisted.has(messageText(m)));
+}
+
 async function reload() {
   if (!sessionId) return;
   try {
@@ -144,6 +178,7 @@ async function reload() {
     ]);
     messages.value = linear;
     tree.value = all;
+    pruneQueued(linear);
     if (viewLeafId.value === null && currentLeafId.value === null && linear.length > 0) {
       currentLeafId.value = linear[linear.length - 1]!.id;
     }
@@ -160,6 +195,7 @@ function handleEvent(ev: AgentEvent) {
         hostStack.push(live.value.segments);
         break;
       }
+      turnSeq += 1;
       running.value = true;
       setLive(emptyLive());
       break;
@@ -220,17 +256,22 @@ function handleEvent(ev: AgentEvent) {
     case 'user_message':
       // 其他客户端发送的消息实时可见；自己的发送由 submit 本地乐观落地
       if (ev.data && ev.data.client_id !== clientId) {
-        messages.value.push({
+        const msg: ChatMessage = {
           id: `remote_${ev.data.client_id}_${Date.now()}`,
           parent_id: currentLeafId.value,
           role: 'user',
           content: [{ type: 'text', text: ev.data.content }],
           created_at: Date.now(),
-        });
+        };
+        // 排队中的输入尚未落库，进队列区；否则会插到正在流式的回复上方
+        if (ev.data.queued) queuedMessages.value.push(msg);
+        else messages.value.push(msg);
       }
       break;
     case 'queue_cleared':
       queued.value = 0;
+      // 队列被清空（取消）时这些输入从未落库，直接丢弃
+      queuedMessages.value = [];
       break;
     case 'queue_updated':
       // 服务端权威队列深度，客户端不再自行累加（避免与丢弃的指令漂移）
@@ -256,8 +297,10 @@ function handleEvent(ev: AgentEvent) {
       }
       currentLeafId.value = null; // 让服务端解析默认 leaf
       // 回读完成后再清空缓冲，持久化消息与流式内容同帧交接，界面不跳动
+      const seq = turnSeq;
       void reload().finally(() => {
-        setLive(emptyLive());
+        // 回读期间若已开始新一轮（排队交棒），缓冲已归新一轮所有，不能抹掉
+        if (turnSeq === seq) setLive(emptyLive());
         finalizing.value = false;
       });
       break;
@@ -452,6 +495,7 @@ export function reset() {
   lastUsage.value = null;
   contextUsage.value = null;
   queued.value = 0;
+  queuedMessages.value = [];
 }
 
 function close() {
@@ -477,13 +521,17 @@ export function submit(content: string, attachments: string[] = []): boolean {
   const blocks: Block[] = [];
   if (content) blocks.push({ type: 'text', text: content });
   for (const ref of attachments) blocks.push({ type: 'image', mime_type: '', data: ref });
-  messages.value.push({
+  const msg: ChatMessage = {
     id: `local_${crypto.randomUUID()}`,
     parent_id: currentLeafId.value,
     role: 'user',
     content: blocks,
     created_at: Date.now(),
-  });
+  };
+  // 轮次运行中时服务端会把这条输入排队，此时它尚未落库：放进队列区单独渲染，
+  // 否则它会排在正在流式的回复上方（排队消息反而跑到上一条回复前面去）。
+  if (running.value) queuedMessages.value.push(msg);
+  else messages.value.push(msg);
   return true;
 }
 

@@ -103,6 +103,7 @@
     "notConnected": "デーモンに接続していないため送信できません",
     "forkAttachmentUnsupported": "編集して再送は添付に対応していません。先に添付を外してください。",
     "queuedCount": "{count} 件待機中",
+    "queuedPending": "待機中",
     "contextTip": "コンテキスト {tokens} / {total} ({percent}%)",
     "contextUnknown": "{tokens} トークン使用（モデルの上限は不明）"
   },

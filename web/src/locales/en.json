@@ -103,6 +103,7 @@
     "notConnected": "Not connected to the daemon; message not sent",
     "forkAttachmentUnsupported": "Edit & resend does not support attachments; remove them first",
     "queuedCount": "{count} queued",
+    "queuedPending": "Queued",
     "contextTip": "Context {tokens} / {total} ({percent}%)",
     "contextUnknown": "{tokens} tokens used (model window unknown)"
   },

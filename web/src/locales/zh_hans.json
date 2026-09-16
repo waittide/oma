@@ -103,6 +103,7 @@
     "notConnected": "未连接到 Daemon，消息未发送",
     "forkAttachmentUnsupported": "编辑重发暂不支持附件，请先移除附件",
     "queuedCount": "排队 {count} 条",
+    "queuedPending": "排队中",
     "contextTip": "上下文 {tokens} / {total}（{percent}%）",
     "contextUnknown": "已用 {tokens} tokens（模型窗口未知）"
   },
