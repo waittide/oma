@@ -4,8 +4,10 @@ members = ["crates/*"]
 default-members = ["crates/bin"]
 
 [workspace.package]
-# 版本号唯一来源：每周自动发布时由 .github/workflows/weekly-release.yml 就地递增。
-# 各 crate 通过 version.workspace = true 继承，不再各自写死。
+# 版本号唯一来源：各 crate 通过 version.workspace = true 继承，不再各自写死。
+# 这里**不会**被自动递增：正式版本的版本号由人工推送的语义化标签（如 v0.2.0）
+# 决定，每日快照由日期标签（如 v2026.09.17）决定；本字段只在无标签的分支 / PR
+# 构建里作为回退值被读取。见 .github/workflows/build.yml 的 meta job。
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
