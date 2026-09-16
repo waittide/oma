@@ -217,7 +217,12 @@ fn build_openai_messages(
                 let mut obj = serde_json::json!({
                     "role": "assistant",
                 });
-                if !text_parts.is_empty() {
+                // 兼容接口要求 assistant 消息至少带 `content` 或 `tool_calls`：
+                // 思维链尚未结束就被打断（用户中止、上游断流）会留下只有 thinking
+                // 的消息，此时必须补空串占位，否则整轮请求被上游拒
+                // （`Invalid assistant message: content or tool_calls must be set`）。
+                // 带 tool_calls 的消息按惯例省略 content，保持与各厂商示例一致。
+                if !text_parts.is_empty() || tool_calls.is_empty() {
                     obj["content"] = serde_json::Value::String(text_parts.join("\n"));
                 }
                 // 思维链回传（见函数文档）：只在当前模型声明 thinking 时下发，
@@ -2773,5 +2778,27 @@ data: [DONE]\n\n";
         let messages = vec![user_text("q").remove(0), assistant_with_thinking(Some("先读文件"))];
         let built = build_openai_messages(&messages, None, false);
         assert!(built[1].get("reasoning_content").is_none(), "{built:#?}");
+    }
+
+    /// 思维链输出到一半被打断时，历史里留下的是既无正文也无工具调用的
+    /// assistant 消息。此时必须补空串 `content`，否则下一次发言整轮被上游拒
+    /// （`Invalid assistant message: content or tool_calls must be set`）。
+    #[test]
+    fn test_openai_fills_content_for_interrupted_thinking() {
+        let interrupted = ChatMessage {
+            id:         "a1".into(),
+            parent_id:  Some("u1".into()),
+            role:       Role::Assistant,
+            content:    vec![Block::Thinking {
+                thinking: "想到一半就被打断".into(),
+            }],
+            created_at: 0,
+        };
+        let messages = vec![user_text("q").remove(0), interrupted, user_text("继续").remove(0)];
+
+        let built = build_openai_messages(&messages, None, true);
+        assert_eq!(built[1]["content"], "");
+        assert_eq!(built[1]["reasoning_content"], "想到一半就被打断");
+        assert!(built[1].get("tool_calls").is_none(), "{built:#?}");
     }
 }
