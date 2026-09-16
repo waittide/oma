@@ -64,7 +64,7 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 - **请求头 / 请求体三级递归合并**：Provider 级 $\prec$ Model 级 $\prec$ 推理等级覆盖，可注入厂商私有字段。
 - **六大内置工具**：`read`（支持读图片）、`write`、`edit`（原子多段替换 + 统一 diff）、
   `shell`（进程组守卫 + 可配置超时）、`task`（子代理）、`ask`（歧义时向用户提问）。
-- **MCP 扩展**：本地 stdio 子进程与远程 SSE 两种传输，工具按 `mcp__{server}__{tool}` 命名空间注册。
+- **MCP 扩展**：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST）两种传输，工具按 `mcp__{server}__{tool}` 命名空间注册。
 - **可配置的展示能力**：模型能力（思考 / 文本 / 图片输入输出 / 音频）逐模型声明，
   界面据此决定是否内联图片、是否展示思考开关。
 
@@ -120,7 +120,7 @@ flowchart TB
             direction LR
             PROV["oma-provider<br/>流式归一化"]
             TOOL["oma-tool<br/>六大工具"]
-            MCP["oma-mcp<br/>stdio / SSE"]
+            MCP["oma-mcp<br/>stdio / HTTP"]
             STORE["oma-storage<br/>oma.db + session.db"]
             CONF["oma-config<br/>config.toml + 模板"]
         end
@@ -147,7 +147,7 @@ flowchart TB
 | `crates/storage` | 双 SQLite 引擎：全局中心库 `oma.db` 与会话库 `session.db`，WAL + 单写者池 |
 | `crates/provider` | 手写 SSE 状态机，归一化四家流式协议（含工具调用与多模态） |
 | `crates/tool` | 六大内置工具与输出截断、工具白名单 |
-| `crates/mcp` | MCP 客户端：本地 stdio 与远程 SSE，工具命名空间注册 |
+| `crates/mcp` | MCP 客户端：本地 stdio 与远程 HTTP（JSON-RPC over POST），工具命名空间注册 |
 | `crates/config` | `config.toml` 解析、内置 Agent 模板、调色板与项目级覆盖 |
 | `crates/runtime` | Agent Loop、会话房间、命令队列、级联取消、熔断器、上下文压缩、审批仲裁 |
 | `crates/daemon` | Axum HTTP / WebSocket 网关、Bearer 鉴权中间件、REST 路由 |

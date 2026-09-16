@@ -76,7 +76,7 @@ ships Traditional Chinese, English and Japanese.
 - **Six built-in tools**: `read` (including images), `write`, `edit` (atomic multi-hunk replacement with
   unified diff), `shell` (process-group guard with configurable timeout), `task` (subagent), and
   `ask` (ask the user when the request is ambiguous).
-- **MCP support**: local stdio subprocesses and remote SSE, with tools registered under
+- **MCP support**: local stdio subprocesses and remote HTTP (JSON-RPC over POST), with tools registered under
   `mcp__{server}__{tool}`.
 - **Per-model capabilities**: thinking / text / image and audio input-output are declared per model,
   and the UI decides from that whether to inline images or expose the thinking toggle.
@@ -136,7 +136,7 @@ flowchart TB
             direction LR
             PROV["oma-provider<br/>stream normalization"]
             TOOL["oma-tool<br/>six tools"]
-            MCP["oma-mcp<br/>stdio / SSE"]
+            MCP["oma-mcp<br/>stdio / HTTP"]
             STORE["oma-storage<br/>oma.db + session.db"]
             CONF["oma-config<br/>config.toml + templates"]
         end
@@ -163,7 +163,7 @@ flowchart TB
 | `crates/storage` | Dual SQLite engine: global index `oma.db` and per-session `session.db`, WAL mode with a single-writer pool |
 | `crates/provider` | Hand-written SSE state machine normalizing four streaming protocols (tool calls and multimodal included) |
 | `crates/tool` | The six built-in tools, output truncation and tool allow-lists |
-| `crates/mcp` | MCP client over local stdio and remote SSE with namespaced tool registration |
+| `crates/mcp` | MCP client over local stdio and remote HTTP (JSON-RPC over POST) with namespaced tool registration |
 | `crates/config` | `config.toml` parsing, bundled agent templates, palettes and project-level overrides |
 | `crates/runtime` | Agent loop, session rooms, command queue, cascade cancel, circuit breaker, compaction, approval arbiter |
 | `crates/daemon` | Axum HTTP / WebSocket gateway, bearer auth middleware, REST routes |

@@ -74,7 +74,7 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
 - **6 つの組み込みツール**: `read`（画像対応）、`write`、`edit`（重複検査付きの原子的マルチハンク置換 + unified diff）、
   `shell`（プロセスグループ監視 + 設定可能なタイムアウト）、`task`（サブエージェント）、
   `ask`（曖昧なときにユーザーへ質問）。
-- **MCP 対応**: ローカル stdio サブプロセスとリモート SSE。ツールは `mcp__{server}__{tool}` の
+- **MCP 対応**: ローカル stdio サブプロセスとリモート HTTP（JSON-RPC over POST）。ツールは `mcp__{server}__{tool}` の
   名前空間で登録されます。
 - **モデル単位の能力宣言**: 思考・テキスト・画像・音声の入出力をモデルごとに宣言し、
   画像をインライン表示するか思考トグルを出すかを UI が判断します。
@@ -134,7 +134,7 @@ flowchart TB
             direction LR
             PROV["oma-provider<br/>ストリーム正規化"]
             TOOL["oma-tool<br/>6 つのツール"]
-            MCP["oma-mcp<br/>stdio / SSE"]
+            MCP["oma-mcp<br/>stdio / HTTP"]
             STORE["oma-storage<br/>oma.db + session.db"]
             CONF["oma-config<br/>config.toml + テンプレート"]
         end
@@ -161,7 +161,7 @@ flowchart TB
 | `crates/storage` | 二重 SQLite エンジン：全体インデックス `oma.db` とセッション別 `session.db`、WAL と単一ライタ |
 | `crates/provider` | 自作 SSE ステートマシンによる 4 プロトコルの正規化（ツール呼び出し・マルチモーダル含む） |
 | `crates/tool` | 6 つの組み込みツール、出力切り詰め、ツール許可リスト |
-| `crates/mcp` | MCP クライアント：ローカル stdio とリモート SSE、名前空間付きツール登録 |
+| `crates/mcp` | MCP クライアント：ローカル stdio とリモート HTTP（JSON-RPC over POST）、名前空間付きツール登録 |
 | `crates/config` | `config.toml` の解析、組み込みエージェントテンプレート、パレット、プロジェクト単位の上書き |
 | `crates/runtime` | エージェントループ、セッションルーム、コマンドキュー、連鎖キャンセル、サーキットブレーカー、圧縮、承認アービトレーション |
 | `crates/daemon` | Axum による HTTP / WebSocket ゲートウェイ、Bearer 認証ミドルウェア、REST ルート |
