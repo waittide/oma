@@ -19,6 +19,7 @@ oma-contract = { workspace = true }
 oma-daemon = { workspace = true }
 oma-runtime = { workspace = true }
 oma-storage = { workspace = true }
+oma-tool = { workspace = true }
 oma-tui = { workspace = true }
 oma-mcp = { workspace = true }
 axum = { workspace = true }

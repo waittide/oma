@@ -1900,6 +1900,7 @@ dependencies = [
  "oma-mcp",
  "oma-runtime",
  "oma-storage",
+ "oma-tool",
  "oma-tui",
  "reqwest",
  "rust-embed",

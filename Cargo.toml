@@ -59,7 +59,7 @@ collapsible_else_if = "allow"
 collapsible_if = "allow"
 
 [workspace.lints.rust]
-# 唯一 unsafe（shell 工具 killpg）在 crates/tool/src/shell.rs 有显式 allow。
+# 唯一 unsafe（shell 工具 killpg）在 crates/tool/src/lib.rs 有显式 allow。
 unsafe_code = "deny"
 
 [profile.release]

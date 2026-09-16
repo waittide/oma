@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -510,6 +511,118 @@ impl Tool for EditTool {
 // ==========================================
 // 4. Shell Tool (libc::killpg Process Group & Timeout)
 // ==========================================
+
+/// 用户登录 shell 的环境快照。
+///
+/// 会话内执行的命令理应「跟用户交互终端一样」，但这两点都不是默认继承
+/// （`Command` 一路继承父进程环境）能拿到的：
+///   - 继承的只是**守护进程**的环境，而守护进程常由服务管理器拉起，只有最小环境；
+///   - rc 文件（`.zshrc` / `.bashrc`）里的 `export` 只在登录/交互 shell 中才会执行。
+///
+/// 因此守护进程启动时（[`init_shell_env`]）用 `$SHELL` 跑一次登录 shell，索取它
+/// 最终的完整环境并缓存。rc 里的 `export` 与 `PATH` 由此对之后每个 `shell` 命令生效，
+/// 又不必在每条命令上重跑登录 shell（那会把 banner、提示符、rc 报错混进命令输出）。
+/// 快照在进程生命周期内固定。
+struct ShellEnv {
+    /// 命令解释器（`$SHELL`，兜底 `/bin/sh`）
+    program: PathBuf,
+    /// 登录 shell 报告的环境变量
+    vars:    Vec<(OsString, OsString)>,
+}
+
+/// 进程级快照槽位。`None` 表示采集失败（或从未采集），
+/// 此时 `shell` 工具退回直接继承守护进程环境，不会因快照缺失而不可用。
+static SHELL_ENV: std::sync::OnceLock<Option<ShellEnv>> = std::sync::OnceLock::new();
+
+/// 采集用户登录 shell 环境，幂等；应在守护进程开始服务前调用一次。
+///
+/// 只认第一次调用：后续会话（乃至后续重建的房间）共用同一份进程级快照。
+pub fn init_shell_env() {
+    let _ = SHELL_ENV.set(capture_login_shell_env());
+}
+
+/// 命令解释器：取 `$SHELL`，为空或不是文件时兜底 `/bin/sh`。
+/// 未加 `-l` / `-i` 不适用于此处的执行路径（环境已由快照提供）。
+fn login_shell() -> PathBuf {
+    std::env::var_os("SHELL")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("/bin/sh"))
+}
+
+/// 跑一次 `$SHELL -lic 'command env'` 并解析输出。
+///
+/// `-i` 是必需的：zsh/bash 只在交互模式下读 `.zshrc` / `.bashrc`，而用户的
+/// `export` 绝大多数就写在那里，只加 `-l` 会整片漏掉。
+/// 用 `command env` 而非裸 `env`，避免 rc 里的同名 alias/函数把 `env` 顶掉。
+/// 输出中的 banner（`.zshrc` 里的 `echo` 之类）不含 `=`，解析时会被自然丢弃。
+fn capture_login_shell_env() -> Option<ShellEnv> {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    let program = login_shell();
+    let mut child = std::process::Command::new(&program)
+        .arg("-lic")
+        .arg("command env")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    // 先起读取线程：环境变量总量可能超过管道缓冲区，等进程退出后再读会死锁
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+
+    // 轮询等待而非阻塞 wait：用户 rc 若卡在等输入或外网请求上，
+    // 不能让守护进程启动无限期挂住，超时即放弃快照（退回继承）。
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+
+    let buf = reader.join().ok()?;
+    let vars = parse_env(&buf);
+    if vars.is_empty() {
+        return None;
+    }
+    Some(ShellEnv { program, vars })
+}
+
+/// 解析 `KEY=VALUE` 行：变量名必须是合法的 shell 标识符，
+/// 其余行（banner、提示符残留、空行）一律丢弃。
+fn parse_env(buf: &[u8]) -> Vec<(OsString, OsString)> {
+    String::from_utf8_lossy(buf)
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            let mut name = key.bytes();
+            let first = name.next()?;
+            if !(first.is_ascii_alphabetic() || first == b'_') {
+                return None;
+            }
+            if !name.all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                return None;
+            }
+            Some((OsString::from(key), OsString::from(value)))
+        })
+        .collect()
+}
+
 pub struct ShellTool {
     timeout_secs: u64,
 }
@@ -604,9 +717,22 @@ impl Tool for ShellTool {
             Err(e) => return ToolOutput::error(format!("Invalid arguments for shell: {}", e)),
         };
 
-        let mut cmd = tokio::process::Command::new("sh");
+        // 解释器与环境取自登录 shell 快照（见 `init_shell_env`）：
+        // 有快照就以它为准（rc 里的 export / PATH 一并生效，被 rc unset 的变量
+        // 也不再漏下来）；采集失败则退回既有行为——继承守护进程环境。
+        let snapshot = SHELL_ENV.get().and_then(|s| s.as_ref());
+        let program = snapshot
+            .map(|s| s.program.clone())
+            .unwrap_or_else(login_shell);
+
+        let mut cmd = tokio::process::Command::new(program);
         cmd.arg("-c").arg(&input.command);
+        // 工作目录就是当前会话的工作区：模型不用先 cd，相对路径也直接落在工作区
         cmd.current_dir(workspace);
+        if let Some(snapshot) = snapshot {
+            cmd.env_clear();
+            cmd.envs(snapshot.vars.iter().cloned());
+        }
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         // 直接子进程随 future 释放被杀，配合进程组守卫覆盖孙进程
@@ -1260,5 +1386,42 @@ mod tests {
         assert!(out.output.contains("hello shell"));
 
         Ok(())
+    }
+
+    /// 命令的工作目录必须落在会话工作区，而不是守护进程自己的 cwd。
+    #[tokio::test]
+    async fn test_shell_runs_in_workspace() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+
+        let shell = ShellTool::new(5);
+        let out = shell
+            .execute(ws, serde_json::json!({ "command": "pwd" }))
+            .await;
+        assert!(!out.is_error, "{}", out.output);
+        // macOS 下 /tmp 是指向 /private/tmp 的符号链接，两边都归一后再比
+        let reported = std::fs::canonicalize(out.output.trim())?;
+        assert_eq!(reported, std::fs::canonicalize(ws)?);
+
+        Ok(())
+    }
+
+    /// 环境快照解析：只收合法标识符开头的 `KEY=VALUE`，
+    /// banner（rc 里的 `echo`）与非法行（空 key、数字开头、无等号）全部丢弃。
+    #[test]
+    fn test_parse_env_filters_noise() {
+        let vars = parse_env(b"PATH=/usr/bin\n\xe6\xac\xa2\xe8\xbf\x8e\xe5\x9b\x9e\xe6\x9d\xa5\n=empty\n1NUM=x\nOK=1\nEMPTY=\nno_equals\n");
+        let got: Vec<(String, String)> = vars
+            .into_iter()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("PATH".to_string(), "/usr/bin".to_string()),
+                ("OK".to_string(), "1".to_string()),
+                ("EMPTY".to_string(), String::new()),
+            ]
+        );
     }
 }

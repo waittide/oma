@@ -140,6 +140,11 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
     let mut config = load_config(&config_path)?;
     let token = resolve_and_persist_token(token_opt, &mut config, &config_path)?;
 
+    // 采集用户登录 shell 环境（`$SHELL` + rc 里的 `export`）：之后所有会话的
+    // `shell` 命令都以这份快照为准。耗时取决于用户 rc，丢到阻塞线程池，
+    // 不占用运行时工作线程；采集失败不回退为错误，工具会退回继承本进程环境。
+    let _ = tokio::task::spawn_blocking(oma_tool::init_shell_env).await;
+
     let storage = StorageManager::new(&data_dir).await?;
     let mcp = Arc::new(McpManager::new());
     mcp.sync_servers(&config.mcp_servers);
