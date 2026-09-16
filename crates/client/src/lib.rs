@@ -38,8 +38,11 @@ use serde::Deserialize;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_tungstenite::tungstenite::Message;
 
-/// SDK 版本（随握手包上报）
-pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// SDK 版本（随握手包上报）。
+///
+/// 与 daemon 握手包里用的是同一个 [`oma_contract::VERSION`]，
+/// 保证同一个二进制对外只自称一个版本。
+pub const CLIENT_VERSION: &str = oma_contract::VERSION;
 
 /// 会话索引记录（与 daemon 的 `SessionRecord` 对应）
 #[derive(Debug, Clone, Deserialize)]

@@ -26,7 +26,8 @@ const HELP_TEMPLATE: &str = "{before-help}{about-with-newline}\n用法: {usage}\
     name = "oma",
     about = "Oma：多客户端协同 AI Agent",
     long_about = "Oma：多客户端协同 AI Agent\n\n不带子命令时等价于 `oma -h`，不会自动启动任何界面。",
-    version = "0.1.0"
+    // 与 daemon 握手包、/api/server/status 同源，不单独维护
+    version = oma_contract::VERSION
 )]
 pub struct Cli {
     #[command(subcommand)]

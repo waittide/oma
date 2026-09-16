@@ -181,7 +181,7 @@ impl McpClient {
                     params:  serde_json::json!({
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
-                        "clientInfo": { "name": "oma", "version": "0.1.0" }
+                        "clientInfo": { "name": "oma", "version": oma_contract::VERSION }
                     }),
                 };
                 let mut line = serde_json::to_string(&init_req)?;

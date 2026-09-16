@@ -2,6 +2,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+/// 本构建的版本标识，握手包两侧共用。
+///
+/// CI 会注入形如 `0.2.0+1a2b3c4` 的值（版本号 + 提交短 hash），
+/// 便于把任何一个发布出去的二进制对应回具体提交；
+/// 本地构建未注入时回退到包版本。
+pub const VERSION: &str = match option_env!("OMA_BUILD_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// 角色模型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

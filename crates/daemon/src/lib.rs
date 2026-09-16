@@ -261,7 +261,7 @@ async fn handle_server_status(
     }
 
     Ok(Json(ServerStatus {
-        version:         "0.1.0",
+        version:         oma_contract::VERSION,
         active_sessions: state.rooms.read().len(),
         uptime_secs:     state.start_time.elapsed().as_secs(),
     }))
@@ -1316,7 +1316,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     };
 
     let ready = Ready {
-        version: "0.1.0".into(),
+        version: oma_contract::VERSION.into(),
         session_id: room.session_id.clone(),
         workspace: room.workspace.to_string_lossy().to_string(),
         active_model,
