@@ -193,9 +193,20 @@ If you would rather not set up the toolchain, grab a binary built by GitHub Acti
 
 | Route | Where | Notes |
 |---|---|---|
-| Published releases | [Releases](https://github.com/waittide/oma/releases) | Created automatically when a `v*` tag is pushed; all platforms at once |
+| Daily snapshots | [Releases](https://github.com/waittide/oma/releases) | A date-stamped snapshot such as `v2026.09.17` is published automatically every day at 00:00 (UTC+8). Marked as a pre-release, so it never takes over Latest |
+| Stable releases | Same page | Push a semantic tag such as `v0.2.0` by hand; it becomes the Latest release |
 | A specific build | [Actions](https://github.com/waittide/oma/actions/workflows/build.yml) → pick a run → **Artifacts** at the bottom | Every push / PR builds; artifacts are kept for 90 days |
 | Manual run | Same page → **Run workflow** | Rebuild and download without touching the code |
+
+Releases run on two independent tracks: daily snapshots only add a date tag and never touch the source,
+giving you a fresh build to grab at any time; stable releases are semantic tags you maintain by hand to
+mark milestones. A binary reports its own version as e.g. `0.2.0+1a2b3c4` (version plus short commit
+hash), so any artifact can be traced back to an exact commit:
+
+```bash
+oma --version    # oma 0.2.0+1a2b3c4
+oma status       # version of a running daemon, from /api/server/status
+```
 
 The repository is public, so artifacts can be downloaded without signing in. Archives are named
 `oma-<version>-<target>.tar.gz` (`.zip` on Windows) and contain a self-contained `oma` executable plus

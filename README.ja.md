@@ -190,9 +190,21 @@ flowchart TB
 
 | 入手方法 | 場所 | 補足 |
 |---|---|---|
-| リリース版 | [Releases](https://github.com/waittide/oma/releases) | `v*` タグを push すると自動作成され、全プラットフォームの成果物が並びます |
+| デイリースナップショット | [Releases](https://github.com/waittide/oma/releases) | 毎日 00:00（UTC+8）に `v2026.09.17` のような日付版が自動リリースされます。pre-release 扱いのため Latest は奪いません |
+| 正式リリース | 同じページ | `v0.2.0` のようなセマンティックタグを手動で push すると Latest になります |
 | 特定のビルド | [Actions](https://github.com/waittide/oma/actions/workflows/build.yml) → run を選択 → ページ下部の **Artifacts** | push / PR ごとにビルドされ、成果物は 90 日保持されます |
 | 手動実行 | 同じページの **Run workflow** | コードを変更せずに再ビルドして取得できます |
+
+リリースは互いに干渉しない 2 本のトラックで運用します。デイリースナップショットは日付タグを
+付けるだけでソースには触れず、いつでも最新ビルドを取れます。正式リリースは人が手動で
+セマンティックタグを打ち、有意なマイルストーンを示します。バイナリの自己申告バージョンは
+`0.2.0+1a2b3c4`（バージョン + コミット短縮ハッシュ）の形式なので、どの成果物からも
+該当コミットを辿れます:
+
+```bash
+oma --version    # oma 0.2.0+1a2b3c4
+oma status       # 起動中の Daemon のバージョン（/api/server/status 由来）
+```
 
 リポジトリは公開のため、Artifacts はサインインなしでダウンロードできます。ファイル名は
 `oma-<バージョン>-<target>.tar.gz`（Windows は `.zip`）で、中身は自己完結した `oma` 実行ファイルと

@@ -176,9 +176,19 @@ flowchart TB
 
 | 方式 | 位置 | 说明 |
 |---|---|---|
-| 已发布版本 | [Releases](https://github.com/waittide/oma/releases) | 推送 `v*` 标签后自动创建，一次性给出全部平台产物 |
+| 每日快照 | [Releases](https://github.com/waittide/oma/releases) | 每天 00:00 自动发布日期版本，如 `v2026.09.17`。标记为 pre-release，不会占用 Latest |
+| 正式版本 | 同上 | 手工推送语义化标签，如 `v0.2.0`，成为 Releases 页的 Latest |
 | 某次构建 | [Actions](https://github.com/waittide/oma/actions/workflows/build.yml) → 选中一条 run → 页面底部 **Artifacts** | 每次 push / PR 都会构建，产物默认保留 90 天 |
 | 手动触发 | 同一页面 → **Run workflow** | 不改代码即可重新构建并取产物 |
+
+发布分两条互不干扰的轨道：每日快照只打日期标签、不动源码，供随时取用最新构建；
+正式版本由人工维护语义化标签，用来标记有意义的里程碑。二进制的自报版本形如
+`0.2.0+1a2b3c4`（版本号 + 提交短 hash），任何一份产物都能对应回具体提交：
+
+```bash
+oma --version    # oma 0.2.0+1a2b3c4
+oma status       # 运行中 Daemon 的版本，取自 /api/server/status
+```
 
 仓库为公开仓库，Artifacts 无需登录即可下载。产物命名 `oma-<版本>-<target>.tar.gz`（Windows 为 `.zip`），
 解包后是自包含的 `oma` 可执行文件 + `README.md` + `LICENSE`——前端资产已在编译期内嵌，**运行时不需要 Node，也不需要 `web/dist`**：
