@@ -1,16 +1,32 @@
+//! 会话持久化：pi 风格的 JSONL 树文件。
+//!
+//! 每次会话一个目录 `<base_dir>/sessions/<session_id>/`，其中 `session.jsonl`
+//! 是对话树，`attachments/` 存放附件。文件首行是 `type=session` 的头部，
+//! 其后每行一个带 `id`/`parentId` 的条目，靠 `parentId` 形成树，
+//! 从而在不新建文件的前提下原地分叉。
+//!
+//! 条目类型与 pi 对齐：`message`（对话消息）、`session_info`（标题）、
+//! `model_change`、`thinking_level_change`，以及承载 oma 运行时状态的
+//! `custom` 条目（当前叶子、上下文占用、agent/审批模式）。`custom` 条目
+//! 与 pi 一样不参与 LLM 上下文。
+//!
+//! 说明：消息内容块仍使用 oma 契约里的 `Block` 序列化形态（`tool_use` /
+//! `tool_result`），因此文件可被本仓库完整回读，但不是 pi 的逐字节格式。
+//!
+//! 读操作始终以磁盘为准（不缓存快照），写操作在同会话写锁内先重读再落盘，
+//! 因此同一数据目录上的多个 `StorageManager` 实例也能彼此看到最新内容。
+
 use std::{
     collections::HashMap,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
+use chrono::{SecondsFormat, TimeZone};
 use oma_contract::{ApprovalMode, Block, ChatMessage, Role};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    Row, SqlitePool,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
-};
 
 /// 存储层错误：调用方据此映射 HTTP 状态码，禁止靠字符串匹配判定类别。
 #[derive(Debug)]
@@ -37,12 +53,6 @@ impl std::error::Error for StorageError {
             StorageError::Internal(e) => e.source(),
             _ => None,
         }
-    }
-}
-
-impl From<sqlx::Error> for StorageError {
-    fn from(e: sqlx::Error) -> Self {
-        StorageError::Internal(e.into())
     }
 }
 
@@ -96,7 +106,7 @@ pub fn validate_attachment_name(name: &str) -> Result<()> {
     }
 }
 
-/// 全局索引会话记录
+/// 会话记录（列表与详情共用的元数据）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub session_id:      String,
@@ -116,132 +126,402 @@ pub struct SessionRecord {
     pub is_running:      bool,
 }
 
-/// 单会话连接池：写池串行（max_connections = 1），读池并行只读，读写互不阻塞。
-#[derive(Clone)]
-struct SessionPools {
-    write: SqlitePool,
-    read:  SqlitePool,
+// =========================================================================
+// JSONL 条目模型
+// =========================================================================
+
+const SESSION_VERSION: u32 = 3;
+/// custom 条目类型：当前叶子
+const CUSTOM_LEAF: &str = "oma.leaf";
+/// custom 条目类型：上下文占用
+const CUSTOM_CONTEXT_USAGE: &str = "oma.context_usage";
+/// custom 条目类型：agent 与审批模式
+const CUSTOM_SETTINGS: &str = "oma.settings";
+
+/// 会话头（文件首行，不参与树）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionHeader {
+    #[serde(rename = "type")]
+    kind:            String,
+    version:         u32,
+    id:              String,
+    timestamp:       String,
+    cwd:             String,
+    #[serde(default)]
+    model:           String,
+    #[serde(default)]
+    agent:           String,
+    #[serde(default, rename = "approvalMode")]
+    approval_mode:   String,
+    #[serde(default, rename = "reasoningLevel")]
+    reasoning_level: String,
 }
 
-/// 双层 SQLite 存储引擎管理器
+impl SessionHeader {
+    fn new(
+        session_id: &str,
+        workspace: &str,
+        active_model: &str,
+        active_agent: &str,
+        approval_mode: ApprovalMode,
+        reasoning_level: &str,
+        now_ms: i64,
+    ) -> Self {
+        Self {
+            kind:            "session".to_string(),
+            version:         SESSION_VERSION,
+            id:              session_id.to_string(),
+            timestamp:       iso_from_ms(now_ms),
+            cwd:             workspace.to_string(),
+            model:           active_model.to_string(),
+            agent:           active_agent.to_string(),
+            approval_mode:   approval_mode.as_str().to_string(),
+            reasoning_level: reasoning_level.to_string(),
+        }
+    }
+}
+
+/// 树条目；`type` 为内部标签。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Entry {
+    Message(MessageEntry),
+    SessionInfo(SessionInfoEntry),
+    ModelChange(ModelChangeEntry),
+    ThinkingLevelChange(ThinkingLevelChangeEntry),
+    Custom(CustomEntry),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageEntry {
+    id:        String,
+    #[serde(default)]
+    parent_id: Option<String>,
+    timestamp: String,
+    message:   StoredMessage,
+}
+
+/// 落盘消息体：`id`/`parentId` 由所在条目承载，故此处只保留语义字段。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredMessage {
+    role:      Role,
+    content:   Vec<Block>,
+    timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionInfoEntry {
+    id:        String,
+    #[serde(default)]
+    parent_id: Option<String>,
+    timestamp: String,
+    name:      String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelChangeEntry {
+    id:        String,
+    #[serde(default)]
+    parent_id: Option<String>,
+    timestamp: String,
+    #[serde(default)]
+    provider:  String,
+    model_id:  String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThinkingLevelChangeEntry {
+    id:             String,
+    #[serde(default)]
+    parent_id:      Option<String>,
+    timestamp:      String,
+    thinking_level: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomEntry {
+    id:          String,
+    #[serde(default)]
+    parent_id:   Option<String>,
+    timestamp:   String,
+    custom_type: String,
+    #[serde(default)]
+    data:        serde_json::Value,
+}
+
+impl Entry {
+    fn timestamp_ms(&self) -> i64 {
+        let ts = match self {
+            Entry::Message(e) => &e.timestamp,
+            Entry::SessionInfo(e) => &e.timestamp,
+            Entry::ModelChange(e) => &e.timestamp,
+            Entry::ThinkingLevelChange(e) => &e.timestamp,
+            Entry::Custom(e) => &e.timestamp,
+        };
+        ms_from_iso(ts)
+    }
+}
+
+fn iso_from_ms(ms: i64) -> String {
+    chrono::Utc
+        .timestamp_millis_opt(ms)
+        .single()
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn ms_from_iso(s: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|d| d.timestamp_millis())
+        .unwrap_or(0)
+}
+
+/// 把 oma 的 "provider/model" 选择器拆成 (provider, modelId)。
+fn split_model(selector: &str) -> (String, String) {
+    match selector.split_once('/') {
+        Some((p, m)) => (p.to_string(), m.to_string()),
+        None => (String::new(), selector.to_string()),
+    }
+}
+
+/// 把 (provider, modelId) 重新拼回 oma 选择器。
+fn join_model(provider: &str, model_id: &str) -> String {
+    if provider.is_empty() {
+        model_id.to_string()
+    } else {
+        format!("{}/{}", provider, model_id)
+    }
+}
+
+/// 生成条目 id（不进入 LLM 上下文，仅需唯一）。
+fn new_entry_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+// =========================================================================
+// 单会话存储
+// =========================================================================
+
+struct SessionStore {
+    dir:     PathBuf,
+    header:  SessionHeader,
+    entries: Vec<Entry>,
+}
+
+impl SessionStore {
+    /// 从磁盘加载；文件不存在返回 None。
+    fn load(dir: &Path) -> Result<Option<Self>> {
+        let path = dir.join("session.jsonl");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let raw = std::fs::read_to_string(&path)?;
+        let mut header: Option<SessionHeader> = None;
+        let mut entries = Vec::new();
+        for line in raw.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let value: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue, // 单行损坏只跳过，避免整个会话不可读
+            };
+            let is_header = value.get("type").and_then(|t| t.as_str()) == Some("session");
+            if is_header {
+                if header.is_none() {
+                    header = serde_json::from_value(value).ok();
+                }
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_value::<Entry>(value) {
+                entries.push(entry);
+            }
+        }
+        let Some(header) = header else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            dir: dir.to_path_buf(),
+            header,
+            entries,
+        }))
+    }
+
+    fn jsonl_path(&self) -> PathBuf {
+        self.dir.join("session.jsonl")
+    }
+
+    /// 追加一条条目：先落盘再进内存，写失败不留内存脏状态。
+    fn append(&mut self, entry: Entry) -> Result<()> {
+        let line = serde_json::to_string(&entry)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.jsonl_path())?;
+        file.write_all(line.as_bytes())?;
+        file.write_all(b"\n")?;
+        self.entries.push(entry);
+        Ok(())
+    }
+
+    /// 全量重写文件（删除子树等需要移除既有行的场景）。
+    fn persist(&self) -> Result<()> {
+        let mut out = String::new();
+        out.push_str(&serde_json::to_string(&self.header)?);
+        out.push('\n');
+        for entry in &self.entries {
+            out.push_str(&serde_json::to_string(entry)?);
+            out.push('\n');
+        }
+        let path = self.jsonl_path();
+        let tmp = path.with_file_name(".session.jsonl.tmp");
+        {
+            let mut file = std::fs::File::create(&tmp)?;
+            file.write_all(out.as_bytes())?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    /// 从条目序列推导当前叶子：消息条目使叶子前移，`oma.leaf` 标记显式覆盖。
+    fn leaf(&self) -> Option<String> {
+        let mut leaf: Option<String> = None;
+        for entry in &self.entries {
+            match entry {
+                Entry::Message(m) => leaf = Some(m.id.clone()),
+                Entry::Custom(c) if c.custom_type == CUSTOM_LEAF => {
+                    leaf = c
+                        .data
+                        .get("leafId")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                }
+                _ => {}
+            }
+        }
+        leaf
+    }
+
+    fn messages(&self) -> Vec<ChatMessage> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Message(m) => Some(ChatMessage {
+                    id:         m.id.clone(),
+                    parent_id:  m.parent_id.clone(),
+                    role:       m.message.role,
+                    content:    m.message.content.clone(),
+                    created_at: m.message.timestamp,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn title(&self) -> String {
+        self.entries
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::SessionInfo(s) => Some(s.name.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn context_usage(&self) -> Option<(usize, usize, usize)> {
+        let data = self.entries.iter().rev().find_map(|entry| match entry {
+            Entry::Custom(c) if c.custom_type == CUSTOM_CONTEXT_USAGE => Some(&c.data),
+            _ => None,
+        })?;
+        let tokens = data.get("tokens")?.as_u64()? as usize;
+        let context_len = data.get("contextLen")?.as_u64()? as usize;
+        let covered = data.get("covered")?.as_u64()? as usize;
+        Some((tokens, context_len, covered))
+    }
+
+    fn record(&self) -> SessionRecord {
+        let mut title = String::new();
+        let mut model = self.header.model.clone();
+        let mut agent = self.header.agent.clone();
+        let mut approval = self.header.approval_mode.clone();
+        let mut reasoning = self.header.reasoning_level.clone();
+        let created_at = ms_from_iso(&self.header.timestamp);
+        let mut updated_at = created_at;
+
+        for entry in &self.entries {
+            updated_at = updated_at.max(entry.timestamp_ms());
+            match entry {
+                Entry::SessionInfo(s) => title = s.name.clone(),
+                Entry::ModelChange(m) => model = join_model(&m.provider, &m.model_id),
+                Entry::ThinkingLevelChange(t) => reasoning = t.thinking_level.clone(),
+                Entry::Custom(c) if c.custom_type == CUSTOM_SETTINGS => {
+                    if let Some(a) = c.data.get("agent").and_then(|v| v.as_str()) {
+                        agent = a.to_string();
+                    }
+                    if let Some(m) = c.data.get("approvalMode").and_then(|v| v.as_str()) {
+                        approval = m.to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        SessionRecord {
+            session_id: self.header.id.clone(),
+            workspace: self.header.cwd.clone(),
+            title,
+            active_model: model,
+            active_agent: agent,
+            approval_mode: ApprovalMode::parse(&approval).unwrap_or_default(),
+            reasoning_level: reasoning,
+            current_leaf_id: self.leaf(),
+            created_at,
+            updated_at,
+            is_running: false,
+        }
+    }
+}
+
+// =========================================================================
+// 存储引擎
+// =========================================================================
+
+/// 会话存储引擎：JSONL 树文件 + 每会话写锁。
 #[derive(Clone)]
 pub struct StorageManager {
-    base_dir:    PathBuf,
-    index_pool:  SqlitePool,
-    /// 已打开的会话连接池缓存；避免每次读写都重建连接与执行 DDL
-    pools:       Arc<RwLock<HashMap<String, SessionPools>>>,
-    /// 池创建串行化锁（跨 await 持有，故用 tokio Mutex）
-    create_lock: Arc<tokio::sync::Mutex<()>>,
-}
-
-fn session_connect_options(db_path: &Path, read_only: bool) -> SqliteConnectOptions {
-    SqliteConnectOptions::new()
-        .filename(db_path)
-        .create_if_missing(!read_only)
-        .read_only(read_only)
-        .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(std::time::Duration::from_millis(5000))
-        .foreign_keys(true)
-}
-
-/// 校验全局索引表结构符合当前版本。
-///
-/// 本版本不做自动迁移：`CREATE TABLE IF NOT EXISTS` 不会给已存在的旧表补列，
-/// 静默容忍会让缺失字段在运行时才报错（如 `no such column`）。
-/// 这里在启动阶段直接拒绝，给出可操作的修复提示。
-async fn ensure_index_schema(pool: &SqlitePool) -> Result<()> {
-    const REQUIRED: [&str; 10] = [
-        "session_id",
-        "workspace",
-        "title",
-        "active_model",
-        "active_agent",
-        "approval_mode",
-        "reasoning_level",
-        "current_leaf_id",
-        "created_at",
-        "updated_at",
-    ];
-    let rows = sqlx::query("PRAGMA table_info(sessions_index)")
-        .fetch_all(pool)
-        .await
-        .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to inspect sessions_index: {}", e)))?;
-    let present: Vec<String> = rows.iter().map(|r| r.get::<String, _>("name")).collect();
-    let missing: Vec<&str> = REQUIRED
-        .into_iter()
-        .filter(|c| !present.iter().any(|p| p == c))
-        .collect();
-    if !missing.is_empty() {
-        return Err(StorageError::Internal(anyhow::anyhow!(
-            "sessions_index 缺少必要列 {:?}（当前列: {:?}）。\
-             本版本不再自动迁移旧库，请先备份并重建该表，或手动执行 ALTER TABLE 补列。",
-            missing,
-            present
-        )));
-    }
-    Ok(())
+    base_dir:  PathBuf,
+    /// 每会话一把写锁，串行化同进程内并发写
+    locks:     Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    /// 写锁创建串行化（跨 await 持有，故用 tokio Mutex）
+    open_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl StorageManager {
-    /// 初始化存储引擎，并在 base_dir 下建立全局 oma.db
+    /// 初始化存储引擎，并在 base_dir 下建立会话目录
     pub async fn new(base_dir: impl AsRef<Path>) -> Result<Self> {
         let base_dir = base_dir.as_ref().to_path_buf();
-        tokio::fs::create_dir_all(&base_dir).await.map_err(|e| {
-            StorageError::Internal(anyhow::anyhow!(
-                "failed to create base dir {}: {}",
-                base_dir.display(),
-                e
-            ))
-        })?;
-
-        let index_db_path = base_dir.join("oma.db");
-        let connect_opts = SqliteConnectOptions::new()
-            .filename(&index_db_path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(std::time::Duration::from_millis(5000));
-
-        let index_pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect_with(connect_opts)
+        tokio::fs::create_dir_all(base_dir.join("sessions"))
             .await
             .map_err(|e| {
                 StorageError::Internal(anyhow::anyhow!(
-                    "failed to connect to index db {}: {}",
-                    index_db_path.display(),
+                    "failed to create base dir {}: {}",
+                    base_dir.display(),
                     e
                 ))
             })?;
 
-        // 初始化全局 sessions_index 表
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS sessions_index (
-                session_id      TEXT PRIMARY KEY,
-                workspace       TEXT NOT NULL,
-                title           TEXT NOT NULL,
-                active_model    TEXT NOT NULL,
-                active_agent    TEXT NOT NULL DEFAULT 'task',
-                approval_mode   TEXT NOT NULL DEFAULT 'normal',
-                reasoning_level TEXT NOT NULL DEFAULT '',
-                current_leaf_id TEXT,
-                created_at      INTEGER NOT NULL,
-                updated_at      INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions_index(workspace);
-            CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions_index(updated_at DESC);
-            "#,
-        )
-        .execute(&index_pool)
-        .await
-        .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to initialize sessions_index: {}", e)))?;
-        ensure_index_schema(&index_pool).await?;
-
         Ok(Self {
             base_dir,
-            index_pool,
-            pools: Arc::new(RwLock::new(HashMap::new())),
-            create_lock: Arc::new(tokio::sync::Mutex::new(())),
+            locks: Arc::new(RwLock::new(HashMap::new())),
+            open_lock: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -264,94 +544,40 @@ impl StorageManager {
         Ok(self.attachments_dir(session_id)?.join(name))
     }
 
-    /// 打开（或复用缓存的）会话连接池
-    async fn session_pools(&self, session_id: &str) -> Result<SessionPools> {
-        if let Some(p) = self.pools.read().get(session_id) {
-            return Ok(p.clone());
-        }
-
-        let _guard = self.create_lock.lock().await;
-        if let Some(p) = self.pools.read().get(session_id) {
-            return Ok(p.clone());
-        }
-
-        let s_dir = self.session_dir(session_id)?;
-        let attachments = s_dir.join("attachments");
-        tokio::fs::create_dir_all(&attachments).await.map_err(|e| {
-            StorageError::Internal(anyhow::anyhow!(
-                "failed to create session dir {}: {}",
-                s_dir.display(),
-                e
-            ))
-        })?;
-
-        let db_path = s_dir.join("session.db");
-        let write = SqlitePoolOptions::new()
-            .max_connections(1) // 严格单写连接
-            .connect_with(session_connect_options(&db_path, false))
-            .await
-            .map_err(|e| {
-                StorageError::Internal(anyhow::anyhow!(
-                    "failed to connect to session db {}: {}",
-                    db_path.display(),
-                    e
-                ))
-            })?;
-
-        // 初始化会话专属表
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS session_meta (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS messages (
-                id            TEXT PRIMARY KEY,
-                parent_id     TEXT,
-                role          TEXT NOT NULL,
-                blocks_json   TEXT NOT NULL,
-                input_tokens  INTEGER DEFAULT 0,
-                output_tokens INTEGER DEFAULT 0,
-                created_at    INTEGER NOT NULL,
-                FOREIGN KEY(parent_id) REFERENCES messages(id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_parent_id ON messages(parent_id);
-            "#,
-        )
-        .execute(&write)
-        .await
-        .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to initialize session tables: {}", e)))?;
-
-        // 写池建库完成后再开只读池（文件必已存在）；读快照不阻塞写路径
-        let read = SqlitePoolOptions::new()
-            .max_connections(4)
-            .connect_with(session_connect_options(&db_path, true))
-            .await
-            .map_err(|e| {
-                StorageError::Internal(anyhow::anyhow!(
-                    "failed to open read-only session db {}: {}",
-                    db_path.display(),
-                    e
-                ))
-            })?;
-
-        let pools = SessionPools { write, read };
-        self.pools
-            .write()
-            .insert(session_id.to_string(), pools.clone());
-        Ok(pools)
+    /// 读取磁盘上的会话快照（无则 None）。
+    fn read_store(&self, session_id: &str) -> Result<Option<SessionStore>> {
+        SessionStore::load(&self.session_dir(session_id)?)
     }
 
-    /// 关闭并移除缓存的会话连接池（删库前调用，避免残留句柄与 WAL 文件）
-    async fn evict_pools(&self, session_id: &str) {
-        let pools = self.pools.write().remove(session_id);
-        if let Some(pools) = pools {
-            pools.write.close().await;
-            pools.read.close().await;
+    /// 取得该会话的写锁（不存在则创建）。
+    async fn write_lock(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        if let Some(l) = self.locks.read().get(session_id) {
+            return l.clone();
         }
+        let _guard = self.open_lock.lock().await;
+        if let Some(l) = self.locks.read().get(session_id) {
+            return l.clone();
+        }
+        let l = Arc::new(tokio::sync::Mutex::new(()));
+        self.locks.write().insert(session_id.to_string(), l.clone());
+        l
     }
 
-    /// 创建会话
+    /// 在写锁内重读最新会话、执行变更并落盘。
+    ///
+    /// 数据始终以磁盘为准：另一个 `StorageManager` 实例写入的条目也能被读到，
+    /// 不会因内存快照过期而丢数据。
+    async fn with_store_mut<T>(&self, session_id: &str, f: impl FnOnce(&mut SessionStore) -> Result<T>) -> Result<T> {
+        validate_session_id(session_id)?;
+        let lock = self.write_lock(session_id).await;
+        let _guard = lock.lock().await;
+        let mut store = self
+            .read_store(session_id)?
+            .ok_or_else(|| StorageError::NotFound(format!("session {}", session_id)))?;
+        f(&mut store)
+    }
+
+    /// 创建会话；已存在时返回既有记录（幂等，不覆盖对话）。
     #[allow(clippy::too_many_arguments)]
     pub async fn create_session(
         &self,
@@ -364,199 +590,115 @@ impl StorageManager {
         reasoning_level: &str,
     ) -> Result<SessionRecord> {
         validate_session_id(session_id)?;
+        let dir = self.session_dir(session_id)?;
+        tokio::fs::create_dir_all(dir.join("attachments")).await?;
+
+        if let Some(existing) = self.read_store(session_id)? {
+            return Ok(existing.record());
+        }
+
         let now = chrono::Utc::now().timestamp_millis();
-
-        sqlx::query(
-            r#"
-            INSERT INTO sessions_index 
-            (session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
-            "#,
-        )
-        .bind(session_id)
-        .bind(workspace)
-        .bind(title)
-        .bind(active_model)
-        .bind(active_agent)
-        .bind(approval_mode.as_str())
-        .bind(reasoning_level)
-        .bind(now)
-        .bind(now)
-        .execute(&self.index_pool)
-        .await?;
-
-        // 触发会话库初始化并写入 meta
-        let pools = self.session_pools(session_id).await?;
-        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('workspace', ?)")
-            .bind(workspace)
-            .execute(&pools.write)
-            .await?;
-        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('title', ?)")
-            .bind(title)
-            .execute(&pools.write)
-            .await?;
-
-        Ok(SessionRecord {
-            session_id: session_id.to_string(),
-            workspace: workspace.to_string(),
-            title: title.to_string(),
-            active_model: active_model.to_string(),
-            active_agent: active_agent.to_string(),
+        let header = SessionHeader::new(
+            session_id,
+            workspace,
+            active_model,
+            active_agent,
             approval_mode,
-            reasoning_level: reasoning_level.to_string(),
-            current_leaf_id: None,
-            created_at: now,
-            updated_at: now,
-            is_running: false,
-        })
+            reasoning_level,
+            now,
+        );
+        let mut entries = Vec::new();
+        if !title.is_empty() {
+            entries.push(Entry::SessionInfo(SessionInfoEntry {
+                id:        new_entry_id(),
+                parent_id: None,
+                timestamp: iso_from_ms(now),
+                name:      title.to_string(),
+            }));
+        }
+        let store = SessionStore { dir, header, entries };
+        store.persist()?;
+        Ok(store.record())
     }
 
     /// 获取会话记录
     pub async fn get_session(&self, session_id: &str) -> Result<Option<SessionRecord>> {
-        validate_session_id(session_id)?;
-        let row = sqlx::query(
-            r#"
-            SELECT session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at
-            FROM sessions_index
-            WHERE session_id = ?
-            "#,
-        )
-        .bind(session_id)
-        .fetch_optional(&self.index_pool)
-        .await?;
-
-        Ok(row.map(|row| Self::record_from_row(&row)))
+        Ok(self.read_store(session_id)?.map(|s| s.record()))
     }
 
-    fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
-        let mode_str: String = row.get("approval_mode");
-        let approval_mode = ApprovalMode::parse(&mode_str).unwrap_or_default();
-        SessionRecord {
-            session_id: row.get("session_id"),
-            workspace: row.get("workspace"),
-            title: row.get("title"),
-            active_model: row.get("active_model"),
-            active_agent: row.get("active_agent"),
-            approval_mode,
-            reasoning_level: row.get("reasoning_level"),
-            current_leaf_id: row.get("current_leaf_id"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-            is_running: false,
-        }
-    }
-
-    /// 列出指定 workspace（或全部）会话
+    /// 列出指定 workspace（或全部）会话，按更新时间倒序。
     pub async fn list_sessions(&self, workspace: Option<&str>) -> Result<Vec<SessionRecord>> {
-        let rows = if let Some(ws) = workspace {
-            sqlx::query(
-                r#"
-                SELECT session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at
-                FROM sessions_index
-                WHERE workspace = ?
-                ORDER BY updated_at DESC
-                "#,
-            )
-            .bind(ws)
-            .fetch_all(&self.index_pool)
-            .await?
-        } else {
-            sqlx::query(
-                r#"
-                SELECT session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at
-                FROM sessions_index
-                ORDER BY updated_at DESC
-                "#,
-            )
-            .fetch_all(&self.index_pool)
-            .await?
+        let sessions_root = self.base_dir.join("sessions");
+        let mut records = Vec::new();
+        let mut dir = match tokio::fs::read_dir(&sessions_root).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
         };
-
-        Ok(rows.iter().map(Self::record_from_row).collect())
+        while let Some(entry) = dir.next_entry().await? {
+            if !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            if let Some(store) = SessionStore::load(&entry.path())? {
+                let rec = store.record();
+                if workspace.is_none() || workspace == Some(rec.workspace.as_str()) {
+                    records.push(rec);
+                }
+            }
+        }
+        records.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
+        Ok(records)
     }
 
     /// 删除会话及其物理目录
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
         validate_session_id(session_id)?;
-        let affected = sqlx::query("DELETE FROM sessions_index WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&self.index_pool)
-            .await?
-            .rows_affected();
-
-        // 先释放连接池，再删除目录（否则 WAL/SHM 句柄会让目录残留）
-        self.evict_pools(session_id).await;
-
-        let s_dir = self.session_dir(session_id)?;
-        if s_dir.exists() {
-            tokio::fs::remove_dir_all(&s_dir).await.map_err(|e| {
-                StorageError::Internal(anyhow::anyhow!(
-                    "failed to remove session dir {}: {}",
-                    s_dir.display(),
-                    e
-                ))
-            })?;
-        }
-
-        if affected == 0 {
+        let dir = self.session_dir(session_id)?;
+        if !dir.exists() {
             return Err(StorageError::NotFound(format!("session {}", session_id)));
         }
+        self.locks.write().remove(session_id);
+        tokio::fs::remove_dir_all(&dir).await.map_err(|e| {
+            StorageError::Internal(anyhow::anyhow!("failed to remove session dir {}: {}", dir.display(), e))
+        })?;
         Ok(())
     }
 
-    /// 重命名会话（同步更新索引与会话库 meta）
+    /// 重命名会话
     pub async fn rename_session(&self, session_id: &str, title: &str) -> Result<()> {
-        validate_session_id(session_id)?;
-        let now = chrono::Utc::now().timestamp_millis();
-        let affected = sqlx::query("UPDATE sessions_index SET title = ?, updated_at = ? WHERE session_id = ?")
-            .bind(title)
-            .bind(now)
-            .bind(session_id)
-            .execute(&self.index_pool)
-            .await?
-            .rows_affected();
-        if affected == 0 {
-            return Err(StorageError::NotFound(format!("session {}", session_id)));
-        }
-
-        let pools = self.session_pools(session_id).await?;
-        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('title', ?)")
-            .bind(title)
-            .execute(&pools.write)
-            .await?;
-
-        Ok(())
+        self.with_store_mut(session_id, |store| {
+            let now = chrono::Utc::now().timestamp_millis();
+            let parent = store.leaf();
+            store.append(Entry::SessionInfo(SessionInfoEntry {
+                id:        new_entry_id(),
+                parent_id: parent,
+                timestamp: iso_from_ms(now),
+                name:      title.to_string(),
+            }))
+        })
+        .await
     }
 
     /// 仅当会话标题仍为空时写入（用于模型自动命名）。
-    ///
-    /// 返回是否实际写入：`UPDATE ... WHERE title = ''` 的原子性保证「用户已手动
-    /// 填写/重命名」不会被并发到达的自动命名覆盖。
     pub async fn set_title_if_empty(&self, session_id: &str, title: &str) -> Result<bool> {
-        validate_session_id(session_id)?;
         if title.trim().is_empty() {
             return Ok(false);
         }
-        let now = chrono::Utc::now().timestamp_millis();
-        let affected =
-            sqlx::query("UPDATE sessions_index SET title = ?, updated_at = ? WHERE session_id = ? AND title = ''")
-                .bind(title)
-                .bind(now)
-                .bind(session_id)
-                .execute(&self.index_pool)
-                .await?
-                .rows_affected();
-        if affected == 0 {
-            return Ok(false);
-        }
-
-        let pools = self.session_pools(session_id).await?;
-        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('title', ?)")
-            .bind(title)
-            .execute(&pools.write)
-            .await?;
-
-        Ok(true)
+        self.with_store_mut(session_id, |store| {
+            if !store.title().is_empty() {
+                return Ok(false);
+            }
+            let now = chrono::Utc::now().timestamp_millis();
+            let parent = store.leaf();
+            store.append(Entry::SessionInfo(SessionInfoEntry {
+                id:        new_entry_id(),
+                parent_id: parent,
+                timestamp: iso_from_ms(now),
+                name:      title.to_string(),
+            }))?;
+            Ok(true)
+        })
+        .await
     }
 
     /// 更新会话配置 (model, agent, approval_mode, reasoning_level)
@@ -568,139 +710,101 @@ impl StorageManager {
         approval_mode: Option<ApprovalMode>,
         reasoning_level: Option<&str>,
     ) -> Result<()> {
-        validate_session_id(session_id)?;
-        let now = chrono::Utc::now().timestamp_millis();
-        if let Some(m) = active_model {
-            sqlx::query("UPDATE sessions_index SET active_model = ?, updated_at = ? WHERE session_id = ?")
-                .bind(m)
-                .bind(now)
-                .bind(session_id)
-                .execute(&self.index_pool)
-                .await?;
-        }
-        if let Some(a) = active_agent {
-            sqlx::query("UPDATE sessions_index SET active_agent = ?, updated_at = ? WHERE session_id = ?")
-                .bind(a)
-                .bind(now)
-                .bind(session_id)
-                .execute(&self.index_pool)
-                .await?;
-        }
-        if let Some(mode) = approval_mode {
-            sqlx::query("UPDATE sessions_index SET approval_mode = ?, updated_at = ? WHERE session_id = ?")
-                .bind(mode.as_str())
-                .bind(now)
-                .bind(session_id)
-                .execute(&self.index_pool)
-                .await?;
-        }
-        if let Some(level) = reasoning_level {
-            sqlx::query("UPDATE sessions_index SET reasoning_level = ?, updated_at = ? WHERE session_id = ?")
-                .bind(level)
-                .bind(now)
-                .bind(session_id)
-                .execute(&self.index_pool)
-                .await?;
-        }
-        Ok(())
+        self.with_store_mut(session_id, |store| {
+            let now = chrono::Utc::now().timestamp_millis();
+            let parent = store.leaf();
+            if let Some(model) = active_model {
+                let (provider, model_id) = split_model(model);
+                store.append(Entry::ModelChange(ModelChangeEntry {
+                    id: new_entry_id(),
+                    parent_id: parent.clone(),
+                    timestamp: iso_from_ms(now),
+                    provider,
+                    model_id,
+                }))?;
+            }
+            if let Some(level) = reasoning_level {
+                store.append(Entry::ThinkingLevelChange(ThinkingLevelChangeEntry {
+                    id:             new_entry_id(),
+                    parent_id:      parent.clone(),
+                    timestamp:      iso_from_ms(now),
+                    thinking_level: level.to_string(),
+                }))?;
+            }
+            if active_agent.is_some() || approval_mode.is_some() {
+                let mut data = serde_json::Map::new();
+                if let Some(a) = active_agent {
+                    data.insert("agent".into(), serde_json::Value::String(a.to_string()));
+                }
+                if let Some(m) = approval_mode {
+                    data.insert("approvalMode".into(), serde_json::Value::String(m.as_str().to_string()));
+                }
+                store.append(Entry::Custom(CustomEntry {
+                    id:          new_entry_id(),
+                    parent_id:   parent,
+                    timestamp:   iso_from_ms(now),
+                    custom_type: CUSTOM_SETTINGS.to_string(),
+                    data:        serde_json::Value::Object(data),
+                }))?;
+            }
+            Ok(())
+        })
+        .await
     }
 
-    /// 追加消息至树状表并更新当前叶子节点
+    /// 追加消息并使其成为当前叶子。
     pub async fn append_message(
         &self,
         session_id: &str,
         message: &ChatMessage,
-        input_tokens: usize,
-        output_tokens: usize,
+        _input_tokens: usize,
+        _output_tokens: usize,
     ) -> Result<()> {
-        let pools = self.session_pools(session_id).await?;
-        let blocks_json = serde_json::to_string(&message.content)?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO messages 
-            (id, parent_id, role, blocks_json, input_tokens, output_tokens, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            "#,
-        )
-        .bind(&message.id)
-        .bind(&message.parent_id)
-        .bind(message.role.as_str())
-        .bind(&blocks_json)
-        .bind(input_tokens as i64)
-        .bind(output_tokens as i64)
-        .bind(message.created_at)
-        .execute(&pools.write)
-        .await?;
-
-        self.set_current_leaf(session_id, &message.id).await?;
-
-        let now = chrono::Utc::now().timestamp_millis();
-        sqlx::query("UPDATE sessions_index SET current_leaf_id = ?, updated_at = ? WHERE session_id = ?")
-            .bind(&message.id)
-            .bind(now)
-            .bind(session_id)
-            .execute(&self.index_pool)
-            .await?;
-
-        Ok(())
+        self.with_store_mut(session_id, |store| {
+            store.append(Entry::Message(MessageEntry {
+                id:        message.id.clone(),
+                parent_id: message.parent_id.clone(),
+                timestamp: iso_from_ms(message.created_at),
+                message:   StoredMessage {
+                    role:      message.role,
+                    content:   message.content.clone(),
+                    timestamp: message.created_at,
+                },
+            }))
+        })
+        .await
     }
 
-    /// 会话库内记录当前叶子（session_meta）
-    async fn set_current_leaf(&self, session_id: &str, leaf_id: &str) -> Result<()> {
-        let pools = self.session_pools(session_id).await?;
-        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('current_leaf_id', ?)")
-            .bind(leaf_id)
-            .execute(&pools.write)
-            .await?;
-        Ok(())
-    }
-
-    /// 切换分支：更新激活的叶子节点 ID
+    /// 切换分支：以显式 `oma.leaf` 标记持久化当前叶子。
     pub async fn switch_branch(&self, session_id: &str, leaf_id: &str) -> Result<()> {
-        let pools = self.session_pools(session_id).await?;
-        let exists = sqlx::query("SELECT 1 FROM messages WHERE id = ?")
-            .bind(leaf_id)
-            .fetch_optional(&pools.read)
-            .await?
-            .is_some();
-        if !exists {
-            return Err(StorageError::NotFound(format!(
-                "message {} in session {}",
-                leaf_id, session_id
-            )));
-        }
-
-        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('current_leaf_id', ?)")
-            .bind(leaf_id)
-            .execute(&pools.write)
-            .await?;
-
-        let now = chrono::Utc::now().timestamp_millis();
-        sqlx::query("UPDATE sessions_index SET current_leaf_id = ?, updated_at = ? WHERE session_id = ?")
-            .bind(leaf_id)
-            .bind(now)
-            .bind(session_id)
-            .execute(&self.index_pool)
-            .await?;
-
-        Ok(())
+        self.with_store_mut(session_id, |store| {
+            if !store.messages().iter().any(|m| m.id == leaf_id) {
+                return Err(StorageError::NotFound(format!(
+                    "message {} in session {}",
+                    leaf_id, session_id
+                )));
+            }
+            let now = chrono::Utc::now().timestamp_millis();
+            store.append(Entry::Custom(CustomEntry {
+                id:          new_entry_id(),
+                parent_id:   Some(leaf_id.to_string()),
+                timestamp:   iso_from_ms(now),
+                custom_type: CUSTOM_LEAF.to_string(),
+                data:        serde_json::json!({ "leafId": leaf_id }),
+            }))
+        })
+        .await
     }
 
     /// 当前激活叶子 ID
     pub async fn current_leaf(&self, session_id: &str) -> Result<Option<String>> {
-        let pools = self.session_pools(session_id).await?;
-        let row = sqlx::query("SELECT value FROM session_meta WHERE key = 'current_leaf_id'")
-            .fetch_optional(&pools.read)
-            .await?;
-        Ok(row.map(|r| r.get::<String, _>("value")))
+        Ok(self.read_store(session_id)?.and_then(|s| s.leaf()))
     }
 
     /// 记录最近一次请求的上下文占用。
     ///
     /// `covered` 为该请求发出时的历史条数：重启后历史可能又追加了消息，
-    /// 只有知道上次覆盖到哪里，才能只对新增部分做估算（不能拿整段历史重估，
-    /// 启发式折算对代码/中文会明显高估）。
+    /// 只有知道上次覆盖到哪里，才能只对新增部分做估算。
     pub async fn set_context_usage(
         &self,
         session_id: &str,
@@ -708,77 +812,50 @@ impl StorageManager {
         context_len: usize,
         covered: usize,
     ) -> Result<()> {
-        let pools = self.session_pools(session_id).await?;
-        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('context_usage', ?)")
-            .bind(format!("{}:{}:{}", tokens, context_len, covered))
-            .execute(&pools.write)
-            .await?;
-        Ok(())
+        self.with_store_mut(session_id, |store| {
+            let now = chrono::Utc::now().timestamp_millis();
+            let parent = store.leaf();
+            store.append(Entry::Custom(CustomEntry {
+                id:          new_entry_id(),
+                parent_id:   parent,
+                timestamp:   iso_from_ms(now),
+                custom_type: CUSTOM_CONTEXT_USAGE.to_string(),
+                data:        serde_json::json!({
+                    "tokens": tokens,
+                    "contextLen": context_len,
+                    "covered": covered,
+                }),
+            }))
+        })
+        .await
     }
 
     /// 读取上次记录的上下文占用（tokens, context_len, covered）。
-    /// 无记录或格式不合法时返回 None。
     pub async fn context_usage(&self, session_id: &str) -> Result<Option<(usize, usize, usize)>> {
-        let pools = self.session_pools(session_id).await?;
-        let row = sqlx::query("SELECT value FROM session_meta WHERE key = 'context_usage'")
-            .fetch_optional(&pools.read)
-            .await?;
-        let Some(raw) = row.map(|r| r.get::<String, _>("value")) else {
-            return Ok(None);
-        };
-        let parsed = raw.split(':').collect::<Vec<_>>();
-        let [t, l, c] = match parsed.as_slice() {
-            [t, l, c] => [*t, *l, *c],
-            _ => return Ok(None),
-        };
-        let value = t
-            .parse::<usize>()
-            .ok()
-            .zip(l.parse::<usize>().ok())
-            .zip(c.parse::<usize>().ok())
-            .map(|((t, l), c)| (t, l, c));
-        Ok(value)
+        Ok(self.read_store(session_id)?.and_then(|s| s.context_usage()))
     }
 
-    /// 获取激活分支的线性消息链（从 root 到指定/当前 leaf_id）
+    /// 获取激活分支的线性消息链（从 root 到指定/当前 leaf）
     pub async fn get_linear_messages(&self, session_id: &str, leaf_id: Option<&str>) -> Result<Vec<ChatMessage>> {
-        let pools = self.session_pools(session_id).await?;
-        let target_leaf = match leaf_id {
-            Some(lid) => Some(lid.to_string()),
-            None => self.current_leaf(session_id).await?,
+        let Some(store) = self.read_store(session_id)? else {
+            return Ok(Vec::new());
         };
-
-        let Some(leaf_id) = target_leaf else {
+        let target = match leaf_id {
+            Some(l) => Some(l.to_string()),
+            None => store.leaf(),
+        };
+        let Some(leaf_id) = target else {
             return Ok(Vec::new());
         };
 
-        // 一次性取出该会话的所有消息并在内存中沿 parent_id 倒序回溯（高效且避免递归 CTE 深度瓶颈）
-        let rows = sqlx::query("SELECT id, parent_id, role, blocks_json, created_at FROM messages")
-            .fetch_all(&pools.read)
-            .await?;
-
-        let mut msg_map: HashMap<String, ChatMessage> = HashMap::with_capacity(rows.len());
-        for r in rows {
-            let id: String = r.get("id");
-            let parent_id: Option<String> = r.get("parent_id");
-            let role_str: String = r.get("role");
-            let blocks_json: String = r.get("blocks_json");
-            let blocks: Vec<Block> = serde_json::from_str(&blocks_json).unwrap_or_default();
-            msg_map.insert(
-                id.clone(),
-                ChatMessage {
-                    id,
-                    parent_id,
-                    role: Role::parse(&role_str).unwrap_or(Role::User),
-                    content: blocks,
-                    created_at: r.get("created_at"),
-                },
-            );
-        }
+        let mut msg_map: HashMap<String, ChatMessage> = store
+            .messages()
+            .into_iter()
+            .map(|m| (m.id.clone(), m))
+            .collect();
 
         let mut linear = Vec::new();
         let mut curr = Some(leaf_id);
-
         while let Some(cid) = curr {
             if let Some(msg) = msg_map.remove(&cid) {
                 curr = msg.parent_id.clone();
@@ -787,33 +864,16 @@ impl StorageManager {
                 break;
             }
         }
-
-        // 翻转为从根节点到叶子节点的顺序
         linear.reverse();
         Ok(linear)
     }
 
     /// 获取全部消息（用于构建完整树状视图）
     pub async fn get_all_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>> {
-        let pools = self.session_pools(session_id).await?;
-        let rows =
-            sqlx::query("SELECT id, parent_id, role, blocks_json, created_at FROM messages ORDER BY created_at ASC")
-                .fetch_all(&pools.read)
-                .await?;
-
-        let mut msgs = Vec::with_capacity(rows.len());
-        for r in rows {
-            let role_str: String = r.get("role");
-            let blocks_json: String = r.get("blocks_json");
-            msgs.push(ChatMessage {
-                id:         r.get("id"),
-                parent_id:  r.get("parent_id"),
-                role:       Role::parse(&role_str).unwrap_or(Role::User),
-                content:    serde_json::from_str(&blocks_json).unwrap_or_default(),
-                created_at: r.get("created_at"),
-            });
-        }
-        Ok(msgs)
+        Ok(self
+            .read_store(session_id)?
+            .map(|s| s.messages())
+            .unwrap_or_default())
     }
 
     /// 删除指定消息及其整棵子树。
@@ -824,83 +884,83 @@ impl StorageManager {
         session_id: &str,
         message_id: &str,
     ) -> Result<(Vec<String>, Option<String>)> {
-        let pools = self.session_pools(session_id).await?;
-        let rows = sqlx::query("SELECT id, parent_id FROM messages")
-            .fetch_all(&pools.write)
-            .await?;
-        let mut children: HashMap<Option<String>, Vec<String>> = HashMap::new();
-        let mut deleted_parent: Option<String> = None;
-        let mut exists = false;
-        for r in rows {
-            let id: String = r.get("id");
-            let parent_id: Option<String> = r.get("parent_id");
-            if id == message_id {
-                deleted_parent = parent_id.clone();
-                exists = true;
+        self.with_store_mut(session_id, |store| {
+            // 收集消息父子关系与所处叶子
+            let mut children: HashMap<Option<String>, Vec<String>> = HashMap::new();
+            let mut deleted_parent: Option<String> = None;
+            let mut exists = false;
+            for msg in store.messages() {
+                if msg.id == message_id {
+                    deleted_parent = msg.parent_id.clone();
+                    exists = true;
+                }
+                children
+                    .entry(msg.parent_id.clone())
+                    .or_default()
+                    .push(msg.id);
             }
-            children.entry(parent_id).or_default().push(id);
-        }
-        if !exists {
-            return Err(StorageError::NotFound(format!(
-                "message {} in session {}",
-                message_id, session_id
-            )));
-        }
-
-        // BFS 收集子树
-        let mut deleted = Vec::new();
-        let mut stack = vec![message_id.to_string()];
-        while let Some(cur) = stack.pop() {
-            deleted.push(cur.clone());
-            if let Some(kids) = children.remove(&Some(cur)) {
-                stack.extend(kids);
+            if !exists {
+                return Err(StorageError::NotFound(format!(
+                    "message {} in session {}",
+                    message_id, session_id
+                )));
             }
-        }
 
-        // 当前叶子位于子树内时回退到被删消息的父节点
-        let current_leaf = self.current_leaf(session_id).await?;
-        let new_leaf = match current_leaf {
-            Some(l) if deleted.contains(&l) => deleted_parent.clone(),
-            other => other,
-        };
-        // messages.parent_id 存在外键约束，必须先删子后删父（deleted 为父先子后序，取逆）
-        for id in deleted.iter().rev() {
-            sqlx::query("DELETE FROM messages WHERE id = ?")
-                .bind(id)
-                .execute(&pools.write)
-                .await?;
-        }
-
-        let now = chrono::Utc::now().timestamp_millis();
-        match &new_leaf {
-            Some(l) => {
-                self.set_current_leaf(session_id, l).await?;
-                sqlx::query("UPDATE sessions_index SET current_leaf_id = ?, updated_at = ? WHERE session_id = ?")
-                    .bind(l)
-                    .bind(now)
-                    .bind(session_id)
-                    .execute(&self.index_pool)
-                    .await?;
+            // BFS 收集子树（父先子后）
+            let mut deleted = Vec::new();
+            let mut stack = vec![message_id.to_string()];
+            while let Some(cur) = stack.pop() {
+                deleted.push(cur.clone());
+                if let Some(kids) = children.remove(&Some(cur)) {
+                    stack.extend(kids);
+                }
             }
-            None => {
-                sqlx::query("DELETE FROM session_meta WHERE key = 'current_leaf_id'")
-                    .execute(&pools.write)
-                    .await?;
-                sqlx::query("UPDATE sessions_index SET current_leaf_id = NULL, updated_at = ? WHERE session_id = ?")
-                    .bind(now)
-                    .bind(session_id)
-                    .execute(&self.index_pool)
-                    .await?;
-            }
-        }
 
-        Ok((deleted, new_leaf))
+            let current_leaf = store.leaf();
+            let new_leaf = match current_leaf {
+                Some(l) if deleted.contains(&l) => deleted_parent.clone(),
+                other => other,
+            };
+
+            // 过滤掉被删条目（及指向它们的叶子标记），再显式落一次新叶子
+            let removed: std::collections::HashSet<&String> = deleted.iter().collect();
+            store.entries.retain(|entry| match entry {
+                Entry::Message(m) => !removed.contains(&m.id),
+                Entry::Custom(c) if c.custom_type == CUSTOM_LEAF => c
+                    .data
+                    .get("leafId")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|id| !deleted.iter().any(|d| d == id)),
+                _ => true,
+            });
+            store.append(Entry::Custom(CustomEntry {
+                id:          new_entry_id(),
+                parent_id:   new_leaf.clone(),
+                timestamp:   iso_from_ms(chrono::Utc::now().timestamp_millis()),
+                custom_type: CUSTOM_LEAF.to_string(),
+                data:        serde_json::json!({ "leafId": new_leaf }),
+            }))?;
+            store.persist()?;
+
+            Ok((deleted, new_leaf))
+        })
+        .await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn msg(id: &str, parent: Option<&str>, text: &str, at: i64) -> ChatMessage {
+        ChatMessage {
+            id:         id.into(),
+            parent_id:  parent.map(|p| p.into()),
+            role:       Role::User,
+            content:    vec![Block::Text { text: text.into() }],
+            created_at: at,
+        }
+    }
 
     #[tokio::test]
     async fn test_storage_crud_and_branching() -> anyhow::Result<()> {
@@ -927,26 +987,13 @@ mod tests {
         assert_eq!(list[0].title, "Test Session");
 
         // 3. 追加消息 m1 (User)
-        let m1 = ChatMessage {
-            id:         "m_1".into(),
-            parent_id:  None,
-            role:       Role::User,
-            content:    vec![Block::Text { text: "Hello".into() }],
-            created_at: 1000,
-        };
-        storage.append_message("s_1", &m1, 10, 0).await?;
-
+        storage
+            .append_message("s_1", &msg("m_1", None, "Hello", 1000), 10, 0)
+            .await?;
         // 4. 追加消息 m2 (Assistant)
-        let m2 = ChatMessage {
-            id:         "m_2".into(),
-            parent_id:  Some("m_1".into()),
-            role:       Role::Assistant,
-            content:    vec![Block::Text {
-                text: "Hi there".into(),
-            }],
-            created_at: 2000,
-        };
-        storage.append_message("s_1", &m2, 0, 15).await?;
+        storage
+            .append_message("s_1", &msg("m_2", Some("m_1"), "Hi there", 2000), 0, 15)
+            .await?;
 
         // 5. 校验当前线性链路 [m_1, m_2]
         let linear = storage.get_linear_messages("s_1", None).await?;
@@ -955,18 +1002,9 @@ mod tests {
         assert_eq!(linear[1].id, "m_2");
 
         // 6. 分叉：从 m_1 分叉产生 m_3
-        let m3 = ChatMessage {
-            id:         "m_3".into(),
-            parent_id:  Some("m_1".into()),
-            role:       Role::Assistant,
-            content:    vec![Block::Text {
-                text: "Alternative branch".into(),
-            }],
-            created_at: 3000,
-        };
-        storage.append_message("s_1", &m3, 0, 20).await?;
-
-        // 当前 leaf 自动变更为 m_3
+        storage
+            .append_message("s_1", &msg("m_3", Some("m_1"), "Alternative branch", 3000), 0, 20)
+            .await?;
         let linear_fork = storage.get_linear_messages("s_1", None).await?;
         assert_eq!(linear_fork.len(), 2);
         assert_eq!(linear_fork[1].id, "m_3");
@@ -979,8 +1017,7 @@ mod tests {
 
         // 7. 删除会话
         storage.delete_session("s_1").await?;
-        let deleted = storage.get_session("s_1").await?;
-        assert!(deleted.is_none());
+        assert!(storage.get_session("s_1").await?.is_none());
 
         Ok(())
     }
@@ -993,19 +1030,12 @@ mod tests {
             .create_session("s_del", "/w", "Del", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
 
-        let msg = |id: &str, parent: Option<&str>| ChatMessage {
-            id:         id.into(),
-            parent_id:  parent.map(|p| p.into()),
-            role:       Role::User,
-            content:    vec![Block::Text { text: id.into() }],
-            created_at: 0,
-        };
-
         // 树：m1 → m2 → m3（活跃链），m1 → m4（兄弟分支）
         for (id, p) in [("m1", None), ("m2", Some("m1")), ("m3", Some("m2")), ("m4", Some("m1"))] {
-            storage.append_message("s_del", &msg(id, p), 0, 0).await?;
+            storage
+                .append_message("s_del", &msg(id, p, id, 0), 0, 0)
+                .await?;
         }
-        // 当前叶子为 m4（最后追加）
 
         // 删除 m2 子树：{m2, m3}；当前叶子 m4 不在子树内 → 保持不变
         let (deleted, leaf) = storage.delete_message_subtree("s_del", "m2").await?;
@@ -1030,7 +1060,7 @@ mod tests {
         Ok(())
     }
 
-    /// session_id 会被拼进文件系统路径：必须拒绝任何分隔符与 `..`，否则可越权读写/递归删除。
+    /// session_id 会被拼进文件系统路径：必须拒绝任何分隔符与 `..`。
     #[tokio::test]
     async fn test_session_id_path_traversal_rejected() -> anyhow::Result<()> {
         let tmp = tempfile::tempdir()?;
@@ -1061,7 +1091,6 @@ mod tests {
         }
         assert!(victim.join("keep.txt").exists(), "victim dir must be untouched");
 
-        // 合法 id 仍然可用
         storage
             .create_session("sess_OK-1", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
@@ -1075,28 +1104,21 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
 
-        // 用户创建时填了标题：模型自动命名不得覆盖
         storage
             .create_session("s_user", "/w", "我的标题", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
         assert!(!storage.set_title_if_empty("s_user", "模型起的名字").await?);
-        let rec = storage.get_session("s_user").await?.unwrap();
-        assert_eq!(rec.title, "我的标题");
+        assert_eq!(storage.get_session("s_user").await?.unwrap().title, "我的标题");
 
-        // 用户留空：模型命名应当生效
         storage
             .create_session("s_auto", "/w", "", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
         assert!(storage.set_title_if_empty("s_auto", "自动命名").await?);
-        let rec = storage.get_session("s_auto").await?.unwrap();
-        assert_eq!(rec.title, "自动命名");
+        assert_eq!(storage.get_session("s_auto").await?.unwrap().title, "自动命名");
 
-        // 二次自动命名不得再覆盖已有标题
         assert!(!storage.set_title_if_empty("s_auto", "另一个名字").await?);
-        let rec = storage.get_session("s_auto").await?.unwrap();
-        assert_eq!(rec.title, "自动命名");
+        assert_eq!(storage.get_session("s_auto").await?.unwrap().title, "自动命名");
 
-        // 空/纯空白标题不得写入
         storage
             .create_session("s_blank", "/w", "", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
@@ -1114,17 +1136,19 @@ mod tests {
             .create_session("s_ctx", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
 
-        // 未写入前无记录
         assert!(storage.context_usage("s_ctx").await?.is_none());
-
         storage
             .set_context_usage("s_ctx", 123_456, 1_048_576, 42)
             .await?;
         assert_eq!(storage.context_usage("s_ctx").await?, Some((123_456, 1_048_576, 42)));
 
-        // 覆盖写：同 key 应被替换而非累积
+        // 覆盖写：取最后一条，而非累积
         storage.set_context_usage("s_ctx", 200, 1000, 7).await?;
         assert_eq!(storage.context_usage("s_ctx").await?, Some((200, 1000, 7)));
+
+        // 重新加载（模拟重启）后仍可读回
+        let reloaded = StorageManager::new(tmp.path()).await?;
+        assert_eq!(reloaded.context_usage("s_ctx").await?, Some((200, 1000, 7)));
         Ok(())
     }
 
@@ -1136,46 +1160,37 @@ mod tests {
         storage
             .create_session("s_bad", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
-        let pools = storage.session_pools("s_bad").await?;
-        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('context_usage', ?)")
-            .bind("not-a-number")
-            .execute(&pools.write)
-            .await?;
-        assert!(storage.context_usage("s_bad").await?.is_none());
+
+        // 直接向 JSONL 追加一条字段缺失的 context_usage 条目
+        let dir = storage.session_dir("s_bad")?;
+        let line = r#"{"type":"custom","id":"x","parentId":null,"timestamp":"2026-01-01T00:00:00.000Z","customType":"oma.context_usage","data":{"tokens":"oops"}}"#;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("session.jsonl"))?;
+        file.write_all(line.as_bytes())?;
+        file.write_all(b"\n")?;
+
+        let reloaded = StorageManager::new(tmp.path()).await?;
+        assert!(reloaded.context_usage("s_bad").await?.is_none());
         Ok(())
     }
 
-    /// 连接池必须缓存复用，且读池是只读的（写路径不被快照读阻塞）。
+    /// 同一数据目录上的多个实例必须互相可见（多个 StorageManager 共享磁盘）。
     #[tokio::test]
-    async fn test_session_pools_are_cached_and_read_only() -> anyhow::Result<()> {
+    async fn test_cross_instance_visibility() -> anyhow::Result<()> {
         let tmp = tempfile::tempdir()?;
-        let storage = StorageManager::new(tmp.path()).await?;
-        storage
-            .create_session("s_cache", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
+        let a = StorageManager::new(tmp.path()).await?;
+        let b = StorageManager::new(tmp.path()).await?;
+
+        a.create_session("s_x", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
+            .await?;
+        b.append_message("s_x", &msg("m1", None, "from b", 1000), 0, 0)
             .await?;
 
-        let pools = storage.session_pools("s_cache").await?;
-        // 二次调用不得新建池（缓存命中路径）
-        let _again = storage.session_pools("s_cache").await?;
-        assert_eq!(
-            storage.pools.read().len(),
-            1,
-            "session pools must be cached, not rebuilt"
-        );
-
-        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('k', 'v')")
-            .execute(&pools.write)
-            .await?;
-        let write_on_read_pool = sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('k2', 'v')")
-            .execute(&pools.read)
-            .await;
-        assert!(write_on_read_pool.is_err(), "read pool must reject writes (read_only)");
-
-        storage.delete_session("s_cache").await?;
-        assert!(
-            storage.pools.read().get("s_cache").is_none(),
-            "pools must be evicted on delete"
-        );
+        // a 未参与写入，但读取时应看到 b 的写入
+        let seen = a.get_all_messages("s_x").await?;
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].id, "m1");
         Ok(())
     }
 

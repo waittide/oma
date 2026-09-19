@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "SQLite 持久化：全局中心库与会话库、WAL 与串行写锁"
+description = "pi 风格的 JSONL 会话树持久化（每会话一个 session.jsonl + attachments）"
 
 [dependencies]
 anyhow = { workspace = true }
@@ -13,9 +13,9 @@ oma-contract = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sqlx = { workspace = true }
 tokio = { workspace = true }
 chrono = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
