@@ -1,5 +1,14 @@
 <script setup lang="ts" generic="T extends string">
-withDefaults(
+import { computed } from 'vue';
+import { UiSegmented } from '@waittide/ui';
+
+/**
+ * oma 分段单选 → `UiSegmented` 适配层。
+ *
+ * ORadio 在 oma 里本就是「分段按钮组」的形态（而非圆点单选），
+ * 对应组件库的 UiSegmented。
+ */
+const props = withDefaults(
   defineProps<{
     modelValue: T;
     options: { value: T; label: string }[];
@@ -9,58 +18,17 @@ withDefaults(
 );
 
 const emit = defineEmits<{ 'update:modelValue': [T] }>();
+
+const uiOptions = computed(() =>
+  props.options.map((option) => ({ label: option.label, value: option.value })),
+);
 </script>
 
 <template>
-  <div class="o-segment" role="radiogroup">
-    <button
-      v-for="opt in options"
-      :key="opt.value"
-      type="button"
-      role="radio"
-      class="seg"
-      :class="{ active: opt.value === modelValue }"
-      :aria-checked="opt.value === modelValue"
-      :disabled="disabled"
-      @click="emit('update:modelValue', opt.value)"
-    >
-      {{ opt.label }}
-    </button>
-  </div>
+  <UiSegmented
+    :model-value="modelValue"
+    :options="uiOptions"
+    :disabled="disabled"
+    @update:model-value="emit('update:modelValue', $event as T)"
+  />
 </template>
-
-<style scoped>
-.o-segment {
-  display: inline-flex;
-  padding: 3px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  gap: 2px;
-}
-.seg {
-  border: none;
-  background: transparent;
-  color: var(--text-tertiary);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 5px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
-}
-.seg:hover:not(:disabled):not(.active) {
-  color: var(--ink);
-}
-.seg.active {
-  background: var(--accent);
-  color: var(--base);
-}
-.seg:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-</style>
