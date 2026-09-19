@@ -121,8 +121,8 @@ flowchart TB
             PROV["oma-provider<br/>流式归一化"]
             TOOL["oma-tool<br/>六大工具"]
             MCP["oma-mcp<br/>stdio / HTTP"]
-            STORE["oma-storage<br/>oma.db + session.db"]
-            CONF["oma-config<br/>config.toml + 模板"]
+            STORE["oma-storage<br/>JSONL 会话树"]
+            CONF["oma-config<br/>settings.json + 模板"]
         end
     end
 
@@ -144,11 +144,12 @@ flowchart TB
 | Crate / 目录 | 职责 |
 |---|---|
 | `crates/contract` | 纯类型与协议契约（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` 等），零重依赖 |
-| `crates/storage` | 双 SQLite 引擎：全局中心库 `oma.db` 与会话库 `session.db`，WAL + 单写者池 |
+| `crates/storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）+ `attachments/` 目录 |
 | `crates/provider` | 手写 SSE 状态机，归一化四家流式协议（含工具调用与多模态） |
 | `crates/tool` | 六大内置工具与输出截断、工具白名单 |
 | `crates/mcp` | MCP 客户端：本地 stdio 与远程 HTTP（JSON-RPC over POST），工具命名空间注册 |
-| `crates/config` | `config.toml` 解析、内置 Agent 模板、调色板与项目级覆盖 |
+| `crates/plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API 白名单桥接 |
+| `crates/config` | `settings.json` / `models.json` 解析、内置 Agent 模板、调色板与项目级覆盖 |
 | `crates/runtime` | Agent Loop、会话房间、命令队列、级联取消、熔断器、上下文压缩、审批仲裁 |
 | `crates/daemon` | Axum HTTP / WebSocket 网关、Bearer 鉴权中间件、REST 路由 |
 | `crates/client` | 纯 Rust 客户端 SDK：`OmaClient`（事件流与指令）与 `SessionApi`（会话管理） |
@@ -240,7 +241,7 @@ cargo build --release
 2. 进入 **设置 → 提供商**，添加 Provider（`api_type` 与 `base_url`）与其下的模型；
 3. 新建工作区会话，选择模型后即可对话。
 
-> Daemon 默认只监听回环地址。若要暴露到局域网或公网，**务必先把 `config.toml` 里的 `server.token` 改成强密钥**。
+> Daemon 默认只监听回环地址。若要暴露到局域网或公网，**务必先把 `settings.json` 里的 `server.token` 改成强密钥**。
 
 ### 前端开发
 
@@ -258,45 +259,61 @@ pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
 
 ## 配置
 
-配置文件位于 `~/.config/oma/config.toml`（遵循 `XDG_CONFIG_HOME`），数据目录为 `~/.local/share/oma/`：
+配置文件位于 `~/.config/oma/`（遵循 `XDG_CONFIG_HOME`），数据目录为 `~/.local/share/oma/`：
 
 ```text
 ~/.config/oma/
-├── config.toml         # 主配置：server / theme / providers / mcp_servers
+├── settings.json       # 常规设置：默认模型/预设、审批与推理等级、theme、server、mcp_servers
+├── models.json         # 提供商与模型清单（providers）
 ├── agents/             # 全局 Agent 预设（*.md，YAML frontmatter + 正文）
-└── themes/             # 自定义调色板（*.toml）
+├── plugins/            # 全局 QuickJS 插件（<id>/plugin.js）
+└── themes/             # 自定义调色板（*.json）
 ~/.local/share/oma/
-├── oma.db              # 会话索引等全局数据
-└── sessions/<id>/session.db   # 每个会话独立的消息库与附件
+└── sessions/<id>/             # 每个会话一个目录
+    ├── session.jsonl          # pi 风格的 JSONL 会话树（首行 header + 条目带 id/parentId）
+    └── attachments/           # 会话附件
 ```
 
-最小示例：
+> 旧版 `config.toml` / `client.toml` 会在首次启动时自动迁移为 `settings.json` + `models.json` /
+> `client.json`，原文件备份为 `*.toml.bak`。
 
-```toml
-default_model = "my_anthropic/claude-3-7-sonnet"
-default_agent = "task"
-default_approval_mode = "normal"
+最小示例（`settings.json`）：
 
-[server]
-listen_addr = "127.0.0.1:17431"
-token = "admin"
-
-[providers.my_anthropic]
-api_type = "anthropic"          # anthropic | completion | response | google
-base_url = "https://api.anthropic.com"
-api_key = "env:ANTHROPIC_API_KEY"   # 支持 env:VAR 间接引用
-
-[[providers.my_anthropic.models]]
-id = "claude-3-7-sonnet"
-name = "Claude 3.7 Sonnet"
-context_len = 200000
-capabilities = ["thinking", "text_input", "text_output", "image_input"]
-
-[mcp_servers.local_sqlite]
-type = "local"
-command = "uvx"
-args = ["mcp-server-sqlite", "--db-path", "oma.db"]
+```json
+{
+  "default_model": "my_anthropic/claude-3-7-sonnet",
+  "default_agent": "task",
+  "default_approval_mode": "normal",
+  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" },
+  "mcp_servers": {
+    "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "demo.db"] }
+  }
+}
 ```
+
+提供商与模型（`models.json`）：
+
+```json
+{
+  "providers": {
+    "my_anthropic": {
+      "api_type": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "api_key": "env:ANTHROPIC_API_KEY",
+      "models": [
+        {
+          "id": "claude-3-7-sonnet",
+          "name": "Claude 3.7 Sonnet",
+          "context_len": 200000,
+          "capabilities": ["thinking", "text_input", "text_output", "image_input"]
+        }
+      ]
+    }
+  }
+}
+```
+
+`api_type` 取值 `anthropic | completion | response | google`；`api_key` 支持 `env:VAR` 间接引用。
 
 Token 优先级：命令行 `--token` > 环境变量 `OMA_AUTH_TOKEN` > 配置文件。
 配置文件缺省时，Daemon 启动会补写默认值 `admin` 并落盘，方便直接查看与修改。
@@ -322,6 +339,46 @@ Agent 预设的查找顺序为项目级 `<workspace>/.oma/agents/*.md` 覆盖全
 
 ---
 
+## 插件（QuickJS）
+
+插件是纯 JavaScript 文件，由进程内嵌的 QuickJS 引擎执行（无需 Node），通过全局 `oma`
+对象注册工具、命令与事件钩子。放于 `<workspace>/.oma/plugins/<id>/plugin.js`（项目级）
+或 `~/.config/oma/plugins/<id>/plugin.js`（全局），同名时项目级覆盖全局。
+
+```js
+oma.registerTool({
+  name: "word_count",
+  description: "Count words in a file",
+  parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+  execute: (p) => String(oma.readFile(p.path).split(/\s+/).filter(Boolean).length),
+});
+
+oma.on("tool_call", (e) =>
+  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
+    ? { block: true, reason: "destructive shell command" }
+    : undefined);
+
+oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });
+```
+
+宿主 API：
+
+| API | 说明 |
+|---|---|
+| `oma.log(...)` | 写日志 |
+| `oma.readFile(path)` / `oma.writeFile(path, content)` | 读写文本文件（拒绝绝对路径与 `..`，限 workspace 内） |
+| `oma.listDir(path)` / `oma.exists(path)` | 列目录 / 判断存在 |
+| `oma.exec(cmd)` | 在 workspace 下执行 shell，返回 `{stdout, stderr, code}` |
+| `oma.registerTool(def)` | 注册工具（`execute` 必须同步返回） |
+| `oma.registerCommand(def)` | 注册命令（限定名 `plugin:command`） |
+| `oma.on(event, fn)` | 事件钩子，当前支持 `tool_call`（返回 `{block:true, reason}` 可拦截） |
+
+插件工具会随会话装配进工具注册表，并由 `GET /api/tools?workspace=...` 以 `kind: "plugin"` 列出。
+
+> **安全**：插件与 pi 的扩展一样拥有宿主进程权限（文件访问被限在 workspace 内），安装前请审查源码。
+
+---
+
 ## 目录结构
 
 ```text
@@ -335,7 +392,7 @@ oma/
 │   ├── mcp/          # MCP 客户端
 │   ├── provider/     # 模型厂商流式适配
 │   ├── runtime/      # Agent 运行引擎
-│   ├── storage/      # SQLite 持久化
+│   ├── storage/      # JSONL 会话树持久化
 │   ├── tool/         # 内置工具
 │   └── tui/          # 终端客户端
 ├── docs/
@@ -349,7 +406,7 @@ oma/
 
 ## 文档
 
-- [技术规格书](docs/multi_client_agent_spec.md)：架构拓扑、WebSocket 契约、SQLite DDL、
+- [技术规格书](docs/multi_client_agent_spec.md)：架构拓扑、WebSocket 契约、JSONL 会话格式、
   配置规范、REST 接口、工具与 MCP 扩展机制、实现一致性说明。
 
 ---

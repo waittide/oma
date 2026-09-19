@@ -135,8 +135,8 @@ flowchart TB
             PROV["oma-provider<br/>ストリーム正規化"]
             TOOL["oma-tool<br/>6 つのツール"]
             MCP["oma-mcp<br/>stdio / HTTP"]
-            STORE["oma-storage<br/>oma.db + session.db"]
-            CONF["oma-config<br/>config.toml + テンプレート"]
+            STORE["oma-storage<br/>JSONL セッション木"]
+            CONF["oma-config<br/>settings.json + テンプレート"]
         end
     end
 
@@ -158,11 +158,12 @@ flowchart TB
 | クレート / ディレクトリ | 責務 |
 |---|---|
 | `crates/contract` | 純粋な型とプロトコル契約（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` など）。重い依存なし |
-| `crates/storage` | 二重 SQLite エンジン：全体インデックス `oma.db` とセッション別 `session.db`、WAL と単一ライタ |
+| `crates/storage` | JSONL セッション木の永続化：セッションごとに `session.jsonl`（pi 風の id/parentId 木）と `attachments/` ディレクトリ |
 | `crates/provider` | 自作 SSE ステートマシンによる 4 プロトコルの正規化（ツール呼び出し・マルチモーダル含む） |
 | `crates/tool` | 6 つの組み込みツール、出力切り詰め、ツール許可リスト |
 | `crates/mcp` | MCP クライアント：ローカル stdio とリモート HTTP（JSON-RPC over POST）、名前空間付きツール登録 |
-| `crates/config` | `config.toml` の解析、組み込みエージェントテンプレート、パレット、プロジェクト単位の上書き |
+| `crates/plugin` | QuickJS プラグイン：JS でツール/コマンド/イベントフックを登録、host API は Rust 側で許可制ブリッジ |
+| `crates/config` | `settings.json` / `models.json` の解析、組み込みエージェントテンプレート、パレット、プロジェクト単位の上書き |
 | `crates/runtime` | エージェントループ、セッションルーム、コマンドキュー、連鎖キャンセル、サーキットブレーカー、圧縮、承認アービトレーション |
 | `crates/daemon` | Axum による HTTP / WebSocket ゲートウェイ、Bearer 認証ミドルウェア、REST ルート |
 | `crates/client` | 純 Rust クライアント SDK：`OmaClient`（イベントストリームと命令）と `SessionApi`（セッション管理） |
@@ -259,7 +260,7 @@ cargo build --release
 3. ワークスペースのセッションを作成し、モデルを選んで会話を開始。
 
 > デーモンは既定でループバックのみを待ち受けます。LAN やインターネットへ公開する前に、
-> **`config.toml` の `server.token` を必ず強力な秘密値へ変更してください**。
+> **`settings.json` の `server.token` を必ず強力な秘密値へ変更してください**。
 
 ### フロントエンド開発
 
@@ -277,45 +278,62 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
 
 ## 設定
 
-設定ファイルは `~/.config/oma/config.toml`（`XDG_CONFIG_HOME` に追従）、データは `~/.local/share/oma/` に置かれます。
+設定ディレクトリは `~/.config/oma/`（`XDG_CONFIG_HOME` に追従）、データは `~/.local/share/oma/` に置かれます。
 
 ```text
 ~/.config/oma/
-├── config.toml         # 主設定: server / theme / providers / mcp_servers
+├── settings.json       # 一般設定: 既定値、theme、server、mcp_servers
+├── models.json         # プロバイダとモデル一覧
 ├── agents/             # グローバルなエージェント・プリセット（*.md、YAML frontmatter + 本文）
-└── themes/             # カスタムパレット（*.toml）
+├── plugins/            # グローバル QuickJS プラグイン（<id>/plugin.js）
+└── themes/             # カスタムパレット（*.json）
 ~/.local/share/oma/
-├── oma.db              # セッション索引などの全体データ
-└── sessions/<id>/session.db   # セッションごとのメッセージ保存と添付
+└── sessions/<id>/             # セッションごとに 1 ディレクトリ
+    ├── session.jsonl          # pi 風 JSONL セッション木（先頭 header + id/parentId 付きエントリ）
+    └── attachments/           # セッション添付
 ```
 
-最小構成の例：
+> 旧版の `config.toml` / `client.toml` は初回起動時に `settings.json` + `models.json` /
+> `client.json` へ自動移行され、旧ファイルは `*.toml.bak` としてバックアップされます。
 
-```toml
-default_model = "my_anthropic/claude-3-7-sonnet"
-default_agent = "task"
-default_approval_mode = "normal"
+最小構成の例（`settings.json`）：
 
-[server]
-listen_addr = "127.0.0.1:17431"
-token = "admin"
-
-[providers.my_anthropic]
-api_type = "anthropic"          # anthropic | completion | response | google
-base_url = "https://api.anthropic.com"
-api_key = "env:ANTHROPIC_API_KEY"   # env:VAR による間接参照に対応
-
-[[providers.my_anthropic.models]]
-id = "claude-3-7-sonnet"
-name = "Claude 3.7 Sonnet"
-context_len = 200000
-capabilities = ["thinking", "text_input", "text_output", "image_input"]
-
-[mcp_servers.local_sqlite]
-type = "local"
-command = "uvx"
-args = ["mcp-server-sqlite", "--db-path", "oma.db"]
+```json
+{
+  "default_model": "my_anthropic/claude-3-7-sonnet",
+  "default_agent": "task",
+  "default_approval_mode": "normal",
+  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" },
+  "mcp_servers": {
+    "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "demo.db"] }
+  }
+}
 ```
+
+プロバイダとモデル（`models.json`）：
+
+```json
+{
+  "providers": {
+    "my_anthropic": {
+      "api_type": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "api_key": "env:ANTHROPIC_API_KEY",
+      "models": [
+        {
+          "id": "claude-3-7-sonnet",
+          "name": "Claude 3.7 Sonnet",
+          "context_len": 200000,
+          "capabilities": ["thinking", "text_input", "text_output", "image_input"]
+        }
+      ]
+    }
+  }
+}
+```
+
+`api_type` は `anthropic | completion | response | google` のいずれか、`api_key` は `env:VAR`
+による間接参照に対応します。
 
 トークンの優先順位：コマンドラインの `--token` > 環境変数 `OMA_AUTH_TOKEN` > 設定ファイル。
 設定ファイルにトークンが無い場合、デーモンは既定値 `admin` を書き戻して保存します
@@ -342,6 +360,50 @@ args = ["mcp-server-sqlite", "--db-path", "oma.db"]
 
 ---
 
+## プラグイン（QuickJS）
+
+プラグインは純粋な JavaScript ファイルで、プロセスに組み込まれた QuickJS エンジンが
+実行します（Node 不要）。グローバル `oma` オブジェクトを通じてツール・コマンド・
+イベントフックを登録します。設置場所は `<workspace>/.oma/plugins/<id>/plugin.js`
+（プロジェクト）または `~/.config/oma/plugins/<id>/plugin.js`（グローバル）で、
+同名の場合プロジェクト側が優先されます。
+
+```js
+oma.registerTool({
+  name: "word_count",
+  description: "Count words in a file",
+  parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+  execute: (p) => String(oma.readFile(p.path).split(/\s+/).filter(Boolean).length),
+});
+
+oma.on("tool_call", (e) =>
+  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
+    ? { block: true, reason: "destructive shell command" }
+    : undefined);
+
+oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });
+```
+
+host API：
+
+| API | 説明 |
+|---|---|
+| `oma.log(...)` | ログ出力 |
+| `oma.readFile(path)` / `oma.writeFile(path, content)` | テキストファイル入出力（絶対パスと `..` を拒否、workspace 内に限定） |
+| `oma.listDir(path)` / `oma.exists(path)` | ディレクトリ一覧 / 存在確認 |
+| `oma.exec(cmd)` | workspace でシェルを実行し `{stdout, stderr, code}` を返す |
+| `oma.registerTool(def)` | ツール登録（`execute` は同期戻り値のみ） |
+| `oma.registerCommand(def)` | コマンド登録（限定名 `plugin:command`） |
+| `oma.on(event, fn)` | イベントフック。現在 `tool_call` 対応（`{block:true, reason}` で阻止） |
+
+プラグインツールはセッションのツールレジストリに登録され、
+`GET /api/tools?workspace=...` に `kind: "plugin"` で現れます。
+
+> **セキュリティ**：プラグインは pi の拡張と同様にホストプロセスの権限で動作します
+> （ファイルアクセスは workspace 内に限定）。導入前にソースを確認してください。
+
+---
+
 ## リポジトリ構成
 
 ```text
@@ -355,7 +417,7 @@ oma/
 │   ├── mcp/          # MCP クライアント
 │   ├── provider/     # ベンダー別ストリーミングアダプタ
 │   ├── runtime/      # エージェント・ランタイム
-│   ├── storage/      # SQLite 永続化
+│   ├── storage/      # JSONL セッション木の永続化
 │   ├── tool/         # 組み込みツール
 │   └── tui/          # ターミナルクライアント
 ├── docs/
@@ -369,7 +431,7 @@ oma/
 
 ## ドキュメント
 
-- [技術仕様書](docs/multi_client_agent_spec.md)：アーキテクチャ、WebSocket 契約、SQLite DDL、
+- [技術仕様書](docs/multi_client_agent_spec.md)：アーキテクチャ、WebSocket 契約、JSONL セッション形式、
   設定仕様、REST API、ツールと MCP 拡張、実装との一致に関する注記。
 
 ---

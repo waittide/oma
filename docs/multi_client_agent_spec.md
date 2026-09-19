@@ -44,10 +44,11 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  ┌─────────────────────────────────▼─────────────────────────────────┐  │
 │  │               Agent Runtime Engine & Subsystems                   │  │
 │  │  - oma-provider: LLM Streaming Normalization & Deep Merge         │  │
-│  │  - oma-storage:  Dual SQLite Engine (WAL + Single-Writer Pool)    │  │
+│  │  - oma-storage:  JSONL Session Tree (pi-style id/parentId)         │  │
 │  │  - oma-tool:     6 Tools (read, write, edit, shell, task, ask)    │  │
 │  │  - oma-mcp:      MCP Client (stdio & HTTP POST, namespaced)       │  │
-│  │  - oma-config:   TOML Config & Bundled Agent Templates            │  │
+│  │  - oma-plugin:   QuickJS Plugins (tools/commands/hooks)          │  │
+│  │  - oma-config:   JSON Config & Bundled Agent Templates             │  │
 │  │  - oma-contract: Shared Wire Protocol, Events, Data Models        │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -58,11 +59,12 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | Crate / 目录 | 职责与依赖 |
 |---|---|
 | `crates/contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
-| `crates/storage` | SQLite 持久化抽象，实现全局中心库 `oma.db` 与会话专属库 `session.db`，管理 WAL 模式与串行写锁。 |
+| `crates/storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）与 `attachments/` 目录；同会话写锁串行化。 |
 | `crates/provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
 | `crates/tool` | 内置 6 大工具（`read`, `write`, `edit` 原子替换补丁, `shell` 进程组守卫, `task` 子任务委托, `ask` 歧义提问），含输出截断与工具白名单。 |
 | `crates/mcp` | MCP 客户端，支持本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），按 `mcp__{server}__{tool}` 统一命名空间注册。 |
-| `crates/config` | 配置文件 `config.toml` 解析，内置 5 大 Agent 模板（`include_str!`）与本地/项目级覆盖、环境块动态注入。 |
+| `crates/plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API（文件/命令/日志）由 Rust 侧白名单桥接并限制在 workspace 内。 |
+| `crates/config` | 配置文件 `settings.json` 解析，内置 5 大 Agent 模板（`include_str!`）与本地/项目级覆盖、环境块动态注入。 |
 | `crates/runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、熔断器、70% 阈值两阶段上下文压缩与内存审批白名单。 |
 | `crates/daemon` | 基于 Axum 的 HTTP REST 与 WebSocket 网关、Bearer Token 鉴权中间件、静态路由与 CORS。 |
 | `crates/client` | 纯 Rust 客户端 SDK：`OmaClient` 封装 WebSocket 握手/事件流/指令与审批，`SessionApi` 提供 REST 会话管理。 |
@@ -89,7 +91,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
    - WebSocket 握手因浏览器无法为 WS 请求设置自定义头，额外接受 `?token=<token>`；
    - 鉴权失败统一返回 HTTP `401 Unauthorized`，且不建立连接。
 2. **Token 配置与存储**：
-   - 唯一存放在配置文件 `config.toml` 的 `[server].token`，用户可直接查看与修改；
+   - 唯一存放在配置文件 `settings.json` 的 `server.token`，用户可直接查看与修改；
    - 优先级：命令行 `--token` > 环境变量 `OMA_AUTH_TOKEN` > 配置文件；
    - 配置中缺省或为空时，启动时向配置文件补写默认值 `admin` 并落盘
      （不再生成 `auth.token` 随机密钥文件）；
@@ -105,7 +107,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 
 ---
 
-## 3. 数据模型与 SQLite 持久化规范 (Data Contracts & DDL)
+## 3. 数据模型与 JSONL 会话树持久化规范 (Data Contracts & Session Tree)
 
 ### 3.1 消息块模型 (Message Block Model & Multimodal)
 Oma 采用结构化 Content Block 表达混合与多模态消息：
@@ -155,60 +157,55 @@ pub struct ChatMessage {
 ```
 
 > **存储与协议映射策略**：  
-> - 数据库中 `ToolResult` 统一包裹在 `role: Role::User` 消息中存储；  
+> - 存储中 `ToolResult` 统一包裹在 `role: Role::User` 消息中；  
 > - 发送给各厂商 API 时：Anthropic 协议保持 `role: "user"`；OpenAI / DeepSeek 协议在适配层自动将 `Block::ToolResult` 解构成独立的 `role: "tool"` 消息。
 
-### 3.2 双层 SQLite 持久化 Schema (DDL) 与并发写安全
+### 3.2 JSONL 会话树持久化规范
 
-#### 1. 全局中心索引库：`~/.local/share/oma/oma.db`
-维护工作区与全部会话元数据，支持极速列表查询与管理：
+会话以 pi 风格的 JSONL 树文件保存，每会话一个目录：
 
-```sql
-CREATE TABLE IF NOT EXISTS sessions_index (
-    session_id      TEXT PRIMARY KEY,
-    workspace       TEXT NOT NULL,
-    title           TEXT NOT NULL,
-    active_model    TEXT NOT NULL,
-    active_agent    TEXT NOT NULL DEFAULT 'task',
-    approval_mode   TEXT NOT NULL DEFAULT 'normal',
-    current_leaf_id TEXT,
-    created_at      INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions_index(workspace);
-CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions_index(updated_at DESC);
+```text
+~/.local/share/oma/sessions/<session_id>/
+├── session.jsonl      # 首行 header，其后每行一个条目
+└── attachments/       # 会话附件
 ```
 
-#### 2. 会话专属数据库：`~/.local/share/oma/sessions/<session_id>/session.db`
-每个 Session 独立存储完整树形消息图与会话级元数据，附件保存至同目录下的 `attachments/`：
+文件首行为会话头（不参与树）：
 
-```sql
--- 会话专属元数据
-CREATE TABLE IF NOT EXISTS session_meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
--- 树状消息表
-CREATE TABLE IF NOT EXISTS messages (
-    id            TEXT PRIMARY KEY,
-    parent_id     TEXT,
-    role          TEXT NOT NULL,          -- 'system' | 'user' | 'assistant'
-    blocks_json   TEXT NOT NULL,         -- JSON 序列化的 Vec<Block>
-    input_tokens  INTEGER DEFAULT 0,
-    output_tokens INTEGER DEFAULT 0,
-    created_at    INTEGER NOT NULL,
-    FOREIGN KEY(parent_id) REFERENCES messages(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_parent_id ON messages(parent_id);
+```json
+{"type":"session","version":3,"id":"<session_id>","timestamp":"2026-09-19T00:00:00.000Z","cwd":"/path/to/project","model":"p/m","agent":"task","approvalMode":"normal","reasoningLevel":"medium"}
 ```
 
-#### 3. 并发安全与连接池规范 (WAL & Serialized Writes)
-- **WAL 模式启用**：所有 SQLite 数据库在打开时统一执行 `PRAGMA journal_mode = WAL;` 与 `PRAGMA busy_timeout = 5000;`。
-- **单写连接池隔离 (`max_connections = 1`)**：写路径（`SessionManager` 与消息追加）使用 `max_connections = 1` 的连接池，保证同一时刻单会话内写入绝对串行，杜绝 SQLite `database is locked` 竞争；
-- **只读连接用于快照**：客户端接入时的历史消息回放和会话列表查询开辟独立的只读连接（`read_only = true`），读写互不阻塞。
+其后每行一个条目，靠 `id`/`parentId` 形成树（`parentId: null` 为根），
+从而在不新建文件的前提下原地分叉。条目类型：
+
+| type | 作用 |
+|---|---|
+| `message` | 对话消息（`message.role` / `message.content`） |
+| `session_info` | 会话标题（`name`） |
+| `model_change` | 切换模型（`provider` / `modelId`） |
+| `thinking_level_change` | 切换推理等级（`thinkingLevel`） |
+| `custom` | oma 运行时状态；不参与 LLM 上下文 |
+
+`custom` 条目的 `customType`：
+- `oma.leaf`：当前叶子（`data.leafId`），分支切换与删除子树后显式落盘；
+- `oma.context_usage`：上下文占用（`data.tokens/contextLen/covered`）；
+- `oma.settings`：agent 与审批模式。
+
+消息条目示例：
+
+```json
+{"type":"message","id":"<uuid>","parentId":null,"timestamp":"2026-09-19T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Hello"}],"timestamp":1758240001000}}
+```
+
+#### 并发与一致性
+- 读操作始终以磁盘为准（不缓存快照）；
+- 写操作在同会话写锁内先重读文件再落盘，保证追加串行；
+- 同数据目录上的多个 `StorageManager` 实例也能互相看到最新内容；
+- 单行损坏只跳过该行，不影响整个会话可读；
+- 删除消息子树需要移除既有行，此时全量原子重写文件（临时文件 + rename）。
+
+> 内容块沿用 oma 契约的 `Block` 形态（`tool_use`/`tool_result`），因此文件可被本仓库完整回读，但不是 pi 的逐字节格式。
 
 ---
 
@@ -602,51 +599,54 @@ pub struct McpServerSummary {
 
 ## 5. 配置体系、Provider 架构与 Agent/Skill 模板
 
-### 5.1 配置文件规范 (`~/.config/oma/config.toml`)
+### 5.1 配置文件规范 (`~/.config/oma/settings.json` + `models.json`)
 
-```toml
-default_model = "my_anthropic/claude-3-7-sonnet"
-default_agent = "task"
-default_approval_mode = "normal"
+参照 pi 的 `settings.json` / `models.json` 分层：常规设置与提供商/模型清单分文件存放。
 
-[server]
-listen_addr = "127.0.0.1:17431"
+`settings.json`：
 
-[providers.my_anthropic]
-api_type = "anthropic"       # "anthropic" | "completion" | "response" | "google"
-base_url = "https://api.anthropic.com"
-api_key = "env:ANTHROPIC_API_KEY"
-
-[providers.my_anthropic.headers]
-"anthropic-beta" = "prompt-caching-2024-07-31"
-
-[[providers.my_anthropic.models]]
-id = "claude-3-7-sonnet"
-name = "Claude 3.7 Sonnet"
-context_len = 200000
-capabilities = ["thinking", "text_input", "text_output", "image_input"]
-
-[providers.my_deepseek]
-api_type = "completion"
-base_url = "https://api.deepseek.com/v1"
-api_key = "env:DEEPSEEK_API_KEY"
-models = [
-    { id = "deepseek-chat", name = "DeepSeek V3", context_len = 64000 },
-    { id = "deepseek-reasoner", name = "DeepSeek R1", context_len = 64000, capabilities = ["thinking", "text_input", "text_output"] }
-]
-
-# MCP 服务配置
-[mcp_servers.local_sqlite]
-type = "local"
-command = "uvx"
-args = ["mcp-server-sqlite", "--db-path", "oma.db"]
-env = { DEBUG = "1" }
-
-[mcp_servers.remote_docs]
-type = "remote"
-url = "https://mcp.internal.example.com/sse"
-headers = { Authorization = "Bearer secret_token" }
+```json
+{
+  "default_model": "my_anthropic/claude-3-7-sonnet",
+  "default_agent": "task",
+  "default_approval_mode": "normal",
+  "server": { "listen_addr": "127.0.0.1:17431" },
+  "mcp_servers": {
+    "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "oma.db"], "env": { "DEBUG": "1" } },
+    "remote_docs": { "type": "remote", "url": "https://mcp.internal.example.com/sse", "headers": { "Authorization": "Bearer secret_token" } }
+  }
+}
 ```
+
+`models.json`：
+
+```json
+{
+  "providers": {
+    "my_anthropic": {
+      "api_type": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "api_key": "env:ANTHROPIC_API_KEY",
+      "headers": { "anthropic-beta": "prompt-caching-2024-07-31" },
+      "models": [
+        { "id": "claude-3-7-sonnet", "name": "Claude 3.7 Sonnet", "context_len": 200000, "capabilities": ["thinking", "text_input", "text_output", "image_input"] }
+      ]
+    },
+    "my_deepseek": {
+      "api_type": "completion",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "env:DEEPSEEK_API_KEY",
+      "models": [
+        { "id": "deepseek-chat", "name": "DeepSeek V3", "context_len": 64000 },
+        { "id": "deepseek-reasoner", "name": "DeepSeek R1", "context_len": 64000, "capabilities": ["thinking", "text_input", "text_output"] }
+      ]
+    }
+  }
+}
+```
+
+> `api_type` 取值 `anthropic | completion | response | google`。
+> 旧版 `config.toml` 首次加载时自动迁移为上述两个文件，原文件备份为 `config.toml.bak`。
 
 ### 5.2 请求头与请求体三级递归合并规范
 优先级：`Provider 级配置` $\prec$ `Model 级配置` $\prec$ `Reasoning Effort 覆盖`。
@@ -697,6 +697,41 @@ headers = { Authorization = "Bearer secret_token" }
      </available_skills>
      ```
      模型在任务相关时用 `read` 工具读取；无关轮次不占用上下文。
+
+### 5.4 QuickJS 插件规范
+
+插件是纯 JavaScript 文件，由进程内嵌的 QuickJS 引擎执行（无 Node 依赖）。发现位置：
+
+| 层 | 路径 |
+|---|---|
+| global | `~/.config/oma/plugins/<id>/plugin.js` |
+| project | `<workspace>/.oma/plugins/<id>/plugin.js`（同名覆盖 global） |
+
+插件通过全局 `oma` 对象注册：
+
+```js
+oma.registerTool({ name, label?, description, parameters, execute(params) -> any });
+oma.registerCommand({ name, description?, handler(args) -> string });
+oma.on("tool_call", (e) => ({ block: true, reason?: string }) | undefined);
+```
+
+宿主 API（均限 workspace 内，绝对路径与 `..` 被拒绝）：
+
+| API | 说明 |
+|---|---|
+| `oma.log(...)` | 写日志 |
+| `oma.readFile` / `oma.writeFile` | 文本文件读写 |
+| `oma.listDir` / `oma.exists` | 列目录 / 存在性 |
+| `oma.exec(cmd)` | workspace 下执行 shell，返回 `{stdout, stderr, code}` |
+
+- 插件工具在会话装配时注册进 `ToolRegistry`（与内置/ MCP 工具同权），并由
+  `GET /api/tools?workspace=...` 以 `kind: "plugin"` 下发；
+- `execute`/`handler` 必须**同步**返回，返回 Promise 会被显式拒绝；每次调用新建
+  JS 上下文，插件顶层状态不跨调用保留；
+- `tool_call` 钩子在审批通过后、工具执行前评估，任一插件返回 `block` 即拦截；
+- 单个插件加载失败（语法错误等）只告警跳过，不影响其余插件与会话。
+
+> **安全**：插件与 pi 扩展一样拥有宿主进程权限（文件访问限在 workspace），安装前需审查源码。
 
 ---
 
@@ -832,7 +867,7 @@ ToolOutput {
 | `GET` | `/api/server/status` | 服务端探活、版本号、活跃 Session 与连接数 |
 | `GET` | `/api/sessions?workspace=...` | 获取指定 Workspace 下的所有会话列表元数据 |
 | `POST` | `/api/sessions` | 在指定 Workspace 下创建新会话，返回 `session_id` |
-| `DELETE` | `/api/sessions/{id}` | 删除会话及其 SQLite 数据与全部附件目录（运行中的轮次拒绝删除） |
+| `DELETE` | `/api/sessions/{id}` | 删除会话目录（JSONL 会话树与全部附件；运行中的轮次拒绝删除） |
 | `PATCH` | `/api/sessions/{id}` | 重命名会话（广播 `SessionRenamed`） |
 | `GET` | `/api/sessions/{id}/messages?leaf_id=...` | 获取指定会话当前激活消息链的全部 `ChatMessage` |
 | `GET` | `/api/sessions/{id}/messages/tree` | 获取该会话全部消息（含兄弟分支），用于构建历史树 |
@@ -876,8 +911,8 @@ pub struct Palette {
 ```
 
 - **存储**：内置 4 套（latte / frappé / macchiato / mocha）编译期以 `include_str!` 嵌入二进制
-  （与 Agent 模板同理，无启动写入）；用户调色板存于 `<配置目录>/oma/themes/<id>.toml`，
-  同名文件可覆盖内置。`config.toml` 只保留 `[theme]`，其中引用的 id 必须在调色板集合内。
+  （与 Agent 模板同理，无启动写入）；用户调色板存于 `<配置目录>/oma/themes/<id>.json`，
+  同名文件可覆盖内置。`settings.json` 中的 `theme` 仅保存引用，其 id 必须在调色板集合内。
 - **下发**：`Ready.active_theme` 携带已解析的 `ResolvedTheme { mode, accent, light, dark }`，
   即两套完整调色板。终端与浏览器因此共用同一份配色数据，客户端不需要读取配置目录，
   也不需要在各自语言里再内置一份色值。
@@ -897,11 +932,11 @@ pub struct Palette {
 - `oma web`：启动 web 客户端（仅内嵌前端静态服务，**不会**顺便拉起 Daemon，也不再依赖 Vite/pnpm）；
   构建产物经 `rust-embed` 内嵌进二进制（release 下不依赖任何外部目录），
   仅打印 `web 监听地址: http://…`（不打印 token），需 `--open` 才自动打开浏览器；
-  监听地址与端口未由 `--host/--port` 指定时读自 `client.toml` 的 `[web]`，
+  监听地址与端口未由 `--host/--port` 指定时读自 `client.json` 的 `web`，
   并向页面提供同源接口 `GET/PUT /api/client/config`（见 9.3）；
 - `oma tui`：启动 tui 客户端（连接 Daemon 并进入 Ratatui 终端交互界面）；
-  连接来源优先级为 `--addr/--token` > `--connection <名称>` > `client.toml` 活动连接
-  > 默认地址，界面内 `Ctrl+O` 可在已保存连接间切换（回写 `client.toml` 的 `active`）；
+  连接来源优先级为 `--addr/--token` > `--connection <名称>` > `client.json` 活动连接
+  > 默认地址，界面内 `Ctrl+O` 可在已保存连接间切换（回写 `client.json` 的 `active`）；
 - `oma status` / `oma help [子命令]`：查看服务端状态 / 打印帮助；
 - 不带子命令（`oma`）：等价于 `oma -h`，仅打印帮助，不自动启动任何界面；
 - **输出全中文**：clap 的固定文案（`Usage:`/`Options:`/`Commands:` 标题、`[default: …]`
@@ -928,7 +963,7 @@ pub struct Palette {
   4. 权限审批模态框（AllowOnce, AllowSession, Deny）；
   5. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）；
   6. 设置面板（连接、外观/主题与调色板、语言、默认参数、Provider、预设、技能、MCP）；
-     其中「连接」页读写 `oma web` 同源接口的 `client.toml`：列表可切换、增删连接，
+     其中「连接」页读写 `oma web` 同源接口的 `client.json`：列表可切换、增删连接，
      保存时 upsert 当前连接并置为 `active`；接口不可用（如 vite dev）时退回 localStorage；
   7. 界面 i18n 支持简体中文 / 繁体中文 / English / 日本語，缺键回退为键名；
      首次访问时按浏览器语言自动选择（`zh-Hans` / `zh-Hant` / `ja` / 其余为 `en`）；
@@ -939,12 +974,13 @@ pub struct Palette {
      页面/终端处于聚焦状态时不提示——审批条、提问面板与审批弹窗已把事件摆在眼前；
      终端不上报焦点时按聚焦处理（始终不通知）。
 
-### 9.3 客户端本地配置 `client.toml`
-- 路径：`<配置目录>/oma/client.toml`，与 Daemon 的 `config.toml` 分离，属「这台机器上的客户端」信息；
-- 内容：`[web]` 段（`host`/`port`，仅 `oma web` 启动时使用）、`[[connections]]` 连接列表
+### 9.3 客户端本地配置 `client.json`
+- 路径：`<配置目录>/oma/client.json`，与 Daemon 的 `settings.json` 分离，属「这台机器上的客户端」信息；
+- 内容：`web` 段（`host`/`port`，仅 `oma web` 启动时使用）、`connections` 连接列表
   （`name`/`url`/`token`，用户可在客户端保存与切换）、`active`（当前活动连接名，空则取列表首个）；
 - 读写：`oma web` 提供同源接口 `GET/PUT /api/client/config`（写入前校验名称/地址非空且不重名，
-  经写锁串行化后原子落盘）；TUI 只读取连接列表，切换后回写 `active`。
+  经写锁串行化后原子落盘）；TUI 只读取连接列表，切换后回写 `active`；
+- 迁移：旧版 `client.toml` 首次加载时自动转为 `client.json`，原文件备份为 `client.toml.bak`。
 
 ---
 

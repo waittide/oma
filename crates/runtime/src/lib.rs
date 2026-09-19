@@ -470,6 +470,8 @@ pub struct SessionRoom {
     pub circuit_breaker: Mutex<CircuitBreaker>,
     /// 轮次占用权：由 CAS 抢占，确保同一房间任意时刻至多一个执行中的轮次
     pub is_running:      AtomicBool,
+    /// 插件宿主（工具已在装配期注册进 ToolRegistry；此处用于 `tool_call` 钩子）
+    pub plugins:         RwLock<Option<Arc<oma_plugin::PluginHost>>>,
     /// 本进程内是否已发起过自动命名：标题一旦生成就不再重复请求模型
     named:               AtomicBool,
 }
@@ -507,8 +509,14 @@ impl SessionRoom {
             cancel_token: RwLock::new(CancellationToken::new()),
             circuit_breaker: Mutex::new(CircuitBreaker::new()),
             is_running: AtomicBool::new(false),
+            plugins: RwLock::new(None),
             named: AtomicBool::new(false),
         })
+    }
+
+    /// 注入插件宿主：工具已在装配期注册进 `ToolRegistry`，此处提供 `tool_call` 钩子。
+    pub fn set_plugins(&self, host: Arc<oma_plugin::PluginHost>) {
+        *self.plugins.write() = Some(host);
     }
 
     /// 订阅该 Room 的实时事件流
@@ -884,7 +892,29 @@ impl SessionRoom {
             }
         }
 
-        // 3. 执行（可被取消信号中断，避免长命令拖住整个轮次）
+        // 3. 插件 tool_call 钩子：任一插件返回 block 即拦截（插件为同步 JS，放到阻塞线程池）
+        let plugin_host = self.plugins.read().clone();
+        if let Some(host) = plugin_host {
+            let name = tool_name.to_string();
+            let input = tool_input.clone();
+            let blocked = tokio::task::spawn_blocking(move || host.before_tool_call(&name, &input))
+                .await
+                .unwrap_or(None);
+            if let Some(reason) = blocked {
+                return (
+                    self.finish_tool_call(
+                        call_id,
+                        tool_name,
+                        ToolOutput::error(format!("Execution blocked by plugin: {}", reason)),
+                        subagent_id,
+                    )
+                    .await,
+                    false,
+                );
+            }
+        }
+
+        // 4. 执行（可被取消信号中断，避免长命令拖住整个轮次）
         let Some(tool) = self.tools.get(tool_name) else {
             return (
                 self.finish_tool_call(

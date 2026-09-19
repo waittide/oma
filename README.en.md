@@ -137,8 +137,8 @@ flowchart TB
             PROV["oma-provider<br/>stream normalization"]
             TOOL["oma-tool<br/>six tools"]
             MCP["oma-mcp<br/>stdio / HTTP"]
-            STORE["oma-storage<br/>oma.db + session.db"]
-            CONF["oma-config<br/>config.toml + templates"]
+            STORE["oma-storage<br/>JSONL session tree"]
+            CONF["oma-config<br/>settings.json + templates"]
         end
     end
 
@@ -160,11 +160,12 @@ flowchart TB
 | Crate / directory | Responsibility |
 |---|---|
 | `crates/contract` | Pure types and protocol contracts (`Role`, `Block`, `ClientMessage`, `ServerMessage`, `AgentEvent`, …) with no heavy dependencies |
-| `crates/storage` | Dual SQLite engine: global index `oma.db` and per-session `session.db`, WAL mode with a single-writer pool |
+| `crates/storage` | JSONL session-tree persistence: one `session.jsonl` (pi-style id/parentId tree) plus an `attachments/` dir per session |
 | `crates/provider` | Hand-written SSE state machine normalizing four streaming protocols (tool calls and multimodal included) |
 | `crates/tool` | The six built-in tools, output truncation and tool allow-lists |
 | `crates/mcp` | MCP client over local stdio and remote HTTP (JSON-RPC over POST) with namespaced tool registration |
-| `crates/config` | `config.toml` parsing, bundled agent templates, palettes and project-level overrides |
+| `crates/plugin` | QuickJS plugins: register tools/commands/event hooks in JS, bridged through a Rust allow-listed host API |
+| `crates/config` | `settings.json` / `models.json` parsing, bundled agent templates, palettes and project-level overrides |
 | `crates/runtime` | Agent loop, session rooms, command queue, cascade cancel, circuit breaker, compaction, approval arbiter |
 | `crates/daemon` | Axum HTTP / WebSocket gateway, bearer auth middleware, REST routes |
 | `crates/client` | Pure Rust client SDK: `OmaClient` (event stream and commands) and `SessionApi` (session management) |
@@ -262,7 +263,7 @@ First run:
 3. Create a session for a workspace, pick a model and start chatting.
 
 > The daemon listens on the loopback interface only. Before exposing it to a LAN or the internet,
-> **change `server.token` in `config.toml` to a strong secret**.
+> **change `server.token` in `settings.json` to a strong secret**.
 
 ### Frontend development
 
@@ -280,46 +281,63 @@ one `pnpm build` is enough — no Rust recompilation required.
 
 ## Configuration
 
-The config file lives in `~/.config/oma/config.toml` (respecting `XDG_CONFIG_HOME`); data lives in
+The config directory is `~/.config/oma/` (respecting `XDG_CONFIG_HOME`); data lives in
 `~/.local/share/oma/`:
 
 ```text
 ~/.config/oma/
-├── config.toml         # main config: server / theme / providers / mcp_servers
+├── settings.json       # general settings: defaults, theme, server, mcp_servers
+├── models.json         # providers and model catalogue
 ├── agents/             # global agent presets (*.md, YAML frontmatter + body)
-└── themes/             # custom palettes (*.toml)
+├── plugins/            # global QuickJS plugins (<id>/plugin.js)
+└── themes/             # custom palettes (*.json)
 ~/.local/share/oma/
-├── oma.db              # global data such as the session index
-└── sessions/<id>/session.db   # per-session message store and attachments
+└── sessions/<id>/             # one directory per session
+    ├── session.jsonl          # pi-style JSONL session tree (header + id/parentId entries)
+    └── attachments/           # session attachments
 ```
 
-Minimal example:
+> Legacy `config.toml` / `client.toml` files are migrated on first start to `settings.json` +
+> `models.json` / `client.json`; the old files are backed up as `*.toml.bak`.
 
-```toml
-default_model = "my_anthropic/claude-3-7-sonnet"
-default_agent = "task"
-default_approval_mode = "normal"
+Minimal example (`settings.json`):
 
-[server]
-listen_addr = "127.0.0.1:17431"
-token = "admin"
-
-[providers.my_anthropic]
-api_type = "anthropic"          # anthropic | completion | response | google
-base_url = "https://api.anthropic.com"
-api_key = "env:ANTHROPIC_API_KEY"   # env:VAR indirection is supported
-
-[[providers.my_anthropic.models]]
-id = "claude-3-7-sonnet"
-name = "Claude 3.7 Sonnet"
-context_len = 200000
-capabilities = ["thinking", "text_input", "text_output", "image_input"]
-
-[mcp_servers.local_sqlite]
-type = "local"
-command = "uvx"
-args = ["mcp-server-sqlite", "--db-path", "oma.db"]
+```json
+{
+  "default_model": "my_anthropic/claude-3-7-sonnet",
+  "default_agent": "task",
+  "default_approval_mode": "normal",
+  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" },
+  "mcp_servers": {
+    "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "demo.db"] }
+  }
+}
 ```
+
+Providers and models (`models.json`):
+
+```json
+{
+  "providers": {
+    "my_anthropic": {
+      "api_type": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "api_key": "env:ANTHROPIC_API_KEY",
+      "models": [
+        {
+          "id": "claude-3-7-sonnet",
+          "name": "Claude 3.7 Sonnet",
+          "context_len": 200000,
+          "capabilities": ["thinking", "text_input", "text_output", "image_input"]
+        }
+      ]
+    }
+  }
+}
+```
+
+`api_type` is one of `anthropic | completion | response | google`; `api_key` supports `env:VAR`
+indirection.
 
 Token precedence: `--token` on the command line > `OMA_AUTH_TOKEN` environment variable > config file.
 When the file has no token yet, the daemon writes the default `admin` back to disk so it stays visible
@@ -346,6 +364,49 @@ Bundled presets: **Build** (compilation and error diagnosis), **Explore** (read-
 
 ---
 
+## Plugins (QuickJS)
+
+Plugins are plain JavaScript files executed by a QuickJS engine embedded in the process
+(no Node required). They register tools, commands, and event hooks through the global
+`oma` object, and live in `<workspace>/.oma/plugins/<id>/plugin.js` (project) or
+`~/.config/oma/plugins/<id>/plugin.js` (global); project plugins override global ones by id.
+
+```js
+oma.registerTool({
+  name: "word_count",
+  description: "Count words in a file",
+  parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+  execute: (p) => String(oma.readFile(p.path).split(/\s+/).filter(Boolean).length),
+});
+
+oma.on("tool_call", (e) =>
+  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
+    ? { block: true, reason: "destructive shell command" }
+    : undefined);
+
+oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });
+```
+
+Host API:
+
+| API | Notes |
+|---|---|
+| `oma.log(...)` | Write a log line |
+| `oma.readFile(path)` / `oma.writeFile(path, content)` | Text file I/O (absolute paths and `..` rejected; sandboxed to the workspace) |
+| `oma.listDir(path)` / `oma.exists(path)` | List a directory / test existence |
+| `oma.exec(cmd)` | Run a shell command in the workspace, returns `{stdout, stderr, code}` |
+| `oma.registerTool(def)` | Register a tool (`execute` must return synchronously) |
+| `oma.registerCommand(def)` | Register a command (qualified as `plugin:command`) |
+| `oma.on(event, fn)` | Event hook; `tool_call` is supported (return `{block:true, reason}` to block) |
+
+Plugin tools are registered into the session tool registry and listed by
+`GET /api/tools?workspace=...` with `kind: "plugin"`.
+
+> **Security**: plugins run with the host process's privileges (file access is confined to the
+> workspace), like pi's extensions. Review the source before installing.
+
+---
+
 ## Repository layout
 
 ```text
@@ -359,7 +420,7 @@ oma/
 │   ├── mcp/          # MCP client
 │   ├── provider/     # vendor streaming adapters
 │   ├── runtime/      # agent runtime engine
-│   ├── storage/      # SQLite persistence
+│   ├── storage/      # JSONL session-tree persistence
 │   ├── tool/         # built-in tools
 │   └── tui/          # terminal client
 ├── docs/
@@ -374,7 +435,7 @@ oma/
 ## Documentation
 
 - [Technical specification](docs/multi_client_agent_spec.md): architecture topology, WebSocket contract,
-  SQLite DDL, configuration rules, REST API, tools and MCP extensibility, implementation notes.
+  JSONL session format, configuration rules, REST API, tools and MCP extensibility, implementation notes.
 
 ---
 
