@@ -30,7 +30,7 @@ async function localRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return (await resp.json()) as T;
 }
 
-/** 客户端本地配置（client.toml）：仅 `oma web` 页面可用。 */
+/** 客户端本地配置（client.json）：仅 `oma web` 页面可用。 */
 export const clientApi = {
   getConfig: () => localRequest<ClientConfig>('/api/client/config'),
   putConfig: (config: ClientConfig) =>

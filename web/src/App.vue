@@ -23,7 +23,7 @@ async function probe() {
 }
 
 onMounted(async () => {
-  // 先应用 client.toml 里保存的活动连接，再用它去探测 Daemon
+  // 先应用 client.json 里保存的活动连接，再用它去探测 Daemon
   await initClientConfig();
   await loadConfig();
   await probe();

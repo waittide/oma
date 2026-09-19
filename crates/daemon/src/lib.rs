@@ -42,7 +42,7 @@ const TREE_MAX_ENTRIES: usize = 2000;
 ///
 /// 优先级：命令行 `--token` > 环境变量 `OMA_AUTH_TOKEN` > 配置文件 `[server].token`。
 /// 不再单独落一个 `auth.token` 文件：token 属于配置的一部分，
-/// 放在 `config.toml` 里用户才能自己查看与修改（设置界面也写回这里）。
+/// 放在 `settings.json` 里用户才能自己查看与修改（设置界面也写回这里）。
 /// 配置缺省时使用 [`oma_config::DEFAULT_AUTH_TOKEN`]，并在必要时回写配置以便可见。
 pub fn resolve_token(cli_token: Option<&str>, config: &OmaConfig) -> String {
     resolve_token_with(cli_token, std::env::var("OMA_AUTH_TOKEN").ok().as_deref(), config)
@@ -70,7 +70,7 @@ pub struct DaemonState {
     pub token:       String,
     pub storage:     StorageManager,
     pub config:      Arc<RwLock<OmaConfig>>,
-    pub config_path: PathBuf,
+    pub config_path: oma_config::ConfigPaths,
     pub mcp:         Arc<McpManager>,
     pub rooms:       Arc<RwLock<HashMap<String, Arc<SessionRoom>>>>,
     pub start_time:  Instant,
@@ -81,7 +81,7 @@ impl DaemonState {
         token: String,
         storage: StorageManager,
         config: OmaConfig,
-        config_path: PathBuf,
+        config_path: oma_config::ConfigPaths,
         mcp: Arc<McpManager>,
     ) -> Self {
         Self {
@@ -1163,8 +1163,8 @@ async fn handle_put_config(
         ));
     }
 
-    // 原子落盘：先写同目录临时文件再 rename，避免半截配置
-    cfg.save_to_file_atomic(&state.config_path).map_err(|e| {
+    // 原子落盘：先写同目录临时文件再 rename，避免半截配置（settings.json + models.json）
+    cfg.save_to_paths(&state.config_path).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to persist config: {e}"),
@@ -1549,7 +1549,7 @@ mod tests {
             "test_secret_token".to_string(),
             storage,
             OmaConfig::default(),
-            tmp.join("config.toml"),
+            oma_config::ConfigPaths::in_dir(tmp),
             Arc::new(McpManager::new()),
         ))
     }
@@ -1907,11 +1907,11 @@ mod tests {
                 models:   vec![],
             },
         );
-        let config_file = tmp.path().join("config.toml");
+        let config_paths = oma_config::ConfigPaths::in_dir(tmp.path());
         let mcp = Arc::new(McpManager::new());
         let token = "test_secret_token".to_string();
 
-        let state = DaemonState::new(token.clone(), storage, config, config_file.clone(), mcp);
+        let state = DaemonState::new(token.clone(), storage, config, config_paths.clone(), mcp);
         let base = spawn_app(state).await?;
         let client = reqwest::Client::new();
         let auth = format!("Bearer {}", token);
@@ -1939,7 +1939,7 @@ mod tests {
             .await?;
         assert_eq!(put_resp.status(), StatusCode::OK);
 
-        let reloaded = OmaConfig::load_from_file(&config_file)?;
+        let reloaded = OmaConfig::load_from_paths(&config_paths)?;
         assert_eq!(reloaded.default_model, "p1/gpt-x");
         assert_eq!(reloaded.providers["p1"].api_key, "sk-secret-123");
 
@@ -1954,7 +1954,7 @@ mod tests {
             .await?;
         assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
         // 且不得污染已落盘的配置
-        let untouched = OmaConfig::load_from_file(&config_file)?;
+        let untouched = OmaConfig::load_from_paths(&config_paths)?;
         assert_eq!(untouched.default_model, "p1/gpt-x");
 
         Ok(())

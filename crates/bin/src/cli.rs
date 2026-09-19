@@ -44,16 +44,16 @@ pub enum Commands {
         /// 覆盖配置文件中的访问 token
         #[arg(long)]
         token:  Option<String>,
-        /// 配置文件路径（默认 ~/.config/oma/config.toml）
+        /// 配置文件路径（默认 ~/.config/oma/settings.json）
         #[arg(long)]
         config: Option<PathBuf>,
     },
     /// 启动 web 客户端
     Web {
-        /// web 监听地址（默认读取 client.toml 的 web.host，缺省 127.0.0.1）
+        /// web 监听地址（默认读取 client.json 的 web.host，缺省 127.0.0.1）
         #[arg(long)]
         host: Option<String>,
-        /// web 监听端口（默认读取 client.toml 的 web.port，缺省 5173）
+        /// web 监听端口（默认读取 client.json 的 web.port，缺省 5173）
         #[arg(long)]
         port: Option<u16>,
         /// 就绪后自动用浏览器打开页面（默认仅打印监听地址）
@@ -62,13 +62,13 @@ pub enum Commands {
     },
     /// 启动 tui 客户端
     Tui {
-        /// Daemon 地址（覆盖 client.toml 中的连接）
+        /// Daemon 地址（覆盖 client.json 中的连接）
         #[arg(long)]
         addr:       Option<String>,
         /// 覆盖配置文件中的访问 token
         #[arg(long)]
         token:      Option<String>,
-        /// 使用 client.toml 中指定名称的连接
+        /// 使用 client.json 中指定名称的连接
         #[arg(long)]
         connection: Option<String>,
         /// 目标工作区（默认当前目录）

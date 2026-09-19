@@ -93,7 +93,7 @@ const navGroups = computed(() => [
 const version = ref('');
 
 // ---------- 连接 ----------
-// 连接列表保存在 client.toml，由 oma web 的同源接口读写；接口不可用（vite dev）时
+// 连接列表保存在 client.json，由 oma web 的同源接口读写；接口不可用（vite dev）时
 // 退回旧的 localStorage 行为，只记住当前这一条。
 const conn = reactive({ name: '', baseUrl: baseUrl.value, token: token.value });
 const connTesting = ref(false);
@@ -186,7 +186,7 @@ async function testConnection(): Promise<boolean> {
   }
 }
 
-/** 组装下一份 client.toml：upsert 当前连接并置为活动，重命名时移除旧名。 */
+/** 组装下一份 client.json：upsert 当前连接并置为活动，重命名时移除旧名。 */
 function buildNextConfig(next: ClientConnection): ClientConfig | null {
   const cfg = clientConfig.value;
   if (!cfg) return null;
@@ -197,7 +197,7 @@ function buildNextConfig(next: ClientConnection): ClientConfig | null {
 
 async function saveConnection() {
   const name = conn.name.trim();
-  // 仅当能落盘 client.toml 时才要求名称；无接口时退回旧的 localStorage 行为
+  // 仅当能落盘 client.json 时才要求名称；无接口时退回旧的 localStorage 行为
   if (clientConfigReady.value && !name) {
     toast.error(t('connNameRequired'));
     return;
@@ -212,7 +212,7 @@ async function saveConnection() {
   conn.baseUrl = baseUrl.value;
   conn.token = token.value;
 
-  // 先落盘 client.toml（接口可用时），再验证可达性：即使目标暂时连不上，
+  // 先落盘 client.json（接口可用时），再验证可达性：即使目标暂时连不上，
   // 保存的连接与 token 也不应丢失。
   if (clientConfigReady.value) {
     const next = buildNextConfig({ name, url, token: conn.token });
@@ -430,7 +430,7 @@ async function removePalette(id: string) {
   await refreshPalettes();
 
   // 被删的调色板若正被主题引用，必须立即把新选择写回服务端：
-  // 否则 config.toml 里会留有悬空 id，下次启动/刷新时主题直接失效。
+  // 否则 settings.json 里会留有悬空 id，下次启动/刷新时主题直接失效。
   const referenced = theme.value.light_palette === id || theme.value.dark_palette === id;
   if (themeSel.light === id) themeSel.light = lightPalettes.value[0]?.id ?? 'latte';
   if (themeSel.dark === id) themeSel.dark = darkPalettes.value[0]?.id ?? 'mocha';

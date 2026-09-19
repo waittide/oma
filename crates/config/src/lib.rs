@@ -29,7 +29,7 @@ pub struct ServerConfig {
     /// 访问 token：REST 需 `Authorization: Bearer`，WS 握手可用 `?token=`。
     ///
     /// 缺省为空表示「尚未设置」：启动时会向配置文件补写
-    /// [`DEFAULT_AUTH_TOKEN`]，这样用户能在 config.toml 里直接看到并修改。
+    /// [`DEFAULT_AUTH_TOKEN`]，这样用户能在 settings.json 里直接看到并修改。
     #[serde(default)]
     pub token:       String,
 }
@@ -50,10 +50,10 @@ impl Default for ServerConfig {
 /// 内置调色板源码：与 `AgentLoader` 的内嵌模板同理，打包进二进制作为兜底，
 /// 用户目录只放自己的调色板，不需要任何初始化写入。
 pub const BUILTIN_PALETTES: [(&str, &str); 4] = [
-    ("latte", include_str!("themes/latte.toml")),
-    ("frappe", include_str!("themes/frappe.toml")),
-    ("macchiato", include_str!("themes/macchiato.toml")),
-    ("mocha", include_str!("themes/mocha.toml")),
+    ("latte", include_str!("themes/latte.json")),
+    ("frappe", include_str!("themes/frappe.json")),
+    ("macchiato", include_str!("themes/macchiato.json")),
+    ("mocha", include_str!("themes/mocha.json")),
 ];
 
 /// 校验调色板 id 是否为合法 slug（同时决定文件名，故不允许路径分隔符）。
@@ -66,7 +66,7 @@ pub fn is_valid_palette_id(id: &str) -> bool {
 
 /// 调色板加载器。
 ///
-/// 内置调色板编译期内嵌；用户调色板位于 `<配置目录>/oma/themes/<id>.toml`。
+/// 内置调色板编译期内嵌；用户调色板位于 `<配置目录>/oma/themes/<id>.json`。
 /// 内置 id 为保留位（同名文件既不会加载也无法写入，见 `is_builtin`），
 /// 因此列表顺序稳定：四个内置在前，用户自定义按目录枚举顺序追加在后。
 pub struct PaletteLoader;
@@ -77,10 +77,10 @@ impl PaletteLoader {
         dirs_config_dir().map(|d| d.join("oma").join("themes"))
     }
 
-    /// 解析单份调色板 TOML；`fallback_id` 为文件名派生的 id（TOML 可省略 id）。
+    /// 解析单份调色板 JSON；`fallback_id` 为文件名派生的 id（JSON 可省略 id）。
     fn parse(raw: &str, fallback_id: &str) -> Result<Palette> {
         let mut palette: Palette =
-            toml::from_str(raw).with_context(|| format!("failed to parse palette '{}'", fallback_id))?;
+            serde_json::from_str(raw).with_context(|| format!("failed to parse palette '{}'", fallback_id))?;
         if palette.id.trim().is_empty() {
             palette.id = fallback_id.to_string();
         }
@@ -111,7 +111,7 @@ impl PaletteLoader {
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                    if path.extension().and_then(|e| e.to_str()) != Some("json") {
                         continue;
                     }
                     let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -158,8 +158,8 @@ impl PaletteLoader {
         );
         let dir = Self::user_themes_dir().context("cannot locate config directory for themes")?;
         std::fs::create_dir_all(&dir).with_context(|| format!("failed to create themes dir {}", dir.display()))?;
-        let path = dir.join(format!("{}.toml", palette.id));
-        let content = toml::to_string_pretty(palette).context("failed to serialize palette")?;
+        let path = dir.join(format!("{}.json", palette.id));
+        let content = serde_json::to_string_pretty(palette).context("failed to serialize palette")?;
         std::fs::write(&path, content).with_context(|| format!("failed to write palette {}", path.display()))?;
         Ok(())
     }
@@ -169,7 +169,7 @@ impl PaletteLoader {
         anyhow::ensure!(is_valid_palette_id(id), "invalid palette id {:?}", id);
         anyhow::ensure!(!Self::is_builtin(id), "bundled palette {:?} cannot be deleted", id);
         let dir = Self::user_themes_dir().context("cannot locate config directory for themes")?;
-        let path = dir.join(format!("{}.toml", id));
+        let path = dir.join(format!("{}.json", id));
         anyhow::ensure!(path.exists(), "palette {:?} not found", id);
         std::fs::remove_file(&path).map_err(|e| {
             // 已被并发删除时同样视为「不存在」，让客户端得到 404 而不是 500
@@ -256,7 +256,53 @@ impl PaletteLoader {
     }
 }
 
-/// Oma 根配置文件 (~/.config/oma/config.toml)
+/// Oma 配置文件的磁盘位置。
+///
+/// 参照 pi 的 `settings.json` / `models.json` 分层：常规偏好与「提供商/模型清单」
+/// 分文件存放，便于手改与版本管理。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigPaths {
+    /// 常规设置：默认模型/预设、审批与推理等级、主题、服务端、MCP
+    pub settings: PathBuf,
+    /// 提供商与模型清单
+    pub models:   PathBuf,
+}
+
+impl ConfigPaths {
+    /// 标准位置 (~/.config/oma/settings.json + models.json)
+    pub fn standard() -> Option<Self> {
+        dirs_config_dir().map(|d| Self::in_dir(d.join("oma")))
+    }
+
+    /// 在指定目录下构造两个文件路径
+    pub fn in_dir(dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        Self {
+            settings: dir.join("settings.json"),
+            models:   dir.join("models.json"),
+        }
+    }
+
+    /// 由 settings 文件路径推导同目录的 models 文件
+    pub fn from_settings_file(path: impl AsRef<Path>) -> Self {
+        let settings = path.as_ref().to_path_buf();
+        let models = settings
+            .parent()
+            .map(|p| p.join("models.json"))
+            .unwrap_or_else(|| PathBuf::from("models.json"));
+        Self { settings, models }
+    }
+
+    /// 旧版单一 TOML 配置路径（迁移用）
+    fn legacy_config(&self) -> PathBuf {
+        self.settings
+            .parent()
+            .map(|p| p.join("config.toml"))
+            .unwrap_or_else(|| PathBuf::from("config.toml"))
+    }
+}
+
+/// Oma 根配置文件 (`~/.config/oma/settings.json` + `models.json`)
 ///
 /// `deny_unknown_fields` 让拼错的键名与前端字段映射错误立即报错，
 /// 而不是被静默忽略后「保存成功但配置没变」。
@@ -309,54 +355,96 @@ impl Default for OmaConfig {
 }
 
 impl OmaConfig {
-    /// 从文件加载配置
+    /// 从「settings 文件路径」加载配置；同目录 `models.json` 提供 providers。
+    ///
+    /// 旧的 `config.toml` 存在而 `settings.json` 不存在时自动迁移。
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let config: OmaConfig = toml::from_str(&content)?;
-        Ok(config)
+        Self::load_from_paths(&ConfigPaths::from_settings_file(path))
     }
 
-    /// 配置文件标准路径 (~/.config/oma/config.toml)
+    /// 从标准位置加载；定位不到配置目录时返回默认值。
+    pub fn load() -> Self {
+        match ConfigPaths::standard() {
+            Some(paths) => Self::load_from_paths(&paths).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to load config, falling back to defaults");
+                Self::default()
+            }),
+            None => Self::default(),
+        }
+    }
+
+    /// 从拆分后的 settings/models 文件加载并合并为完整配置。
+    ///
+    /// 以默认值为基底做浅合并：文件里缺省的键沿用默认值，未知键仍会被
+    /// `deny_unknown_fields` 拒绝。
+    pub fn load_from_paths(paths: &ConfigPaths) -> Result<Self> {
+        Self::migrate_legacy(paths)?;
+        let mut merged = serde_json::to_value(Self::default())?;
+        if paths.settings.exists() {
+            let value = read_json(&paths.settings)?;
+            merge_object(&mut merged, value, &paths.settings)?;
+        }
+        if paths.models.exists() {
+            let value = read_json(&paths.models)?;
+            merge_object(&mut merged, value, &paths.models)?;
+        }
+        Ok(serde_json::from_value(merged)?)
+    }
+
+    /// 一次性迁移：`config.toml` → `settings.json` + `models.json`。
+    ///
+    /// 迁移成功后把旧文件改名为 `config.toml.bak` 保留，避免用户配置丢失，
+    /// 也避免下次启动重复迁移。
+    fn migrate_legacy(paths: &ConfigPaths) -> Result<()> {
+        if paths.settings.exists() {
+            return Ok(());
+        }
+        let legacy = paths.legacy_config();
+        if !legacy.exists() {
+            return Ok(());
+        }
+        let raw = std::fs::read_to_string(&legacy)
+            .with_context(|| format!("failed to read legacy config {}", legacy.display()))?;
+        let config: OmaConfig =
+            toml::from_str(&raw).with_context(|| format!("failed to parse legacy config {}", legacy.display()))?;
+        config.save_to_paths(paths)?;
+        let backup = legacy.with_extension("toml.bak");
+        std::fs::rename(&legacy, &backup)
+            .with_context(|| format!("failed to back up legacy config {}", legacy.display()))?;
+        tracing::info!(from = %legacy.display(), to = %paths.settings.display(), "migrated config to JSON");
+        Ok(())
+    }
+
+    /// 配置文件标准路径 (`~/.config/oma/settings.json`)
     pub fn config_path() -> Option<PathBuf> {
-        dirs_config_dir().map(|d| d.join("oma").join("config.toml"))
+        ConfigPaths::standard().map(|p| p.settings)
     }
 
     /// 序列化并回写配置文件（前端配置修改后的持久化入口）
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config dir {}", parent.display()))?;
-        }
-        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
-        std::fs::write(path, content).with_context(|| format!("Failed to write config {}", path.display()))?;
-        Ok(())
+        self.save_to_paths_inner(&ConfigPaths::from_settings_file(path), false)
     }
 
     /// 原子回写：先落同目录临时文件并 fsync，再 rename 覆盖。
     /// 避免进程中断留下半截配置，导致下次启动解析失败。
     pub fn save_to_file_atomic(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config dir {}", parent.display()))?;
-        }
-        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
+        self.save_to_paths_inner(&ConfigPaths::from_settings_file(path), true)
+    }
 
-        let file_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "config.toml".to_string());
-        let tmp = path.with_file_name(format!(".{}.tmp", file_name));
-        {
-            let mut file = std::fs::File::create(&tmp)
-                .with_context(|| format!("Failed to create temp config {}", tmp.display()))?;
-            std::io::Write::write_all(&mut file, content.as_bytes())
-                .with_context(|| format!("Failed to write temp config {}", tmp.display()))?;
-            file.sync_all()
-                .with_context(|| format!("Failed to sync temp config {}", tmp.display()))?;
-        }
-        std::fs::rename(&tmp, path).with_context(|| format!("Failed to replace config {}", path.display()))?;
+    /// 写入拆分后的 settings.json 与 models.json（原子）。
+    pub fn save_to_paths(&self, paths: &ConfigPaths) -> Result<()> {
+        self.save_to_paths_inner(paths, true)
+    }
+
+    fn save_to_paths_inner(&self, paths: &ConfigPaths, atomic: bool) -> Result<()> {
+        let mut settings = serde_json::to_value(self).context("Failed to serialize config")?;
+        let providers = settings
+            .as_object_mut()
+            .and_then(|obj| obj.remove("providers"))
+            .unwrap_or_else(|| serde_json::json!({}));
+        let models = serde_json::json!({ "providers": providers });
+        write_json(&paths.settings, &settings, atomic)?;
+        write_json(&paths.models, &models, atomic)?;
         Ok(())
     }
 
@@ -430,8 +518,53 @@ pub fn dirs_config_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
 }
 
+/// 读取并解析一个 JSON 配置文件。
+fn read_json(path: &Path) -> Result<serde_json::Value> {
+    let raw = std::fs::read_to_string(path).with_context(|| format!("failed to read config {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("failed to parse config {}", path.display()))
+}
+
+/// 把 `src` 的顶层键并入 `dst`（浅合并）。
+fn merge_object(dst: &mut serde_json::Value, src: serde_json::Value, path: &Path) -> Result<()> {
+    let (Some(dst), Some(src)) = (dst.as_object_mut(), src.as_object()) else {
+        anyhow::bail!("config {} must contain a JSON object", path.display());
+    };
+    for (k, v) in src {
+        dst.insert(k.clone(), v.clone());
+    }
+    Ok(())
+}
+
+/// 写入 JSON 文件；`atomic` 为真时先写临时文件再 rename。
+fn write_json(path: &Path, value: &serde_json::Value, atomic: bool) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("Failed to create config dir {}", parent.display()))?;
+    }
+    let mut content = serde_json::to_string_pretty(value).context("Failed to serialize config")?;
+    content.push('\n');
+    if !atomic {
+        std::fs::write(path, content).with_context(|| format!("Failed to write config {}", path.display()))?;
+        return Ok(());
+    }
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "settings.json".to_string());
+    let tmp = path.with_file_name(format!(".{}.tmp", file_name));
+    {
+        let mut file =
+            std::fs::File::create(&tmp).with_context(|| format!("Failed to create temp config {}", tmp.display()))?;
+        std::io::Write::write_all(&mut file, content.as_bytes())
+            .with_context(|| format!("Failed to write temp config {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("Failed to sync temp config {}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, path).with_context(|| format!("Failed to replace config {}", path.display()))?;
+    Ok(())
+}
+
 // =========================================================================
-// 客户端本地配置 (client.toml)
+// 客户端本地配置 (client.json)
 // =========================================================================
 
 /// web 客户端默认监听地址
@@ -480,9 +613,9 @@ pub struct Connection {
     pub token: String,
 }
 
-/// 客户端本地配置：`<配置目录>/oma/client.toml`。
+/// 客户端本地配置：`<配置目录>/oma/client.json`。
 ///
-/// 与 Daemon 的 `config.toml` 分开：这里存的是「这台机器上的客户端」信息——
+/// 与 Daemon 的 `settings.json` 分开：这里存的是「这台机器上的客户端」信息——
 /// 已保存、可切换的连接列表，以及 web 客户端默认的绑定地址与端口。
 /// TUI 只使用连接列表，不涉及绑定地址。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -500,19 +633,41 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
-    /// 配置文件标准路径 (~/.config/oma/client.toml)
+    /// 配置文件标准路径 (~/.config/oma/client.json)
     pub fn config_path() -> Option<PathBuf> {
-        dirs_config_dir().map(|d| d.join("oma").join("client.toml"))
+        dirs_config_dir().map(|d| d.join("oma").join("client.json"))
     }
 
     /// 从文件加载；文件不存在时返回默认配置。
+    ///
+    /// 旧的 `client.toml` 存在而 `client.json` 不存在时自动迁移。
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+        if !path.exists() {
+            Self::migrate_legacy(path)?;
+        }
         if !path.exists() {
             return Ok(Self::default());
         }
         let content = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&content)?)
+        Ok(serde_json::from_str(&content)?)
+    }
+
+    /// 一次性迁移：`client.toml` → `client.json`，旧文件改名为 `.bak`。
+    fn migrate_legacy(path: &Path) -> Result<()> {
+        let legacy = path.with_file_name("client.toml");
+        if !legacy.exists() {
+            return Ok(());
+        }
+        let raw = std::fs::read_to_string(&legacy)
+            .with_context(|| format!("failed to read legacy client config {}", legacy.display()))?;
+        let config: ClientConfig = toml::from_str(&raw)
+            .with_context(|| format!("failed to parse legacy client config {}", legacy.display()))?;
+        config.save_to_file_atomic(path)?;
+        let backup = legacy.with_extension("toml.bak");
+        std::fs::rename(&legacy, &backup)
+            .with_context(|| format!("failed to back up legacy client config {}", legacy.display()))?;
+        Ok(())
     }
 
     /// 从标准路径加载；定位不到配置目录时返回默认值。
@@ -525,28 +680,7 @@ impl ClientConfig {
 
     /// 原子回写：先落同目录临时文件并 fsync，再 rename 覆盖。
     pub fn save_to_file_atomic(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config dir {}", parent.display()))?;
-        }
-        let content = toml::to_string_pretty(self).context("Failed to serialize client config")?;
-
-        let file_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "client.toml".to_string());
-        let tmp = path.with_file_name(format!(".{}.tmp", file_name));
-        {
-            let mut file = std::fs::File::create(&tmp)
-                .with_context(|| format!("Failed to create temp config {}", tmp.display()))?;
-            std::io::Write::write_all(&mut file, content.as_bytes())
-                .with_context(|| format!("Failed to write temp config {}", tmp.display()))?;
-            file.sync_all()
-                .with_context(|| format!("Failed to sync temp config {}", tmp.display()))?;
-        }
-        std::fs::rename(&tmp, path).with_context(|| format!("Failed to replace config {}", path.display()))?;
-        Ok(())
+        write_json(path.as_ref(), &serde_json::to_value(self)?, true)
     }
 
     /// 当前生效的连接：优先 active 指定的项，否则列表首个。
@@ -1261,14 +1395,14 @@ id = "m2"
     #[test]
     fn test_model_entry_omits_empty_override_fields() {
         // 空覆写不落盘：模型条目多时每项都带空 body/headers 会淹没真正的配置
-        let entry: ModelEntry = toml::from_str(r#"id = "m""#).unwrap();
-        let out = toml::to_string(&entry).unwrap();
+        let entry: ModelEntry = serde_json::from_str(r#"{"id": "m"}"#).unwrap();
+        let out = serde_json::to_string(&entry).unwrap();
         assert!(!out.contains("body"), "empty body must be skipped: {out}");
         assert!(!out.contains("headers"), "empty headers must be skipped: {out}");
 
         let rich: ModelEntry =
-            toml::from_str("id = \"m\"\nheaders = { \"X-A\" = \"1\" }\nbody = { temperature = 0.7 }\n").unwrap();
-        let out = toml::to_string(&rich).unwrap();
+            serde_json::from_str(r#"{"id": "m", "headers": {"X-A": "1"}, "body": {"temperature": 0.7}}"#).unwrap();
+        let out = serde_json::to_string(&rich).unwrap();
         assert!(out.contains("X-A"));
         assert!(out.contains("temperature"));
     }
@@ -1344,7 +1478,7 @@ api_key = "k"
     #[test]
     fn test_save_and_reload_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("oma").join("config.toml");
+        let path = tmp.path().join("oma").join("settings.json");
 
         let mut providers = BTreeMap::new();
         providers.insert(
@@ -1365,9 +1499,51 @@ api_key = "k"
         };
         cfg.save_to_file(&path).unwrap();
 
+        // 拆分落盘：常规设置在 settings.json，提供商在 models.json
+        assert!(path.exists());
+        let models_path = tmp.path().join("oma").join("models.json");
+        assert!(models_path.exists());
+        let settings_raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!settings_raw.contains("providers"), "providers belongs in models.json");
+
         let reloaded = OmaConfig::load_from_file(&path).unwrap();
         assert_eq!(reloaded.default_model, "deepseek/deepseek-chat");
         assert!(reloaded.providers.contains_key("deepseek"));
+    }
+
+    /// 旧版 `config.toml` 存在时自动迁移为 settings.json + models.json。
+    #[test]
+    fn test_legacy_toml_is_migrated_to_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("oma");
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("config.toml");
+        std::fs::write(
+            &legacy,
+            r#"
+default_model = "deepseek/deepseek-chat"
+
+[server]
+listen_addr = "0.0.0.0:17431"
+
+[providers.deepseek]
+api_type = "completion"
+base_url = "https://api.deepseek.com/v1"
+api_key = "env:DEEPSEEK_KEY"
+"#,
+        )
+        .unwrap();
+
+        let paths = ConfigPaths::in_dir(&dir);
+        let cfg = OmaConfig::load_from_paths(&paths).unwrap();
+        assert_eq!(cfg.default_model, "deepseek/deepseek-chat");
+        assert_eq!(cfg.server.listen_addr, "0.0.0.0:17431");
+        assert!(cfg.providers.contains_key("deepseek"));
+        // 已落盘为 JSON，旧文件被备份
+        assert!(paths.settings.exists());
+        assert!(paths.models.exists());
+        assert!(!legacy.exists());
+        assert!(dir.join("config.toml.bak").exists());
     }
 
     #[test]
@@ -1773,18 +1949,13 @@ api_key = "k"
     /// 配置键拼错必须报错，而不是被静默忽略。
     #[test]
     fn test_unknown_config_field_is_rejected() {
-        let err = toml::from_str::<OmaConfig>(
-            r#"
-default_model = "p/m"
-model = "p/other"
-"#,
-        );
+        let err = serde_json::from_str::<OmaConfig>(r#"{"default_model": "p/m", "model": "p/other"}"#);
         assert!(err.is_err(), "unknown key must not be silently ignored");
         let msg = err.unwrap_err().to_string();
         assert!(msg.contains("model"), "error should name the offending key: {}", msg);
 
         // 合法配置不受影响
-        assert!(toml::from_str::<OmaConfig>("default_model = \"p/m\"").is_ok());
+        assert!(serde_json::from_str::<OmaConfig>(r#"{"default_model": "p/m"}"#).is_ok());
     }
 
     /// 未知键在任意层级都必须报错：旧版残留键名被静默忽略时，
@@ -1792,61 +1963,43 @@ model = "p/other"
     #[test]
     fn test_unknown_config_field_is_rejected_at_every_level() {
         let cases = [
-            ("theme", "[theme]\ndark_flavor = \"mocha\"\n"),
-            ("server", "[server]\nlisten = \"0.0.0.0:1\"\n"),
+            ("theme", r#"{"theme": {"dark_flavor": "mocha"}}"#),
+            ("server", r#"{"server": {"listen": "0.0.0.0:1"}}"#),
             (
                 "provider",
-                r#"
-[providers.p]
-api_type = "completion"
-base_url = "http://x/v1"
-api_key = "k"
-modles = []
-"#,
+                r#"{"providers": {"p": {"api_type": "completion", "base_url": "http://x/v1", "api_key": "k", "modles": []}}}"#,
             ),
             (
                 "model",
-                r#"
-[providers.p]
-api_type = "completion"
-base_url = "http://x/v1"
-api_key = "k"
-
-[[providers.p.models]]
-id = "m"
-ctx = 100
-"#,
+                r#"{"providers": {"p": {"api_type": "completion", "base_url": "http://x/v1", "api_key": "k", "models": [{"id": "m", "ctx": 100}]}}}"#,
             ),
             (
                 "mcp server",
-                "[mcp_servers.s]\ntype = \"local\"\ncommand = \"x\"\ntimeout = 1\n",
+                r#"{"mcp_servers": {"s": {"type": "local", "command": "x", "timeout": 1}}}"#,
             ),
         ];
 
-        for (level, toml_str) in cases {
+        for (level, json_str) in cases {
             assert!(
-                toml::from_str::<OmaConfig>(toml_str).is_err(),
+                serde_json::from_str::<OmaConfig>(json_str).is_err(),
                 "unknown {level} field must not be silently ignored"
             );
         }
     }
 
-    /// client.toml：缺省字段可省略、写读往返保持一致，active 无匹配时回落首项。
+    /// client.json：缺省字段可省略、写读往返保持一致，active 无匹配时回落首项。
     #[test]
     fn test_client_config_roundtrip_and_active_fallback() {
         // 仅写连接列表时，web 段落应使用默认绑定地址与端口
-        let minimal: ClientConfig = toml::from_str(
+        let minimal: ClientConfig = serde_json::from_str(
             r#"
-active = "b"
-
-[[connections]]
-name = "a"
-url = "http://127.0.0.1:17431"
-token = "admin"
-
-[[connections]]
-name = "b"
-url = "http://10.0.0.5:17431"
+{
+  "active": "b",
+  "connections": [
+    {"name": "a", "url": "http://127.0.0.1:17431", "token": "admin"},
+    {"name": "b", "url": "http://10.0.0.5:17431"}
+  ]
+}
 "#,
         )
         .unwrap();
@@ -1863,10 +2016,38 @@ url = "http://10.0.0.5:17431"
 
         // 写盘后重新加载，内容一致（含 web 绑定地址与端口）
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("oma").join("client.toml");
+        let path = tmp.path().join("oma").join("client.json");
         stale.save_to_file_atomic(&path).unwrap();
         let loaded = ClientConfig::load_from_file(&path).unwrap();
         assert_eq!(loaded.connections, minimal.connections);
         assert_eq!(loaded.active, "missing");
+    }
+
+    /// 旧版 client.toml 自动迁移为 client.json。
+    #[test]
+    fn test_legacy_client_toml_is_migrated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("oma");
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("client.toml");
+        std::fs::write(
+            &legacy,
+            r#"
+active = "a"
+
+[[connections]]
+name = "a"
+url = "http://127.0.0.1:17431"
+token = "admin"
+"#,
+        )
+        .unwrap();
+
+        let path = dir.join("client.json");
+        let loaded = ClientConfig::load_from_file(&path).unwrap();
+        assert_eq!(loaded.active, "a");
+        assert_eq!(loaded.connections.len(), 1);
+        assert!(path.exists());
+        assert!(dir.join("client.toml.bak").exists());
     }
 }

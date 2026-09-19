@@ -355,7 +355,7 @@ export type Accent = (typeof ACCENT_TOKENS)[number];
 
 /** 一套完整调色板 (GET /api/palettes)。 */
 export interface Palette {
-  /** 稳定 slug：主题引用键，也是服务端 themes/<id>.toml 的文件名 */
+  /** 稳定 slug：主题引用键，也是服务端 themes/<id>.json 的文件名 */
   id: string;
   /** 仅用于展示，可自由改名而不影响引用 */
   name: string;
@@ -477,7 +477,7 @@ export interface UploadAttachmentResp {
   attachments: string[];
 }
 
-/** client.toml 中一条已保存的连接 */
+/** client.json 中一条已保存的连接 */
 export interface ClientConnection {
   name: string;
   url: string;
@@ -485,7 +485,7 @@ export interface ClientConnection {
 }
 
 /**
- * 客户端本地配置（<配置目录>/oma/client.toml）。
+ * 客户端本地配置（<配置目录>/oma/client.json）。
  *
  * 只有 `oma web` 的同源接口 GET/PUT /api/client/config 读写它，
  * 与 Daemon 的 /api/config 无关。

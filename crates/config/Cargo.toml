@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "config.toml 解析、内置 Agent 模板与调色板加载"
+description = "settings.json/models.json 解析、内置 Agent 模板与调色板加载（含旧版 TOML 迁移）"
 
 [dependencies]
 anyhow = { workspace = true }

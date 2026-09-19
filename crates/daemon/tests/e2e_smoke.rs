@@ -270,9 +270,10 @@ low = "think-low"
 ultra = "think-ultra"
 "#
     );
-    let config_path = data_dir.join("config.toml");
-    std::fs::write(&config_path, config_toml)?;
-    let config = oma_config::OmaConfig::load_from_file(&config_path)?;
+    let config_paths = oma_config::ConfigPaths::in_dir(&data_dir);
+    std::fs::write(data_dir.join("config.toml"), config_toml)?;
+    // 旧版 TOML 自动迁移为 settings.json + models.json
+    let config = oma_config::OmaConfig::load_from_paths(&config_paths)?;
 
     let workspace = data_dir.join("ws");
     std::fs::create_dir_all(&workspace)?;
@@ -282,7 +283,13 @@ ultra = "think-ultra"
 
     let storage = StorageManager::new(&data_dir).await?;
     let token = "smoke-token".to_string();
-    let state = DaemonState::new(token.clone(), storage, config, config_path, Arc::new(McpManager::new()));
+    let state = DaemonState::new(
+        token.clone(),
+        storage,
+        config,
+        config_paths,
+        Arc::new(McpManager::new()),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     tokio::spawn(async move {

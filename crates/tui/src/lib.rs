@@ -72,7 +72,7 @@ enum InputEvent {
     Focus(bool),
 }
 
-/// 一条可切换的已保存连接（来自 client.toml）。
+/// 一条可切换的已保存连接（来自 client.json）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TuiConnection {
     pub name:  String,
@@ -82,7 +82,7 @@ pub struct TuiConnection {
 
 /// `oma tui` 的启动参数。
 pub struct TuiOptions {
-    /// 初始连接地址与 token（来自 client.toml 的活动连接或命令行覆盖）
+    /// 初始连接地址与 token（来自 client.json 的活动连接或命令行覆盖）
     pub addr:        String,
     pub token:       String,
     pub workspace:   String,
@@ -441,7 +441,7 @@ fn summarize_tool_input(input: &serde_json::Value) -> String {
 
 /// 启动 TUI 客户端：复用当前工作区最近的会话，没有则新建。
 ///
-/// 支持在界面内切换到 client.toml 里保存的其他连接：切换时重建会话与事件流。
+/// 支持在界面内切换到 client.json 里保存的其他连接：切换时重建会话与事件流。
 /// 返回最终使用的连接名（未使用已保存连接时为 None），供调用方回写 active。
 pub async fn run(options: TuiOptions) -> Result<Option<String>> {
     // crossterm 的阻塞读放在独立线程；切换连接只是重建会话，
@@ -792,7 +792,7 @@ fn open_picker(app: &mut App) {
     if app.connections.is_empty() {
         app.push(
             "·",
-            "没有已保存的连接（可在设置页或 client.toml 中添加）",
+            "没有已保存的连接（可在设置页或 client.json 中添加）",
             Style::default().fg(app.theme.muted),
         );
         return;

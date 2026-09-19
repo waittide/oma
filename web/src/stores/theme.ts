@@ -101,7 +101,7 @@ export async function loadConfig(): Promise<void> {
   applyTheme();
 }
 
-/** 主题保存：服务端校验引用合法后持久化到 config.toml。 */
+/** 主题保存：服务端校验引用合法后持久化到 settings.json。 */
 export async function saveTheme(next: Theme): Promise<void> {
   const prev = theme.value;
   theme.value = next;

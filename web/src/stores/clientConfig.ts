@@ -4,7 +4,7 @@ import { setConnection } from './connection';
 import type { ClientConfig, ClientConnection } from '../types';
 
 /**
- * 客户端本地配置（<配置目录>/oma/client.toml）。
+ * 客户端本地配置（<配置目录>/oma/client.json）。
  *
  * 由承载页面的 `oma web` 提供同源接口读写；连接列表是用户在客户端保存、
  * 可切换的目标 Daemon，绑定地址与端口则只在 `oma web` 启动时使用。
@@ -26,7 +26,7 @@ export function applyActiveConnection(cfg: ClientConfig) {
 }
 
 /**
- * 启动时读取 client.toml 并应用其中的活动连接。
+ * 启动时读取 client.json 并应用其中的活动连接。
  *
  * 接口不可用（独立 vite 开发）时保持 localStorage 中的连接设置不动，
  * 保证开发模式与旧行为一致。

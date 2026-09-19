@@ -44,7 +44,7 @@ fn config_path(config_opt: Option<&Path>) -> PathBuf {
     config_opt
         .map(PathBuf::from)
         .or_else(OmaConfig::config_path)
-        .unwrap_or_else(|| get_data_dir().join("config.toml"))
+        .unwrap_or_else(|| get_data_dir().join("settings.json"))
 }
 
 /// 加载配置；文件存在但解析失败时报错退出。
@@ -139,6 +139,7 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
     let config_path = config_path(config_opt);
     let mut config = load_config(&config_path)?;
     let token = resolve_and_persist_token(token_opt, &mut config, &config_path)?;
+    let config_paths = oma_config::ConfigPaths::from_settings_file(&config_path);
 
     // 采集用户登录 shell 环境（`$SHELL` + rc 里的 `export`）：之后所有会话的
     // `shell` 命令都以这份快照为准。耗时取决于用户 rc，丢到阻塞线程池，
@@ -154,7 +155,7 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
         tokio::spawn(async move { mcp.warm_up().await });
     }
 
-    let state = DaemonState::new(token.clone(), storage, config, config_path, mcp);
+    let state = DaemonState::new(token.clone(), storage, config, config_paths, mcp);
     let app = create_router(state);
 
     let listener = tokio::net::TcpListener::bind(addr)
@@ -175,13 +176,13 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
 ///
 /// 只提供界面本身：连接哪个 Daemon、用什么 token 由用户在设置的「连接」页填写，
 /// 因此这里不需要也不应该知道 Daemon 的任何信息。另提供一个同源的
-/// `/api/client/config` 给界面读写本机的 client.toml（连接列表与绑定地址）。
+/// `/api/client/config` 给界面读写本机的 client.json（连接列表与绑定地址）。
 async fn run_web(host: Option<&str>, port: Option<u16>, open: bool) -> Result<()> {
     if WebAssets::iter().next().is_none() {
         anyhow::bail!("前端资产缺失：请在 web/ 目录执行 `pnpm build` 后重新编译（当前二进制内没有任何文件）");
     }
 
-    // 绑定地址优先取命令行参数；未给出时回落到 client.toml，再缺省则为内置默认值
+    // 绑定地址优先取命令行参数；未给出时回落到 client.json，再缺省则为内置默认值
     let client_path = client_config_path();
     let client = load_client_config(&client_path)?;
     let host = host.map(str::to_string).unwrap_or(client.web.host.clone());
@@ -220,17 +221,17 @@ async fn run_web(host: Option<&str>, port: Option<u16>, open: bool) -> Result<()
     Ok(())
 }
 
-/// client.toml 的标准路径（定位不到配置目录时回落到数据目录）
+/// client.json 的标准路径（定位不到配置目录时回落到数据目录）
 fn client_config_path() -> PathBuf {
-    ClientConfig::config_path().unwrap_or_else(|| get_data_dir().join("client.toml"))
+    ClientConfig::config_path().unwrap_or_else(|| get_data_dir().join("client.json"))
 }
 
-/// 加载 client.toml；文件存在但解析失败时报错退出，理由与 config.toml 一致。
+/// 加载 client.json；文件存在但解析失败时报错退出，理由与 settings.json 一致。
 fn load_client_config(path: &Path) -> Result<ClientConfig> {
     ClientConfig::load_from_file(path).with_context(|| format!("客户端配置文件 {} 内容无效", path.display()))
 }
 
-/// `oma web` 读写 client.toml 所需的共享状态。
+/// `oma web` 读写 client.json 所需的共享状态。
 ///
 /// `lock` 串行化写入：浏览器可能并发调用 PUT，无锁时两次原子替换可能
 /// 相互覆盖（后者读到旧的临时文件状态），造成连接列表丢失。
@@ -412,9 +413,9 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
-/// 启动 TUI：连接来源优先级为 命令行 > client.toml 指定连接 > 活动连接 > 默认地址。
+/// 启动 TUI：连接来源优先级为 命令行 > client.json 指定连接 > 活动连接 > 默认地址。
 ///
-/// TUI 内切换连接后回写 client.toml 的 active，下次启动仍在同一连接上。
+/// TUI 内切换连接后回写 client.json 的 active，下次启动仍在同一连接上。
 async fn run_tui(
     addr: Option<String>,
     token: Option<String>,
@@ -431,7 +432,7 @@ async fn run_tui(
                 .connections
                 .iter()
                 .find(|c| c.name == name)
-                .with_context(|| format!("client.toml 中不存在名为「{name}」的连接"))?,
+                .with_context(|| format!("client.json 中不存在名为「{name}」的连接"))?,
         ),
         None => None,
     };
@@ -443,7 +444,7 @@ async fn run_tui(
 
     let token = match token {
         Some(t) => t,
-        // token 优先取与地址匹配的连接；否则退回命名/活动连接，最后才读 config.toml
+        // token 优先取与地址匹配的连接；否则退回命名/活动连接，最后才读 settings.json
         None => client
             .connections
             .iter()
@@ -534,7 +535,7 @@ mod tests {
         assert_eq!(format_host("127.0.0.1", 5173), "127.0.0.1:5173");
     }
 
-    /// client.toml 校验：空名称、空地址与重名都要拒绝，
+    /// client.json 校验：空名称、空地址与重名都要拒绝，
     /// 否则 active 按名称引用时会歧义。
     #[test]
     fn test_validate_client_config() {
