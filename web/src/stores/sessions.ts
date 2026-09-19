@@ -1,5 +1,5 @@
 import { computed, ref, watch } from 'vue';
-import { toast } from 'vue-sonner';
+import { toast } from '@waittide/ui';
 import { api } from '../api';
 import { tr } from '../composables/i18n';
 import type { SessionRecord } from '../types';

@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@waittide/ui':
+        specifier: link:../../waittide-ui/packages/ui
+        version: link:../../waittide-ui/packages/ui
       markdown-it:
         specifier: ^15.0.1
         version: 15.0.1
@@ -17,9 +20,6 @@ importers:
       vue-icons-plus:
         specifier: ^0.1.8
         version: 0.1.8(vue@3.5.42(typescript@6.0.3))
-      vue-sonner:
-        specifier: ^2.0.9
-        version: 2.0.9
     devDependencies:
       '@types/markdown-it':
         specifier: ^14.2.0
@@ -444,20 +444,6 @@ packages:
     peerDependencies:
       vue: '>=2.7.0'
 
-  vue-sonner@2.0.9:
-    resolution: {integrity: sha512-i6BokNlNDL93fpzNxN/LZSn6D6MzlO+i3qXt6iVZne3x1k7R46d5HlFB4P8tYydhgqOrRbIZEsnRd3kG7qGXyw==}
-    peerDependencies:
-      '@nuxt/kit': ^4.0.3
-      '@nuxt/schema': ^4.0.3
-      nuxt: ^4.0.3
-    peerDependenciesMeta:
-      '@nuxt/kit':
-        optional: true
-      '@nuxt/schema':
-        optional: true
-      nuxt:
-        optional: true
-
   vue-tsc@3.3.11:
     resolution: {integrity: sha512-gOb0B9rtU2+f1dszwPqSH5kAieIF9ReeLhD3kSRNHv5WZZUQz/JdVXW0RTdqhNTMlQkqKzrTTviqKr/4FYZraQ==}
     hasBin: true
@@ -785,8 +771,6 @@ snapshots:
   vue-icons-plus@0.1.8(vue@3.5.42(typescript@6.0.3)):
     dependencies:
       vue: 3.5.42(typescript@6.0.3)
-
-  vue-sonner@2.0.9: {}
 
   vue-tsc@3.3.11(typescript@6.0.3):
     dependencies:

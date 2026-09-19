@@ -1,70 +1,11 @@
+/*
+ * oma 应用层的少量别名。
+ *
+ * 语义令牌（--ink / --paper / --line / --surface / --accent / --danger…）与调色板
+ * 变量全部由 @waittide/ui 的 theme 运行时负责（见 src/main.ts 与 stores/theme.ts），
+ * 应用不再自带一套令牌或主题样式表。这里只补组件库未覆盖、oma 自己用到的别名。
+ */
 :root {
-  --font-sans:
-    Inter, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-mono: 'SFMono-Regular', 'JetBrains Mono', Consolas, Menlo, monospace;
-  font-family: var(--font-sans);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-
-  /*
-   * 语义别名层：组件只使用这一层变量，不直接引用调色板令牌。
-   * 调色板令牌（--base/--text/--blue…）由 stores/theme.ts 在运行时按
-   * 当前调色板写入 <html> 的行内样式；这里的字面量仅作为首帧兜底，
-   * 避免样式表执行与主题应用之间出现无配色的一瞬。
-   */
-  --ink: var(--text, #cdd6f4);
-  --muted: var(--overlay1, #7f849c);
-  --line: var(--surface1, #45475a);
-  --paper: var(--base, #1e1e2e);
-  --surface: var(--mantle, #181825);
-  --surface-strong: var(--surface0, #313244);
-  --surface-hover: var(--surface1, #45475a);
-  --accent: var(--blue, #89b4fa);
-  --surface-active: color-mix(in srgb, var(--accent) 18%, var(--surface));
   --sidebar: var(--mantle, #181825);
-  --control-border: var(--surface2, #585b70);
-  --text-secondary: var(--subtext1, #bac2de);
-  --text-tertiary: var(--subtext0, #a6adc8);
-  --danger: var(--red, #f38ba8);
-  --danger-soft: color-mix(in srgb, var(--danger) 16%, var(--surface));
-  --success: var(--green, #a6e3a1);
-  --success-soft: color-mix(in srgb, var(--success) 16%, var(--surface));
-  --warning: var(--yellow, #f9e2af);
-  --warning-soft: color-mix(in srgb, var(--warning) 16%, var(--surface));
-  --overlay-scrim: color-mix(in srgb, var(--crust, #11111b) 78%, transparent);
   --shadow: color-mix(in srgb, var(--crust, #11111b) 42%, transparent);
-  /* 参照 opencode 的复合阴影：0.5px 描边 ring + 分层投影，避免普通模糊阴影发虚 */
-  --ring: color-mix(in srgb, var(--crust, #11111b) 30%, transparent);
-  --shadow-raised:
-    0 2px 4px color-mix(in srgb, var(--crust, #11111b) 10%, transparent),
-    0 1px 2px -1px color-mix(in srgb, var(--crust, #11111b) 18%, transparent),
-    0 0 0 0.5px var(--ring);
-  --shadow-floating:
-    0 8px 16px color-mix(in srgb, var(--crust, #11111b) 10%, transparent),
-    0 4px 8px color-mix(in srgb, var(--crust, #11111b) 16%, transparent),
-    0 0 0 0.5px var(--ring);
-  --shadow-overlay:
-    0 16px 32px color-mix(in srgb, var(--crust, #11111b) 10%, transparent),
-    0 8px 16px color-mix(in srgb, var(--crust, #11111b) 16%, transparent),
-    0 0 0 0.5px var(--ring);
-}
-
-/* ---- vue-sonner 通知主题化：变量继承自 :root，无需随调色板切换类名 ---- */
-[data-sonner-toaster] {
-  --border-radius: 10px;
-  --normal-bg: var(--surface-strong);
-  --normal-text: var(--ink);
-  --normal-border: var(--control-border);
-  --success-bg: var(--success-soft);
-  --success-text: var(--success);
-  --success-border: color-mix(in srgb, var(--success) 32%, transparent);
-  --error-bg: var(--danger-soft);
-  --error-text: var(--danger);
-  --error-border: color-mix(in srgb, var(--danger) 32%, transparent);
-  --warning-bg: var(--warning-soft);
-  --warning-text: var(--warning);
-  --warning-border: color-mix(in srgb, var(--warning) 32%, transparent);
-  --info-bg: color-mix(in srgb, var(--accent) 14%, var(--surface));
-  --info-text: var(--accent);
-  --info-border: color-mix(in srgb, var(--accent) 32%, transparent);
 }

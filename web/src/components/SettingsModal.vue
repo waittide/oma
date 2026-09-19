@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
-import { toast } from 'vue-sonner';
+import { toast } from '@waittide/ui';
 import {
   LuCheck,
   LuChevronRight,

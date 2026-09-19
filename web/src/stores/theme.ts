@@ -1,4 +1,5 @@
 import { computed, ref } from 'vue';
+import { setUiPalettes, setUiTheme, type Palette as UiPalette } from '@waittide/ui';
 import { api } from '../api';
 import { tr } from '../composables/i18n';
 import {
@@ -67,24 +68,22 @@ export const activeAccent = computed<PaletteToken>(() =>
 );
 
 /**
- * 把调色板写入 <html> 的 CSS 变量，并标记 color-scheme。
+ * 把当前主题与调色板同步给 @waittide/ui 的运行时。
  *
- * 每次只改一张样式表：调色板是完整色值集合，无需像「基底 + 覆盖表」那样
- * 注入多张主题样式表，也不依赖任何第三方配色包。
+ * 具体的 CSS 变量写入由组件库负责（它监听自己的主题/调色板并写 <html>），
+ * 这里只做「服务端配置 → 组件库状态」的投射，不再自己维护一套主题样式表。
+ * 调色板为空（配置尚未拉取成功）时保留组件库内置方案，避免整页无色。
  */
 export function applyTheme(): void {
-  const root = document.documentElement;
-  const palette = activePalette.value;
-  if (!palette) return;
-
-  for (const token of PALETTE_TOKENS) {
-    root.style.setProperty(`--${token}`, palette[token]);
+  if (palettes.value.length > 0) {
+    setUiPalettes(palettes.value as unknown as UiPalette[]);
   }
-  // 强调色单列一个变量：组件只认 --accent，不必关心选中了哪个令牌
-  root.style.setProperty('--accent', palette[activeAccent.value]);
-  root.style.colorScheme = isDark.value ? 'dark' : 'light';
-  root.dataset.themeMode = isDark.value ? 'dark' : 'light';
-  root.dataset.palette = palette.id;
+  setUiTheme({
+    mode: theme.value.mode,
+    dark_palette: theme.value.dark_palette,
+    light_palette: theme.value.light_palette,
+    accent: theme.value.accent,
+  });
 }
 
 media?.addEventListener('change', () => {

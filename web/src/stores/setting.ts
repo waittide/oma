@@ -1,46 +1,33 @@
 import { reactive } from 'vue';
+import {
+  UI_LOCALES,
+  localeHtmlTag,
+  setUiLocale,
+  uiLocale,
+  type UiLocale,
+} from '@waittide/ui';
 
-export type Locale = 'zh_hans' | 'zh_hant' | 'en' | 'ja';
+/**
+ * 应用语言。
+ *
+ * 语言是组件库与应用共用的同一份状态：`uiLocale` 是唯一事实来源，
+ * 组件库据此翻译自身文案，应用据此翻译页面文案，二者永远一致。
+ * 持久化与浏览器语言探测都由组件库运行时负责。
+ */
+export type Locale = UiLocale;
 
-const STORAGE_KEY = 'oma.locale';
+export const LOCALES = UI_LOCALES;
 
-export const LOCALES: { value: Locale; label: string; htmlTag: string }[] = [
-  { value: 'zh_hans', label: '简体中文', htmlTag: 'zh-Hans' },
-  { value: 'zh_hant', label: '繁體中文', htmlTag: 'zh-Hant' },
-  { value: 'en', label: 'English', htmlTag: 'en' },
-  { value: 'ja', label: '日本語', htmlTag: 'ja' },
-];
-
-function isLocale(v: string | null): v is Locale {
-  return v === 'zh_hans' || v === 'zh_hant' || v === 'en' || v === 'ja';
-}
-
-function detectLocale(): Locale {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (isLocale(saved)) return saved;
-  } catch {
-    // ignore storage read error
-  }
-  const nav = navigator.language.toLowerCase();
-  if (nav.startsWith('zh')) {
-    return /tw|hk|mo|hant/.test(nav) ? 'zh_hant' : 'zh_hans';
-  }
-  if (nav.startsWith('ja')) return 'ja';
-  return 'en';
-}
-
-export const settingStore = reactive<{ locale: Locale }>({ locale: detectLocale() });
+export const settingStore = reactive({
+  get locale(): Locale {
+    return uiLocale.value;
+  },
+});
 
 export function setLocale(locale: Locale) {
-  settingStore.locale = locale;
-  try {
-    localStorage.setItem(STORAGE_KEY, locale);
-  } catch {
-    // ignore storage write error
-  }
+  setUiLocale(locale);
 }
 
-export function localeTag(locale: Locale = settingStore.locale): string {
-  return LOCALES.find((l) => l.value === locale)?.htmlTag ?? 'zh-Hans';
+export function localeTag(locale: Locale = settingStore.locale) {
+  return localeHtmlTag(locale);
 }

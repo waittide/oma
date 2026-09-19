@@ -1,5 +1,5 @@
 import { computed, ref } from 'vue';
-import { toast } from 'vue-sonner';
+import { toast } from '@waittide/ui';
 import { api, getToken, wsUrl } from '../api';
 import type {
   ActiveTurnCatchUp,

@@ -1,6 +1,6 @@
 import { h, render } from 'vue';
 import { LuCheck, LuCopy } from 'vue-icons-plus/lu';
-import { toast } from 'vue-sonner';
+import { toast } from '@waittide/ui';
 import { tr } from '../composables/i18n';
 import { copyText } from './clipboard';
 

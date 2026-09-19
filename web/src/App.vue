@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
-import { Toaster } from 'vue-sonner';
-import { isDark } from './stores/theme';
+import { UiToaster } from '@waittide/ui';
 import { api } from './api';
 import Sidebar from './components/Sidebar.vue';
 import ChatView from './components/ChatView.vue';
@@ -50,14 +49,7 @@ async function onReconnect() {
       @reconnect="onReconnect"
     />
   </div>
-  <Toaster
-    position="bottom-right"
-    :expand="false"
-    :theme="isDark ? 'dark' : 'light'"
-    :toast-options="{ style: { fontFamily: 'var(--font-sans)' } }"
-    rich-colors
-    close-button
-  />
+  <UiToaster position="bottom-right" :max="4" :close-button="true" />
 </template>
 
 <style scoped>
