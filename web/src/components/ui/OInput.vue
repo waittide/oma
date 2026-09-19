@@ -1,5 +1,14 @@
 <script setup lang="ts">
-withDefaults(
+import { onMounted, ref } from 'vue';
+import { UiInput } from '@waittide/ui';
+
+/**
+ * oma 输入框 → `UiInput` 适配层。
+ *
+ * `UiInput` 已内建 `#prefix` / `#suffix` 槽与 search/password 的图标，
+ * 因此这里只做事件名与自动聚焦的桥接。
+ */
+const props = withDefaults(
   defineProps<{
     modelValue: string;
     placeholder?: string;
@@ -11,72 +20,26 @@ withDefaults(
 );
 
 const emit = defineEmits<{ 'update:modelValue': [string]; enter: []; blur: [] }>();
+
+const inputRef = ref<InstanceType<typeof UiInput> | null>(null);
+
+onMounted(() => {
+  if (props.autofocus) inputRef.value?.focus();
+});
 </script>
 
 <template>
-  <div class="o-input" :class="{ disabled }">
-    <!-- 前缀图标槽（如搜索放大镜）：留空则不占位 -->
-    <span v-if="$slots.prefix" class="affix prefix"><slot name="prefix" /></span>
-    <input
-      :type="type"
-      :value="modelValue"
-      :placeholder="placeholder"
-      :disabled="disabled"
-      :autofocus="autofocus"
-      @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
-      @keydown.enter="emit('enter')"
-      @blur="emit('blur')"
-    />
-    <!-- 后缀槽（如清空按钮）：内容与点击行为都由调用方决定，
-         避免把点击热区写成只有图标本身那么大 -->
-    <span v-if="$slots.suffix" class="affix suffix"><slot name="suffix" /></span>
-  </div>
+  <UiInput
+    ref="inputRef"
+    :model-value="modelValue"
+    :type="type"
+    :placeholder="placeholder"
+    :disabled="disabled"
+    @update:model-value="emit('update:modelValue', $event)"
+    @enter="emit('enter')"
+    @blur="emit('blur')"
+  >
+    <template v-if="$slots.prefix" #prefix><slot name="prefix" /></template>
+    <template v-if="$slots.suffix" #suffix><slot name="suffix" /></template>
+  </UiInput>
 </template>
-
-<style scoped>
-.o-input {
-  display: flex;
-  align-items: center;
-  background: var(--surface);
-  border: 1px solid var(--control-border);
-  border-radius: 8px;
-  transition: border-color 0.15s ease;
-}
-.o-input:focus-within {
-  border-color: var(--accent);
-}
-.o-input.disabled {
-  opacity: 0.55;
-}
-.affix {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  color: var(--text-tertiary);
-}
-.prefix {
-  padding-left: 9px;
-}
-.suffix {
-  padding-right: 6px;
-}
-input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--ink);
-  font-family: inherit;
-  font-size: 13px;
-  padding: 7px 10px;
-}
-/* 带前缀时压缩左侧内边距，避免图标与文字之间出现双倍间距 */
-.prefix + input {
-  padding-left: 6px;
-}
-input::placeholder {
-  color: var(--overlay0);
-}
-</style>

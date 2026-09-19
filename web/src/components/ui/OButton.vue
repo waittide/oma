@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { LuLoader } from 'vue-icons-plus/lu';
+import { UiButton, type UiTone, type UiVariant } from '@waittide/ui';
 
+/**
+ * oma 按钮 → @waittide/ui 的 `UiButton` 适配层。
+ *
+ * 保留 oma 既有的 `variant` 词汇，映射到组件库的 `variant × tone` 组合；
+ * `#icon` 槽对应组件库的 `#prefix`。调用点无需改动。
+ */
 const props = withDefaults(
   defineProps<{
     variant?: 'primary' | 'ghost' | 'danger' | 'soft';
@@ -15,102 +21,42 @@ const props = withDefaults(
 
 const emit = defineEmits<{ click: [MouseEvent] }>();
 
-const classes = computed(() => ['btn', `btn-${props.variant}`, `btn-${props.size}`]);
+const mapped = computed<{ variant: UiVariant; tone: UiTone }>(() => {
+  switch (props.variant) {
+    case 'primary':
+      return { variant: 'solid', tone: 'accent' };
+    case 'danger':
+      return { variant: 'solid', tone: 'danger' };
+    case 'ghost':
+      return { variant: 'ghost', tone: 'neutral' };
+    default:
+      return { variant: 'soft', tone: 'neutral' };
+  }
+});
 
-function onClick(e: MouseEvent) {
-  if (props.disabled || props.loading) return;
-  emit('click', e);
-}
+/**
+ * 透传属性用对象 v-bind 传入。
+ *
+ * `UiButton` 未声明 click 事件与 aria-label 属性类型，`v-bind="obj"` 可绕过
+ * 模板严格属性检查，同时保留原生事件的 fallthrough 行为。
+ */
+const bindings = computed<Record<string, unknown>>(() => {
+  const attrs: Record<string, unknown> = { onClick: (event: MouseEvent) => emit('click', event) };
+  if (props.ariaLabel) attrs['aria-label'] = props.ariaLabel;
+  return attrs;
+});
 </script>
 
 <template>
-  <button
-    :class="classes"
-    :disabled="disabled || loading"
-    :aria-label="ariaLabel"
-    @click="onClick"
+  <UiButton
+    v-bind="bindings"
+    :variant="mapped.variant"
+    :tone="mapped.tone"
+    :size="size"
+    :loading="loading"
+    :disabled="disabled"
   >
-    <LuLoader v-if="loading" class="spin" :size="size === 'sm' ? 13 : 15" />
-    <slot v-else name="icon" />
-    <span class="btn-label"><slot /></span>
-  </button>
+    <template v-if="$slots.icon" #prefix><slot name="icon" /></template>
+    <slot />
+  </UiButton>
 </template>
-
-<style scoped>
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  font-family: inherit;
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease,
-    opacity 0.15s ease;
-  white-space: nowrap;
-  user-select: none;
-}
-.btn-md {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-}
-.btn-sm {
-  height: 26px;
-  padding: 0 9px;
-  font-size: 12px;
-  border-radius: 6px;
-}
-.btn-primary {
-  background: var(--accent);
-  color: var(--base);
-}
-.btn-primary:hover:not(:disabled) {
-  filter: brightness(1.08);
-}
-.btn-soft {
-  background: var(--surface-strong);
-  color: var(--text-secondary);
-  border-color: var(--line);
-}
-.btn-soft:hover:not(:disabled) {
-  color: var(--ink);
-  background: var(--surface-hover);
-}
-.btn-ghost {
-  background: transparent;
-  color: var(--text-tertiary);
-}
-.btn-ghost:hover:not(:disabled) {
-  color: var(--ink);
-  background: var(--surface-hover);
-}
-.btn-danger {
-  background: var(--danger-soft);
-  color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
-}
-.btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 26%, var(--surface));
-}
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.btn-label:empty {
-  display: none;
-}
-.spin {
-  animation: rotate 0.9s linear infinite;
-}
-@keyframes rotate {
-  to {
-    transform: rotate(360deg);
-  }
-}
-</style>
