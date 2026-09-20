@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(test)]
 use anyhow::Result;
 use oma_contract::ToolImage;
 pub use oma_contract::ToolOutput;
@@ -86,12 +87,6 @@ pub fn base64_encode(bytes: &[u8]) -> String {
         });
     }
     out
-}
-
-/// 子 Agent 执行委托 Trait
-#[async_trait::async_trait]
-pub trait SubagentRunner: Send + Sync {
-    async fn run_subagent(&self, agent: &str, prompt: &str) -> Result<String, String>;
 }
 
 /// 统一 Tool Trait
@@ -782,94 +777,7 @@ impl Tool for ShellTool {
 }
 
 // ==========================================
-// 5. Task Tool (Subagent Delegation)
-// ==========================================
-
-/// 延迟绑定槽：SessionRoom 需要持有工具注册表，而 subagent runner 又需要持有 SessionRoom，
-/// 构成构造期环路；用一次性槽位在房间建成后回填 runner 解环。
-#[derive(Default)]
-pub struct RunnerSlot {
-    subagent: std::sync::OnceLock<Arc<dyn SubagentRunner>>,
-}
-
-impl RunnerSlot {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn set(&self, runner: Arc<dyn SubagentRunner>) -> Result<()> {
-        self.subagent
-            .set(runner)
-            .map_err(|_| anyhow::anyhow!("Subagent runner is already bound"))
-    }
-
-    pub fn get(&self) -> Option<&Arc<dyn SubagentRunner>> {
-        self.subagent.get()
-    }
-}
-
-pub struct TaskTool {
-    runner: Arc<RunnerSlot>,
-}
-
-impl TaskTool {
-    pub fn new(runner: Arc<RunnerSlot>) -> Self {
-        Self { runner }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct TaskInput {
-    agent:  String,
-    prompt: String,
-}
-
-#[async_trait::async_trait]
-impl Tool for TaskTool {
-    fn name(&self) -> &'static str {
-        "task"
-    }
-
-    fn description(&self) -> &'static str {
-        "Delegate a sub-task to a specialized subagent (e.g. explore, review, plan)."
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "agent": {
-                    "type": "string",
-                    "description": "Name of the target subagent (e.g. explore, review)"
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Task instruction for the subagent"
-                }
-            },
-            "required": ["agent", "prompt"]
-        })
-    }
-
-    async fn execute(&self, _workspace: &Path, input: serde_json::Value) -> ToolOutput {
-        let input: TaskInput = match serde_json::from_value(input) {
-            Ok(v) => v,
-            Err(e) => return ToolOutput::error(format!("Invalid arguments for task: {}", e)),
-        };
-
-        let Some(runner) = self.runner.get() else {
-            return ToolOutput::error("Subagent runner is not configured in this runtime.");
-        };
-
-        match runner.run_subagent(&input.agent, &input.prompt).await {
-            Ok(result) => ToolOutput::success(truncate_output(&result)),
-            Err(e) => ToolOutput::error(format!("Subagent failed: {}", e)),
-        }
-    }
-}
-
-// ==========================================
-// 6. Tool Registry
+// 5. Tool Registry
 // ==========================================
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
@@ -884,15 +792,13 @@ impl ToolRegistry {
     /// 内置工具集。
     ///
     /// 「有哪些内置工具」只在此处定义，房间装配与工具清单接口共用，
-    /// 避免两处各列一份而悄悄漂移。`runner_slot` 由调用方注入：
-    /// 房间需要自己的槽位以便回填 subagent runner。
-    pub fn with_builtins(runner_slot: Arc<RunnerSlot>) -> Self {
+    /// 避免两处各列一份而悄悄漂移。
+    pub fn with_builtins() -> Self {
         let mut reg = Self::new();
         reg.register(Arc::new(ReadTool));
         reg.register(Arc::new(WriteTool));
         reg.register(Arc::new(EditTool));
         reg.register(Arc::new(ShellTool::default()));
-        reg.register(Arc::new(TaskTool::new(runner_slot)));
         reg
     }
 

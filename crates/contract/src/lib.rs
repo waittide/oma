@@ -538,12 +538,10 @@ pub struct TokenUsage {
 /// 工具调用发起数据
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallStartedData {
-    pub call_id:     String,
+    pub call_id:   String,
     /// 被调用的工具名
-    pub tool_name:   String,
-    pub input:       serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_id: Option<String>,
+    pub tool_name: String,
+    pub input:     serde_json::Value,
 }
 
 /// 活跃轮次重连追赶快照
@@ -561,16 +559,12 @@ pub struct ActiveTurnCatchUp {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum AgentEvent {
     TurnStarted {
-        turn_id:     String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subagent_id: Option<String>,
+        turn_id: String,
     },
     TurnFinished {
         turn_id:     String,
         stop_reason: StopReason,
         usage:       TokenUsage,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subagent_id: Option<String>,
     },
     UserMessage {
         client_id:   String,
@@ -593,24 +587,18 @@ pub enum AgentEvent {
     /// 客户端落后的历史事件已溢出广播缓冲，必须整体回读持久化状态
     SyncRequired {},
     ThinkingDelta {
-        delta:       String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subagent_id: Option<String>,
+        delta: String,
     },
     TextDelta {
-        delta:       String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subagent_id: Option<String>,
+        delta: String,
     },
     ToolCallStarted(ToolCallStartedData),
     ToolCallFinished {
-        call_id:     String,
+        call_id:   String,
         /// 被调用的工具名
-        tool_name:   String,
-        output:      String,
-        is_error:    bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subagent_id: Option<String>,
+        tool_name: String,
+        output:    String,
+        is_error:  bool,
     },
     ActiveBranchChanged {
         current_leaf_id: String,
@@ -769,10 +757,9 @@ mod tests {
     #[test]
     fn test_agent_event_serde() {
         let event = AgentEvent::ToolCallStarted(ToolCallStartedData {
-            call_id:     "call_1".into(),
-            tool_name:   "read".into(),
-            input:       serde_json::json!({ "path": "src/lib.rs" }),
-            subagent_id: Some("sub_1".into()),
+            call_id:   "call_1".into(),
+            tool_name: "read".into(),
+            input:     serde_json::json!({ "path": "src/lib.rs" }),
         });
         let json = serde_json::to_string(&event).unwrap();
         let de: AgentEvent = serde_json::from_str(&json).unwrap();

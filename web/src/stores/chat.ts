@@ -21,7 +21,6 @@ import { releaseAll } from '../lib/attachments';
 import {
   emptyLive,
   foldSegments,
-  SubagentHostStack,
   type LiveSegment,
   type LiveTurn,
 } from '../lib/liveSegments';
@@ -41,18 +40,9 @@ export const messages = ref<ChatMessage[]>([]);
 export const tree = ref<ChatMessage[]>([]);
 export const live = ref<LiveTurn>(emptyLive());
 
-/**
- * 子代理宿主栈：栈顶是当前正在执行的子代理所属的 task call_id。
- *
- * 推栈/弹栈必须与子代理的 turn_started / turn_finished 严格配对，
- * 具体理由见 [`SubagentHostStack`]。
- */
-const hostStack = new SubagentHostStack();
-
-/** 重置流式缓冲；栈与缓冲同生命周期，必须一并清空。 */
+/** 重置流式缓冲。 */
 function setLive(next: LiveTurn) {
   live.value = next;
-  hostStack.clear();
 }
 
 export const running = ref(false);
@@ -190,39 +180,30 @@ async function reload() {
 function handleEvent(ev: AgentEvent) {
   switch (ev.type) {
     case 'turn_started':
-      // 子代理轮次沿用同一事件类型：仅压入宿主栈，不清空主流式缓冲
-      if (ev.data?.subagent_id) {
-        hostStack.push(live.value.segments);
-        break;
-      }
       turnSeq += 1;
       running.value = true;
       setLive(emptyLive());
       break;
     case 'thinking_delta': {
       // 同类段连续则续写，否则新开一段，保持与真实到达顺序一致
-      const host = ev.data?.subagent_id ? hostStack.current() : undefined;
       const last = live.value.segments[live.value.segments.length - 1];
-      if (last && last.kind === 'thinking' && last.host_call_id === host) last.text += ev.data?.delta ?? '';
+      if (last && last.kind === 'thinking') last.text += ev.data?.delta ?? '';
       else
         live.value.segments.push({
           kind: 'thinking',
           key: `th${liveSeq++}`,
           text: ev.data?.delta ?? '',
-          host_call_id: host,
         });
       break;
     }
     case 'text_delta': {
-      const host = ev.data?.subagent_id ? hostStack.current() : undefined;
       const last = live.value.segments[live.value.segments.length - 1];
-      if (last && last.kind === 'text' && last.host_call_id === host) last.text += ev.data?.delta ?? '';
+      if (last && last.kind === 'text') last.text += ev.data?.delta ?? '';
       else
         live.value.segments.push({
           kind: 'text',
           key: `tx${liveSeq++}`,
           text: ev.data?.delta ?? '',
-          host_call_id: host,
         });
       break;
     }
@@ -234,7 +215,6 @@ function handleEvent(ev: AgentEvent) {
         live.value.segments.push({
           kind: 'tool',
           key: d.call_id,
-          host_call_id: d.subagent_id ? hostStack.current() : undefined,
           tool: { ...d, done: false },
         });
       }
@@ -282,11 +262,6 @@ function handleEvent(ev: AgentEvent) {
       void reload();
       break;
     case 'turn_finished': {
-      // 子代理结束时主流式轮次仍在继续：仅弹出宿主栈，忽略其生命周期事件
-      if (ev.data?.subagent_id) {
-        hostStack.pop();
-        break;
-      }
       running.value = false;
       finalizing.value = true;
       if (ev.data) {

@@ -110,8 +110,7 @@
     "done": "完成",
     "copyCode": "複製程式碼",
     "copied": "已複製到剪貼簿",
-    "copyFailed": "複製失敗，請手動選取複製",
-    "subagent": "子代理過程"
+    "copyFailed": "複製失敗，請手動選取複製"
   },
   "select": {
     "placeholder": "請選擇",

@@ -42,8 +42,6 @@ interface Item {
   output?: string;
   resultError?: boolean;
   resultDone?: boolean;
-  /** task 工具：子代理过程块（thinking / 正文 / 嵌套工具调用） */
-  subagentBlocks?: Block[];
 }
 
 /** 把 tool_use 与其 tool_result 合并成单个条目；tool_result 不单独渲染。 */
@@ -73,10 +71,6 @@ const items = computed<Item[]>(() => {
         resultError: carried?.is_error,
         resultDone: carried !== undefined,
       });
-    } else if (b.type === 'subagent') {
-      // 子代理过程：并入宿主 task 条目，在卡片内部渲染（不占顶层位置）
-      const idx = toolIndex[b.tool_use_id];
-      if (idx !== undefined) out[idx]!.subagentBlocks = b.blocks;
     } else {
       const idx = toolIndex[b.tool_use_id];
       if (idx !== undefined) {
@@ -104,17 +98,10 @@ function toggleFold(it: Item) {
 }
 
 /**
- * 子代理正在执行（宿主 task 尚未出结果）。
- *
- * 与思考块「active」同思路但判定不同：子代理是否有内容不看位置，
- * 只看宿主任务是否结束——即使期间夹了别的顶层块也不会误判。
+ * 折叠块是否需要自动展开（流式中的思考块）。
  */
-function subagentLive(it: Item): boolean {
-  return props.streaming && !!it.subagentBlocks && !it.resultDone;
-}
-
 function isOpen(it: Item): boolean {
-  return manual.value[it.key] ?? (!!it.active || subagentLive(it));
+  return manual.value[it.key] ?? !!it.active;
 }
 
 // ---------- 思考内容跟随滚动：内容超出折叠体高度时贴底显示最新内容 ----------
@@ -237,14 +224,6 @@ onMounted(() => void nextTick(syncCodeCopy));
         </UiButton>
         <div v-show="isOpen(it)" class="fold-body-wrap">
           <pre class="fold-body">{{ prettyJson(it.toolInput) }}</pre>
-          <!--
-            子代理过程嵌在 task 卡片内部：它属于这张卡片的执行细节，
-            不是主 Agent 的同级输出。仅对 task 且有待显示内容时才有值。
-          -->
-          <div v-if="it.subagentBlocks" class="subagent">
-            <div class="subagent-label">{{ t('subagent') }}</div>
-            <MessageBlocks :blocks="it.subagentBlocks" :streaming="!it.resultDone" />
-          </div>
           <pre v-if="it.resultDone" class="fold-body result" :class="{ err: it.resultError }">{{ it.output }}</pre>
         </div>
       </div>
@@ -583,20 +562,5 @@ onMounted(() => void nextTick(syncCodeCopy));
 .att {
   max-width: 320px;
   border-radius: 8px;
-}
-
-/* 子代理过程：嵌在 task 卡片内，用左侧竖线表达从属关系 */
-.subagent {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 6px 0 0;
-  padding-left: 10px;
-  border-left: 2px solid var(--surface2);
-}
-.subagent-label {
-  font-size: 11px;
-  color: var(--overlay0);
-  user-select: none;
 }
 </style>

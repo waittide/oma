@@ -19,9 +19,9 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use oma_config::{AgentLoader, OmaConfig, PaletteLoader, SkillLoader};
 use oma_contract::{AgentEvent, ChatMessage, ClientMessage, Palette, Ready, ServerMessage};
-use oma_runtime::{RoomError, RoomSubagentRunner, SessionRoom, estimate_tokens};
+use oma_runtime::{RoomError, SessionRoom, estimate_tokens};
 use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachment_name};
-use oma_tool::{RunnerSlot, ToolRegistry, resolve_path};
+use oma_tool::{ToolRegistry, resolve_path};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tower_http::{
@@ -123,10 +123,9 @@ impl DaemonState {
 
         let record = record.expect("session record present after create");
 
-        // 先装配完整工具注册表（含 task），再交给房间：
+        // 先装配完整工具注册表，再交给房间：
         // 房间持有的是注册表快照，注册必须发生在构造之前。
-        let runner_slot = Arc::new(RunnerSlot::new());
-        let mut reg = ToolRegistry::with_builtins(runner_slot.clone());
+        let mut reg = ToolRegistry::with_builtins();
         // 插件工具：按 workspace 发现并注册（JS 由内嵌 QuickJS 执行）
         let plugins = Arc::new(oma_plugin::PluginHost::load(std::path::Path::new(workspace)));
         for tool in plugins.tools() {
@@ -146,14 +145,6 @@ impl DaemonState {
         *room.reasoning_level.write() = record.reasoning_level.clone();
         // 插件宿主同时提供 `tool_call` 钩子（工具已在上面注册）
         room.set_plugins(plugins);
-
-        // 回填 subagent runner：TaskTool 需要房间，房间持有注册表，一次性槽位解环
-        let subagent_runner = Arc::new(RoomSubagentRunner::new(room.clone()));
-        if let Err(e) = runner_slot.set(subagent_runner) {
-            room.broadcast(AgentEvent::Error {
-                message: format!("Failed to bind subagent runner: {}", e),
-            });
-        }
 
         self.rooms
             .write()
@@ -723,7 +714,7 @@ async fn handle_list_tools(
         return Err(unauthorized());
     }
 
-    let builtin = ToolRegistry::with_builtins(Arc::new(RunnerSlot::new()));
+    let builtin = ToolRegistry::with_builtins();
     let mut out: Vec<serde_json::Value> = builtin
         .list()
         .iter()
@@ -1675,25 +1666,6 @@ mod tests {
             "no dir may be created outside sessions/"
         );
 
-        Ok(())
-    }
-
-    /// 房间必须暴露完整的工具集（含 task）：注册表在交给房间前就绪。
-    #[tokio::test]
-    async fn test_room_exposes_task_tool() -> Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let state = test_state(tmp.path()).await?;
-        let room = state.get_or_create_room("sess_tools", "/tmp").await?;
-
-        let names: Vec<&str> = room.tools.list().iter().map(|t| t.name()).collect();
-        assert!(names.contains(&"task"), "task tool missing: {:?}", names);
-        assert!(room.tools.get("task").is_some());
-
-        let defs = room.tools.to_definitions(&[]);
-        assert!(
-            defs.iter().any(|d| d["name"] == "task"),
-            "task must be advertised to the model"
-        );
         Ok(())
     }
 

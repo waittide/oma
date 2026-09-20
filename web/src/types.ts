@@ -37,14 +37,7 @@ export type Block =
   | { type: 'thinking'; thinking: string }
   | { type: 'image'; mime_type: string; data: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean }
-  /**
-   * task 工具的子代理过程（thinking / text / 工具调用）。
-   *
-   * 仅存在于流式缓冲：子代理上下文不落库，因此历史消息里不会出现该块。
-   * `tool_use_id` 指向宿主 task 的 call_id，渲染时嵌进那张卡片内部。
-   */
-  | { type: 'subagent'; tool_use_id: string; blocks: Block[] };
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean };
 
 export interface ChatMessage {
   id: string;
@@ -76,7 +69,6 @@ export interface ToolCallStartedData {
   /** 被调用的工具名 */
   tool_name: string;
   input: unknown;
-  subagent_id?: string | null;
 }
 
 export interface ActiveTurnCatchUp {
@@ -92,17 +84,17 @@ export interface TokenUsage {
 }
 
 export type AgentEvent =
-  | { type: 'turn_started'; data?: { turn_id: string; subagent_id?: string | null } }
-  | { type: 'turn_finished'; data?: { turn_id: string; stop_reason: StopReason; usage: TokenUsage; subagent_id?: string | null } }
+  | { type: 'turn_started'; data?: { turn_id: string } }
+  | { type: 'turn_finished'; data?: { turn_id: string; stop_reason: StopReason; usage: TokenUsage } }
   | { type: 'user_message'; data?: { client_id: string; client_name: string; client_type: ClientType; content: string; queued: boolean } }
   | { type: 'session_running'; data?: { session_id: string; running: boolean } }
   | { type: 'queue_cleared'; data?: Record<string, never> }
   | { type: 'queue_updated'; data?: { pending: number } }
   | { type: 'sync_required'; data?: Record<string, never> }
-  | { type: 'thinking_delta'; data?: { delta: string; subagent_id?: string | null } }
-  | { type: 'text_delta'; data?: { delta: string; subagent_id?: string | null } }
+  | { type: 'thinking_delta'; data?: { delta: string } }
+  | { type: 'text_delta'; data?: { delta: string } }
   | { type: 'tool_call_started'; data?: ToolCallStartedData }
-  | { type: 'tool_call_finished'; data?: { call_id: string; tool_name: string; output: string; is_error: boolean; subagent_id?: string | null } }
+  | { type: 'tool_call_finished'; data?: { call_id: string; tool_name: string; output: string; is_error: boolean } }
   | { type: 'active_branch_changed'; data?: { current_leaf_id: string } }
   | { type: 'model_changed'; data?: { active_model: string } }
   | { type: 'agent_changed'; data?: { active_agent: string } }

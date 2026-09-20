@@ -15,13 +15,11 @@ use oma_contract::{
 };
 use oma_provider::{ModelConfig, ProviderStreamEvent, UniversalProvider};
 use oma_storage::{StorageError, StorageManager};
-use oma_tool::{SubagentRunner, ToolContext, ToolRegistry};
+use oma_tool::{ToolContext, ToolRegistry};
 use parking_lot::RwLock;
 use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
-/// 子 Agent 单次委托的最大工具轮次，防止无限自我调用
-const MAX_SUBAGENT_ROUNDS: usize = 16;
 /// 上下文压缩后保留的工具结果占位文案
 const PRUNED_TOOL_RESULT: &str = "[工具执行结果已截断修剪以节省上下文窗口]";
 /// 超过该字符数的工具结果在压缩时会被替换为占位
@@ -575,18 +573,14 @@ impl SessionRoom {
         tool_input: serde_json::Value,
         allowed: Option<&HashSet<String>>,
         cancel: &CancellationToken,
-        subagent_id: Option<&str>,
     ) -> (ToolOutput, bool) {
         let started = ToolCallStartedData {
-            call_id:     call_id.to_string(),
-            tool_name:   tool_name.to_string(),
-            input:       tool_input.clone(),
-            subagent_id: subagent_id.map(str::to_string),
+            call_id:   call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            input:     tool_input.clone(),
         };
-        if subagent_id.is_none() {
-            if let Some(turn) = self.active_turn.write().as_mut() {
-                turn.active_tool_call = Some(started.clone());
-            }
+        if let Some(turn) = self.active_turn.write().as_mut() {
+            turn.active_tool_call = Some(started.clone());
         }
         self.broadcast(AgentEvent::ToolCallStarted(started));
 
@@ -594,11 +588,7 @@ impl SessionRoom {
         if let Some(allowed) = allowed {
             if !allowed.contains(tool_name) {
                 let output = ToolOutput::error(format!("Tool '{}' is not permitted for the active agent.", tool_name));
-                return (
-                    self.finish_tool_call(call_id, tool_name, output, subagent_id)
-                        .await,
-                    false,
-                );
+                return (self.finish_tool_call(call_id, tool_name, output).await, false);
             }
         }
 
@@ -616,7 +606,6 @@ impl SessionRoom {
                         call_id,
                         tool_name,
                         ToolOutput::error(format!("Execution blocked by plugin: {}", reason)),
-                        subagent_id,
                     )
                     .await,
                     false,
@@ -631,7 +620,6 @@ impl SessionRoom {
                     call_id,
                     tool_name,
                     ToolOutput::error(format!("Tool '{}' not found in registry", tool_name)),
-                    subagent_id,
                 )
                 .await,
                 false,
@@ -645,11 +633,7 @@ impl SessionRoom {
             out = tool.execute_with(&self.workspace, tool_input, &vision_ctx) => out,
         };
         let cancelled = cancel.is_cancelled();
-        (
-            self.finish_tool_call(call_id, tool_name, output, subagent_id)
-                .await,
-            cancelled,
-        )
+        (self.finish_tool_call(call_id, tool_name, output).await, cancelled)
     }
 
     /// 当前模型能否直接接收图片输入。
@@ -665,24 +649,15 @@ impl SessionRoom {
     }
 
     /// 广播工具执行结果并清理活跃工具槽位，把输出交回调用方用于落库
-    async fn finish_tool_call(
-        &self,
-        call_id: &str,
-        tool_name: &str,
-        output: ToolOutput,
-        subagent_id: Option<&str>,
-    ) -> ToolOutput {
-        if subagent_id.is_none() {
-            if let Some(turn) = self.active_turn.write().as_mut() {
-                turn.active_tool_call = None;
-            }
+    async fn finish_tool_call(&self, call_id: &str, tool_name: &str, output: ToolOutput) -> ToolOutput {
+        if let Some(turn) = self.active_turn.write().as_mut() {
+            turn.active_tool_call = None;
         }
         self.broadcast(AgentEvent::ToolCallFinished {
-            call_id:     call_id.to_string(),
-            tool_name:   tool_name.to_string(),
-            output:      output.output.clone(),
-            is_error:    output.is_error,
-            subagent_id: subagent_id.map(str::to_string),
+            call_id:   call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            output:    output.output.clone(),
+            is_error:  output.is_error,
         });
         output
     }
@@ -705,8 +680,7 @@ impl SessionRoom {
         });
 
         self.broadcast(AgentEvent::TurnStarted {
-            turn_id:     turn_id.clone(),
-            subagent_id: None,
+            turn_id: turn_id.clone(),
         });
 
         // 1. 构造并持久化 User Message
@@ -930,20 +904,14 @@ impl SessionRoom {
                         if let Some(turn) = self.active_turn.write().as_mut() {
                             turn.accumulated_thinking.push_str(&delta);
                         }
-                        self.broadcast(AgentEvent::ThinkingDelta {
-                            delta,
-                            subagent_id: None,
-                        });
+                        self.broadcast(AgentEvent::ThinkingDelta { delta });
                     }
                     ProviderStreamEvent::TextDelta(delta) => {
                         assistant_text.push_str(&delta);
                         if let Some(turn) = self.active_turn.write().as_mut() {
                             turn.accumulated_text.push_str(&delta);
                         }
-                        self.broadcast(AgentEvent::TextDelta {
-                            delta,
-                            subagent_id: None,
-                        });
+                        self.broadcast(AgentEvent::TextDelta { delta });
                     }
                     ProviderStreamEvent::ToolCall { id, name, input } => {
                         assistant_tool_calls.push((id, name, input));
@@ -1079,7 +1047,7 @@ impl SessionRoom {
                     continue;
                 }
                 let (output, was_cancelled) = self
-                    .execute_tool_call(&call_id, &tool_name, tool_input, allowed.as_ref(), cancel_token, None)
+                    .execute_tool_call(&call_id, &tool_name, tool_input, allowed.as_ref(), cancel_token)
                     .await;
                 cancelled = was_cancelled;
                 results.push((call_id, output.output, output.is_error, output.images));
@@ -1240,7 +1208,6 @@ impl SessionRoom {
             turn_id,
             stop_reason,
             usage,
-            subagent_id: None,
         });
 
         // 自动命名不在此处触发：模型首次回复落库时已后台发起（见 agent_loop），
@@ -1399,249 +1366,6 @@ fn base64_encode(bytes: &[u8]) -> String {
         });
     }
     out
-}
-
-// =========================================================================
-// 7. Subagent Runner 实现（真实子循环：独立上下文，不落库）
-// =========================================================================
-
-pub struct RoomSubagentRunner {
-    room: Arc<SessionRoom>,
-}
-
-impl RoomSubagentRunner {
-    pub fn new(room: Arc<SessionRoom>) -> Self {
-        Self { room }
-    }
-
-    async fn run_inner(&self, agent: &str, prompt: &str, subagent_id: &str) -> Result<String, String> {
-        let room = &self.room;
-        let template = AgentLoader::load_agent(agent, &room.workspace).map_err(|e| e.to_string())?;
-
-        let active_model = room.active_model.read().clone();
-        let (provider_cfg, model_cfg) = {
-            let cfg = room.config.read();
-            cfg.find_model(&active_model)
-                .map(|(p, m)| (p.clone(), m))
-                .ok_or_else(|| format!("Model not found: {}", active_model))?
-        };
-        let system_prompt = AgentLoader::build_system_prompt(&template, &room.workspace, &active_model);
-        let tools_defs = room.tools.to_definitions(&template.tools);
-        let allowed = allowed_tools(&template);
-        let cancel = room.cancel_token.read().clone();
-
-        // 子 Agent 上下文完全独立且不落库：仅返回最终文本给父轮次
-        let mut messages = vec![ChatMessage {
-            id:         uuid::Uuid::new_v4().to_string(),
-            parent_id:  None,
-            role:       Role::User,
-            content:    vec![Block::Text {
-                text: prompt.to_string(),
-            }],
-            created_at: chrono::Utc::now().timestamp_millis(),
-        }];
-        let mut last_text = String::new();
-        // 子 Agent 会连续多轮调用工具，上下文同样需要受窗口约束
-        let mut anchor: Option<TokenAnchor> = None;
-
-        for _round in 0..MAX_SUBAGENT_ROUNDS {
-            if cancel.is_cancelled() {
-                return Err("Subagent cancelled.".into());
-            }
-
-            let covered = messages.len();
-            // 压缩只作用于本次请求的副本，子 Agent 的内存历史保持完整
-            let mut request = messages.clone();
-            compact_messages(&mut request, model_cfg.context_len, anchor);
-
-            // 子 Agent 继承会话推理等级，保证主/子轮次行为一致
-            let mut sub_model_cfg = model_cfg.clone();
-            apply_reasoning_level(&mut sub_model_cfg, &self.room.reasoning_level.read());
-            let provider = UniversalProvider::new(provider_cfg.clone());
-            let mut stream_rx = provider
-                .send_stream(&request, Some(&system_prompt), &tools_defs, &sub_model_cfg)
-                .await
-                .map_err(|e| format!("Subagent provider error: {}", e))?;
-
-            let mut thinking = String::new();
-            let mut text = String::new();
-            let mut calls: Vec<(String, String, serde_json::Value)> = Vec::new();
-            let mut stop_reason = StopReason::EndTurn;
-            let mut request_input_tokens = 0usize;
-
-            loop {
-                let event = tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => return Err("Subagent cancelled.".into()),
-                    ev = stream_rx.recv() => match ev {
-                        Some(e) => e,
-                        None => break,
-                    },
-                };
-                match event {
-                    ProviderStreamEvent::ThinkingDelta(delta) => {
-                        thinking.push_str(&delta);
-                        room.broadcast(AgentEvent::ThinkingDelta {
-                            delta,
-                            subagent_id: Some(subagent_id.to_string()),
-                        });
-                    }
-                    ProviderStreamEvent::TextDelta(delta) => {
-                        text.push_str(&delta);
-                        room.broadcast(AgentEvent::TextDelta {
-                            delta,
-                            subagent_id: Some(subagent_id.to_string()),
-                        });
-                    }
-                    ProviderStreamEvent::ToolCall { id, name, input } => calls.push((id, name, input)),
-                    ProviderStreamEvent::Usage { input_tokens, .. } => {
-                        if input_tokens > 0 {
-                            request_input_tokens = input_tokens;
-                        }
-                    }
-                    ProviderStreamEvent::Done { stop_reason: reason } => stop_reason = reason,
-                    ProviderStreamEvent::Error(err) => return Err(format!("Subagent stream error: {}", err)),
-                }
-            }
-
-            if let Some(recorded) = TokenAnchor::record(covered, request_input_tokens) {
-                anchor = Some(recorded);
-            }
-
-            let mut blocks = Vec::new();
-            if !thinking.is_empty() {
-                blocks.push(Block::Thinking { thinking });
-            }
-            if !text.is_empty() {
-                blocks.push(Block::Text { text: text.clone() });
-                last_text = text;
-            }
-            for (id, name, input) in &calls {
-                blocks.push(Block::ToolUse {
-                    id:    id.clone(),
-                    name:  name.clone(),
-                    input: input.clone(),
-                });
-            }
-
-            let run_tools = stop_reason == StopReason::ToolUse && !calls.is_empty();
-            let mut assistant_id = None;
-            if !blocks.is_empty() {
-                let msg = ChatMessage {
-                    id:         uuid::Uuid::new_v4().to_string(),
-                    parent_id:  messages.last().map(|m| m.id.clone()),
-                    role:       Role::Assistant,
-                    content:    blocks,
-                    created_at: chrono::Utc::now().timestamp_millis(),
-                };
-                assistant_id = Some(msg.id.clone());
-                messages.push(msg);
-            }
-
-            if !run_tools {
-                if !calls.is_empty() {
-                    if let Some(parent) = assistant_id {
-                        messages.push(subagent_tool_results(
-                            &parent,
-                            calls
-                                .iter()
-                                .map(|(id, _, _)| (id.clone(), "Tool call not executed.".to_string(), true, Vec::new()))
-                                .collect(),
-                        ));
-                    }
-                }
-                break;
-            }
-
-            let parent = assistant_id.expect("assistant message pushed for tool use");
-            let mut results = Vec::with_capacity(calls.len());
-            let mut cancelled = false;
-            for (call_id, tool_name, tool_input) in calls {
-                if cancelled {
-                    results.push((call_id, "Tool call cancelled.".to_string(), true, Vec::new()));
-                    continue;
-                }
-                let (output, was_cancelled) = room
-                    .execute_tool_call(
-                        &call_id,
-                        &tool_name,
-                        tool_input,
-                        allowed.as_ref(),
-                        &cancel,
-                        Some(subagent_id),
-                    )
-                    .await;
-                cancelled = was_cancelled;
-                results.push((call_id, output.output, output.is_error, output.images));
-            }
-            messages.push(subagent_tool_results(&parent, results));
-            if cancelled {
-                return Err("Subagent cancelled.".into());
-            }
-        }
-
-        if last_text.trim().is_empty() {
-            return Ok("(subagent finished without a textual summary)".to_string());
-        }
-        Ok(last_text)
-    }
-}
-
-/// 子 Agent 的工具回执：与主轮次同构，图片按协议需求附在同一消息内。
-///
-/// 子 Agent 的上下文不落库也不渲染，不存在「被当作用户消息」的问题，
-/// 因此统一沿用 Anthropic 的内联形态，由各协议自行拆解。
-fn subagent_tool_results(parent_id: &str, results: Vec<(String, String, bool, Vec<ToolImage>)>) -> ChatMessage {
-    ChatMessage {
-        id:         uuid::Uuid::new_v4().to_string(),
-        parent_id:  Some(parent_id.to_string()),
-        role:       Role::User,
-        content:    results
-            .into_iter()
-            .flat_map(|(tool_use_id, content, is_error, images)| {
-                let mut out = vec![Block::ToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                }];
-                // 子 Agent 同样支持图片回传，否则「让子代理看图」会静默降级
-                out.extend(images.into_iter().map(|img| Block::Image {
-                    mime_type: img.mime_type,
-                    data:      img.data,
-                }));
-                out
-            })
-            .collect(),
-        created_at: chrono::Utc::now().timestamp_millis(),
-    }
-}
-
-#[async_trait::async_trait]
-impl SubagentRunner for RoomSubagentRunner {
-    async fn run_subagent(&self, agent: &str, prompt: &str) -> Result<String, String> {
-        let subagent_id = uuid::Uuid::new_v4().to_string();
-        let turn_id = uuid::Uuid::new_v4().to_string();
-
-        self.room.broadcast(AgentEvent::TurnStarted {
-            turn_id:     turn_id.clone(),
-            subagent_id: Some(subagent_id.clone()),
-        });
-
-        let result = self.run_inner(agent, prompt, &subagent_id).await;
-
-        self.room.broadcast(AgentEvent::TurnFinished {
-            turn_id,
-            stop_reason: if result.is_ok() {
-                StopReason::EndTurn
-            } else {
-                StopReason::Error
-            },
-            usage: TokenUsage::default(),
-            subagent_id: Some(subagent_id),
-        });
-
-        result
-    }
 }
 
 #[cfg(test)]

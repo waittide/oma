@@ -655,12 +655,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             app.stick = true;
             app.status = format!("运行中 · {}", short_id(&turn_id));
         }
-        AgentEvent::TurnFinished {
-            stop_reason,
-            usage,
-            subagent_id,
-            ..
-        } => {
+        AgentEvent::TurnFinished { stop_reason, usage, .. } => {
             app.busy = false;
             let style = if matches!(stop_reason, StopReason::Error) {
                 Style::default().fg(app.theme.error)
@@ -678,8 +673,8 @@ fn apply_event(app: &mut App, event: AgentEvent) {
                 style,
             );
             app.status = "就绪".into();
-            // 子代理轮次不是人的待办，且出错已单独报错，均不发系统通知
-            if subagent_id.is_none() && !matches!(stop_reason, StopReason::Error) {
+            // 出错已单独报错，不再发系统通知
+            if !matches!(stop_reason, StopReason::Error) {
                 app.notify(format!("任务完成（{}）", stop_reason_label(stop_reason)));
             }
         }
@@ -701,22 +696,14 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         // 仅侧栏运行标记使用（Web 端）；TUI 已由 TurnStarted/Finished 维护状态
         AgentEvent::SessionRunning { .. } => {}
         AgentEvent::QueueCleared {} => app.queue = 0,
-        AgentEvent::ThinkingDelta { delta, subagent_id } => {
-            app.append_stream(
-                if subagent_id.is_some() { "↳思" } else { "思" },
-                &delta,
-                Style::default().fg(app.theme.thinking),
-            );
+        AgentEvent::ThinkingDelta { delta } => {
+            app.append_stream("思", &delta, Style::default().fg(app.theme.thinking));
         }
-        AgentEvent::TextDelta { delta, subagent_id } => {
-            app.append_stream(
-                if subagent_id.is_some() { "↳" } else { "AI" },
-                &delta,
-                Style::default().fg(app.theme.success),
-            );
+        AgentEvent::TextDelta { delta } => {
+            app.append_stream("AI", &delta, Style::default().fg(app.theme.success));
         }
         AgentEvent::ToolCallStarted(data) => app.push(
-            if data.subagent_id.is_some() { "↳⚙" } else { "⚙" },
+            "⚙",
             format!("{} {}", data.tool_name, summarize_tool_input(&data.input)),
             Style::default().fg(app.theme.warning),
         ),

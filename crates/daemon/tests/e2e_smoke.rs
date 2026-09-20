@@ -141,14 +141,6 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
             sse(r#"{"choices":[{"delta":{"content":"done"}}]}"#),
             sse(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#),
         ]
-    } else if tool_names.iter().any(|t| t == "task") {
-        // 主 Agent：委托子代理（工具白名单不含 task 的角色不会走到这里）
-        vec![
-            sse(
-                r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_task","function":{"name":"task","arguments":"{\"agent\":\"explore\",\"prompt\":\"scan\"}"}}]}}]}"#,
-            ),
-            sse(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
-        ]
     } else if tool_names.iter().any(|t| t == "read") {
         // 读到图片时回图像工具调用（见 READ_IMAGE_TRIGGER），否则读文本文件
         let path = if wants_image { "pic.png" } else { "note.txt" };
@@ -314,10 +306,7 @@ fn count_image_blocks(messages: &[serde_json::Value]) -> usize {
         .count()
 }
 
-/// 收集事件直到**主**轮次结束。
-///
-/// 子代理复用 `TurnStarted` / `TurnFinished`，但携带 `subagent_id`；客户端必须
-/// 忽略这些事件，否则子代理收尾会被误判为整体轮次结束（进而清空流式缓冲）。
+/// 收集事件直到轮次结束。
 async fn drive_turn(client: &mut OmaClient, timeout: Duration) -> Result<Vec<AgentEvent>> {
     let deadline = Instant::now() + timeout;
     let mut events = Vec::new();
@@ -329,10 +318,7 @@ async fn drive_turn(client: &mut OmaClient, timeout: Duration) -> Result<Vec<Age
         else {
             break;
         };
-        let main_finished = matches!(
-            &event,
-            AgentEvent::TurnFinished { subagent_id, .. } if subagent_id.is_none()
-        );
+        let main_finished = matches!(&event, AgentEvent::TurnFinished { .. });
         events.push(event);
         if main_finished {
             break;
@@ -370,19 +356,16 @@ fn tool_calls(events: &[AgentEvent]) -> Vec<(String, bool, Option<String>)> {
         .iter()
         .filter_map(|e| match e {
             AgentEvent::ToolCallFinished {
-                tool_name,
-                is_error,
-                subagent_id,
-                ..
-            } => Some((tool_name.clone(), *is_error, subagent_id.clone())),
+                tool_name, is_error, ..
+            } => Some((tool_name.clone(), *is_error, None)),
             _ => None,
         })
         .collect()
 }
 
-/// 完整链路：用户输入 → 主 Agent 调用 task → 子 Agent 调用 read → 双双收敛。
+/// 完整链路：用户输入 → 主 Agent 调用 read → 工具回执 → 收尾。
 #[tokio::test]
-async fn test_end_to_end_turn_with_task_tool() -> Result<()> {
+async fn test_end_to_end_turn_with_read_tool() -> Result<()> {
     let h = start_harness().await?;
     let session = h.api.create_session(&h.workspace, Some("e2e")).await?;
 
@@ -426,33 +409,29 @@ async fn test_end_to_end_turn_with_task_tool() -> Result<()> {
     assert!(
         calls
             .iter()
-            .any(|(name, is_error, _)| name == "task" && !is_error),
-        "task tool must be registered and executable: {:?}",
+            .any(|(name, is_error, _)| name == "read" && !is_error),
+        "read tool must be registered and executable: {:?}",
         calls
     );
     assert!(
-        calls
-            .iter()
-            .any(|(name, is_error, sub)| name == "read" && !is_error && sub.is_some()),
-        "the subagent must run its own tool loop successfully: {:?}",
+        !calls.iter().any(|(name, _, _)| name == "task"),
+        "task tool must no longer be advertised: {:?}",
         calls
     );
 
-    // Mock 侧观测：主 Agent 的清单含 task，子 Agent 的清单不含写工具（explore 模板）
+    // Mock 侧观测：工具清单不含 task
     let observed = h.mock.observed.lock().clone();
-    let main = observed
-        .iter()
-        .find(|o| o.tool_names.iter().any(|t| t == "task"))
-        .expect("main agent request observed");
+    let main = observed.first().expect("agent request observed");
     assert!(
         main.tool_names.iter().any(|t| t == "write"),
-        "task agent declares write: {:?}",
+        "builtin tools must include write: {:?}",
         main.tool_names
     );
-    let sub = observed
-        .iter()
-        .find(|o| !o.tool_names.iter().any(|t| t == "task"))
-        .expect("subagent request observed");
+    assert!(
+        !main.tool_names.iter().any(|t| t == "task"),
+        "task must not be in the tool list: {:?}",
+        main.tool_names
+    );
     // 回执轮次必须呈 assistant → tool 相邻形态，否则 OpenAI 兼容端点会拒绝
     let with_results = observed
         .iter()
@@ -465,11 +444,6 @@ async fn test_end_to_end_turn_with_task_tool() -> Result<()> {
             .any(|w| w[0] == "assistant" && w[1] == "tool"),
         "tool results must immediately follow the assistant tool_calls message: {:?}",
         with_results.role_sequence
-    );
-    assert!(
-        !sub.tool_names.iter().any(|t| t == "write" || t == "edit"),
-        "explore whitelist must hide write/edit: {:?}",
-        sub.tool_names
     );
 
     assert_eq!(session.session_id, client.ready().session_id);
@@ -795,7 +769,7 @@ async fn test_session_autonamed_before_turn_finishes() -> Result<()> {
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, AgentEvent::TurnFinished { subagent_id: None, .. })),
+            .any(|e| matches!(e, AgentEvent::TurnFinished { .. })),
         "autoname must fire before the whole turn finishes: {events:?}"
     );
     assert!(
