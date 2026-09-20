@@ -76,10 +76,6 @@
     "resizeHint": "拖动调整输入框高度",
     "noModel": "未选择模型",
     "lastUsage": "上轮 {input}↑ / {output}↓ tokens",
-    "approvalRequest": "请求执行：",
-    "allowOnce": "本次允许",
-    "allowSession": "本会话允许",
-    "deny": "拒绝",
     "cancelRequested": "已请求中止当前轮次",
     "loadMessagesFailed": "加载消息失败：{message}",
     "turnError": "本轮执行出错",
@@ -121,11 +117,6 @@
     "placeholder": "请选择",
     "empty": "暂无选项"
   },
-  "approval": {
-    "normal": "普通审批",
-    "strict": "严格审批",
-    "auto": "自动放行"
-  },
   "settings": {
     "title": "设置",
     "navDefaults": "默认参数",
@@ -147,12 +138,8 @@
     "defaultModel": "默认模型",
     "defaultModelPlaceholder": "provider/model-id",
     "defaultAgent": "默认 Agent",
-    "defaultApproval": "默认审批模式",
     "saveDefaults": "保存默认",
     "defaultsSaved": "默认配置已保存",
-    "approvalNormal": "Normal（危险操作审批）",
-    "approvalStrict": "Strict（全部审批）",
-    "approvalAuto": "Auto（自动放行）",
     "add": "添加",
     "saveAll": "保存全部",
     "newProvider": "新增 Provider",
@@ -332,7 +319,6 @@
     "emptySnippet": "（空）"
   },
   "notify": {
-    "turnDone": "任务已完成",
-    "approvalNeeded": "工具执行待授权"
+    "turnDone": "任务已完成"
   }
 }

@@ -7,13 +7,10 @@ import type {
   AgentCommand,
   AgentEvent,
   AgentSummary,
-  ApprovalDecision,
-  ApprovalMode,
   Block,
   ChatMessage,
   ClientMessage,
   ModelInfo,
-  PermissionRequestedData,
   ServerMessage,
   TokenUsage,
 } from '../types';
@@ -60,7 +57,6 @@ function setLive(next: LiveTurn) {
 }
 
 export const running = ref(false);
-export const pendingApproval = ref<PermissionRequestedData | null>(null);
 export const currentLeafId = ref<string | null>(null);
 /**
  * 视图截断点。
@@ -90,7 +86,6 @@ export const finalizing = ref(false);
 
 export const activeModel = ref('');
 export const activeAgent = ref('');
-export const approvalMode = ref<ApprovalMode>('normal');
 /** 当前会话推理等级；空串 = 未设置（回退模型默认） */
 export const reasoningLevel = ref('');
 /** 可选模型目录（provider → 模型清单），来自握手载荷的 model_catalog */
@@ -312,15 +307,6 @@ function handleEvent(ev: AgentEvent) {
       });
       break;
     }
-    case 'permission_requested':
-      pendingApproval.value = ev.data ?? null;
-      if (ev.data) notifyHumanEvent('approval', ev.data.tool_name);
-      break;
-    case 'permission_resolved':
-      if (ev.data && pendingApproval.value?.request_id === ev.data.request_id) {
-        pendingApproval.value = null;
-      }
-      break;
     case 'active_branch_changed':
       currentLeafId.value = ev.data?.current_leaf_id ?? null;
       // 编辑重发同样广播此事件：轮次进行中保留实时缓冲，避免打断流式渲染
@@ -332,9 +318,6 @@ function handleEvent(ev: AgentEvent) {
       break;
     case 'agent_changed':
       if (ev.data) activeAgent.value = ev.data.active_agent;
-      break;
-    case 'approval_mode_changed':
-      if (ev.data) approvalMode.value = ev.data.mode;
       break;
     case 'reasoning_level_changed':
       if (ev.data) reasoningLevel.value = ev.data.level;
@@ -384,7 +367,6 @@ function applyCatchUp(c: ActiveTurnCatchUp | null) {
       tool: { ...c.active_tool_call, done: false },
     });
   setLive({ segments });
-  pendingApproval.value = c.pending_approval ?? null;
 }
 
 function connect() {
@@ -427,7 +409,6 @@ function connect() {
       if (r.active_theme) applyResolvedTheme(r.active_theme);
       activeModel.value = r.active_model;
       activeAgent.value = r.active_agent;
-      approvalMode.value = r.approval_mode;
       reasoningLevel.value = r.reasoning_level ?? '';
       modelCatalog.value = r.model_catalog;
       agents.value = r.agents;
@@ -479,7 +460,6 @@ export function reset() {
   messages.value = [];
   tree.value = [];
   setLive(emptyLive());
-  pendingApproval.value = null;
   running.value = false;
   finalizing.value = false;
   currentLeafId.value = null;
@@ -539,24 +519,12 @@ export function cancel(): boolean {
   return send({ kind: 'cancel' });
 }
 
-export function respond(decision: ApprovalDecision) {
-  if (!pendingApproval.value) return;
-  send({
-    kind: 'approval',
-    response: { request_id: pendingApproval.value.request_id, decision },
-  });
-}
-
 export function setModel(model: string) {
   command({ type: 'set_model', data: { model } });
 }
 
 export function setAgent(agent: string) {
   command({ type: 'set_agent', data: { agent } });
-}
-
-export function setApprovalMode(mode: ApprovalMode) {
-  command({ type: 'set_approval_mode', data: { mode } });
 }
 
 /** 设置当前会话推理等级；空串 = 回退模型默认。 */

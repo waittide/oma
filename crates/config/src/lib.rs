@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use oma_contract::{ACCENTS, AgentSummary, ApprovalMode, ModelInfo, Palette, PaletteMode, ResolvedTheme, Theme};
+use oma_contract::{ACCENTS, AgentSummary, ModelInfo, Palette, PaletteMode, ResolvedTheme, Theme};
 pub use oma_contract::{PALETTE_TOKENS, is_valid_hex_color};
 use oma_mcp::McpServerConfig;
 use oma_provider::ModelConfig;
@@ -262,7 +262,7 @@ impl PaletteLoader {
 /// 分文件存放，便于手改与版本管理。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigPaths {
-    /// 常规设置：默认模型/预设、审批与推理等级、主题、服务端、MCP
+    /// 常规设置：默认模型/预设、推理等级、主题、服务端、MCP
     pub settings: PathBuf,
     /// 提供商与模型清单
     pub models:   PathBuf,
@@ -313,8 +313,6 @@ pub struct OmaConfig {
     pub default_model:           String,
     #[serde(default = "default_agent_str")]
     pub default_agent:           String,
-    #[serde(default)]
-    pub default_approval_mode:   ApprovalMode,
     /// 新会话默认推理等级（REASONING_LEVELS 之一）；不得为空，缺省为 medium
     #[serde(default = "default_reasoning_level_str")]
     pub default_reasoning_level: String,
@@ -344,7 +342,6 @@ impl Default for OmaConfig {
         Self {
             default_model:           default_model_str(),
             default_agent:           default_agent_str(),
-            default_approval_mode:   ApprovalMode::Normal,
             default_reasoning_level: default_reasoning_level_str(),
             theme:                   Theme::default(),
             server:                  ServerConfig::default(),
@@ -1409,7 +1406,6 @@ id = "m2"
         let toml_str = r#"
 default_model = "deepseek/deepseek-chat"
 default_agent = "task"
-default_approval_mode = "strict"
 
 [server]
 listen_addr = "0.0.0.0:17431"

@@ -18,7 +18,7 @@ use axum::{
     routing::post,
 };
 use oma_client::{ConnectOptions, OmaClient, SessionApi};
-use oma_contract::{AgentCommand, AgentEvent, ApprovalMode, ClientType, StopReason};
+use oma_contract::{AgentCommand, AgentEvent, ClientType, StopReason};
 use oma_daemon::{DaemonState, create_router};
 use oma_mcp::McpManager;
 use oma_storage::StorageManager;
@@ -236,7 +236,6 @@ async fn start_harness_with(context_len: usize, supports_vision: bool) -> Result
         r#"
 default_model = "mock/model-x"
 default_agent = "task"
-default_approval_mode = "auto"
 
 [providers.mock]
 api_type = "completion"
@@ -337,37 +336,6 @@ async fn drive_turn(client: &mut OmaClient, timeout: Duration) -> Result<Vec<Age
         else {
             break;
         };
-        let main_finished = matches!(
-            &event,
-            AgentEvent::TurnFinished { subagent_id, .. } if subagent_id.is_none()
-        );
-        events.push(event);
-        if main_finished {
-            break;
-        }
-    }
-    Ok(events)
-}
-
-/// 收集事件并在收到审批请求时按 `decision` 自动放行，直到主轮次结束。
-async fn drive_turn_approving(
-    client: &mut OmaClient,
-    timeout: Duration,
-    decision: oma_contract::ApprovalDecision,
-) -> Result<Vec<AgentEvent>> {
-    let deadline = Instant::now() + timeout;
-    let mut events = Vec::new();
-    while Instant::now() < deadline {
-        let Some(event) = tokio::time::timeout(Duration::from_secs(5), client.next_event())
-            .await
-            .ok()
-            .flatten()
-        else {
-            break;
-        };
-        if let AgentEvent::PermissionRequested(data) = &event {
-            client.respond_approval(&data.request_id, decision).await?;
-        }
         let main_finished = matches!(
             &event,
             AgentEvent::TurnFinished { subagent_id, .. } if subagent_id.is_none()
@@ -742,80 +710,6 @@ async fn test_attachment_reaches_provider() -> Result<()> {
     );
     Ok(())
 }
-
-/// 审批模式为 strict 时，工具调用必须先取得人工放行。
-#[tokio::test]
-async fn test_strict_approval_blocks_until_allowed() -> Result<()> {
-    let h = start_harness().await?;
-    let session = h.api.create_session(&h.workspace, Some("approval")).await?;
-
-    let mut client = OmaClient::connect(ConnectOptions {
-        addr:        h.base.clone(),
-        token:       h.token.clone(),
-        workspace:   h.workspace.clone(),
-        session_id:  session.session_id.clone(),
-        client_type: ClientType::Cli,
-        client_name: "smoke".into(),
-    })
-    .await?;
-
-    client
-        .send_command(AgentCommand::SetApprovalMode {
-            mode: ApprovalMode::Strict,
-        })
-        .await?;
-    client
-        .send_command(AgentCommand::UserInput {
-            content:     "explore".into(),
-            attachments: vec![],
-        })
-        .await?;
-
-    // 等到审批请求出现，再放行
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut request_id = None;
-    while request_id.is_none() && Instant::now() < deadline {
-        let Some(event) = tokio::time::timeout(Duration::from_secs(5), client.next_event())
-            .await
-            .ok()
-            .flatten()
-        else {
-            break;
-        };
-        if let AgentEvent::PermissionRequested(data) = event {
-            request_id = Some(data.request_id);
-        }
-    }
-    let request_id = request_id.expect("strict mode must request approval before running a tool");
-
-    client
-        .respond_approval(&request_id, oma_contract::ApprovalDecision::AllowOnce)
-        .await?;
-    // 子代理的工具调用同样受审批约束，继续按同一策略放行
-    let events = drive_turn_approving(
-        &mut client,
-        Duration::from_secs(30),
-        oma_contract::ApprovalDecision::AllowOnce,
-    )
-    .await?;
-    let calls = tool_calls(&events);
-    assert!(
-        calls
-            .iter()
-            .any(|(name, is_error, _)| name == "task" && !is_error),
-        "approved main-agent tool must actually run: {:?}",
-        calls
-    );
-    assert!(
-        calls
-            .iter()
-            .any(|(name, is_error, _)| name == "read" && !is_error),
-        "approved subagent tool must actually run: {:?}",
-        calls
-    );
-    Ok(())
-}
-
 
 /// 留空标题：模型在首轮结束后自动命名并广播 session_renamed。
 #[tokio::test]

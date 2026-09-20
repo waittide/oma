@@ -2,8 +2,6 @@
 
 export type Role = 'system' | 'user' | 'assistant';
 export type ClientType = 'tui' | 'web' | 'tauri' | 'cli';
-export type ApprovalMode = 'normal' | 'strict' | 'auto';
-export type ApprovalDecision = 'allow_once' | 'allow_session' | 'deny';
 export type StopReason = 'end_turn' | 'tool_use' | 'max_tokens' | 'cancelled' | 'error';
 
 /**
@@ -81,20 +79,11 @@ export interface ToolCallStartedData {
   subagent_id?: string | null;
 }
 
-export interface PermissionRequestedData {
-  request_id: string;
-  /** 待执行的工具名 */
-  tool_name: string;
-  /** 工具入参原文；与 ToolCallStartedData.input 同为结构化 JSON */
-  input: unknown;
-}
-
 export interface ActiveTurnCatchUp {
   turn_id: string;
   accumulated_thinking: string;
   accumulated_text: string;
   active_tool_call?: ToolCallStartedData | null;
-  pending_approval?: PermissionRequestedData | null;
 }
 
 export interface TokenUsage {
@@ -114,12 +103,9 @@ export type AgentEvent =
   | { type: 'text_delta'; data?: { delta: string; subagent_id?: string | null } }
   | { type: 'tool_call_started'; data?: ToolCallStartedData }
   | { type: 'tool_call_finished'; data?: { call_id: string; tool_name: string; output: string; is_error: boolean; subagent_id?: string | null } }
-  | { type: 'permission_requested'; data?: PermissionRequestedData }
-  | { type: 'permission_resolved'; data?: { request_id: string; decision: ApprovalDecision; resolved_by: string } }
   | { type: 'active_branch_changed'; data?: { current_leaf_id: string } }
   | { type: 'model_changed'; data?: { active_model: string } }
   | { type: 'agent_changed'; data?: { active_agent: string } }
-  | { type: 'approval_mode_changed'; data?: { mode: ApprovalMode } }
   | { type: 'reasoning_level_changed'; data?: { level: string } }
   | { type: 'context_usage'; data?: { tokens: number; context_len: number } }
   | { type: 'active_turn_catch_up'; data?: ActiveTurnCatchUp }
@@ -172,7 +158,6 @@ export interface Ready {
   workspace: string;
   active_model: string;
   active_agent: string;
-  approval_mode: ApprovalMode;
   /** 当前会话推理等级；空串 = 未设置（回退模型默认） */
   reasoning_level: string;
   current_leaf_id: string | null;
@@ -204,7 +189,6 @@ export type AgentCommand =
   | { type: 'user_input'; data: { content: string; attachments?: string[] } }
   | { type: 'set_model'; data: { model: string } }
   | { type: 'set_agent'; data: { agent: string } }
-  | { type: 'set_approval_mode'; data: { mode: ApprovalMode } }
   | { type: 'set_reasoning_level'; data: { level: string } }
   | { type: 'fork_and_run'; data: { parent_message_id: string; new_content?: string | null } }
   | { type: 'switch_branch'; data: { leaf_message_id: string } };
@@ -220,7 +204,6 @@ export type ClientMessage =
       version: string;
     }
   | { kind: 'command'; command: AgentCommand }
-  | { kind: 'approval'; response: { request_id: string; decision: ApprovalDecision } }
   | { kind: 'cancel' };
 
 /** 会话索引记录 (SessionRecord) */
@@ -230,7 +213,6 @@ export interface SessionRecord {
   title: string;
   active_model: string;
   active_agent: string;
-  approval_mode: ApprovalMode;
   /** 会话推理等级；空串 = 未设置（回退模型默认） */
   reasoning_level?: string;
   current_leaf_id: string | null;
@@ -400,7 +382,6 @@ export interface ProviderConfig {
 export interface OmaConfig {
   default_model: string;
   default_agent: string;
-  default_approval_mode: ApprovalMode;
   /** 新会话默认推理等级；空串 = 未指定（回退模型默认） */
   default_reasoning_level?: string;
   theme: Theme;

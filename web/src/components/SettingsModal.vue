@@ -440,7 +440,6 @@ async function removePalette(id: string) {
 const defaults = reactive({
   model: '',
   agent: '',
-  approval: 'normal' as OmaConfig['default_approval_mode'],
   reasoning: '',
 });
 const savingDefaults = ref(false);
@@ -453,7 +452,6 @@ watch(
     if (config.value) {
       defaults.model = config.value.default_model;
       defaults.agent = config.value.default_agent;
-      defaults.approval = config.value.default_approval_mode;
       defaults.reasoning = config.value.default_reasoning_level || DEFAULT_REASONING_LEVEL;
     }
     mode.value = theme.value.mode;
@@ -472,13 +470,12 @@ async function saveDefaults() {
   savingDefaults.value = true;
   try {
     // 必须映射到 OmaConfig 的真实字段名：直接展开 defaults 会写入
-    // model/agent/approval 这三个无效键，服务端忽略后配置纹丝不动，
+    // model/agent/reasoning 这三个无效键，服务端忽略后配置纹丝不动，
     // 但请求本身成功 —— 表现为「提示保存成功，实际没生效」。
     await saveConfig({
       ...config.value,
       default_model: defaults.model,
       default_agent: defaults.agent,
-      default_approval_mode: defaults.approval,
       default_reasoning_level: defaults.reasoning,
     });
     toast.success(t('defaultsSaved'));
@@ -1311,14 +1308,6 @@ async function saveProviders() {
   }
 }
 
-const approvalOptions = computed<{ value: OmaConfig['default_approval_mode']; label: string }[]>(
-  () => [
-    { value: 'normal', label: t('approvalNormal') },
-    { value: 'strict', label: t('approvalStrict') },
-    { value: 'auto', label: t('approvalAuto') },
-  ],
-);
-
 const localeOptions = computed(() =>
   LOCALES.map((l) => ({ value: l.value, label: l.label })),
 );
@@ -1643,19 +1632,6 @@ function pickLocale(v: Locale) {
                     :options="agentOptions"
                     style="width: 200px"
                     @update:model-value="(v) => (defaults.agent = String(v ?? ''))"
-                  />
-                </div>
-              </div>
-              <div class="srow">
-                <div class="srow-main">
-                  <span class="srow-title">{{ t('defaultApproval') }}</span>
-                </div>
-                <div class="srow-ctl">
-                  <UiSelect
-                    :model-value="defaults.approval"
-                    :options="approvalOptions"
-                    style="width: 200px"
-                    @update:model-value="(v) => (defaults.approval = v as typeof defaults.approval)"
                   />
                 </div>
               </div>
