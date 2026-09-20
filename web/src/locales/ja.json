@@ -245,7 +245,7 @@
     "themeRowLight": "ライトテーマ",
     "themeRowDark": "ダークテーマ",
     "manageThemes": "カスタムパレット",
-    "manageThemesDesc": "パレットは設定ディレクトリの themes 配下に TOML として保存されます。",
+    "manageThemesDesc": "パレットは設定ディレクトリの themes 配下に JSON として保存されます。",
     "newTheme": "新しいパレット",
     "editTheme": "パレットを編集",
     "themeName": "名前",

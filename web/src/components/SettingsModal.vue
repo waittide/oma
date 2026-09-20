@@ -1426,6 +1426,7 @@ function pickLocale(v: Locale) {
                     <UiInput
                       :model-value="d.api_key"
                       :type="keyRevealed[d.uid] ? 'text' : 'password'"
+                      :password-toggle="false"
                       :placeholder="d.keyMasked ? '*'.repeat(d.keyLen) : ''"
                       @update:model-value="(v) => setApiKey(d, v)"
                     />

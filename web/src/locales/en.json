@@ -245,7 +245,7 @@
     "themeRowLight": "Light Theme",
     "themeRowDark": "Dark Theme",
     "manageThemes": "Custom Themes",
-    "manageThemesDesc": "Palettes live as TOML files under the config themes directory.",
+    "manageThemesDesc": "Palettes live as JSON files under the config themes directory.",
     "newTheme": "New Palette",
     "editTheme": "Edit Palette",
     "themeName": "Name",

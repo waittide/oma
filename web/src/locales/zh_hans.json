@@ -245,7 +245,7 @@
     "themeRowLight": "浅色主题",
     "themeRowDark": "深色主题",
     "manageThemes": "自定义主题",
-    "manageThemesDesc": "调色板以 TOML 存放于配置目录的 themes 子目录。",
+    "manageThemesDesc": "调色板以 JSON 存放于配置目录的 themes 子目录。",
     "newTheme": "新建调色板",
     "editTheme": "编辑调色板",
     "themeName": "名称",

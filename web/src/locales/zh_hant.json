@@ -245,7 +245,7 @@
     "themeRowLight": "淺色主題",
     "themeRowDark": "深色主題",
     "manageThemes": "自訂主題",
-    "manageThemesDesc": "調色盤以 TOML 存放於設定目錄的 themes 子目錄。",
+    "manageThemesDesc": "調色盤以 JSON 存放於設定目錄的 themes 子目錄。",
     "newTheme": "新建調色盤",
     "editTheme": "編輯調色盤",
     "themeName": "名稱",
