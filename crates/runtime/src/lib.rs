@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use oma_config::{AgentLoader, AgentTemplate, OmaConfig};
 use oma_contract::{
     ActiveTurnCatchUp, AgentCommand, AgentEvent, ApprovalDecision, ApprovalMode, AskAnswer, AskQuestion,
@@ -32,49 +32,7 @@ const PRUNED_TOOL_RESULT: &str = "[工具执行结果已截断修剪以节省上
 const PRUNE_MIN_CHARS: usize = 300;
 
 // =========================================================================
-// 1. 熔断器 Circuit Breaker
-// =========================================================================
-
-#[derive(Debug, Default)]
-pub struct CircuitBreaker {
-    last_signature:    Option<String>,
-    consecutive_count: usize,
-}
-
-impl CircuitBreaker {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// 检查并记录工具调用签名，连续 3 次相同参数则触发熔断报错
-    pub fn check_and_record(&mut self, tool_name: &str, input: &serde_json::Value) -> Result<()> {
-        let sig = format!("{}:{}", tool_name, input);
-        if let Some(last) = &self.last_signature {
-            if last == &sig {
-                self.consecutive_count += 1;
-                if self.consecutive_count >= 3 {
-                    bail!(
-                        "【系统熔断】检测到你已连续 3 次使用相同参数调用工具 '{}'，结果未发生改变。请停止重复尝试，重新审视假设并尝试其他排查或修改路径。",
-                        tool_name
-                    );
-                }
-                return Ok(());
-            }
-        }
-
-        self.last_signature = Some(sig);
-        self.consecutive_count = 1;
-        Ok(())
-    }
-
-    pub fn reset(&mut self) {
-        self.last_signature = None;
-        self.consecutive_count = 0;
-    }
-}
-
-// =========================================================================
-// 2. 审批仲裁器 Approval Arbiter (先到先得 + 超时兜底)
+// 1. 审批仲裁器 Approval Arbiter (先到先得 + 超时兜底)
 // =========================================================================
 
 #[derive(Default)]
@@ -467,7 +425,6 @@ pub struct SessionRoom {
     pub arbiter:         ApprovalArbiter,
     pub ask_arbiter:     AskArbiter,
     pub cancel_token:    RwLock<CancellationToken>,
-    pub circuit_breaker: Mutex<CircuitBreaker>,
     /// 轮次占用权：由 CAS 抢占，确保同一房间任意时刻至多一个执行中的轮次
     pub is_running:      AtomicBool,
     /// 插件宿主（工具已在装配期注册进 ToolRegistry；此处用于 `tool_call` 钩子）
@@ -507,7 +464,6 @@ impl SessionRoom {
             arbiter: ApprovalArbiter::new(),
             ask_arbiter: AskArbiter::new(),
             cancel_token: RwLock::new(CancellationToken::new()),
-            circuit_breaker: Mutex::new(CircuitBreaker::new()),
             is_running: AtomicBool::new(false),
             plugins: RwLock::new(None),
             named: AtomicBool::new(false),
@@ -846,22 +802,7 @@ impl SessionRoom {
             }
         }
 
-        // 1. 熔断器检查
-        let breaker_check = {
-            self.circuit_breaker
-                .lock()
-                .await
-                .check_and_record(tool_name, &tool_input)
-        };
-        if let Err(e) = breaker_check {
-            return (
-                self.finish_tool_call(call_id, tool_name, ToolOutput::error(e.to_string()), subagent_id)
-                    .await,
-                false,
-            );
-        }
-
-        // 2. 审批
+        // 1. 审批
         match self.request_approval(tool_name, &tool_input, cancel).await {
             ApprovalOutcome::Allowed => {}
             ApprovalOutcome::Denied => {
@@ -2011,19 +1952,6 @@ impl SubagentRunner for RoomSubagentRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_circuit_breaker() {
-        let mut cb = CircuitBreaker::new();
-        let input = serde_json::json!({ "path": "test.txt" });
-
-        assert!(cb.check_and_record("read", &input).is_ok());
-        assert!(cb.check_and_record("read", &input).is_ok());
-        assert!(cb.check_and_record("read", &input).is_err()); // 连续第 3 次触发熔断
-
-        cb.reset();
-        assert!(cb.check_and_record("read", &input).is_ok());
-    }
 
     #[tokio::test]
     async fn test_approval_arbiter() {
