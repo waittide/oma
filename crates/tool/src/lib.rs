@@ -611,17 +611,17 @@ fn parse_env(buf: &[u8]) -> Vec<(OsString, OsString)> {
         .collect()
 }
 
-pub struct ShellTool {
+pub struct BashTool {
     timeout_secs: u64,
 }
 
-impl Default for ShellTool {
+impl Default for BashTool {
     fn default() -> Self {
         Self { timeout_secs: 60 }
     }
 }
 
-impl ShellTool {
+impl BashTool {
     pub fn new(timeout_secs: u64) -> Self {
         Self { timeout_secs }
     }
@@ -677,13 +677,13 @@ impl Drop for ProcessGroupGuard {
 }
 
 #[async_trait::async_trait]
-impl Tool for ShellTool {
+impl Tool for BashTool {
     fn name(&self) -> &'static str {
-        "shell"
+        "bash"
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command with process group management and timeout."
+        "Execute a bash command with process group management and timeout."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -692,7 +692,7 @@ impl Tool for ShellTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute"
+                    "description": "The bash command to execute"
                 }
             },
             "required": ["command"]
@@ -702,7 +702,7 @@ impl Tool for ShellTool {
     async fn execute(&self, workspace: &Path, input: serde_json::Value) -> ToolOutput {
         let input: ShellInput = match serde_json::from_value(input) {
             Ok(v) => v,
-            Err(e) => return ToolOutput::error(format!("Invalid arguments for shell: {}", e)),
+            Err(e) => return ToolOutput::error(format!("Invalid arguments for bash: {}", e)),
         };
 
         // 解释器与环境取自登录 shell 快照（见 `init_shell_env`）：
@@ -738,7 +738,7 @@ impl Tool for ShellTool {
 
         let child = match cmd.spawn() {
             Ok(c) => c,
-            Err(e) => return ToolOutput::error(format!("Failed to spawn shell command: {}", e)),
+            Err(e) => return ToolOutput::error(format!("Failed to spawn bash command: {}", e)),
         };
 
         // 守卫覆盖超时与取消两条路径；正常回收后解除
@@ -777,7 +777,351 @@ impl Tool for ShellTool {
 }
 
 // ==========================================
-// 5. Tool Registry
+// 5. 文件检索工具：ls / find / grep（对齐 pi 内置工具集）
+// ==========================================
+
+/// 递归收集普通文件；跳过 `.git` 目录，限制递归深度避免符号链接环。
+fn walk_files(root: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+    const MAX_DEPTH: usize = 32;
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() {
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            walk_files(&entry.path(), out, depth + 1);
+        } else if ft.is_file() {
+            out.push(entry.path());
+        }
+    }
+}
+
+/// 把 glob 编译为正则：`**` 跨目录、`*` 不跨目录、`?` 单字符。
+fn glob_to_regex(pattern: &str) -> Result<regex::Regex, String> {
+    let mut out = String::from("^");
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' => {
+                if i + 1 < chars.len() && chars[i + 1] == '*' {
+                    out.push_str(".*");
+                    i += 2;
+                    // 吞掉 `**/` 里的斜杠，让 `**/x` 也能匹配顶层的 `x`
+                    if i < chars.len() && chars[i] == '/' {
+                        out.push_str("/?");
+                        i += 1;
+                    }
+                    continue;
+                }
+                out.push_str("[^/]*");
+            }
+            '?' => out.push_str("[^/]"),
+            c => out.push_str(&regex::escape(&c.to_string())),
+        }
+        i += 1;
+    }
+    out.push('$');
+    regex::Regex::new(&out).map_err(|e| e.to_string())
+}
+
+/// 相对路径展示：优先相对工作区，失败时退回原路径。
+fn display_rel(workspace: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+// ---------- ls ----------
+
+pub struct LsTool;
+
+#[derive(Debug, Deserialize)]
+struct LsInput {
+    #[serde(default)]
+    path: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for LsTool {
+    fn name(&self) -> &'static str {
+        "ls"
+    }
+
+    fn description(&self) -> &'static str {
+        "List directory entries in a tree-ish view. "
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory to list (default: workspace root)"
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, workspace: &Path, input: serde_json::Value) -> ToolOutput {
+        let input: LsInput = match serde_json::from_value(input) {
+            Ok(v) => v,
+            Err(e) => return ToolOutput::error(format!("Invalid arguments for ls: {}", e)),
+        };
+        let raw = if input.path.is_empty() {
+            "."
+        } else {
+            input.path.as_str()
+        };
+        let dir = resolve_path(workspace, raw);
+        let mut entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e.flatten().collect::<Vec<_>>(),
+            Err(e) => return ToolOutput::error(format!("Failed to list {}: {}", dir.display(), e)),
+        };
+        entries.sort_by_key(|e| e.file_name());
+
+        let mut lines = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                lines.push(format!("{}/", name));
+            } else {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                lines.push(format!("{}\t{} B", name, size));
+            }
+        }
+        if lines.is_empty() {
+            return ToolOutput::success("(empty directory)");
+        }
+        ToolOutput::success(truncate_output(&lines.join("\n")))
+    }
+}
+
+// ---------- find ----------
+
+pub struct FindTool;
+
+#[derive(Debug, Deserialize)]
+struct FindInput {
+    pattern: String,
+    #[serde(default)]
+    path:    String,
+    #[serde(default = "default_find_limit")]
+    limit:   usize,
+}
+
+fn default_find_limit() -> usize {
+    200
+}
+
+#[async_trait::async_trait]
+impl Tool for FindTool {
+    fn name(&self) -> &'static str {
+        "find"
+    }
+
+    fn description(&self) -> &'static str {
+        "Find files by glob pattern (e.g. '*.rs', 'src/**/*.ts'). Returns matching paths."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": { "type": "string", "description": "Glob pattern to match against file paths" },
+                "path": { "type": "string", "description": "Directory to search (default: workspace root)" },
+                "limit": { "type": "integer", "description": "Maximum results (default: 200)" }
+            },
+            "required": ["pattern"]
+        })
+    }
+
+    async fn execute(&self, workspace: &Path, input: serde_json::Value) -> ToolOutput {
+        let input: FindInput = match serde_json::from_value(input) {
+            Ok(v) => v,
+            Err(e) => return ToolOutput::error(format!("Invalid arguments for find: {}", e)),
+        };
+        if input.pattern.trim().is_empty() {
+            return ToolOutput::error("pattern must not be empty");
+        }
+        // 无 `/` 的 pattern 只匹配文件名（与 fd 一致），有 `/` 时匹配相对路径
+        let match_name_only = !input.pattern.contains('/');
+        let re = match glob_to_regex(&input.pattern) {
+            Ok(r) => r,
+            Err(e) => return ToolOutput::error(format!("Invalid pattern: {}", e)),
+        };
+
+        let raw = if input.path.is_empty() {
+            "."
+        } else {
+            input.path.as_str()
+        };
+        let root = resolve_path(workspace, raw);
+        let mut files = Vec::new();
+        walk_files(&root, &mut files, 0);
+        files.sort();
+
+        let mut matches = Vec::new();
+        for path in files {
+            let candidate = if match_name_only {
+                path.file_name().map(|n| n.to_string_lossy().to_string())
+            } else {
+                Some(display_rel(&root, &path))
+            };
+            let Some(candidate) = candidate else { continue };
+            if re.is_match(&candidate) {
+                matches.push(display_rel(workspace, &path));
+                if matches.len() >= input.limit.max(1) {
+                    break;
+                }
+            }
+        }
+        if matches.is_empty() {
+            return ToolOutput::success(format!("No files matched '{}'", input.pattern));
+        }
+        ToolOutput::success(truncate_output(&matches.join("\n")))
+    }
+}
+
+// ---------- grep ----------
+
+pub struct GrepTool;
+
+#[derive(Debug, Deserialize)]
+struct GrepInput {
+    pattern:     String,
+    #[serde(default)]
+    path:        String,
+    #[serde(default)]
+    glob:        Option<String>,
+    #[serde(default)]
+    ignore_case: bool,
+    #[serde(default)]
+    literal:     bool,
+    #[serde(default = "default_grep_limit")]
+    limit:       usize,
+}
+
+fn default_grep_limit() -> usize {
+    100
+}
+
+#[async_trait::async_trait]
+impl Tool for GrepTool {
+    fn name(&self) -> &'static str {
+        "grep"
+    }
+
+    fn description(&self) -> &'static str {
+        "Search file contents for a pattern. Returns matching lines as path:line:text. "
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": { "type": "string", "description": "Search pattern (regex or literal string)" },
+                "path": { "type": "string", "description": "File or directory to search (default: workspace root)" },
+                "glob": { "type": "string", "description": "Filter files by glob pattern, e.g. '*.rs'" },
+                "ignore_case": { "type": "boolean", "description": "Case-insensitive search (default: false)" },
+                "literal": { "type": "boolean", "description": "Treat pattern as literal string (default: false)" },
+                "limit": { "type": "integer", "description": "Maximum matches (default: 100)" }
+            },
+            "required": ["pattern"]
+        })
+    }
+
+    async fn execute(&self, workspace: &Path, input: serde_json::Value) -> ToolOutput {
+        let input: GrepInput = match serde_json::from_value(input) {
+            Ok(v) => v,
+            Err(e) => return ToolOutput::error(format!("Invalid arguments for grep: {}", e)),
+        };
+        if input.pattern.trim().is_empty() {
+            return ToolOutput::error("pattern must not be empty");
+        }
+        let body = if input.literal {
+            regex::escape(&input.pattern)
+        } else {
+            input.pattern.clone()
+        };
+        let re = match regex::RegexBuilder::new(&body)
+            .case_insensitive(input.ignore_case)
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => return ToolOutput::error(format!("Invalid pattern: {}", e)),
+        };
+        let glob_re = match input.glob.as_deref().filter(|g| !g.is_empty()) {
+            Some(g) => match glob_to_regex(g) {
+                Ok(r) => Some(r),
+                Err(e) => return ToolOutput::error(format!("Invalid glob: {}", e)),
+            },
+            None => None,
+        };
+
+        let raw = if input.path.is_empty() {
+            "."
+        } else {
+            input.path.as_str()
+        };
+        let root = resolve_path(workspace, raw);
+
+        let mut files = Vec::new();
+        if root.is_file() {
+            files.push(root.clone());
+        } else {
+            walk_files(&root, &mut files, 0);
+        }
+        files.sort();
+
+        let limit = input.limit.max(1);
+        let mut out: Vec<String> = Vec::new();
+        let mut hit_limit = false;
+        'files: for path in files {
+            if let Some(re_g) = &glob_re {
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string());
+                let rel = display_rel(&root, &path);
+                let ok = name.as_deref().is_some_and(|n| re_g.is_match(n)) || re_g.is_match(&rel);
+                if !ok {
+                    continue;
+                }
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue; // 二进制 / 非 UTF-8 文件直接跳过
+            };
+            let shown = display_rel(workspace, &path);
+            for (idx, line) in content.lines().enumerate() {
+                if re.is_match(line) {
+                    out.push(format!("{}:{}:{}", shown, idx + 1, line));
+                    if out.len() >= limit {
+                        hit_limit = true;
+                        break 'files;
+                    }
+                }
+            }
+        }
+        if out.is_empty() {
+            return ToolOutput::success(format!("No matches for '{}'", input.pattern));
+        }
+        let mut text = out.join("\n");
+        if hit_limit {
+            text.push_str(&format!("\n... [达到 {} 条上限]", limit));
+        }
+        ToolOutput::success(truncate_output(&text))
+    }
+}
+
+// ==========================================
+// 6. Tool Registry
 // ==========================================
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
@@ -798,7 +1142,10 @@ impl ToolRegistry {
         reg.register(Arc::new(ReadTool));
         reg.register(Arc::new(WriteTool));
         reg.register(Arc::new(EditTool));
-        reg.register(Arc::new(ShellTool::default()));
+        reg.register(Arc::new(BashTool::default()));
+        reg.register(Arc::new(LsTool));
+        reg.register(Arc::new(FindTool));
+        reg.register(Arc::new(GrepTool));
         reg
     }
 
@@ -1081,7 +1428,7 @@ mod tests {
         // 子进程在超时之后才写入标记文件：若进程组未被杀死，文件就会出现
         let command = format!("(sleep 2; echo leaked > {}) & sleep 30", marker.display());
 
-        let shell = ShellTool::new(1);
+        let shell = BashTool::new(1);
         let out = shell
             .execute(tmp.path(), serde_json::json!({ "command": command }))
             .await;
@@ -1105,7 +1452,7 @@ mod tests {
         let marker = tmp.path().join("cancelled.txt");
         let command = format!("(sleep 2; echo leaked > {}) & sleep 30", marker.display());
 
-        let shell = ShellTool::new(60);
+        let shell = BashTool::new(60);
         let workspace = tmp.path().to_path_buf();
         let task = tokio::spawn(async move {
             shell
@@ -1129,7 +1476,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let ws = tmp.path();
 
-        let shell = ShellTool::new(5);
+        let shell = BashTool::new(5);
         let out = shell
             .execute(
                 ws,
@@ -1150,7 +1497,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let ws = tmp.path();
 
-        let shell = ShellTool::new(5);
+        let shell = BashTool::new(5);
         let out = shell
             .execute(ws, serde_json::json!({ "command": "pwd" }))
             .await;
@@ -1179,5 +1526,70 @@ mod tests {
                 ("EMPTY".to_string(), String::new()),
             ]
         );
+    }
+
+    /// 工具集必须与 pi 对齐：bash / edit / find / grep / ls / read / write。
+    #[test]
+    fn test_builtin_tool_set_matches_pi() {
+        let reg = ToolRegistry::with_builtins();
+        let mut names: Vec<&str> = reg.list().iter().map(|t| t.name()).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["bash", "edit", "find", "grep", "ls", "read", "write"]);
+    }
+
+    /// glob 转换：`*` 不跨目录、`**` 跨目录、`?` 单字符。
+    #[test]
+    fn test_glob_to_regex() {
+        let m = |pat: &str, s: &str| glob_to_regex(pat).unwrap().is_match(s);
+        assert!(m("*.rs", "main.rs"));
+        assert!(!m("*.rs", "src/main.rs"));
+        assert!(m("**/*.rs", "src/deep/main.rs"));
+        assert!(m("**/*.rs", "main.rs"));
+        assert!(m("src/**/*.ts", "src/a/b/c.ts"));
+        assert!(m("a?c", "abc"));
+        assert!(!m("a?c", "ac"));
+    }
+
+    #[tokio::test]
+    async fn test_ls_find_grep() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        std::fs::create_dir_all(ws.join("src"))?;
+        std::fs::write(ws.join("src/main.rs"), "fn main() {}\n// needle line\n")?;
+        std::fs::write(ws.join("README.md"), "# title\nneedle here\n")?;
+
+        let ls = LsTool.execute(ws, serde_json::json!({})).await;
+        assert!(!ls.is_error, "{}", ls.output);
+        assert!(ls.output.contains("src/"));
+        assert!(ls.output.contains("README.md"));
+
+        let find = FindTool
+            .execute(ws, serde_json::json!({ "pattern": "*.rs" }))
+            .await;
+        assert!(!find.is_error, "{}", find.output);
+        assert!(find.output.contains("src/main.rs"));
+        assert!(!find.output.contains("README.md"));
+
+        let grep = GrepTool
+            .execute(ws, serde_json::json!({ "pattern": "needle" }))
+            .await;
+        assert!(!grep.is_error, "{}", grep.output);
+        assert!(grep.output.contains("src/main.rs:2:"));
+        assert!(grep.output.contains("README.md:2:"));
+
+        // glob 过滤
+        let grep_rs = GrepTool
+            .execute(ws, serde_json::json!({ "pattern": "needle", "glob": "*.rs" }))
+            .await;
+        assert!(grep_rs.output.contains("main.rs"));
+        assert!(!grep_rs.output.contains("README.md"));
+
+        // 无匹配
+        let none = GrepTool
+            .execute(ws, serde_json::json!({ "pattern": "absent-token" }))
+            .await;
+        assert!(!none.is_error);
+        assert!(none.output.contains("No matches"));
+        Ok(())
     }
 }

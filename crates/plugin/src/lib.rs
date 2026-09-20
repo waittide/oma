@@ -601,13 +601,13 @@ oma.registerTool({
             &ws.join(".oma").join("plugins"),
             "guard",
             r#"
-oma.on("tool_call", (e) => (e.name === "shell" ? { block: true, reason: "shell disabled" } : undefined));
+oma.on("tool_call", (e) => (e.name === "bash" ? { block: true, reason: "bash disabled" } : undefined));
 "#,
         );
 
         let host = PluginHost::load(ws);
-        let blocked = host.before_tool_call("shell", &serde_json::json!({ "command": "rm -rf /" }));
-        assert_eq!(blocked.as_deref(), Some("shell disabled"));
+        let blocked = host.before_tool_call("bash", &serde_json::json!({ "command": "rm -rf /" }));
+        assert_eq!(blocked.as_deref(), Some("bash disabled"));
         assert!(
             host.before_tool_call("read", &serde_json::json!({}))
                 .is_none()

@@ -2402,7 +2402,7 @@ data: [DONE]\n\n";
             "\n\n",
             r#"data: {"type":"response.output_text.delta","delta":"world"}"#,
             "\n\n",
-            r#"data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_9","name":"shell"}}"#,
+            r#"data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_9","name":"bash"}}"#,
             "\n\n",
             r#"data: {"type":"response.function_call_arguments.delta","delta":"{\"cmd\":"}"#,
             "\n\n",
@@ -2433,7 +2433,7 @@ data: [DONE]\n\n";
             events[3],
             ProviderStreamEvent::ToolCall {
                 id:    "call_9".into(),
-                name:  "shell".into(),
+                name:  "bash".into(),
                 input: serde_json::json!({ "cmd": "ls -la" }),
             }
         );

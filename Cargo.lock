@@ -1879,6 +1879,7 @@ dependencies = [
  "async-trait",
  "libc",
  "oma-contract",
+ "regex",
  "serde",
  "serde_json",
  "similar",
