@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { LuChevronRight } from 'vue-icons-plus/lu';
+import { UiButton } from '@waittide/ui';
 import OModal from './ui/OModal.vue';
 import * as chat from '../stores/chat';
 import type { ChatMessage } from '../types';
@@ -181,15 +182,17 @@ function pick(r: Row) {
 <template>
   <OModal :open="props.open" :title="t('title')" width="760px" @close="emit('close')">
     <div class="tree">
-      <button
+      <UiButton
         v-for="r in rows"
         :key="r.msg.id"
-        type="button"
+        variant="ghost"
+        tone="neutral"
+        block
         class="node"
         :class="{ selected: r.leaf, off: !r.active }"
         :style="{ paddingLeft: `${CURSOR_CHARS + r.indent * LEVEL_CHARS}ch` }"
         :disabled="busy"
-        :title="snippet(r.msg)"
+        v-bind="{ title: snippet(r.msg) }"
         @click="pick(r)"
       >
         <!-- 光标槽 -->
@@ -224,7 +227,7 @@ function pick(r: Row) {
         <span class="bullet"><i v-if="r.active" /></span>
         <span class="role" :class="r.msg.role">{{ r.msg.role }}:&nbsp;</span>
         <span class="text">{{ snippet(r.msg) }}</span>
-      </button>
+      </UiButton>
       <p v-if="rows.length === 0" class="empty">{{ t('empty') }}</p>
     </div>
   </OModal>
@@ -254,6 +257,12 @@ function pick(r: Row) {
   cursor: pointer;
   text-align: left;
   transition: background-color 0.12s ease;
+}
+/* 组件库按钮的标签盒需要恢复成普通行盒，绝对定位的树线才能以本行为基准 */
+.node :deep(.ui-button__label) {
+  display: block;
+  width: 100%;
+  text-align: left;
 }
 .node:hover:not(:disabled) {
   background: var(--surface-hover);

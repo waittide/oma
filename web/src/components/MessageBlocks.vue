@@ -12,6 +12,7 @@ import {
   LuWrench,
 } from 'vue-icons-plus/lu';
 import type { Block } from '../types';
+import { UiButton } from '@waittide/ui';
 import { prettyJson, renderMarkdown } from '../lib/format';
 import { enhanceCodeBlocks } from '../lib/codeCopy';
 import { imageSrc } from '../lib/attachments';
@@ -207,11 +208,11 @@ onMounted(() => void nextTick(syncCodeCopy));
     <template v-for="it in items" :key="it.key">
       <div v-if="it.kind === 'text' && it.text" class="md" v-html="renderMarkdown(it.text)" />
       <div v-else-if="it.kind === 'thinking'" class="fold" :class="{ open: isOpen(it) }">
-        <button type="button" class="fold-head think" @click="toggleFold(it)">
+        <UiButton variant="ghost" tone="neutral" block class="fold-head think" @click="toggleFold(it)">
           <LuBrain :size="13" />
           <span class="fold-title">{{ t('thinking') }}</span>
           <LuChevronRight :size="13" class="caret" />
-        </button>
+        </UiButton>
         <div
           v-show="isOpen(it)"
           :ref="(el) => setBodyEl(it.key, el)"
@@ -224,7 +225,7 @@ onMounted(() => void nextTick(syncCodeCopy));
       <img v-else-if="it.kind === 'image' && it.imageSrc" class="att" :src="it.imageSrc" alt="attachment" />
 
       <div v-else-if="it.kind === 'tool'" class="fold" :class="{ open: isOpen(it), error: it.resultDone && it.resultError }">
-        <button type="button" class="fold-head" @click="toggleFold(it)">
+        <UiButton variant="ghost" tone="neutral" block class="fold-head" @click="toggleFold(it)">
           <component :is="toolIcon(it.toolName)" :size="13" class="tool-icon" />
           <span class="fold-title">{{ it.toolName }}</span>
           <span v-if="toolSubtitle(it)" class="fold-sep">·</span>
@@ -233,7 +234,7 @@ onMounted(() => void nextTick(syncCodeCopy));
           <span v-else-if="it.resultError" class="tstatus err">{{ t('failed') }}</span>
           <span v-else class="tstatus ok">{{ t('done') }}</span>
           <LuChevronRight :size="13" class="caret" />
-        </button>
+        </UiButton>
         <div v-show="isOpen(it)" class="fold-body-wrap">
           <pre class="fold-body">{{ prettyJson(it.toolInput) }}</pre>
           <!--
@@ -420,6 +421,17 @@ onMounted(() => void nextTick(syncCodeCopy));
   cursor: pointer;
   text-align: left;
   user-select: none;
+}
+/* 组件库按钮的默认内边距/悬停底色不适用于折叠头，这里还原为纯文本行 */
+.fold-head:hover {
+  background: transparent;
+}
+.fold-head :deep(.ui-button__label) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
 }
 .fold-head:hover .fold-title {
   color: var(--ink);

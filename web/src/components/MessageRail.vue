@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { UiIconButton } from '@waittide/ui';
 import { useTranslations } from '../composables/i18n';
 
 export interface RailItem {
@@ -26,9 +27,21 @@ const tipPos = ref({ top: '0px', left: '0px' });
 const dotEls: Record<string, HTMLElement | null> = {};
 
 function setDotEl(id: string, el: unknown) {
-  const node = (el ?? null) as HTMLElement | null;
+  // 组件 ref 拿到的是实例，需取其根元素做定位测量
+  const raw = el && typeof el === 'object' && '$el' in el ? (el as { $el: HTMLElement }).$el : el;
+  const node = (raw ?? null) as HTMLElement | null;
   if (node) dotEls[id] = node;
   else delete dotEls[id];
+}
+
+/** 悬停/聚焦到某个点时展示气泡；事件用对象传入以兼容组件的事件类型。 */
+function dotEvents(id: string): Record<string, unknown> {
+  return {
+    onMouseenter: () => enter(id),
+    onMouseleave: () => leave(),
+    onFocus: () => enter(id),
+    onBlur: () => leave(),
+  };
 }
 
 /** 提示词去掉多余空白：气泡按行截断，空行会白占行数 */
@@ -84,17 +97,15 @@ onBeforeUnmount(() => {
     <div class="rail-scroll">
       <div class="dot-col">
         <span class="line" />
-        <button
+        <UiIconButton
           v-for="it in items"
           :key="it.id"
           :ref="(el) => setDotEl(it.id, el)"
-          type="button"
+          v-bind="dotEvents(it.id)"
           class="dot"
-          :aria-label="it.text"
-          @mouseenter="enter(it.id)"
-          @mouseleave="leave"
-          @focus="enter(it.id)"
-          @blur="leave"
+          round="circle"
+          size="sm"
+          :label="it.text"
           @click="emit('jump', it.id)"
         />
       </div>
@@ -158,10 +169,15 @@ onBeforeUnmount(() => {
   place-items: center;
   width: 14px;
   height: 14px;
+  min-width: 0;
   padding: 0;
   border: none;
   background: transparent;
   cursor: pointer;
+}
+/* 组件库按钮的悬停底色会干扰“小圆点”的视觉，这里只保留点本身的悬停态 */
+.dot:hover {
+  background: transparent;
 }
 .dot::before {
   content: '';
