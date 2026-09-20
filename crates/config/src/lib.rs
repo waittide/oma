@@ -509,6 +509,18 @@ pub fn dirs_config_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
 }
 
+/// oma 数据目录：`$XDG_DATA_HOME/oma`，退回 `~/.local/share/oma`。
+///
+/// 会话、附件、以及外部工具二进制（`bin/`）都落在这里，
+/// 因此「数据放哪」只有这一处定义，守护进程与工具层共用。
+pub fn dirs_data_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs_home().map(|h| h.join(".local").join("share")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("oma")
+}
+
 /// 读取并解析一个 JSON 配置文件。
 fn read_json(path: &Path) -> Result<serde_json::Value> {
     let raw = std::fs::read_to_string(path).with_context(|| format!("failed to read config {}", path.display()))?;

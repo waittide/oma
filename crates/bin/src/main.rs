@@ -31,12 +31,10 @@ const INDEX_HTML: &str = "index.html";
 #[folder = "$OMA_WEB_DIST"]
 struct WebAssets;
 
+/// 数据目录（会话、附件、外部工具二进制）由 `oma-config` 统一定义，
+/// 以便工具层（如 fd / ripgrep 的安装目录）与守护进程指向同一处。
 fn get_data_dir() -> PathBuf {
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("oma")
+    oma_config::dirs_data_dir()
 }
 
 fn config_path(config_opt: Option<&Path>) -> PathBuf {

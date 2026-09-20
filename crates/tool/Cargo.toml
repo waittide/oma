@@ -5,13 +5,15 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "内置工具集：read / write / edit / bash / find / grep / ls"
+description = "内置工具集：read / write / edit / bash / ls / find / grep（find/grep 调用 fd/ripgrep）"
 
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+oma-config = { workspace = true }
 oma-contract = { workspace = true }
-regex = { workspace = true }
+# 下载 fd / ripgrep 需要 HTTP 客户端
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 similar = { workspace = true }
