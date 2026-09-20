@@ -86,6 +86,10 @@
     "systemPromptLoading": "読み込み中…",
     "sessionUsage": "セッション累計トークン（入力 · 出力 · キャッシュ読 · キャッシュ書）",
     "close": "閉じる",
+    "approvalRequest": "の実行許可を求めています:",
+    "allowOnce": "今回のみ許可",
+    "allowSession": "このセッションで許可",
+    "deny": "拒否",
     "cancelRequested": "中断を要求しました",
     "loadMessagesFailed": "メッセージの読み込みに失敗しました: {message}",
     "turnError": "このターンはエラーで終了しました",
@@ -128,6 +132,11 @@
     "placeholder": "選択…",
     "empty": "候補がありません"
   },
+  "approval": {
+    "normal": "通常",
+    "strict": "厳格",
+    "auto": "自動"
+  },
   "settings": {
     "title": "設定",
     "navDefaults": "既定値",
@@ -149,8 +158,12 @@
     "defaultModel": "既定のモデル",
     "defaultModelPlaceholder": "provider/model-id",
     "defaultAgent": "既定のエージェント",
+    "defaultApproval": "既定の承認モード",
     "saveDefaults": "既定値を保存",
     "defaultsSaved": "既定値を保存しました",
+    "approvalNormal": "通常（危険なツールを承認）",
+    "approvalStrict": "厳格（すべて承認）",
+    "approvalAuto": "自動（承認なし）",
     "add": "追加",
     "saveAll": "すべて保存",
     "newProvider": "新しいプロバイダー",
@@ -316,7 +329,8 @@
     "emptySnippet": "(空)"
   },
   "notify": {
-    "turnDone": "タスクが完了しました"
+    "turnDone": "タスクが完了しました",
+    "approvalNeeded": "ツール実行の承認が必要です"
   },
   "panel": {
     "files": "ファイル",

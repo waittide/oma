@@ -18,7 +18,7 @@ use axum::{
     routing::post,
 };
 use oma_client::{ConnectOptions, OmaClient, SessionApi};
-use oma_contract::{AgentCommand, AgentEvent, ClientType, StopReason};
+use oma_contract::{AgentCommand, AgentEvent, ApprovalMode, ClientType, StopReason};
 use oma_daemon::{DaemonState, create_router};
 use oma_storage::StorageManager;
 use parking_lot::Mutex;
@@ -227,6 +227,7 @@ async fn start_harness_with(context_len: usize, supports_vision: bool) -> Result
         r#"
 default_model = "mock/model-x"
 default_agent = "task"
+default_approval_mode = "auto"
 
 [providers.mock]
 api_type = "completion"
@@ -318,6 +319,34 @@ async fn drive_turn(client: &mut OmaClient, timeout: Duration) -> Result<Vec<Age
         else {
             break;
         };
+        let main_finished = matches!(&event, AgentEvent::TurnFinished { .. });
+        events.push(event);
+        if main_finished {
+            break;
+        }
+    }
+    Ok(events)
+}
+
+/// 收集事件并在收到审批请求时按 `decision` 自动放行，直到主轮次结束。
+async fn drive_turn_approving(
+    client: &mut OmaClient,
+    timeout: Duration,
+    decision: oma_contract::ApprovalDecision,
+) -> Result<Vec<AgentEvent>> {
+    let deadline = Instant::now() + timeout;
+    let mut events = Vec::new();
+    while Instant::now() < deadline {
+        let Some(event) = tokio::time::timeout(Duration::from_secs(5), client.next_event())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
+        if let AgentEvent::PermissionRequested(data) = &event {
+            client.respond_approval(&data.request_id, decision).await?;
+        }
         let main_finished = matches!(&event, AgentEvent::TurnFinished { .. });
         events.push(event);
         if main_finished {
@@ -674,6 +703,79 @@ async fn test_attachment_reaches_provider() -> Result<()> {
         observed.iter().any(|o| o.has_image),
         "provider request must carry the uploaded image: {:?}",
         observed
+    );
+    Ok(())
+}
+
+/// 审批模式为 strict 时，工具调用必须先取得人工放行。
+#[tokio::test]
+async fn test_strict_approval_blocks_until_allowed() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("approval")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "smoke".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::SetApprovalMode {
+            mode: ApprovalMode::Strict,
+        })
+        .await?;
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "explore".into(),
+            attachments: vec![],
+        })
+        .await?;
+
+    // 等到审批请求出现，再放行；期间不得有任何工具被执行（这正是 strict 的含义）
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut request_id = None;
+    let mut ran_before_approval: Option<String> = None;
+    while request_id.is_none() && Instant::now() < deadline {
+        let Some(event) = tokio::time::timeout(Duration::from_secs(5), client.next_event())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
+        match event {
+            AgentEvent::PermissionRequested(data) => request_id = Some(data.request_id),
+            AgentEvent::ToolCallFinished { tool_name, .. } => ran_before_approval = Some(tool_name),
+            _ => {}
+        }
+    }
+    let request_id = request_id.expect("strict mode must request approval before running a tool");
+    assert!(
+        ran_before_approval.is_none(),
+        "工具必须在拿到授权之前不被执行，却先执行了 {:?}",
+        ran_before_approval
+    );
+
+    client
+        .respond_approval(&request_id, oma_contract::ApprovalDecision::AllowOnce)
+        .await?;
+    let events = drive_turn_approving(
+        &mut client,
+        Duration::from_secs(30),
+        oma_contract::ApprovalDecision::AllowOnce,
+    )
+    .await?;
+    let calls = tool_calls(&events);
+    assert!(
+        calls
+            .iter()
+            .any(|(name, is_error, _)| name == "read" && !is_error),
+        "放行后的工具必须真的执行: {:?}",
+        calls
     );
     Ok(())
 }

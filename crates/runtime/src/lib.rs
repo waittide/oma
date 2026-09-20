@@ -1,29 +1,80 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use anyhow::Result;
 use oma_config::{AgentLoader, AgentTemplate, OmaConfig};
 use oma_contract::{
-    ActiveTurnCatchUp, AgentCommand, AgentEvent, Block, ChatMessage, ClientType, Role, StopReason, TokenUsage,
-    ToolCallStartedData, ToolImage, ToolOutput,
+    ActiveTurnCatchUp, AgentCommand, AgentEvent, ApprovalDecision, ApprovalMode, Block, ChatMessage, ClientType,
+    PermissionRequestedData, Role, StopReason, TokenUsage, ToolCallStartedData, ToolImage, ToolOutput,
 };
 use oma_provider::{ModelConfig, ProviderStreamEvent, UniversalProvider};
 use oma_storage::{StorageError, StorageManager};
 use oma_tool::{ToolContext, ToolRegistry};
 use parking_lot::RwLock;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 
+/// 审批等待上限（超时按拒绝处理并广播解绑）
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Normal 模式下需要人工授权的工具：只有能改环境的命令执行。
+///
+/// 单独抽出来是因为工具名会随内核演进改名（`shell` → `bash`），
+/// 写死的字符串一旦过时，默认模式下审批就会静默地永不触发。
+const DANGEROUS_TOOLS: [&str; 1] = ["bash"];
 /// 上下文压缩后保留的工具结果占位文案
 const PRUNED_TOOL_RESULT: &str = "[工具执行结果已截断修剪以节省上下文窗口]";
 /// 超过该字符数的工具结果在压缩时会被替换为占位
 const PRUNE_MIN_CHARS: usize = 300;
+
+// =========================================================================
+// 1. 审批仲裁器 Approval Arbiter (先到先得 + 超时兜底)
+// =========================================================================
+
+#[derive(Default)]
+pub struct ApprovalArbiter {
+    pending: Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>,
+}
+
+impl ApprovalArbiter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 注册一个等待审批项，返回 oneshot 接收端
+    pub async fn register(&self, request_id: String) -> oneshot::Receiver<ApprovalDecision> {
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().await.insert(request_id, tx);
+        rx
+    }
+
+    /// 接收到某个客户端的决策响应，先到先得完成 oneshot
+    pub async fn resolve(&self, request_id: &str, decision: ApprovalDecision) -> bool {
+        if let Some(tx) = self.pending.lock().await.remove(request_id) {
+            let _ = tx.send(decision);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 撤销未完成的等待项（超时/取消路径），避免注册表随轮次累积
+    pub async fn forget(&self, request_id: &str) {
+        self.pending.lock().await.remove(request_id);
+    }
+
+    /// 当前挂起数量（供观测与测试）
+    pub async fn pending_count(&self) -> usize {
+        self.pending.lock().await.len()
+    }
+}
 
 /// 把会话推理等级落到请求参数上：
 /// `resolve_reasoning_effort` 已处理「映射为空 = 不下发」，这里把结果回写到
@@ -107,6 +158,14 @@ fn sanitize_title(raw: &str) -> Option<String> {
         return None;
     }
     Some(cleaned.chars().take(TITLE_MAX_CHARS).collect())
+}
+
+/// 审批判定结果：放行 / 拒绝 / 轮次被取消
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalOutcome {
+    Allowed,
+    Denied,
+    Cancelled,
 }
 
 // =========================================================================
@@ -263,6 +322,7 @@ pub struct ActiveTurnState {
     pub accumulated_thinking: String,
     pub accumulated_text:     String,
     pub active_tool_call:     Option<ToolCallStartedData>,
+    pub pending_approval:     Option<PermissionRequestedData>,
 }
 
 // =========================================================================
@@ -305,7 +365,7 @@ impl From<StorageError> for RoomError {
 // =========================================================================
 //
 // 共享语义：房间本身只经 `Arc<SessionRoom>` 传递，所有可变状态都是字段级互斥保护，
-// 因此多个客户端/后台任务看到的是同一份模型与命令队列。
+// 因此多个客户端/后台任务看到的是同一份模型、审批模式、白名单与命令队列。
 // （此前的 `impl Clone` 会深拷贝这些字段，导致排队指令被丢弃，已删除。）
 
 pub struct SessionRoom {
@@ -316,11 +376,14 @@ pub struct SessionRoom {
     pub tools:           ToolRegistry,
     pub active_model:    RwLock<String>,
     pub active_agent:    RwLock<String>,
+    pub approval_mode:   RwLock<ApprovalMode>,
     /// 当前会话推理等级（REASONING_LEVELS 之一；空 = 未设置，回退模型默认）
     pub reasoning_level: RwLock<String>,
+    pub whitelist:       RwLock<HashSet<String>>, // AllowSession 内存白名单
     pub event_tx:        broadcast::Sender<AgentEvent>,
     pub command_queue:   Mutex<VecDeque<AgentCommand>>,
     pub active_turn:     RwLock<Option<ActiveTurnState>>,
+    pub arbiter:         ApprovalArbiter,
     pub cancel_token:    RwLock<CancellationToken>,
     /// 轮次占用权：由 CAS 抢占，确保同一房间任意时刻至多一个执行中的轮次
     pub is_running:      AtomicBool,
@@ -340,6 +403,7 @@ impl SessionRoom {
         tools: ToolRegistry,
         active_model: impl Into<String>,
         active_agent: impl Into<String>,
+        approval_mode: ApprovalMode,
     ) -> Arc<Self> {
         let (event_tx, _) = broadcast::channel(512);
 
@@ -351,10 +415,13 @@ impl SessionRoom {
             tools,
             active_model: RwLock::new(active_model.into()),
             active_agent: RwLock::new(active_agent.into()),
+            approval_mode: RwLock::new(approval_mode),
             reasoning_level: RwLock::new(String::new()),
+            whitelist: RwLock::new(HashSet::new()),
             event_tx,
             command_queue: Mutex::new(VecDeque::new()),
             active_turn: RwLock::new(None),
+            arbiter: ApprovalArbiter::new(),
             cancel_token: RwLock::new(CancellationToken::new()),
             is_running: AtomicBool::new(false),
             plugins: RwLock::new(None),
@@ -401,6 +468,7 @@ impl SessionRoom {
             accumulated_thinking: turn.accumulated_thinking,
             accumulated_text:     turn.accumulated_text,
             active_tool_call:     turn.active_tool_call,
+            pending_approval:     turn.pending_approval,
         })
     }
 
@@ -422,6 +490,24 @@ impl SessionRoom {
         }
         self.broadcast(AgentEvent::QueueCleared {});
         self.broadcast_queue_len().await;
+
+        // 3. 挂起中的审批一并解绑，避免客户端继续显示等待中的弹窗
+        //    （先取出再 await：parking_lot 守卫不得跨越 await）
+        let pending = {
+            let mut turn = self.active_turn.write();
+            turn.as_mut().and_then(|t| t.pending_approval.take())
+        };
+        if let Some(req) = pending {
+            let _ = self
+                .arbiter
+                .resolve(&req.request_id, ApprovalDecision::Deny)
+                .await;
+            self.broadcast(AgentEvent::PermissionResolved {
+                request_id:  req.request_id,
+                decision:    ApprovalDecision::Deny,
+                resolved_by: "system (cancelled)".into(),
+            });
+        }
     }
 
     /// 提交客户端指令
@@ -441,7 +527,7 @@ impl SessionRoom {
                 *self.active_model.write() = model.clone();
                 let _ = self
                     .storage
-                    .update_session_settings(&self.session_id, Some(&model), None, None)
+                    .update_session_settings(&self.session_id, Some(&model), None, None, None)
                     .await;
                 self.broadcast(AgentEvent::ModelChanged { active_model: model });
             }
@@ -449,9 +535,17 @@ impl SessionRoom {
                 *self.active_agent.write() = agent.clone();
                 let _ = self
                     .storage
-                    .update_session_settings(&self.session_id, None, Some(&agent), None)
+                    .update_session_settings(&self.session_id, None, Some(&agent), None, None)
                     .await;
                 self.broadcast(AgentEvent::AgentChanged { active_agent: agent });
+            }
+            AgentCommand::SetApprovalMode { mode } => {
+                *self.approval_mode.write() = mode;
+                let _ = self
+                    .storage
+                    .update_session_settings(&self.session_id, None, None, Some(mode), None)
+                    .await;
+                self.broadcast(AgentEvent::ApprovalModeChanged { mode });
             }
             AgentCommand::SetReasoningLevel { level } => {
                 // 校验收敛在服务端：非法等级一律拒绝，避免脏值落库
@@ -464,7 +558,7 @@ impl SessionRoom {
                 *self.reasoning_level.write() = level.clone();
                 let _ = self
                     .storage
-                    .update_session_settings(&self.session_id, None, None, Some(&level))
+                    .update_session_settings(&self.session_id, None, None, None, Some(&level))
                     .await;
                 self.broadcast(AgentEvent::ReasoningLevelChanged { level });
             }
@@ -599,8 +693,76 @@ impl SessionRoom {
     // 工具授权与执行
     // ---------------------------------------------------------------------
 
-    /// 执行单个工具调用：白名单 → 插件钩子 → 执行。
-    /// 返回 (工具输出, 轮次是否被取消)。
+    /// 该工具在当前审批模式下是否需要人工确认
+    fn needs_approval(&self, tool_name: &str) -> bool {
+        let mode = *self.approval_mode.read();
+        let is_whitelisted = self.whitelist.read().contains(tool_name);
+        match mode {
+            ApprovalMode::Auto => false,
+            ApprovalMode::Strict => !is_whitelisted,
+            // Normal 模式下只有能改环境的命令工具需审批，读写放行。
+            // 注意工具名是 `bash`（曾在 pi 对齐时由 `shell` 改名）——
+            // 写过时的名字会让默认模式静默失效，这里单独有用例盯住。
+            ApprovalMode::Normal => DANGEROUS_TOOLS.contains(&tool_name) && !is_whitelisted,
+        }
+    }
+
+    /// 请求人工审批：先到先得响应，超时或取消按拒绝处理，并保证等待项被回收与广播解绑。
+    async fn request_approval(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        cancel: &CancellationToken,
+    ) -> ApprovalOutcome {
+        if !self.needs_approval(tool_name) {
+            return ApprovalOutcome::Allowed;
+        }
+
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let request = PermissionRequestedData {
+            request_id: request_id.clone(),
+            tool_name:  tool_name.to_string(),
+            input:      tool_input.clone(),
+        };
+        if let Some(turn) = self.active_turn.write().as_mut() {
+            turn.pending_approval = Some(request.clone());
+        }
+        self.broadcast(AgentEvent::PermissionRequested(request));
+
+        let rx = self.arbiter.register(request_id.clone()).await;
+        let (outcome, resolved_by): (ApprovalOutcome, Option<&str>) = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => (ApprovalOutcome::Cancelled, Some("system (cancelled)")),
+            waited = tokio::time::timeout(APPROVAL_TIMEOUT, rx) => match waited {
+                Ok(Ok(ApprovalDecision::AllowOnce)) => (ApprovalOutcome::Allowed, None),
+                Ok(Ok(ApprovalDecision::AllowSession)) => {
+                    self.whitelist.write().insert(tool_name.to_string());
+                    (ApprovalOutcome::Allowed, None)
+                }
+                Ok(Ok(ApprovalDecision::Deny)) => (ApprovalOutcome::Denied, None),
+                // 超时或发送端消失（轮次被取消）
+                Ok(Err(_)) | Err(_) => (ApprovalOutcome::Denied, Some("system (timeout)")),
+            },
+        };
+
+        // 无论走哪条分支都要回收等待项，否则注册表会随轮次无限增长
+        self.arbiter.forget(&request_id).await;
+        if let Some(turn) = self.active_turn.write().as_mut() {
+            turn.pending_approval = None;
+        }
+        if let Some(by) = resolved_by {
+            self.broadcast(AgentEvent::PermissionResolved {
+                request_id,
+                decision: ApprovalDecision::Deny,
+                resolved_by: by.to_string(),
+            });
+        }
+
+        outcome
+    }
+
+    /// 执行单个工具调用：白名单 → 熔断 → 审批 → 执行。
+    /// 返回 (工具输出, 轮次是否被取消)；取消信号可中断审批等待与工具执行。
     async fn execute_tool_call(
         &self,
         call_id: &str,
@@ -627,7 +789,32 @@ impl SessionRoom {
             }
         }
 
-        // 1. 插件 tool_call 钩子：任一插件返回 block 即拦截（插件为同步 JS，放到阻塞线程池）
+        // 1. 审批
+        match self.request_approval(tool_name, &tool_input, cancel).await {
+            ApprovalOutcome::Allowed => {}
+            ApprovalOutcome::Denied => {
+                return (
+                    self.finish_tool_call(
+                        call_id,
+                        tool_name,
+                        ToolOutput::error(
+                            "Execution rejected: Permission denied by user (or approval timed out after 120s).",
+                        ),
+                    )
+                    .await,
+                    false,
+                );
+            }
+            ApprovalOutcome::Cancelled => {
+                return (
+                    self.finish_tool_call(call_id, tool_name, ToolOutput::error("Tool execution cancelled."))
+                        .await,
+                    true,
+                );
+            }
+        }
+
+        // 3. 插件 tool_call 钩子：任一插件返回 block 即拦截（插件为同步 JS，放到阻塞线程池）
         let plugin_host = self.plugins.read().clone();
         if let Some(host) = plugin_host {
             let name = tool_name.to_string();
@@ -1427,6 +1614,38 @@ fn base64_encode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn test_approval_arbiter() {
+        let arbiter = ApprovalArbiter::new();
+        let rx = arbiter.register("req_123".into()).await;
+
+        let resolved = arbiter
+            .resolve("req_123", ApprovalDecision::AllowOnce)
+            .await;
+        assert!(resolved);
+        assert_eq!(arbiter.pending_count().await, 0);
+
+        let decision = rx.await.unwrap();
+        assert_eq!(decision, ApprovalDecision::AllowOnce);
+    }
+
+    /// 超时/取消路径必须回收等待项，否则注册表随轮次无限增长。
+    #[tokio::test]
+    async fn test_approval_arbiter_forget_releases_slot() {
+        let arbiter = ApprovalArbiter::new();
+        let _rx = arbiter.register("req_timeout".into()).await;
+        assert_eq!(arbiter.pending_count().await, 1);
+
+        arbiter.forget("req_timeout").await;
+        assert_eq!(arbiter.pending_count().await, 0);
+        // 已回收的请求不再接受迟到响应
+        assert!(
+            !arbiter
+                .resolve("req_timeout", ApprovalDecision::AllowOnce)
+                .await
+        );
+    }
+
     fn text(role: Role, id: &str, parent: Option<&str>, body: &str) -> ChatMessage {
         ChatMessage {
             id: id.into(),
@@ -1797,7 +2016,15 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_q", "/w", "T", "missing/model", "task", "medium")
+            .create_session(
+                "s_q",
+                "/w",
+                "T",
+                "missing/model",
+                "task",
+                ApprovalMode::Normal,
+                "medium",
+            )
             .await?;
 
         let room = SessionRoom::new(
@@ -1808,6 +2035,7 @@ mod tests {
             ToolRegistry::new(),
             "missing/model",
             "task",
+            ApprovalMode::Normal,
         );
 
         let submit = |text: &str| {
@@ -1837,7 +2065,7 @@ mod tests {
             if !room.is_busy() && room.command_queue.lock().await.is_empty() {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         let all = storage.get_all_messages("s_q").await?;
@@ -2055,5 +2283,52 @@ mod tests {
             ..template
         };
         assert!(allowed_tools(&unrestricted).is_none());
+    }
+
+    /// 审批触发条件：三种模式的边界，以及白名单只对当前会话内该工具生效。
+    ///
+    /// 重点盯住 Normal 模式：它靠工具名匹配「危险工具」，工具一旦改名
+    /// （`shell` → `bash`）而这里没跟着改，默认模式下审批就会静默失效。
+    #[tokio::test]
+    async fn test_needs_approval_per_mode() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let storage = StorageManager::new(tmp.path()).await?;
+        storage
+            .create_session("s_ap", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
+            .await?;
+        let room = SessionRoom::new(
+            "s_ap",
+            PathBuf::from(tmp.path()),
+            storage,
+            Arc::new(RwLock::new(OmaConfig::default())),
+            ToolRegistry::with_builtins(),
+            "missing/model",
+            "task",
+            ApprovalMode::Normal,
+        );
+
+        // Normal：只有命令执行要审批，读写放行
+        assert!(room.needs_approval("bash"));
+        assert!(!room.needs_approval("read"));
+        assert!(!room.needs_approval("write"));
+        assert!(!room.needs_approval("edit"));
+        // 过时的旧名字不应再触发审批（它已不是任何工具）
+        assert!(!room.needs_approval("shell"));
+
+        // Auto：一律放行
+        *room.approval_mode.write() = ApprovalMode::Auto;
+        assert!(!room.needs_approval("bash"));
+
+        // Strict：除白名单外全部要审批
+        *room.approval_mode.write() = ApprovalMode::Strict;
+        assert!(room.needs_approval("read"));
+        room.whitelist.write().insert("bash".to_string());
+        assert!(!room.needs_approval("bash"), "AllowSession 放行后不应重复询问");
+        assert!(room.needs_approval("write"), "白名单只针对被放行的那一个工具");
+
+        // 回到 Normal：白名单同样生效
+        *room.approval_mode.write() = ApprovalMode::Normal;
+        assert!(!room.needs_approval("bash"));
+        Ok(())
     }
 }

@@ -18,7 +18,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use oma_config::{AgentLoader, OmaConfig, PaletteLoader, SkillLoader};
-use oma_contract::{AgentEvent, ChatMessage, ClientMessage, Palette, Ready, ServerMessage};
+use oma_contract::{AgentEvent, ApprovalMode, ChatMessage, ClientMessage, Palette, Ready, ServerMessage};
 use oma_runtime::{RoomError, SessionRoom, estimate_tokens};
 use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachment_name};
 use oma_tool::{ToolRegistry, resolve_path};
@@ -97,11 +97,12 @@ impl DaemonState {
 
         let mut record = self.storage.get_session(session_id).await?;
         if record.is_none() {
-            let (default_model, default_agent, default_level) = {
+            let (default_model, default_agent, default_approval, default_level) = {
                 let cfg = self.config.read();
                 (
                     cfg.default_model.clone(),
                     cfg.default_agent.clone(),
+                    cfg.default_approval_mode,
                     cfg.default_reasoning_level.clone(),
                 )
             };
@@ -115,6 +116,7 @@ impl DaemonState {
                     "",
                     &default_model,
                     &default_agent,
+                    default_approval,
                     &default_level,
                 )
                 .await?;
@@ -140,6 +142,7 @@ impl DaemonState {
             reg,
             &record.active_model,
             &record.active_agent,
+            record.approval_mode,
         );
         // 推理等级来自会话自身（创建时即写入，不会为空），无需再回退
         *room.reasoning_level.write() = record.reasoning_level.clone();
@@ -288,10 +291,11 @@ async fn handle_list_sessions(
 
 #[derive(Deserialize)]
 struct CreateSessionReq {
-    workspace: String,
-    title:     Option<String>,
-    model:     Option<String>,
-    agent:     Option<String>,
+    workspace:     String,
+    title:         Option<String>,
+    model:         Option<String>,
+    agent:         Option<String>,
+    approval_mode: Option<ApprovalMode>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -313,20 +317,30 @@ async fn handle_create_session(
     // 标题留空表示「交给模型根据首轮对话自动命名」；
     // 用户填写时原样保留，模型不会再覆盖（见 set_title_if_empty）。
     let title = payload.title.unwrap_or_default().trim().to_string();
-    let (default_model, default_agent, default_level) = {
+    let (default_model, default_agent, default_approval, default_level) = {
         let cfg = state.config.read();
         (
             cfg.default_model.clone(),
             cfg.default_agent.clone(),
+            cfg.default_approval_mode,
             cfg.default_reasoning_level.clone(),
         )
     };
     let model = payload.model.unwrap_or(default_model);
     let agent = payload.agent.unwrap_or(default_agent);
+    let approval_mode = payload.approval_mode.unwrap_or(default_approval);
 
     let rec = state
         .storage
-        .create_session(&session_id, &payload.workspace, &title, &model, &agent, &default_level)
+        .create_session(
+            &session_id,
+            &payload.workspace,
+            &title,
+            &model,
+            &agent,
+            approval_mode,
+            &default_level,
+        )
         .await
         .map_err(storage_error)?;
 
@@ -1461,12 +1475,13 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     };
 
     // 3. 发送 Ready 握手确认（model_catalog 携带配置的真实模型清单）
-    let (model_catalog, active_model, active_agent, reasoning_level, active_theme) = {
+    let (model_catalog, active_model, active_agent, approval_mode, reasoning_level, active_theme) = {
         let cfg = state.config.read();
         (
             cfg.model_catalog(),
             room.active_model.read().clone(),
             room.active_agent.read().clone(),
+            *room.approval_mode.read(),
             room.reasoning_level.read().clone(),
             // 已解析主题随握手下发：终端客户端无需自读配置或内置色值
             PaletteLoader::resolve(&cfg.theme),
@@ -1506,6 +1521,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         workspace: room.workspace.to_string_lossy().to_string(),
         active_model,
         active_agent,
+        approval_mode,
         reasoning_level,
         current_leaf_id: room
             .storage
@@ -1591,6 +1607,20 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
                         room_clone
                             .submit_command(&client_id, &client_name, client_type, command)
                             .await;
+                    }
+                    ClientMessage::Approval { response } => {
+                        let resolved = room_clone
+                            .arbiter
+                            .resolve(&response.request_id, response.decision)
+                            .await;
+                        // 先到先得：仅首个响应广播，避免多客户端重复提示
+                        if resolved {
+                            room_clone.broadcast(AgentEvent::PermissionResolved {
+                                request_id:  response.request_id,
+                                decision:    response.decision,
+                                resolved_by: client_name.clone(),
+                            });
+                        }
                     }
                     ClientMessage::Cancel {} => {
                         room_clone.cancel().await;
@@ -1912,7 +1942,7 @@ mod tests {
         let state = test_state(tmp.path()).await?;
         state
             .storage
-            .create_session("sess_att", "/w", "T", "m", "task", "medium")
+            .create_session("sess_att", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
             .await?;
         let base = spawn_app(state).await?;
         let client = reqwest::Client::new();
