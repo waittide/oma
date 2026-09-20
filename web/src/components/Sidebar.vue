@@ -14,8 +14,7 @@ import {
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu';
-import { UiButton, UiIconButton, UiTooltip } from '@waittide/ui';
-import OInput from './ui/OInput.vue';
+import { UiButton, UiIconButton, UiInput, UiTooltip } from '@waittide/ui';
 import OSelect from './ui/OSelect.vue';
 import OModal from './ui/OModal.vue';
 import * as store from '../stores/sessions';
@@ -25,6 +24,18 @@ import type { WorkspaceGroup } from '../stores/sessions';
 import { useTranslations } from '../composables/i18n';
 
 const emit = defineEmits<{ openSettings: [] }>();
+
+/**
+ * 本地指令：挂载时聚焦内部输入框。
+ *
+ * 组件库的 UiInput 不提供 v-focus 属性（避免页面加载即抢焦点），
+ * 这里的 v-focus 只用于弹窗内「打开即聚焦」的场景。
+ */
+const vFocus = {
+  mounted: (el: HTMLElement) => {
+    el.querySelector('input')?.focus();
+  },
+};
 
 const { t } = useTranslations('sidebar');
 const { t: tc } = useTranslations('common');
@@ -179,7 +190,7 @@ const deleteTarget = computed(
 
     <!-- 搜索与排序：搜工作区名与会话标题，结果仍按工作区分组展示 -->
     <div class="filters">
-      <OInput v-model="store.query.value" :placeholder="t('searchPlaceholder')">
+      <UiInput v-model="store.query.value" :placeholder="t('searchPlaceholder')">
         <template #prefix><LuSearch :size="13" /></template>
         <template v-if="store.query.value" #suffix>
           <UiIconButton
@@ -191,7 +202,7 @@ const deleteTarget = computed(
             <LuX :size="13" />
           </UiIconButton>
         </template>
-      </OInput>
+      </UiInput>
       <OSelect
         :model-value="store.sortValue.value"
         :options="sortOptions"
@@ -261,9 +272,9 @@ const deleteTarget = computed(
             @click="select(s.session_id)"
           >
             <template v-if="renaming === s.session_id">
-              <OInput
+              <UiInput
                 v-model="renameValue"
-                autofocus
+                v-focus
                 class="rename-input"
                 @enter="commitRename"
                 @blur="commitRename"
@@ -312,10 +323,10 @@ const deleteTarget = computed(
     <OModal :open="showNewWorkspace" :title="t('newWorkspace')" width="480px" @close="showNewWorkspace = false">
       <div class="form">
         <label>{{ t('workspacePath') }}</label>
-        <OInput
+        <UiInput
           v-model="newWorkspacePath"
           :placeholder="t('workspacePlaceholder')"
-          autofocus
+          v-focus
           @enter="createWorkspace"
         />
         <span class="field-hint">{{ t('newWorkspaceHint') }}</span>
@@ -336,7 +347,7 @@ const deleteTarget = computed(
           <span class="ws-path">{{ newWorkspace || t('workspaceUnset') }}</span>
         </div>
         <label>{{ t('sessionTitle') }}</label>
-        <OInput v-model="newTitle" :placeholder="t('titleAutoPlaceholder')" autofocus @enter="createSession" />
+        <UiInput v-model="newTitle" :placeholder="t('titleAutoPlaceholder')" v-focus @enter="createSession" />
       </div>
       <template #footer>
         <UiButton variant="ghost" tone="neutral" @click="showNew = false">{{ tc('cancel') }}</UiButton>

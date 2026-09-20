@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
-import { toast, UiButton, UiIconButton, UiTextarea, UiTooltip } from '@waittide/ui';
+import { toast, UiButton, UiIconButton, UiInput, UiTextarea, UiTooltip } from '@waittide/ui';
 import {
   LuCheck,
   LuChevronRight,
@@ -18,7 +18,6 @@ import {
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu';
-import OInput from './ui/OInput.vue';
 import { api } from '../api';
 import OModal from './ui/OModal.vue';
 import ORadio from './ui/ORadio.vue';
@@ -1402,7 +1401,7 @@ function pickLocale(v: Locale) {
                   <span class="srow-desc">{{ t('connNameDesc') }}</span>
                 </div>
                 <div class="srow-ctl wide">
-                  <OInput
+                  <UiInput
                     v-model="conn.name"
                     class="conn-input"
                     :placeholder="t('connNamePlaceholder')"
@@ -1415,7 +1414,7 @@ function pickLocale(v: Locale) {
                   <span class="srow-desc">{{ t('connBaseUrlDesc') }}</span>
                 </div>
                 <div class="srow-ctl wide">
-                  <OInput
+                  <UiInput
                     v-model="conn.baseUrl"
                     class="conn-input"
                     :placeholder="t('connBaseUrlPlaceholder')"
@@ -1428,7 +1427,7 @@ function pickLocale(v: Locale) {
                   <span class="srow-desc">{{ t('connTokenDesc') }}</span>
                 </div>
                 <div class="srow-ctl wide">
-                  <OInput
+                  <UiInput
                     v-model="conn.token"
                     class="conn-input"
                     type="password"
@@ -1693,7 +1692,7 @@ function pickLocale(v: Locale) {
                 <div class="cfg-rows">
                   <label class="cfg-label">{{ t('providerName') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="d.name" class="mono" :placeholder="t('providerName')" />
+                    <UiInput v-model="d.name" class="mono" :placeholder="t('providerName')" />
                   </div>
 
                   <label class="cfg-label">{{ t('fRequestFormat') }}</label>
@@ -1703,12 +1702,12 @@ function pickLocale(v: Locale) {
 
                   <label class="cfg-label">{{ t('fBaseUrl') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="d.base_url" />
+                    <UiInput v-model="d.base_url" />
                   </div>
 
                   <label class="cfg-label">{{ t('fApiKey') }}</label>
                   <div class="cfg-ctl">
-                    <OInput
+                    <UiInput
                       :model-value="d.api_key"
                       :type="keyRevealed[d.uid] ? 'text' : 'password'"
                       :placeholder="d.keyMasked ? '*'.repeat(d.keyLen) : ''"
@@ -1782,22 +1781,22 @@ function pickLocale(v: Locale) {
                 <div class="cfg-rows">
                   <label class="cfg-label">{{ t('modelId') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="m.id" class="mono" placeholder="model-id" />
+                    <UiInput v-model="m.id" class="mono" placeholder="model-id" />
                   </div>
 
                   <label class="cfg-label">{{ t('modelName') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="m.name" />
+                    <UiInput v-model="m.name" />
                   </div>
 
                   <label class="cfg-label">{{ t('contextLen') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="m.context_len" />
+                    <UiInput v-model="m.context_len" />
                   </div>
 
                   <label class="cfg-label">{{ t('maxOutput') }}</label>
                   <div class="cfg-ctl">
-                    <OInput v-model="m.max_output" :placeholder="t('unset')" />
+                    <UiInput v-model="m.max_output" :placeholder="t('unset')" />
                   </div>
 
                   <label class="cfg-label">{{ t('capabilities') }}</label>
@@ -1825,7 +1824,7 @@ function pickLocale(v: Locale) {
                         <div class="effort-map">
                           <div v-for="lv in REASONING_LEVELS" :key="lv" class="effort-row">
                             <span class="effort-key mono">{{ lv }}</span>
-                            <OInput
+                            <UiInput
                               :model-value="m.reasoning_map[lv] ?? ''"
                               :placeholder="lv"
                               @update:model-value="(v) => (m.reasoning_map[lv] = v)"
@@ -1994,7 +1993,7 @@ function pickLocale(v: Locale) {
                 <!-- 编辑中 / 新增：展开卡片表单 -->
                 <div v-if="d.origName === null || d.origName === editingMcp" class="prov card">
                   <div class="prov-head">
-                    <OInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
+                    <UiInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
                     <ORadio v-model="d.kind" :options="mcpKindOptions" />
                     <UiTooltip :content="tc('delete')" align="end">
                       <UiIconButton class="m-del" size="sm" :label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
@@ -2006,25 +2005,25 @@ function pickLocale(v: Locale) {
                     <template v-if="d.kind === 'local'">
                       <div class="field">
                         <label>{{ t('mcpCommand') }}</label>
-                        <OInput v-model="d.command" />
+                        <UiInput v-model="d.command" />
                       </div>
                       <div class="field">
                         <label>{{ t('mcpArgs') }}</label>
-                        <OInput v-model="d.argsText" />
+                        <UiInput v-model="d.argsText" />
                       </div>
                       <div class="field span2">
                         <label>{{ t('mcpEnv') }}</label>
-                        <OInput v-model="d.envText" placeholder="KEY=value" />
+                        <UiInput v-model="d.envText" placeholder="KEY=value" />
                       </div>
                     </template>
                     <template v-else>
                       <div class="field span2">
                         <label>{{ t('mcpUrl') }}</label>
-                        <OInput v-model="d.url" />
+                        <UiInput v-model="d.url" />
                       </div>
                       <div class="field span2">
                         <label>{{ t('mcpHeaders') }}</label>
-                        <OInput v-model="d.headersText" placeholder="Authorization=Bearer xxx" />
+                        <UiInput v-model="d.headersText" placeholder="Authorization=Bearer xxx" />
                       </div>
                     </template>
                   </div>
@@ -2076,7 +2075,7 @@ function pickLocale(v: Locale) {
       <div class="sk-grid">
         <div class="field">
           <label>{{ t('presetId') }}</label>
-          <OInput v-model="presetEdit.id" :disabled="!presetEdit.isNew" placeholder="my-preset" />
+          <UiInput v-model="presetEdit.id" :disabled="!presetEdit.isNew" placeholder="my-preset" />
         </div>
         <div class="field">
           <label>{{ t('scopeLabel') }}</label>
@@ -2089,11 +2088,11 @@ function pickLocale(v: Locale) {
       </div>
       <div class="field">
         <label>{{ t('modelName') }}</label>
-        <OInput v-model="presetEdit.name" />
+        <UiInput v-model="presetEdit.name" />
       </div>
       <div class="field">
         <label>{{ t('skillDesc') }}</label>
-        <OInput v-model="presetEdit.description" />
+        <UiInput v-model="presetEdit.description" />
       </div>
       <div class="field">
         <label>{{ t('skillTools') }}</label>
@@ -2137,7 +2136,7 @@ function pickLocale(v: Locale) {
       <div class="sk-grid">
         <div class="field">
           <label>{{ t('skillId') }}</label>
-          <OInput v-model="skillEdit.id" :disabled="!skillEdit.isNew" placeholder="my-skill" />
+          <UiInput v-model="skillEdit.id" :disabled="!skillEdit.isNew" placeholder="my-skill" />
         </div>
         <div class="field">
           <label>{{ t('scopeLabel') }}</label>
@@ -2146,11 +2145,11 @@ function pickLocale(v: Locale) {
       </div>
       <div class="field">
         <label>{{ t('modelName') }}</label>
-        <OInput v-model="skillEdit.name" />
+        <UiInput v-model="skillEdit.name" />
       </div>
       <div class="field">
         <label>{{ t('skillDesc') }}</label>
-        <OInput v-model="skillEdit.description" />
+        <UiInput v-model="skillEdit.description" />
       </div>
       <div class="field">
         <label>{{ t('skillContent') }}</label>
@@ -2186,7 +2185,7 @@ function pickLocale(v: Locale) {
       <div class="sk-grid">
         <div class="field">
           <label>{{ t('themeName') }}</label>
-          <OInput v-model="paletteEdit.name" placeholder="Nord Dark" />
+          <UiInput v-model="paletteEdit.name" placeholder="Nord Dark" />
         </div>
         <div class="field">
           <label>{{ t('themeModeLabel') }}</label>
@@ -2214,7 +2213,7 @@ function pickLocale(v: Locale) {
           <div v-for="tok in NEUTRAL_TOKENS" :key="tok" class="color-cell">
             <span class="color-swatch" :style="{ background: paletteEdit.values[tok] }" />
             <span class="color-name">{{ tok }}</span>
-            <OInput v-model="paletteEdit.values[tok]" class="color-input" placeholder="#89b4fa" />
+            <UiInput v-model="paletteEdit.values[tok]" class="color-input" placeholder="#89b4fa" />
           </div>
         </div>
       </div>
@@ -2224,7 +2223,7 @@ function pickLocale(v: Locale) {
           <div v-for="tok in ACCENTS" :key="tok" class="color-cell">
             <span class="color-swatch" :style="{ background: paletteEdit.values[tok] }" />
             <span class="color-name">{{ tok }}</span>
-            <OInput v-model="paletteEdit.values[tok]" class="color-input" placeholder="#89b4fa" />
+            <UiInput v-model="paletteEdit.values[tok]" class="color-input" placeholder="#89b4fa" />
           </div>
         </div>
       </div>
