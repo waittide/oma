@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use oma_contract::{ACCENTS, AgentSummary, ModelInfo, Palette, PaletteMode, ResolvedTheme, Theme};
+use oma_contract::{ACCENTS, ModelInfo, Palette, PaletteMode, ResolvedTheme, Theme};
 pub use oma_contract::{PALETTE_TOKENS, is_valid_hex_color};
 use oma_provider::ModelConfig;
 pub use oma_provider::{ModelEntry, ProviderConfig};
@@ -46,7 +46,7 @@ impl Default for ServerConfig {
     }
 }
 
-/// 内置调色板源码：与 `AgentLoader` 的内嵌模板同理，打包进二进制作为兜底，
+/// 内置调色板源码：打包进二进制作为兜底，
 /// 用户目录只放自己的调色板，不需要任何初始化写入。
 pub const BUILTIN_PALETTES: [(&str, &str); 4] = [
     ("latte", include_str!("themes/latte.json")),
@@ -310,8 +310,6 @@ impl ConfigPaths {
 pub struct OmaConfig {
     #[serde(default = "default_model_str")]
     pub default_model:           String,
-    #[serde(default = "default_agent_str")]
-    pub default_agent:           String,
     /// 新会话默认推理等级（REASONING_LEVELS 之一）；不得为空，缺省为 medium
     #[serde(default = "default_reasoning_level_str")]
     pub default_reasoning_level: String,
@@ -326,9 +324,6 @@ pub struct OmaConfig {
 fn default_model_str() -> String {
     "my_anthropic/claude-3-7-sonnet".to_string()
 }
-fn default_agent_str() -> String {
-    "task".to_string()
-}
 /// 默认推理等级：模型支持思考时必须落在某个等级上，故不提供「空」语义
 fn default_reasoning_level_str() -> String {
     "medium".to_string()
@@ -338,7 +333,6 @@ impl Default for OmaConfig {
     fn default() -> Self {
         Self {
             default_model:           default_model_str(),
-            default_agent:           default_agent_str(),
             default_reasoning_level: default_reasoning_level_str(),
             theme:                   Theme::default(),
             server:                  ServerConfig::default(),
@@ -686,45 +680,16 @@ impl ClientConfig {
 }
 
 // =========================================================================
-// Agent 模板体系与动态环境上下文拼装
+// 系统提示词与环境上下文拼装
 // =========================================================================
 
-/// 内置 Agent 模板源码
-pub const TEMPLATE_TASK: &str = include_str!("templates/task.md");
-pub const TEMPLATE_PLAN: &str = include_str!("templates/plan.md");
-pub const TEMPLATE_EXPLORE: &str = include_str!("templates/explore.md");
-pub const TEMPLATE_REVIEW: &str = include_str!("templates/review.md");
-pub const TEMPLATE_BUILD: &str = include_str!("templates/build.md");
-
-/// 解析后的 Agent 模板定义
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentTemplate {
-    pub id:                 String,
-    pub name:               String,
-    pub description:        String,
-    #[serde(default)]
-    pub tools:              Vec<String>,
-    pub system_prompt_body: String,
-}
-
-/// Agent 预设文件条目（内置模板或用户覆盖）：scope = bundled | global | project
-#[derive(Debug, Clone, Serialize)]
-pub struct AgentFile {
-    pub id:          String,
-    pub name:        String,
-    pub description: String,
-    pub tools:       Vec<String>,
-    pub scope:       String,
-    /// 完整 Markdown 原文（含 frontmatter）
-    pub content:     String,
-    /// 仅正文（不含 frontmatter）：编辑器只应展示/回写正文，
-    /// 否则保存时会把元信息当成提示词内容再次嵌入
-    pub body:        String,
-}
+/// 内置系统提示词（编译期嵌入）。
+///
+/// pi 使用单一内置系统提示词，不再有「角色/预设」选择，oma 向齐。
+pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("prompts/system_prompt.md");
 
 /// 技能文件条目：scope = global | project
 ///
-/// 技能与 Agent 预设是两件事：预设决定「以什么角色、能用哪些工具运行」，
 /// 技能是一段可复用领域知识，按需读取而不占用常驻上下文。
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillFile {
@@ -746,34 +711,30 @@ pub struct SkillFile {
 ///
 /// 全部字段可缺省：文件名为权威 id，`name` 仅是展示名（缺省回退为 id）；
 /// 且**不校验未知字段**——用户目录里既有 `role: all` 这类自有约定，
-/// 也可能出现未来新增的键，都不应让预设无法加载。
+/// 也可能出现未来新增的键，都不应让技能无法加载。
 #[derive(Debug, Deserialize)]
 struct Frontmatter {
     #[serde(default)]
     name:        Option<String>,
     #[serde(default)]
     description: String,
-    #[serde(default)]
-    tools:       Vec<String>,
 }
 
 /// 解析后的 Frontmatter 与正文
 struct ParsedTemplate {
     name:        String,
     description: String,
-    tools:       Vec<String>,
     body:        String,
 }
 
 /// 解析 Markdown 的 Frontmatter 与正文；无 frontmatter 时整篇作为正文。
 ///
 /// 解析失败（YAML 损坏）不在此处报错：调用方据 id 兜底，避免一个格式有瑕的
-/// 文件让整个预设/技能不可用。
+/// 文件让整个技能不可用。
 fn parse_template_parts(id: &str, raw: &str) -> ParsedTemplate {
     let fallback = ParsedTemplate {
         name:        id.to_string(),
         description: String::new(),
-        tools:       Vec::new(),
         body:        raw.trim().to_string(),
     };
 
@@ -794,226 +755,35 @@ fn parse_template_parts(id: &str, raw: &str) -> ParsedTemplate {
                 .filter(|n| !n.trim().is_empty())
                 .unwrap_or_else(|| id.to_string()),
             description: fm.description,
-            tools:       fm.tools,
             body:        body.to_string(),
         },
         Err(_) => fallback,
     }
 }
 
-/// 解析 Markdown 的 Frontmatter 与正文
-pub fn parse_markdown_template(id: &str, raw: &str) -> Result<AgentTemplate> {
-    let parts = parse_template_parts(id, raw);
-    Ok(AgentTemplate {
-        id:                 id.to_string(),
-        name:               parts.name,
-        description:        parts.description,
-        tools:              parts.tools,
-        system_prompt_body: parts.body,
-    })
-}
+/// 动态拼装注入实时环境块与技能目录的最终 System Prompt。
+pub fn build_system_prompt(workspace: &Path, active_model: &str) -> String {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
 
-/// Agent 模板加载器
-pub struct AgentLoader;
+    let mut prompt = format!(
+        "{}\n\n<runtime_context>\n- Workspace: {}\n- Operating System: {} ({})\n- Today: {}\n- Active Model: {}\n</runtime_context>",
+        DEFAULT_SYSTEM_PROMPT.trim(),
+        workspace.display(),
+        os,
+        arch,
+        today,
+        active_model
+    );
 
-impl AgentLoader {
-    /// 加载指定 Agent 模板（项目目录 > 全局用户目录 > 二进制内嵌）
-    pub fn load_agent(agent_id: &str, workspace: &Path) -> Result<AgentTemplate> {
-        // 1. 项目级覆盖: <workspace>/.oma/agents/<agent_id>.md
-        let project_path = workspace
-            .join(".oma")
-            .join("agents")
-            .join(format!("{}.md", agent_id));
-        if project_path.exists() {
-            if let Ok(raw) = std::fs::read_to_string(&project_path) {
-                return parse_markdown_template(agent_id, &raw);
-            }
-        }
-
-        // 2. 用户全局配置: ~/.config/oma/agents/<agent_id>.md
-        if let Some(config_dir) = dirs_config_dir() {
-            let user_path = config_dir
-                .join("oma")
-                .join("agents")
-                .join(format!("{}.md", agent_id));
-            if user_path.exists() {
-                if let Ok(raw) = std::fs::read_to_string(&user_path) {
-                    return parse_markdown_template(agent_id, &raw);
-                }
-            }
-        }
-
-        // 3. 编译期内嵌兜底
-        let bundled = match agent_id {
-            "task" => TEMPLATE_TASK,
-            "plan" => TEMPLATE_PLAN,
-            "explore" => TEMPLATE_EXPLORE,
-            "review" => TEMPLATE_REVIEW,
-            "build" => TEMPLATE_BUILD,
-            _ => anyhow::bail!("Agent template '{}' not found", agent_id),
-        };
-
-        parse_markdown_template(agent_id, bundled)
+    // 技能只在目录里列名与路径，需要时由模型自行 read：
+    // 常驻全文会持续挤占上下文，而多数轮次用不到任何技能
+    if let Some(catalog) = SkillLoader::catalog(workspace) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&catalog);
     }
-
-    /// 列出所有可用的 Agent 元数据列表
-    pub fn list_agents(workspace: &Path) -> Vec<AgentSummary> {
-        Self::list_agent_files(Some(workspace))
-            .into_iter()
-            .map(|a| AgentSummary {
-                id:          a.id,
-                name:        a.name,
-                description: a.description,
-            })
-            .collect()
-    }
-
-    /// 动态拼装注入实时环境块与技能目录的最终 System Prompt
-    pub fn build_system_prompt(template: &AgentTemplate, workspace: &Path, active_model: &str) -> String {
-        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        let os = std::env::consts::OS;
-        let arch = std::env::consts::ARCH;
-
-        let mut prompt = format!(
-            "{}\n\n<runtime_context>\n- Workspace: {}\n- Operating System: {} ({})\n- Today: {}\n- Active Model: {}\n</runtime_context>",
-            template.system_prompt_body,
-            workspace.display(),
-            os,
-            arch,
-            today,
-            active_model
-        );
-
-        // 技能只在目录里列名与路径，需要时由模型自行 read：
-        // 常驻全文会持续挤占上下文，而多数轮次用不到任何技能
-        if let Some(catalog) = SkillLoader::catalog(workspace) {
-            prompt.push_str("\n\n");
-            prompt.push_str(&catalog);
-        }
-        prompt
-    }
-
-    /// 全局 Agent 预设目录 (~/.config/oma/agents)
-    pub fn global_agents_dir() -> Option<PathBuf> {
-        dirs_config_dir().map(|d| d.join("oma").join("agents"))
-    }
-
-    /// 项目 Agent 预设目录 (<workspace>/.oma/agents)
-    pub fn project_agents_dir(workspace: &Path) -> PathBuf {
-        workspace.join(".oma").join("agents")
-    }
-
-    /// 解析预设 Markdown 为条目；frontmatter 损坏时退化为「id 即名称」仍可见
-    fn agent_file_from_raw(id: &str, scope: &str, raw: &str) -> AgentFile {
-        let parts = parse_template_parts(id, raw);
-        AgentFile {
-            id:          id.to_string(),
-            name:        parts.name,
-            description: parts.description,
-            tools:       parts.tools,
-            scope:       scope.to_string(),
-            content:     raw.to_string(),
-            body:        parts.body,
-        }
-    }
-
-    fn agent_files_in_dir(dir: &Path, scope: &str) -> Vec<AgentFile> {
-        let mut out = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                    continue;
-                }
-                let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                if let Ok(raw) = std::fs::read_to_string(&path) {
-                    out.push(Self::agent_file_from_raw(id, scope, &raw));
-                }
-            }
-        }
-        out.sort_by(|a, b| a.id.cmp(&b.id));
-        out
-    }
-
-    /// 列出全部 Agent 预设：内置 + 全局 + 项目（同 id 时项目覆盖全局、全局覆盖内置）
-    pub fn list_agent_files(workspace: Option<&Path>) -> Vec<AgentFile> {
-        let mut by_id: std::collections::BTreeMap<String, AgentFile> = std::collections::BTreeMap::new();
-        for (id, raw) in BUNDLED_AGENTS {
-            by_id.insert(id.to_string(), Self::agent_file_from_raw(id, "bundled", raw));
-        }
-        if let Some(dir) = Self::global_agents_dir() {
-            for a in Self::agent_files_in_dir(&dir, "global") {
-                by_id.insert(a.id.clone(), a);
-            }
-        }
-        if let Some(ws) = workspace {
-            for a in Self::agent_files_in_dir(&Self::project_agents_dir(ws), "project") {
-                by_id.insert(a.id.clone(), a);
-            }
-        }
-        by_id.into_values().collect()
-    }
-
-    /// 读取单个 Agent 预设
-    pub fn read_agent_file(workspace: Option<&Path>, id: &str) -> Result<AgentFile> {
-        Self::list_agent_files(workspace)
-            .into_iter()
-            .find(|a| a.id == id)
-            .with_context(|| format!("Agent preset '{}' not found", id))
-    }
-
-    /// 写入 Agent 预设：scope = global | project；内置模板只读
-    pub fn write_agent_file(
-        workspace: Option<&Path>,
-        id: &str,
-        scope: &str,
-        name: &str,
-        description: &str,
-        tools: &[String],
-        content: &str,
-    ) -> Result<PathBuf> {
-        anyhow::ensure!(
-            matches!(scope, "global" | "project"),
-            "Invalid preset scope {:?}: expect global|project",
-            scope
-        );
-        anyhow::ensure!(
-            !BUNDLED_AGENTS.iter().any(|(bid, _)| *bid == id),
-            "Bundled preset '{}' is read-only",
-            id
-        );
-        anyhow::ensure!(is_valid_slug(id), "Invalid preset id {:?}", id);
-
-        let dir = match scope {
-            "global" => Self::global_agents_dir().with_context(|| "Cannot resolve global config dir for presets")?,
-            _ => {
-                let ws = workspace.with_context(|| "workspace is required for project presets")?;
-                Self::project_agents_dir(ws)
-            }
-        };
-        std::fs::create_dir_all(&dir).with_context(|| format!("Failed to create presets dir {}", dir.display()))?;
-        let path = dir.join(format!("{}.md", id));
-        std::fs::write(&path, render_markdown(name, description, tools, content)?)
-            .with_context(|| format!("Failed to write preset {}", path.display()))?;
-        Ok(path)
-    }
-
-    /// 删除 Agent 预设文件（仅限 global/project 作用域）
-    pub fn delete_agent_file(workspace: Option<&Path>, id: &str, scope: &str) -> Result<()> {
-        let dir = match scope {
-            "global" => Self::global_agents_dir().with_context(|| "Cannot resolve global config dir for presets")?,
-            "project" => {
-                let ws = workspace.with_context(|| "workspace is required for project presets")?;
-                Self::project_agents_dir(ws)
-            }
-            other => anyhow::bail!("Invalid preset scope {:?}: expect global|project", other),
-        };
-        let path = dir.join(format!("{}.md", id));
-        anyhow::ensure!(path.exists(), "Preset file {} not found", path.display());
-        std::fs::remove_file(&path).with_context(|| format!("Failed to delete preset {}", path.display()))
-    }
+    prompt
 }
 
 /// 技能加载器：按三层根目录发现技能，每层为 `<root>/<skill-name>/SKILL.md`。
@@ -1024,7 +794,7 @@ impl AgentLoader {
 /// project  <workspace>/.agents/skills 随仓库分发的技能
 /// ```
 ///
-/// 技能是可按需取用的领域知识，与 Agent 预设（角色 + 工具白名单）是两套独立机制。
+/// 技能是可按需取用的领域知识。
 /// 同名时更具体的一层覆盖更宽泛的一层：project > agent > global。
 pub struct SkillLoader;
 
@@ -1187,15 +957,6 @@ impl SkillLoader {
     }
 }
 
-/// 内置 Agent 预设清单（id, 模板源码）
-pub const BUNDLED_AGENTS: [(&str, &str); 5] = [
-    ("task", TEMPLATE_TASK),
-    ("plan", TEMPLATE_PLAN),
-    ("explore", TEMPLATE_EXPLORE),
-    ("review", TEMPLATE_REVIEW),
-    ("build", TEMPLATE_BUILD),
-];
-
 /// 预设/技能标识符：字母数字与 - _，非空。
 ///
 /// id 直接充当文件名（`<id>.md`、`<id>/SKILL.md`），故按字母表放行：
@@ -1332,20 +1093,9 @@ mod tests {
     }
 
     #[test]
-    fn test_load_bundled_agents() {
+    fn test_system_prompt_injects_runtime_context() {
         let tmp = tempfile::tempdir().unwrap();
-        let ws = tmp.path();
-
-        let task_agent = AgentLoader::load_agent("task", ws).unwrap();
-        assert_eq!(task_agent.id, "task");
-        assert_eq!(task_agent.name, "Task");
-        assert!(task_agent.tools.contains(&"read".to_string()));
-        assert!(task_agent.tools.contains(&"write".to_string()));
-        assert!(task_agent.tools.contains(&"edit".to_string()));
-        assert!(task_agent.tools.contains(&"shell".to_string()));
-        assert!(task_agent.tools.contains(&"task".to_string()));
-
-        let prompt = AgentLoader::build_system_prompt(&task_agent, ws, "my_anthropic/claude-3-7");
+        let prompt = build_system_prompt(tmp.path(), "my_anthropic/claude-3-7");
         assert!(prompt.contains("<runtime_context>"));
         assert!(prompt.contains("Active Model: my_anthropic/claude-3-7"));
     }
@@ -1401,7 +1151,6 @@ id = "m2"
     fn test_parse_toml_config() {
         let toml_str = r#"
 default_model = "deepseek/deepseek-chat"
-default_agent = "task"
 
 [server]
 listen_addr = "0.0.0.0:17431"
@@ -1535,93 +1284,6 @@ api_key = "env:DEEPSEEK_KEY"
         assert!(dir.join("config.toml.bak").exists());
     }
 
-    #[test]
-    fn test_agent_preset_crud_scopes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ws = tmp.path().join("proj");
-        std::fs::create_dir_all(&ws).unwrap();
-
-        // 写入与列表（project 作用域：测试不得触碰用户真实的全局配置）
-        AgentLoader::write_agent_file(
-            Some(&ws),
-            "my-preset",
-            "project",
-            "My Preset",
-            "Does things",
-            &["read".to_string()],
-            "Do the thing.",
-        )
-        .unwrap();
-        let all = AgentLoader::list_agent_files(Some(&ws));
-        let g = all.iter().find(|a| a.id == "my-preset").unwrap();
-        assert_eq!(g.scope, "project");
-        assert_eq!(g.name, "My Preset");
-        assert_eq!(g.tools, vec!["read"]);
-
-        // 项目覆盖同名 id
-        AgentLoader::write_agent_file(
-            Some(&ws),
-            "my-preset",
-            "project",
-            "Proj Preset",
-            "Project variant",
-            &[],
-            "Project body.",
-        )
-        .unwrap();
-        let overridden = AgentLoader::read_agent_file(Some(&ws), "my-preset").unwrap();
-        assert_eq!(overridden.scope, "project");
-        assert_eq!(overridden.name, "Proj Preset");
-
-        // 内置预设只读
-        assert!(AgentLoader::write_agent_file(Some(&ws), "task", "global", "X", "", &[], "body").is_err());
-
-        // 删除后回落到内置兜底
-        AgentLoader::delete_agent_file(Some(&ws), "my-preset", "project").unwrap();
-        assert!(AgentLoader::read_agent_file(Some(&ws), "my-preset").is_err());
-        // 内置兜底仍然可用
-        assert!(AgentLoader::read_agent_file(Some(&ws), "task").is_ok());
-    }
-
-    /// 技能与 Agent 预设必须是两套互不干扰的存储：同名也不会互相覆盖。
-    ///
-    /// 全部使用 project 作用域，避免与共享的全局配置目录相互干扰。
-    #[test]
-    fn test_skills_are_separate_from_presets() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ws = tmp.path().join("proj");
-        std::fs::create_dir_all(&ws).unwrap();
-
-        // 项目作用域初始无技能；内置预设始终可见
-        let project_skills = |ws: &std::path::Path| -> Vec<SkillFile> {
-            SkillLoader::list_skills(Some(ws))
-                .into_iter()
-                .filter(|s| s.scope == "project")
-                .collect()
-        };
-        assert!(project_skills(&ws).is_empty());
-        assert!(!AgentLoader::list_agent_files(Some(&ws)).is_empty());
-
-        SkillLoader::write_skill(Some(&ws), "task", "project", "同名技能", "与预设同名", "技能正文").unwrap();
-        let skills = project_skills(&ws);
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].id, "task");
-        assert_eq!(skills[0].scope, "project");
-
-        // 同名互不覆盖：预设仍是内置只读模板，且工具白名单来自预设而非技能
-        let preset = AgentLoader::read_agent_file(Some(&ws), "task").unwrap();
-        assert_eq!(preset.scope, "bundled");
-        assert_ne!(preset.name, "同名技能");
-        assert!(preset.tools.contains(&"write".to_string()));
-
-        // 技能存放在独立的 skills 目录下，且为 <name>/SKILL.md 布局
-        let skill_dir = SkillLoader::project_dir(&ws);
-        let preset_dir = AgentLoader::project_agents_dir(&ws);
-        assert_ne!(skill_dir, preset_dir);
-        assert!(skill_dir.join("task").join("SKILL.md").exists());
-        assert!(!preset_dir.join("task.md").exists());
-    }
-
     /// 描述含冒号等 YAML 元字符时必须能原样回读。
     #[test]
     fn test_frontmatter_escaping_roundtrip() {
@@ -1635,21 +1297,6 @@ api_key = "env:DEEPSEEK_KEY"
         assert_eq!(skill.name, "Tricky: 名称");
         assert_eq!(skill.description, tricky);
         assert!(skill.path.ends_with("tricky/SKILL.md"));
-
-        AgentLoader::write_agent_file(
-            Some(&ws),
-            "preset-tricky",
-            "project",
-            "Name: with colon",
-            "描述: 含冒号",
-            &["read".to_string()],
-            "body",
-        )
-        .unwrap();
-        let preset = AgentLoader::read_agent_file(Some(&ws), "preset-tricky").unwrap();
-        assert_eq!(preset.name, "Name: with colon");
-        assert_eq!(preset.description, "描述: 含冒号");
-        assert_eq!(preset.tools, vec!["read"]);
     }
 
     /// 技能通过目录注入 System Prompt，携带可读取的绝对路径。
@@ -1661,13 +1308,12 @@ api_key = "env:DEEPSEEK_KEY"
         let ws = tmp.path().join("proj");
         std::fs::create_dir_all(&ws).unwrap();
 
-        let preset = AgentLoader::load_agent("task", &ws).unwrap();
         // 写入前该技能不应出现在目录中
-        let before = AgentLoader::build_system_prompt(&preset, &ws, "p/m");
+        let before = build_system_prompt(&ws, "p/m");
         assert!(!before.contains("- cargo:"));
 
         SkillLoader::write_skill(Some(&ws), "cargo", "project", "Cargo", "Rust 构建约定", "正文").unwrap();
-        let with_skills = AgentLoader::build_system_prompt(&preset, &ws, "p/m");
+        let with_skills = build_system_prompt(&ws, "p/m");
         assert!(with_skills.contains("<available_skills>"));
         assert!(with_skills.contains("- cargo: Rust 构建约定"));
         // 目录里给的是真实路径，模型才能用 read 取用
@@ -1693,42 +1339,30 @@ api_key = "env:DEEPSEEK_KEY"
             SkillLoader::project_dir(ws).ends_with(".agents/skills"),
             "project layer is <workspace>/.agents/skills"
         );
-        assert!(AgentLoader::project_agents_dir(ws).ends_with(".oma/agents"));
     }
 
-    /// 预设/技能文件缺 `name`、或带有未知 frontmatter 键时仍须可用。
+    /// 技能文件缺 `name`、或带有未知 frontmatter 键时仍须可用。
     ///
-    /// 用户目录里存在这类文件（如 `description` + `role: all`，名称即文件名），
+    /// 用户目录里存在这类文件（如 `description` + `role: all`，名称即目录名），
     /// 此前会因 name 必填 + YAML 严格解析而整条报错。
     #[test]
     fn test_frontmatter_tolerates_missing_name_and_extra_keys() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("proj");
-        let dir = AgentLoader::project_agents_dir(&ws);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = SkillLoader::project_dir(&ws);
 
         // 缺 name，且带未知键 role
+        std::fs::create_dir_all(dir.join("minimal")).unwrap();
         std::fs::write(
-            dir.join("minimal.md"),
-            "---\ndescription: 极简的软件工程助手\nrole: all\n---\n你是一位乐于助人的软件工程师助手。",
+            dir.join("minimal").join("SKILL.md"),
+            "---\ndescription: 极简的技能描述\nrole: all\n---\n这里是技能正文。",
         )
         .unwrap();
-        // 完全没有 frontmatter
-        std::fs::write(dir.join("bare.md"), "纯正文，没有元信息。").unwrap();
 
-        let minimal = AgentLoader::read_agent_file(Some(&ws), "minimal").unwrap();
-        assert_eq!(minimal.name, "minimal", "name 缺省时回退为文件名");
-        assert_eq!(minimal.description, "极简的软件工程助手");
-        assert_eq!(minimal.body, "你是一位乐于助人的软件工程师助手。");
-        assert!(minimal.tools.is_empty());
-
-        let bare = AgentLoader::read_agent_file(Some(&ws), "bare").unwrap();
-        assert_eq!(bare.name, "bare");
-        assert_eq!(bare.body, "纯正文，没有元信息。");
-
-        // 且能真正加载为可用模板（此前这里会报 missing field `name`）
-        let template = AgentLoader::load_agent("minimal", &ws).unwrap();
-        assert_eq!(template.system_prompt_body, "你是一位乐于助人的软件工程师助手。");
+        let minimal = SkillLoader::read_skill(Some(&ws), "minimal").unwrap();
+        assert_eq!(minimal.name, "minimal", "name 缺省时回退为目录名");
+        assert_eq!(minimal.description, "极简的技能描述");
+        assert_eq!(minimal.body, "这里是技能正文。");
     }
 
     /// `body` 只含正文：编辑器回写正文，元信息由服务端按字段重新渲染，
@@ -1740,24 +1374,15 @@ api_key = "env:DEEPSEEK_KEY"
         std::fs::create_dir_all(&ws).unwrap();
 
         let body = "正文第一行\n\n正文第二行";
-        AgentLoader::write_agent_file(
-            Some(&ws),
-            "p",
-            "project",
-            "Name",
-            "Desc: 含冒号",
-            &["read".to_string()],
-            body,
-        )
-        .unwrap();
-        let read = AgentLoader::read_agent_file(Some(&ws), "p").unwrap();
+        SkillLoader::write_skill(Some(&ws), "p", "project", "Name", "Desc: 含冒号", body).unwrap();
+        let read = SkillLoader::read_skill(Some(&ws), "p").unwrap();
         assert_eq!(read.body, body, "body 必须是纯正文");
         assert!(read.content.starts_with("---"), "content 保留完整原文");
         assert!(!read.body.contains("---"), "正文不得包含 frontmatter 分隔符");
 
         // 以 body 作为新内容再次保存，frontmatter 不应累积
-        AgentLoader::write_agent_file(Some(&ws), "p", "project", "Name", "Desc: 含冒号", &[], &read.body).unwrap();
-        let again = AgentLoader::read_agent_file(Some(&ws), "p").unwrap();
+        SkillLoader::write_skill(Some(&ws), "p", "project", "Name", "Desc: 含冒号", &read.body).unwrap();
+        let again = SkillLoader::read_skill(Some(&ws), "p").unwrap();
         assert_eq!(again.body, body);
         assert_eq!(again.content.matches("---").count(), 2, "frontmatter 只应出现一对");
     }
@@ -1860,38 +1485,27 @@ api_key = "env:DEEPSEEK_KEY"
         assert!(SkillLoader::read_skill(Some(&ws), "with-scripts").is_err());
     }
 
-    /// 非 ASCII 名称必须是合法 id：用户手写的 `猫娘.md` / `极简.md` 直接充当 id，
-    /// 此前仅放行 ASCII，保存时报 "Invalid preset id"。
+    /// 非 ASCII 名称必须是合法 id：用户手写的 `猫娘` / `极简` 直接充当 id。
     #[test]
     fn test_non_ascii_id_allowed() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("proj");
         std::fs::create_dir_all(&ws).unwrap();
 
-        for id in ["猫娘", "极简", "预设-2", "café", "тест"] {
-            AgentLoader::write_agent_file(Some(&ws), id, "project", id, "", &[], "正文")
+        // 技能（`<id>/SKILL.md`）
+        for id in ["猫娘技能", "极简", "技能-2", "café", "тест"] {
+            SkillLoader::write_skill(Some(&ws), id, "project", id, "描述", "正文")
                 .unwrap_or_else(|e| panic!("id {id:?} 应当合法: {e}"));
-            let got = AgentLoader::read_agent_file(Some(&ws), id).unwrap();
+            let got = SkillLoader::read_skill(Some(&ws), id).unwrap();
             assert_eq!(got.body, "正文");
-            // 生成的文件名就是 `<id>.md`（项目层为 <workspace>/.oma/agents）
             assert!(
-                AgentLoader::project_agents_dir(&ws)
-                    .join(format!("{id}.md"))
+                SkillLoader::project_dir(&ws)
+                    .join(id)
+                    .join("SKILL.md")
                     .exists()
             );
-            AgentLoader::delete_agent_file(Some(&ws), id, "project")
-                .unwrap_or_else(|e| panic!("id {id:?} 应当可删: {e}"));
+            SkillLoader::delete_skill(Some(&ws), id, "project").unwrap_or_else(|e| panic!("id {id:?} 应当可删: {e}"));
         }
-
-        // 技能同理（`<id>/SKILL.md`）
-        SkillLoader::write_skill(Some(&ws), "猫娘技能", "project", "猫娘技能", "描述", "正文").unwrap();
-        assert!(
-            SkillLoader::project_dir(&ws)
-                .join("猫娘技能")
-                .join("SKILL.md")
-                .exists()
-        );
-        SkillLoader::delete_skill(Some(&ws), "猫娘技能", "project").unwrap();
     }
 
     /// 放行非 ASCII 不得顺带放开路径穿越：分隔符与 `.` 仍被拒。

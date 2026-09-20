@@ -49,7 +49,6 @@ pub struct SessionRecord {
     pub workspace:    String,
     pub title:        String,
     pub active_model: String,
-    pub active_agent: String,
 }
 
 /// REST 客户端：会话列出与创建（实时交互走 `OmaClient`）

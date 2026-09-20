@@ -279,8 +279,6 @@ async function copyMessage(id: string) {
   }, 1200);
 }
 
-const agentOptions = computed(() => chat.agents.value.map((a) => ({ value: a.id, label: a.name })));
-
 /** 规范推理等级：与后端 REASONING_LEVELS 一致 */
 const REASONING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 
@@ -548,12 +546,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
             <span v-if="chat.queued.value > 0" class="queued-chip">
               {{ t('queuedCount', { count: chat.queued.value }) }}
             </span>
-            <UiSelect
-              :model-value="chat.activeAgent.value"
-              :options="agentOptions"
-              style="width: 118px"
-              @update:model-value="(v) => chat.setAgent(String(v ?? ''))"
-            />
             <UiSelect
               :model-value="chat.activeModel.value"
               :groups="modelGroups"

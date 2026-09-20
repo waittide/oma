@@ -109,10 +109,6 @@ pub enum AgentCommand {
     SetModel {
         model: String,
     },
-    SetAgent {
-        agent: String,
-    },
-    /// 设置当前会话的推理等级（必须在 REASONING_LEVELS 内，空串 = 未设置）
     SetReasoningLevel {
         level: String,
     },
@@ -477,14 +473,6 @@ pub struct ModelInfo {
     pub reasoning_map: BTreeMap<String, String>,
 }
 
-/// Agent 模板元数据
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSummary {
-    pub id:          String,
-    pub name:        String,
-    pub description: String,
-}
-
 /// 握手成功就绪载荷
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ready {
@@ -492,14 +480,12 @@ pub struct Ready {
     pub session_id:      String,
     pub workspace:       String,
     pub active_model:    String,
-    pub active_agent:    String,
     /// 当前会话的推理等级（空 = 未设置）
     #[serde(default)]
     pub reasoning_level: String,
     pub current_leaf_id: Option<String>,
     /// 可选模型目录（provider → 模型清单），与 OmaConfig.providers 的配置形态不同
     pub model_catalog:   BTreeMap<String, Vec<ModelInfo>>,
-    pub agents:          Vec<AgentSummary>,
     /// 上次记录的上下文占用与模型窗口，供重连后立即恢复进度条；无记录时为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_usage:   Option<ContextUsage>,
@@ -605,9 +591,6 @@ pub enum AgentEvent {
     },
     ModelChanged {
         active_model: String,
-    },
-    AgentChanged {
-        active_agent: String,
     },
     /// 上下文占用更新：每次模型请求拿到用量后广播，供界面展示进度。
     /// `tokens` 为提示侧总量（含缓存），`context_len` 为模型窗口。

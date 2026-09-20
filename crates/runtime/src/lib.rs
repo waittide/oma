@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::VecDeque,
     path::PathBuf,
     sync::{
         Arc,
@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
-use oma_config::{AgentLoader, AgentTemplate, OmaConfig};
+use oma_config::{OmaConfig, build_system_prompt};
 use oma_contract::{
     ActiveTurnCatchUp, AgentCommand, AgentEvent, Block, ChatMessage, ClientType, Role, StopReason, TokenUsage,
     ToolCallStartedData, ToolImage, ToolOutput,
@@ -315,7 +315,6 @@ pub struct SessionRoom {
     pub config:          Arc<RwLock<OmaConfig>>,
     pub tools:           ToolRegistry,
     pub active_model:    RwLock<String>,
-    pub active_agent:    RwLock<String>,
     /// 当前会话推理等级（REASONING_LEVELS 之一；空 = 未设置，回退模型默认）
     pub reasoning_level: RwLock<String>,
     pub event_tx:        broadcast::Sender<AgentEvent>,
@@ -339,7 +338,6 @@ impl SessionRoom {
         config: Arc<RwLock<OmaConfig>>,
         tools: ToolRegistry,
         active_model: impl Into<String>,
-        active_agent: impl Into<String>,
     ) -> Arc<Self> {
         let (event_tx, _) = broadcast::channel(512);
 
@@ -350,7 +348,6 @@ impl SessionRoom {
             config,
             tools,
             active_model: RwLock::new(active_model.into()),
-            active_agent: RwLock::new(active_agent.into()),
             reasoning_level: RwLock::new(String::new()),
             event_tx,
             command_queue: Mutex::new(VecDeque::new()),
@@ -429,17 +426,9 @@ impl SessionRoom {
                 *self.active_model.write() = model.clone();
                 let _ = self
                     .storage
-                    .update_session_settings(&self.session_id, Some(&model), None, None)
+                    .update_session_settings(&self.session_id, Some(&model), None)
                     .await;
                 self.broadcast(AgentEvent::ModelChanged { active_model: model });
-            }
-            AgentCommand::SetAgent { agent } => {
-                *self.active_agent.write() = agent.clone();
-                let _ = self
-                    .storage
-                    .update_session_settings(&self.session_id, None, Some(&agent), None)
-                    .await;
-                self.broadcast(AgentEvent::AgentChanged { active_agent: agent });
             }
             AgentCommand::SetReasoningLevel { level } => {
                 // 校验收敛在服务端：非法等级一律拒绝，避免脏值落库
@@ -452,7 +441,7 @@ impl SessionRoom {
                 *self.reasoning_level.write() = level.clone();
                 let _ = self
                     .storage
-                    .update_session_settings(&self.session_id, None, None, Some(&level))
+                    .update_session_settings(&self.session_id, None, Some(&level))
                     .await;
                 self.broadcast(AgentEvent::ReasoningLevelChanged { level });
             }
@@ -571,7 +560,6 @@ impl SessionRoom {
         call_id: &str,
         tool_name: &str,
         tool_input: serde_json::Value,
-        allowed: Option<&HashSet<String>>,
         cancel: &CancellationToken,
     ) -> (ToolOutput, bool) {
         let started = ToolCallStartedData {
@@ -583,14 +571,6 @@ impl SessionRoom {
             turn.active_tool_call = Some(started.clone());
         }
         self.broadcast(AgentEvent::ToolCallStarted(started));
-
-        // 0. Agent 模板工具白名单（模板未声明工具时不限制）
-        if let Some(allowed) = allowed {
-            if !allowed.contains(tool_name) {
-                let output = ToolOutput::error(format!("Tool '{}' is not permitted for the active agent.", tool_name));
-                return (self.finish_tool_call(call_id, tool_name, output).await, false);
-            }
-        }
 
         // 1. 插件 tool_call 钩子：任一插件返回 block 即拦截（插件为同步 JS，放到阻塞线程池）
         let plugin_host = self.plugins.read().clone();
@@ -820,17 +800,6 @@ impl SessionRoom {
             }
 
             // 获取 Agent 模板与 Model 配置
-            let active_agent_name = self.active_agent.read().clone();
-            let template = match AgentLoader::load_agent(&active_agent_name, &self.workspace) {
-                Ok(t) => t,
-                Err(e) => {
-                    self.broadcast(AgentEvent::Error {
-                        message: format!("Agent load error: {}", e),
-                    });
-                    return TurnOutcome::Finished(StopReason::Error);
-                }
-            };
-
             let active_model_sel = self.active_model.read().clone();
             let (provider_cfg, model_cfg) = {
                 let cfg = self.config.read();
@@ -854,10 +823,9 @@ impl SessionRoom {
             // session_attachment:// 引用在此内联为 data URI，各厂商协议拿到的都是完整载荷
             self.inline_attachments(&mut messages).await;
 
-            // 拼装 System Prompt 与按 Agent 模板裁剪的工具清单
-            let system_prompt = AgentLoader::build_system_prompt(&template, &self.workspace, &active_model_sel);
-            let tools_defs = self.tools.to_definitions(&template.tools);
-            let allowed = allowed_tools(&template);
+            // 拼装 System Prompt与工具清单
+            let system_prompt = build_system_prompt(&self.workspace, &active_model_sel);
+            let tools_defs = self.tools.to_definitions(&[]);
 
             // 发起 Provider 请求：会话推理等级在此映射为厂商可识别参数
             let mut model_cfg = model_cfg.clone();
@@ -1047,7 +1015,7 @@ impl SessionRoom {
                     continue;
                 }
                 let (output, was_cancelled) = self
-                    .execute_tool_call(&call_id, &tool_name, tool_input, allowed.as_ref(), cancel_token)
+                    .execute_tool_call(&call_id, &tool_name, tool_input, cancel_token)
                     .await;
                 cancelled = was_cancelled;
                 results.push((call_id, output.output, output.is_error, output.images));
@@ -1322,15 +1290,6 @@ fn queued_run(cmd: AgentCommand) -> Option<(String, Vec<String>, Option<String>)
     }
 }
 
-/// Agent 模板声明的工具白名单（空声明 = 不限制）
-fn allowed_tools(template: &AgentTemplate) -> Option<HashSet<String>> {
-    if template.tools.is_empty() {
-        None
-    } else {
-        Some(template.tools.iter().cloned().collect())
-    }
-}
-
 fn guess_mime(name: &str) -> String {
     match name
         .rsplit_once('.')
@@ -1370,6 +1329,8 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     fn text(role: Role, id: &str, parent: Option<&str>, body: &str) -> ChatMessage {
@@ -1732,7 +1693,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_q", "/w", "T", "missing/model", "task", "medium")
+            .create_session("s_q", "/w", "T", "missing/model", "medium")
             .await?;
 
         let room = SessionRoom::new(
@@ -1742,7 +1703,6 @@ mod tests {
             Arc::new(RwLock::new(OmaConfig::default())),
             ToolRegistry::new(),
             "missing/model",
-            "task",
         );
 
         let submit = |text: &str| {
@@ -1963,26 +1923,5 @@ mod tests {
             "prompt must stay bounded: {}",
             prompt.chars().count()
         );
-    }
-
-    /// 工具白名单：模板声明只读时，写工具不可见亦不可执行。
-    #[test]
-    fn test_allowed_tools_from_template() {
-        let template = AgentTemplate {
-            id:                 "explore".into(),
-            name:               "Explore".into(),
-            description:        String::new(),
-            tools:              vec!["read".into(), "shell".into()],
-            system_prompt_body: String::new(),
-        };
-        let allowed = allowed_tools(&template).unwrap();
-        assert!(allowed.contains("read") && allowed.contains("shell"));
-        assert!(!allowed.contains("write"));
-
-        let unrestricted = AgentTemplate {
-            tools: Vec::new(),
-            ..template
-        };
-        assert!(allowed_tools(&unrestricted).is_none());
     }
 }

@@ -58,12 +58,6 @@ export interface ModelInfo {
   reasoning_map?: Record<string, string>;
 }
 
-export interface AgentSummary {
-  id: string;
-  name: string;
-  description: string;
-}
-
 export interface ToolCallStartedData {
   call_id: string;
   /** 被调用的工具名 */
@@ -97,26 +91,12 @@ export type AgentEvent =
   | { type: 'tool_call_finished'; data?: { call_id: string; tool_name: string; output: string; is_error: boolean } }
   | { type: 'active_branch_changed'; data?: { current_leaf_id: string } }
   | { type: 'model_changed'; data?: { active_model: string } }
-  | { type: 'agent_changed'; data?: { active_agent: string } }
   | { type: 'reasoning_level_changed'; data?: { level: string } }
   | { type: 'context_usage'; data?: { tokens: number; context_len: number } }
   | { type: 'active_turn_catch_up'; data?: ActiveTurnCatchUp }
   | { type: 'session_renamed'; data?: { session_id: string; title: string } }
   | { type: 'messages_deleted'; data?: { deleted_ids: string[]; current_leaf_id: string | null } }
   | { type: 'error'; data?: { message: string } };
-
-/** Agent 预设文件条目：决定以什么角色、能用哪些工具运行；scope = bundled | global | project */
-export interface AgentFile {
-  id: string;
-  name: string;
-  description: string;
-  tools: string[];
-  scope: string;
-  /** 完整 Markdown（含 frontmatter） */
-  content: string;
-  /** 仅正文：编辑器只展示/回写正文，元信息由服务端按字段重新渲染 */
-  body: string;
-}
 
 /** 技能文件条目：按需读取的领域知识；scope = global | agent | project */
 export interface SkillFile {
@@ -139,13 +119,11 @@ export interface Ready {
   session_id: string;
   workspace: string;
   active_model: string;
-  active_agent: string;
   /** 当前会话推理等级；空串 = 未设置（回退模型默认） */
   reasoning_level: string;
   current_leaf_id: string | null;
   /** 可选模型目录（provider → 模型清单），与 OmaConfig.providers 的配置形态不同 */
   model_catalog: Record<string, ModelInfo[]>;
-  agents: AgentSummary[];
   /** 上次记录的上下文占用；用于重连/重启后立即恢复进度条 */
   context_usage?: ContextUsage | null;
   /** 已解析主题：终端与浏览器共用同一份配色数据 */
@@ -168,7 +146,6 @@ export type ServerMessage =
 export type AgentCommand =
   | { type: 'user_input'; data: { content: string; attachments?: string[] } }
   | { type: 'set_model'; data: { model: string } }
-  | { type: 'set_agent'; data: { agent: string } }
   | { type: 'set_reasoning_level'; data: { level: string } }
   | { type: 'fork_and_run'; data: { parent_message_id: string; new_content?: string | null } }
   | { type: 'switch_branch'; data: { leaf_message_id: string } };
@@ -192,7 +169,6 @@ export interface SessionRecord {
   workspace: string;
   title: string;
   active_model: string;
-  active_agent: string;
   /** 会话推理等级；空串 = 未设置（回退模型默认） */
   reasoning_level?: string;
   current_leaf_id: string | null;
@@ -361,7 +337,6 @@ export interface ProviderConfig {
 /** 完整服务端配置 (GET/PUT /api/config) */
 export interface OmaConfig {
   default_model: string;
-  default_agent: string;
   /** 新会话默认推理等级；空串 = 未指定（回退模型默认） */
   default_reasoning_level?: string;
   theme: Theme;
