@@ -261,7 +261,7 @@ const modeOptions = computed<{ value: Theme['mode']; label: string }[]>(() => [
 
 // 浅色/深色各自引用的调色板 id。
 // 两个下拉框只在同一明暗组内选择，从根上避免「浅色引用了深色调色板」。
-const themeSel = reactive({ light: 'latte', dark: 'mocha' });
+const themeSel = reactive({ light: 'pi-light', dark: 'pi-dark' });
 
 const lightPaletteOptions = computed(() =>
   lightPalettes.value.map((p) => ({ value: p.id, label: p.name })),
@@ -305,7 +305,7 @@ const paletteEdit = reactive<{
   id: '',
   name: '',
   mode: 'dark',
-  base: 'mocha',
+  base: 'pi-dark',
   values: {},
 });
 
@@ -337,7 +337,7 @@ function applyBase(id: string) {
 function newPaletteMode(next: PaletteMode) {
   paletteEdit.mode = next;
   const group = next === 'light' ? lightPalettes.value : darkPalettes.value;
-  applyBase(group[0]?.id ?? (next === 'light' ? 'latte' : 'mocha'));
+  applyBase(group[0]?.id ?? (next === 'light' ? 'pi-light' : 'pi-dark'));
 }
 
 function newPalette() {
@@ -347,7 +347,7 @@ function newPalette() {
   paletteEdit.name = '';
   paletteEdit.mode = mode.value === 'light' ? 'light' : 'dark';
   const group = paletteEdit.mode === 'light' ? lightPalettes.value : darkPalettes.value;
-  applyBase(group[0]?.id ?? (paletteEdit.mode === 'light' ? 'latte' : 'mocha'));
+  applyBase(group[0]?.id ?? (paletteEdit.mode === 'light' ? 'pi-light' : 'pi-dark'));
 }
 
 function editPalette(p: Palette) {
@@ -416,8 +416,8 @@ async function removePalette(id: string) {
   // 被删的调色板若正被主题引用，必须立即把新选择写回服务端：
   // 否则 settings.json 里会留有悬空 id，下次启动/刷新时主题直接失效。
   const referenced = theme.value.light_palette === id || theme.value.dark_palette === id;
-  if (themeSel.light === id) themeSel.light = lightPalettes.value[0]?.id ?? 'latte';
-  if (themeSel.dark === id) themeSel.dark = darkPalettes.value[0]?.id ?? 'mocha';
+  if (themeSel.light === id) themeSel.light = lightPalettes.value[0]?.id ?? 'pi-light';
+  if (themeSel.dark === id) themeSel.dark = darkPalettes.value[0]?.id ?? 'pi-dark';
 
   try {
     if (referenced) await applyTheme();
@@ -444,8 +444,8 @@ watch(
       defaults.reasoning = config.value.default_reasoning_level || DEFAULT_REASONING_LEVEL;
     }
     mode.value = theme.value.mode;
-    themeSel.light = theme.value.light_palette || 'latte';
-    themeSel.dark = theme.value.dark_palette || 'mocha';
+    themeSel.light = theme.value.light_palette || 'pi-light';
+    themeSel.dark = theme.value.dark_palette || 'pi-dark';
     accent.value = theme.value.accent;
     if (!version.value) {
       version.value = await api.status().then((s) => s.version).catch(() => '');

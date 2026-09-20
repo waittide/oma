@@ -227,11 +227,11 @@ pub struct Theme {
 }
 
 fn default_dark_palette() -> String {
-    "mocha".to_string()
+    "pi-dark".to_string()
 }
 
 fn default_light_palette() -> String {
-    "latte".to_string()
+    "pi-light".to_string()
 }
 
 fn default_accent() -> String {

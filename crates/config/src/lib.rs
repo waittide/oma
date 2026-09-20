@@ -48,7 +48,11 @@ impl Default for ServerConfig {
 
 /// 内置调色板源码：打包进二进制作为兜底，
 /// 用户目录只放自己的调色板，不需要任何初始化写入。
-pub const BUILTIN_PALETTES: [(&str, &str); 4] = [
+///
+/// `pi-light` / `pi-dark` 为默认：中性灰阶 + 单一强调色，视觉对齐 pi-web。
+pub const BUILTIN_PALETTES: &[(&str, &str)] = &[
+    ("pi-light", include_str!("themes/pi-light.json")),
+    ("pi-dark", include_str!("themes/pi-dark.json")),
     ("latte", include_str!("themes/latte.json")),
     ("frappe", include_str!("themes/frappe.json")),
     ("macchiato", include_str!("themes/macchiato.json")),
@@ -1000,18 +1004,18 @@ mod tests {
     #[test]
     fn test_bundled_palettes_are_valid() {
         let palettes = PaletteLoader::builtin_all();
-        assert_eq!(palettes.len(), 4, "four bundled palettes expected");
+        assert_eq!(palettes.len(), 6, "six bundled palettes expected");
         for p in &palettes {
             PaletteLoader::validate_palette(p).unwrap_or_else(|e| panic!("bundled palette {} invalid: {e}", p.id));
             assert_eq!(p.tokens().len(), PALETTE_TOKENS.len());
         }
-        // 浅色/深色基底：latte 为唯一浅色
+        // 浅色/深色基底：pi-light 为默认浅色，latte 为其后的 Catppuccin 浅色
         let light: Vec<&str> = palettes
             .iter()
             .filter(|p| p.mode == PaletteMode::Light)
             .map(|p| p.id.as_str())
             .collect();
-        assert_eq!(light, vec!["latte"]);
+        assert_eq!(light, vec!["pi-light", "latte"]);
     }
 
     #[test]

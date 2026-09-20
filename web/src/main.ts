@@ -13,7 +13,7 @@ import './style.css';
 // 初始值先对齐 oma 的深色默认，避免首帧闪一下浅色。
 initUiTheme({
   storageKey: null,
-  theme: { mode: 'dark', dark_palette: 'mocha', light_palette: 'latte', accent: 'blue' },
+  theme: { mode: 'dark', dark_palette: 'pi-dark', light_palette: 'pi-light', accent: 'blue' },
 });
 // 组件库语言跟随应用语言，<html lang> 由组件库运行时统一维护。
 setUiLocale(settingStore.locale);
