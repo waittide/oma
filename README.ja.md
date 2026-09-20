@@ -15,7 +15,7 @@ Oma はコーディングエージェントを 2 層に分離します。**ヘ�
 （現在はターミナル TUI と Web コンソール、デスクトップ版は計画中）です。
 
 複数のクライアントが同じセッションに同時接続できます。ターミナルで開始したターンはブラウザにも
-同じストリーミング出力と同じツールカードとして現れ、どのクライアントで承認しても全クライアントに反映されます。
+同じストリーミング出力と同じツールカードとして現れます。
 
 CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライアントは繁体字中国語・英語・日本語にも対応します。
 
@@ -30,7 +30,7 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
 - [アーキテクチャ](#アーキテクチャ)
 - [はじめかた](#はじめかた)
 - [設定](#設定)
-- [組み込みツールとエージェント・プリセット](#組み込みツールとエージェントプリセット)
+- [組み込みツール](#組み込みツール)
 - [リポジトリ構成](#リポジトリ構成)
 - [ドキュメント](#ドキュメント)
 - [ライセンス](#ライセンス)
@@ -46,10 +46,7 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
   全クライアントへ配信されます。途中から接続したクライアントには、進行中ターンの追いつき用スナップショットが送られるため、
   会話の後半だけが見えることはありません。
 - **FIFO コマンドと連鎖キャンセル**: 同一セッションの命令は直列キューで処理されます。1 回の `cancel` で
-  現在のターンを中断し、待機中の命令を破棄し、実行中のサブエージェントにも中断を伝播します。
-- **先着順の承認アービトレーション**: いずれかのクライアントの判断が即座に他へ配信されます。
-  誰も応答しない場合は 120 秒で自動拒否。モードは `normal` / `strict` / `auto` の 3 段階で、
-  セッション単位の許可リストも持てます。
+  現在のターンを中断し、待機中の命令を破棄します。
 
 ### エージェント・ランタイム
 
@@ -60,9 +57,6 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
 - **2 段階のコンテキスト管理**: モデルが宣言した `context_len` から 70% のしきい値を計算し、
   まずツール結果の切り詰め、次に圧縮を行います。権威あるトークン・アンカーは不要な圧縮を抑止し、
   実測値をヒューリスティックな推定で上書きしません。
-- **サーキットブレーカー**: ツール失敗が連続してしきい値に達すると、そのターンを中断します。
-- **サブエージェント委譲**: `task` ツールは専用プリセット（ツールセット + プロンプト）を持つ
-  サブエージェントに下位タスクを委譲し、そのストリームは親の `task` カード内に描画されます。
 
 ### モデルとツール
 
@@ -71,11 +65,9 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
   共通の `Block` モデルにマッピングされます。
 - **ヘッダー / リクエストボディの 3 段階マージ**: プロバイダー $\prec$ モデル $\prec$ 推論レベル上書き。
   ベンダー固有フィールドを自由に注入できます。
-- **6 つの組み込みツール**: `read`（画像対応）、`write`、`edit`（重複検査付きの原子的マルチハンク置換 + unified diff）、
-  `shell`（プロセスグループ監視 + 設定可能なタイムアウト）、`task`（サブエージェント）、
-  `ask`（曖昧なときにユーザーへ質問）。
-- **MCP 対応**: ローカル stdio サブプロセスとリモート HTTP（JSON-RPC over POST）。ツールは `mcp__{server}__{tool}` の
-  名前空間で登録されます。
+- **7 つの組み込みツール**: `read`（画像対応）、`write`、`edit`（重複検査付きの原子的マルチハンク置換 + unified diff）、
+  `bash`（プロセスグループ監視 + 設定可能なタイムアウト）、`ls`、`find`（glob）、`grep`（正規表現 / リテラル検索）。
+  ツールセットは pi のコアと同じで、読み書きと検索の最小限のみを内蔵します。
 - **モデル単位の能力宣言**: 思考・テキスト・画像・音声の入出力をモデルごとに宣言し、
   画像をインライン表示するか思考トグルを出すかを UI が判断します。
 
@@ -84,8 +76,7 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
 - **Web（`web/`）**: Vue 3 + TypeScript、CSS は手書きで**外部 UI / CSS ライブラリはゼロ**。
   Catppuccin のダーク / ライト各 4 パレット、4 言語、Markdown レンダリング、履歴ツリー、
   メッセージレール、添付と画像プレビュー。
-- **TUI（`crates/tui`）**: Ratatui 製のターミナルクライアント。ストリーミング表示、承認ダイアログ、
-  ask パネル、CJK 対応の折り返し。
+- **TUI（`crates/tui`）**: Ratatui 製のターミナルクライアント。ストリーミング表示、CJK 対応の折り返し。
 - **CLI**: `oma daemon | web | tui | status`。ヘルプと解析エラーはすべて中国語化されています。
 - **実行時依存なし**: フロントエンドのビルド成果物はコンパイル時に `rust-embed` でバイナリへ埋め込まれるため、
   配布先に Node は不要です。
@@ -99,14 +90,6 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
 セッション画面：折りたたみ可能な思考、ツールカード、ツール結果、コードのワンクリックコピー。
 
 ![Web セッション画面](docs/images/web-chat.png)
-
-サブエージェント：`task` カードがサブエージェントのストリーム全体と最終結論を内包します。
-
-![サブエージェントカード](docs/images/web-subagent.png)
-
-設定 · プリセット：組み込みの 5 プリセット。グローバル / ワークスペース単位のカスタムプリセットとして保存できます。
-
-![エージェント・プリセット](docs/images/web-presets.png)
 
 ### ターミナルクライアント
 
@@ -128,15 +111,14 @@ flowchart TB
     subgraph Daemon["Oma デーモン · 単一ポート 17431"]
         direction TB
         GW["Axum ゲートウェイ<br/>REST / WebSocket · Bearer 認証 · CORS"]
-        ROOM["セッションルーム調停<br/>FIFO キュー · 連鎖キャンセル<br/>承認アービトレーション · イベント配信"]
-        ENGINE["エージェント・エンジン<br/>ターンループ · サーキットブレーカー · 圧縮"]
+        ROOM["セッションルーム調停<br/>FIFO キュー · 連鎖キャンセル<br/>イベント配信"]
+        ENGINE["エージェント・エンジン<br/>ターンループ · 圧縮"]
         subgraph Sub["サブシステム"]
             direction LR
             PROV["oma-provider<br/>ストリーム正規化"]
-            TOOL["oma-tool<br/>6 つのツール"]
-            MCP["oma-mcp<br/>stdio / HTTP"]
+            TOOL["oma-tool<br/>7 つのツール"]
             STORE["oma-storage<br/>JSONL セッション木"]
-            CONF["oma-config<br/>settings.json + テンプレート"]
+            CONF["oma-config<br/>settings.json"]
         end
     end
 
@@ -148,7 +130,6 @@ flowchart TB
     GW --> ROOM --> ENGINE
     ENGINE --> PROV --> VENDORS
     ENGINE --> TOOL
-    ENGINE --> MCP
     ENGINE --> STORE
     CONF -.->|"起動時に読み込み"| ENGINE
 ```
@@ -160,11 +141,10 @@ flowchart TB
 | `crates/contract` | 純粋な型とプロトコル契約（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` など）。重い依存なし |
 | `crates/storage` | JSONL セッション木の永続化：セッションごとに `session.jsonl`（pi 風の id/parentId 木）と `attachments/` ディレクトリ |
 | `crates/provider` | 自作 SSE ステートマシンによる 4 プロトコルの正規化（ツール呼び出し・マルチモーダル含む） |
-| `crates/tool` | 6 つの組み込みツール、出力切り詰め、ツール許可リスト |
-| `crates/mcp` | MCP クライアント：ローカル stdio とリモート HTTP（JSON-RPC over POST）、名前空間付きツール登録 |
+| `crates/tool` | 7 つの組み込みツール、出力切り詰め |
 | `crates/plugin` | QuickJS プラグイン：JS でツール/コマンド/イベントフックを登録、host API は Rust 側で許可制ブリッジ |
-| `crates/config` | `settings.json` / `models.json` の解析、組み込みエージェントテンプレート、パレット、プロジェクト単位の上書き |
-| `crates/runtime` | エージェントループ、セッションルーム、コマンドキュー、連鎖キャンセル、サーキットブレーカー、圧縮、承認アービトレーション |
+| `crates/config` | `settings.json` / `models.json` の解析、システムプロンプト、パレット、プロジェクト単位の上書き |
+| `crates/runtime` | エージェントループ、セッションルーム、コマンドキュー、連鎖キャンセル、圧縮 |
 | `crates/daemon` | Axum による HTTP / WebSocket ゲートウェイ、Bearer 認証ミドルウェア、REST ルート |
 | `crates/client` | 純 Rust クライアント SDK：`OmaClient`（イベントストリームと命令）と `SessionApi`（セッション管理） |
 | `crates/tui` | Ratatui 製ターミナルクライアント |
@@ -267,8 +247,8 @@ cargo build --release
 ```bash
 cd web
 pnpm dev        # Vite 開発サーバー。/api と /ws は 127.0.0.1:17431 へプロキシ
-pnpm test       # 単体レベルの検証（ストリーム分割、サブエージェント描画）
-pnpm test:e2e   # エンドツーエンド：実デーモン + 偽ベンダー SSE サーバー
+pnpm test       # 単体レベルの検証（ストリーム分割）
+pnpm test       # 単体レベルの検証（ストリーム分割）
 ```
 
 debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディスクから直接読むため、
@@ -282,10 +262,8 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
 
 ```text
 ~/.config/oma/
-├── settings.json       # 一般設定: 既定値、theme、server、mcp_servers
-├── models.json         # プロバイダとモデル一覧
-├── agents/             # グローバルなエージェント・プリセット（*.md、YAML frontmatter + 本文）
-├── plugins/            # グローバル QuickJS プラグイン（<id>/plugin.js）
+├── settings.json       # 一般設定: 既定値、theme、server
+├── skills/             # oma 自身のスキル（<id>/SKILL.md）
 └── themes/             # カスタムパレット（*.json）
 ~/.local/share/oma/
 └── sessions/<id>/             # セッションごとに 1 ディレクトリ
@@ -301,12 +279,8 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
 ```json
 {
   "default_model": "my_anthropic/claude-3-7-sonnet",
-  "default_agent": "task",
-  "default_approval_mode": "normal",
-  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" },
-  "mcp_servers": {
-    "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "demo.db"] }
-  }
+  "default_reasoning_level": "medium",
+  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" }
 }
 ```
 
@@ -339,24 +313,24 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
 設定ファイルにトークンが無い場合、デーモンは既定値 `admin` を書き戻して保存します
 （ユーザーが確認・変更できるようにするため）。
 
-エージェント・プリセットの探索順は、プロジェクト単位の `<workspace>/.oma/agents/*.md` が
-グローバルの `~/.config/oma/agents/*.md` を上書きし、最後に組み込みの 5 テンプレートへフォールバックします。
+エージェント・プリセットは削除されました：oma は pi と同じ単一の組み込みシステムプロンプトを使い、
+ロール / プリセットの概念はありません。追加の振る舞いはスキルまたはプラグインで実装してください。
 
 ---
 
-## 組み込みツールとエージェント・プリセット
+## 組み込みツール
 
 | ツール | 説明 |
 |---|---|
 | `read` | 行範囲を指定してファイルを読む。画像はモデルが視覚対応ならインライン、そうでなければ寸法 / チャンネル / MIME の要約を返す |
 | `write` | ファイルの上書きまたは新規作成 |
 | `edit` | 重複検査付きの原子的マルチハンク置換（unified diff を出力） |
-| `shell` | 専用プロセスグループでコマンドを実行し、`killpg` でフォールバック。タイムアウトは設定可能 |
-| `task` | 専用プリセットを持つサブエージェントへ下位タスクを委譲 |
-| `ask` | 情報が不足しているときにユーザーへ質問（単一 / 複数選択。UI が「その他」の自由入力を自動で付加） |
+| `bash` | 専用プロセスグループでコマンドを実行し、`killpg` でフォールバック。タイムアウトは設定可能 |
+| `ls` | ディレクトリのエントリを一覧 |
+| `find` | glob パターンでファイルを検索（`**` はディレクトリを跨ぐ） |
+| `grep` | 正規表現 / リテラル文字列でファイル内容を検索 |
 
-組み込みプリセット：**Build**（ビルドとエラー診断）、**Explore**（読み取り専用の調査）、
-**Plan**（設計と計画）、**Review**（コードレビュー）、**Task**（全ツールを持つ汎用実行）。
+ツールセットは pi のコアと同じで、読み書きと検索の最小限のみを内蔵します。
 
 ---
 
@@ -377,8 +351,8 @@ oma.registerTool({
 });
 
 oma.on("tool_call", (e) =>
-  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
-    ? { block: true, reason: "destructive shell command" }
+  e.name === "bash" && /rm\s+-rf/.test(e.input.command || "")
+    ? { block: true, reason: "destructive bash command" }
     : undefined);
 
 oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });
@@ -411,11 +385,9 @@ oma/
 ├── crates/
 │   ├── bin/          # `oma` コマンドライン入口
 │   ├── client/       # Rust クライアント SDK
-│   ├── config/       # 設定解析と組み込みテンプレート
+│   ├── config/       # 設定解析とシステムプロンプト
 │   ├── contract/     # プロトコルとデータモデル
 │   ├── daemon/       # Axum ゲートウェイ
-│   ├── mcp/          # MCP クライアント
-│   ├── provider/     # ベンダー別ストリーミングアダプタ
 │   ├── runtime/      # エージェント・ランタイム
 │   ├── storage/      # JSONL セッション木の永続化
 │   ├── tool/         # 組み込みツール
@@ -432,7 +404,7 @@ oma/
 ## ドキュメント
 
 - [技術仕様書](docs/multi_client_agent_spec.md)：アーキテクチャ、WebSocket 契約、JSONL セッション形式、
-  設定仕様、REST API、ツールと MCP 拡張、実装との一致に関する注記。
+  設定仕様、REST API、プラグイン拡張、実装との一致に関する注記。
 
 ---
 

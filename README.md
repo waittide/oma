@@ -28,7 +28,7 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 - [架构](#架构)
 - [快速开始](#快速开始)
 - [配置](#配置)
-- [内置工具与 Agent 预设](#内置工具与-agent-预设)
+- [内置工具](#内置工具)
 - [目录结构](#目录结构)
 - [文档](#文档)
 - [许可证](#许可证)
@@ -42,10 +42,7 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 - **单 Daemon 单端口**：默认 `127.0.0.1:17431`，一个端口同时承载 WebSocket（`/ws`）与 REST（`/api/*`）。
 - **会话房间（Session Room）**：每个会话一个房间，事件经 `tokio::broadcast` 广播给全部在线客户端，
   新接入的客户端会收到进行中轮次的追平快照（catch-up），不会看到半截对话。
-- **命令 FIFO 与级联取消**：同会话指令进入串行队列；一次 `cancel` 会中断当前轮次、清空排队指令，
-  并把中止语义级联到正在运行的子代理。
-- **先到先得审批仲裁**：任一客户端作出的审批决定即刻广播给其余客户端；无人应答时 120 秒自动拒绝。
-  审批模式分 `normal` / `strict` / `auto` 三档，可把放行结果记入会话白名单。
+- **命令 FIFO 与级联取消**：同会话指令进入串行队列；一次 `cancel` 会中断当前轮次并清空排队指令。
 
 ### Agent 运行引擎
 
@@ -53,18 +50,15 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 - **会话树而非线性列表**：消息带 `parent_id`，可以从历史任意节点分叉重开，Web 端有专门的历史树视图。
 - **两级上下文管理**：按模型声明的 `context_len` 计算 70% 阈值，先做工具结果截断、再做两阶段压缩；
   权威 Token 锚点会抑制不必要的压缩，避免把已知的准确值覆盖成启发式估算。
-- **熔断器**：连续工具调用失败达到阈值即中止本轮，避免模型在坏状态里空转。
-- **子代理委托**：`task` 工具把子任务派给带独立预设（工具集 + 提示词）的子代理，
-  子代理的流式过程会嵌在父级 `task` 卡片里呈现。
 
 ### 模型与工具
 
 - **四种协议归一化**（手写 SSE 状态机）：Anthropic Messages、OpenAI / DeepSeek Chat Completions、
   Responses、Google Gemini。工具调用与多模态图片在四种协议下统一成同一套 `Block`。
 - **请求头 / 请求体三级递归合并**：Provider 级 $\prec$ Model 级 $\prec$ 推理等级覆盖，可注入厂商私有字段。
-- **六大内置工具**：`read`（支持读图片）、`write`、`edit`（原子多段替换 + 统一 diff）、
-  `shell`（进程组守卫 + 可配置超时）、`task`（子代理）、`ask`（歧义时向用户提问）。
-- **MCP 扩展**：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST）两种传输，工具按 `mcp__{server}__{tool}` 命名空间注册。
+- **七个内置工具**：`read`（支持读图片）、`write`、`edit`（原子多段替换 + 统一 diff）、
+  `bash`（进程组守卫 + 可配置超时）、`ls`、`find`（glob）、`grep`（正则 / 字面量搜索）。
+  工具集与 pi 对齐：内核只保留最小可用的读写与检索能力。
 - **可配置的展示能力**：模型能力（思考 / 文本 / 图片输入输出 / 音频）逐模型声明，
   界面据此决定是否内联图片、是否展示思考开关。
 
@@ -72,7 +66,7 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 
 - **Web（`web/`）**：Vue 3 + TypeScript，手写 CSS，**零外部 UI / CSS 库**；
   深色浅色各四套 Catppuccin 调色板、四语言文案、Markdown 渲染、历史树、消息导航栏、附件与图片预览。
-- **TUI（`crates/tui`）**：基于 Ratatui 的终端客户端，流式渲染、审批弹窗、提问面板、CJK 折行。
+- **TUI（`crates/tui`）**：基于 Ratatui 的终端客户端，流式渲染、CJK 折行。
 - **CLI**：`oma daemon | web | tui | status`，帮助与解析错误全部中文化。
 - **零运行时依赖**：前端构建产物在编译期经 `rust-embed` 内嵌进二进制，发布时不需要目标机器安装 Node。
 
@@ -85,14 +79,6 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 会话主界面：思考折叠、工具调用卡片、工具回执、代码块一键复制。
 
 ![Web 会话主界面](docs/images/web-chat.png)
-
-子代理：`task` 卡片内嵌子代理的完整流式过程与最终结论。
-
-![子代理卡片](docs/images/web-subagent.png)
-
-设置 · 预设：内置 5 套 Agent 预设，可另存为全局 / 工作区级自定义预设。
-
-![Agent 预设](docs/images/web-presets.png)
 
 ### 终端客户端
 
@@ -114,15 +100,14 @@ flowchart TB
     subgraph Daemon["Oma Daemon · 单端口 17431"]
         direction TB
         GW["Axum 网关<br/>REST / WebSocket · Bearer 鉴权 · CORS"]
-        ROOM["Session Room 调度<br/>命令 FIFO · 级联取消 · 审批仲裁 · 事件广播"]
-        ENGINE["Agent 运行引擎<br/>回合循环 · 熔断器 · 上下文压缩"]
+        ROOM["Session Room 调度<br/>命令 FIFO · 级联取消 · 事件广播"]
+        ENGINE["Agent 运行引擎<br/>回合循环 · 上下文压缩"]
         subgraph Sub["子系统"]
             direction LR
             PROV["oma-provider<br/>流式归一化"]
-            TOOL["oma-tool<br/>六大工具"]
-            MCP["oma-mcp<br/>stdio / HTTP"]
+            TOOL["oma-tool<br/>七个工具"]
             STORE["oma-storage<br/>JSONL 会话树"]
-            CONF["oma-config<br/>settings.json + 模板"]
+            CONF["oma-config<br/>settings.json"]
         end
     end
 
@@ -134,7 +119,6 @@ flowchart TB
     GW --> ROOM --> ENGINE
     ENGINE --> PROV --> VENDORS
     ENGINE --> TOOL
-    ENGINE --> MCP
     ENGINE --> STORE
     CONF -.->|"启动期加载"| ENGINE
 ```
@@ -146,11 +130,10 @@ flowchart TB
 | `crates/contract` | 纯类型与协议契约（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` 等），零重依赖 |
 | `crates/storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）+ `attachments/` 目录 |
 | `crates/provider` | 手写 SSE 状态机，归一化四家流式协议（含工具调用与多模态） |
-| `crates/tool` | 六大内置工具与输出截断、工具白名单 |
-| `crates/mcp` | MCP 客户端：本地 stdio 与远程 HTTP（JSON-RPC over POST），工具命名空间注册 |
+| `crates/tool` | 七个内置工具与输出截断 |
 | `crates/plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API 白名单桥接 |
-| `crates/config` | `settings.json` / `models.json` 解析、内置 Agent 模板、调色板与项目级覆盖 |
-| `crates/runtime` | Agent Loop、会话房间、命令队列、级联取消、熔断器、上下文压缩、审批仲裁 |
+| `crates/config` | `settings.json` / `models.json` 解析、系统提示词、调色板与项目级覆盖 |
+| `crates/runtime` | Agent Loop、会话房间、命令队列、级联取消、上下文压缩 |
 | `crates/daemon` | Axum HTTP / WebSocket 网关、Bearer 鉴权中间件、REST 路由 |
 | `crates/client` | 纯 Rust 客户端 SDK：`OmaClient`（事件流与指令）与 `SessionApi`（会话管理） |
 | `crates/tui` | Ratatui 终端客户端 |
@@ -263,9 +246,9 @@ pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
 
 ```text
 ~/.config/oma/
-├── settings.json       # 常规设置：默认模型/预设、审批与推理等级、theme、server、mcp_servers
+├── settings.json       # 常规设置：默认模型、推理等级、theme、server
 ├── models.json         # 提供商与模型清单（providers）
-├── agents/             # 全局 Agent 预设（*.md，YAML frontmatter + 正文）
+├── skills/             # oma 自身技能（<id>/SKILL.md）
 ├── plugins/            # 全局 QuickJS 插件（<id>/plugin.js）
 └── themes/             # 自定义调色板（*.json）
 ~/.local/share/oma/
@@ -282,12 +265,8 @@ pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
 ```json
 {
   "default_model": "my_anthropic/claude-3-7-sonnet",
-  "default_agent": "task",
-  "default_approval_mode": "normal",
-  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" },
-  "mcp_servers": {
-    "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "demo.db"] }
-  }
+  "default_reasoning_level": "medium",
+  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" }
 }
 ```
 
@@ -318,24 +297,24 @@ pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
 Token 优先级：命令行 `--token` > 环境变量 `OMA_AUTH_TOKEN` > 配置文件。
 配置文件缺省时，Daemon 启动会补写默认值 `admin` 并落盘，方便直接查看与修改。
 
-Agent 预设的查找顺序为项目级 `<workspace>/.oma/agents/*.md` 覆盖全局 `~/.config/oma/agents/*.md`，
-再回退到内置的 5 套模板。
+Agent 预设已移除：oma 使用与 pi 相同的单一内置系统提示词，不再有角色/预设概念；
+需要额外行为请使用技能或插件。
 
 ---
 
-## 内置工具与 Agent 预设
+## 内置工具
 
 | 工具 | 说明 |
 |---|---|
 | `read` | 按行区间读文件；图片在模型支持视觉时直接内联，否则返回尺寸 / 通道 / MIME 摘要 |
 | `write` | 覆盖或创建文件 |
 | `edit` | 原子多段替换，带重叠检查与统一 diff |
-| `shell` | 执行命令，独立进程组 + 兜底 `killpg`，超时可配置 |
-| `task` | 把子任务委托给带独立预设的子代理 |
-| `ask` | 信息不足时向用户提问（单选 / 多选，界面自动附「其他」自由输入） |
+| `bash` | 执行命令，独立进程组 + 兜底 `killpg`，超时可配置 |
+| `ls` | 列出目录条目 |
+| `find` | 按 glob 模式查找文件（支持 `**` 跨目录） |
+| `grep` | 按正则 / 字面量搜索文件内容 |
 
-内置预设：**Build**（编译与排错）、**Explore**（只读检索）、**Plan**（架构与计划）、
-**Review**（代码评审）、**Task**（通用执行，具备全部工具）。
+工具集与 pi 内核保持一致：内核只保留最小可用的读写与检索能力。
 
 ---
 
@@ -354,8 +333,8 @@ oma.registerTool({
 });
 
 oma.on("tool_call", (e) =>
-  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
-    ? { block: true, reason: "destructive shell command" }
+  e.name === "bash" && /rm\s+-rf/.test(e.input.command || "")
+    ? { block: true, reason: "destructive bash command" }
     : undefined);
 
 oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });
@@ -368,7 +347,7 @@ oma.registerCommand({ name: "explain", description: "Explain a topic", handler: 
 | `oma.log(...)` | 写日志 |
 | `oma.readFile(path)` / `oma.writeFile(path, content)` | 读写文本文件（拒绝绝对路径与 `..`，限 workspace 内） |
 | `oma.listDir(path)` / `oma.exists(path)` | 列目录 / 判断存在 |
-| `oma.exec(cmd)` | 在 workspace 下执行 shell，返回 `{stdout, stderr, code}` |
+| `oma.exec(cmd)` | 在 workspace 下执行命令，返回 `{stdout, stderr, code}` |
 | `oma.registerTool(def)` | 注册工具（`execute` 必须同步返回） |
 | `oma.registerCommand(def)` | 注册命令（限定名 `plugin:command`） |
 | `oma.on(event, fn)` | 事件钩子，当前支持 `tool_call`（返回 `{block:true, reason}` 可拦截） |
@@ -386,10 +365,9 @@ oma/
 ├── crates/
 │   ├── bin/          # 统一命令行入口 oma
 │   ├── client/       # Rust 客户端 SDK
-│   ├── config/       # 配置解析与内置模板
+│   ├── config/       # 配置解析与系统提示词
 │   ├── contract/     # 协议与数据模型
 │   ├── daemon/       # Axum 网关
-│   ├── mcp/          # MCP 客户端
 │   ├── provider/     # 模型厂商流式适配
 │   ├── runtime/      # Agent 运行引擎
 │   ├── storage/      # JSONL 会话树持久化
@@ -407,7 +385,7 @@ oma/
 ## 文档
 
 - [技术规格书](docs/multi_client_agent_spec.md)：架构拓扑、WebSocket 契约、JSONL 会话格式、
-  配置规范、REST 接口、工具与 MCP 扩展机制、实现一致性说明。
+  配置规范、REST 接口、插件扩展机制、实现一致性说明。
 
 ---
 

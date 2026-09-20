@@ -1,8 +1,18 @@
 # Oma 多类型多客户端协同 Agent 技术规格书 (Technical Specification)
 
-> 版本：v2.1  
-> 状态：Implementation Verified（文档与代码同步；差异项见文末）  
+> 版本：v2.2
+> 状态：Implementation Verified（文档与代码同步；差异项见文末）
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
+
+> **v2.2 变更（向 pi 对齐，移除 pi 内核没有的能力）**：
+> 本文档部分小节描述的能力已被删除，阅读时以本节为准：
+> - 熔断器（原 6.3 节）已移除
+> - 提问工具 `ask`（AskPanel / AskRequested / AskResponse）已移除
+> - 工具审批系统（审批模式 / 白名单 / 审批仲裁，原 6.4 节）已移除
+> - 内置 MCP 客户端（`crates/mcp` 与 `mcp_servers` 配置）已移除
+> - 子代理 `task` 工具与 Agent 预设（内置 5 套模板 / `/api/presets`）已移除，
+>   系统提示词改为单一内置常量；事件中的 `subagent_id` 字段同步删除
+> - 工具集对齐 pi：`shell` 更名为 `bash`，新增 `ls` / `find` / `grep`
 
 ---
 

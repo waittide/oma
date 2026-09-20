@@ -15,8 +15,7 @@ Oma splits a complete coding agent into two layers: a **headless daemon core**
 (a terminal TUI and a web console today, a desktop client on the roadmap).
 
 Several clients can attach to the same session at once — start a turn in the terminal and the browser
-shows the same streaming output and the same tool cards, while an approval accepted on any client
-takes effect everywhere.
+shows the same streaming output and the same tool cards.
 
 The CLI and the UI are **Chinese-first** (Simplified Chinese is the default locale); the web client also
 ships Traditional Chinese, English and Japanese.
@@ -32,7 +31,7 @@ ships Traditional Chinese, English and Japanese.
 - [Architecture](#architecture)
 - [Getting started](#getting-started)
 - [Configuration](#configuration)
-- [Built-in tools and agent presets](#built-in-tools-and-agent-presets)
+- [Built-in tools](#built-in-tools)
 - [Repository layout](#repository-layout)
 - [Documentation](#documentation)
 - [License](#license)
@@ -47,10 +46,7 @@ ships Traditional Chinese, English and Japanese.
 - **Session rooms**: every session is a room; events are broadcast to all attached clients over
   `tokio::broadcast`, and a late joiner receives a catch-up snapshot of the turn in flight instead of half a conversation.
 - **FIFO commands and cascading cancel**: commands for one session run through a serial queue; a single
-  `cancel` interrupts the current turn, drains the queue and propagates the abort into running subagents.
-- **First-response-wins approvals**: the first decision from any client is broadcast to the rest;
-  if nobody answers, the request auto-denies after 120 seconds. Modes: `normal` / `strict` / `auto`,
-  with per-session allow-lists.
+  `cancel` interrupts the current turn and drains the queue.
 
 ### Agent runtime
 
@@ -61,10 +57,6 @@ ships Traditional Chinese, English and Japanese.
 - **Two-stage context management**: a 70% threshold derived from the model's declared `context_len`
   triggers tool-result truncation first and compaction second. An authoritative token anchor suppresses
   needless compaction so measured counts are never overwritten by heuristics.
-- **Circuit breaker**: the turn aborts once consecutive tool failures cross a threshold, instead of
-  spinning in a broken state.
-- **Subagent delegation**: the `task` tool hands a sub-task to a subagent with its own preset
-  (tool set + prompt); the subagent's stream is rendered inside the parent `task` card.
 
 ### Models and tools
 
@@ -73,11 +65,9 @@ ships Traditional Chinese, English and Japanese.
   onto one shared `Block` model.
 - **Three-level recursive merge** for headers and request bodies: provider $\prec$ model $\prec$
   reasoning-level override, so vendor-specific fields can be injected freely.
-- **Six built-in tools**: `read` (including images), `write`, `edit` (atomic multi-hunk replacement with
-  unified diff), `shell` (process-group guard with configurable timeout), `task` (subagent), and
-  `ask` (ask the user when the request is ambiguous).
-- **MCP support**: local stdio subprocesses and remote HTTP (JSON-RPC over POST), with tools registered under
-  `mcp__{server}__{tool}`.
+- **Seven built-in tools**: `read` (including images), `write`, `edit` (atomic multi-hunk replacement with
+  unified diff), `bash` (process-group guard with configurable timeout), `ls`, `find` (glob) and `grep`
+  (regex or literal search). The tool set mirrors the pi core: only minimal read/write/search capability.
 - **Per-model capabilities**: thinking / text / image and audio input-output are declared per model,
   and the UI decides from that whether to inline images or expose the thinking toggle.
 
@@ -86,8 +76,7 @@ ships Traditional Chinese, English and Japanese.
 - **Web (`web/`)**: Vue 3 + TypeScript with hand-written CSS and **zero external UI or CSS libraries**;
   four Catppuccin palettes for dark and light, four locales, Markdown rendering, a history tree,
   a message rail, attachments and image previews.
-- **TUI (`crates/tui`)**: a Ratatui terminal client with streaming output, approval dialogs,
-  an ask panel and CJK-aware line wrapping.
+- **TUI (`crates/tui`)**: a Ratatui terminal client with streaming output and CJK-aware line wrapping.
 - **CLI**: `oma daemon | web | tui | status`, with fully localized (Chinese) help and parse errors.
 - **No runtime dependencies**: the frontend build output is embedded into the binary at compile time via
   `rust-embed`, so released binaries need no Node installation on the target machine.
@@ -101,14 +90,6 @@ ships Traditional Chinese, English and Japanese.
 Main session view: collapsible thinking, tool cards, tool results and one-click code copy.
 
 ![Web session view](docs/images/web-chat.png)
-
-Subagents: the `task` card embeds the subagent's full stream and its final conclusion.
-
-![Subagent card](docs/images/web-subagent.png)
-
-Settings · Presets: five built-in agent presets, forkable into global or workspace-scoped custom presets.
-
-![Agent presets](docs/images/web-presets.png)
 
 ### Terminal client
 
@@ -130,15 +111,14 @@ flowchart TB
     subgraph Daemon["Oma daemon · single port 17431"]
         direction TB
         GW["Axum gateway<br/>REST / WebSocket · bearer auth · CORS"]
-        ROOM["Session room dispatcher<br/>FIFO queue · cascade cancel<br/>approval arbiter · event broadcast"]
-        ENGINE["Agent engine<br/>turn loop · circuit breaker · compaction"]
+        ROOM["Session room dispatcher<br/>FIFO queue · cascade cancel<br/>event broadcast"]
+        ENGINE["Agent engine<br/>turn loop · compaction"]
         subgraph Sub["Subsystems"]
             direction LR
             PROV["oma-provider<br/>stream normalization"]
-            TOOL["oma-tool<br/>six tools"]
-            MCP["oma-mcp<br/>stdio / HTTP"]
+            TOOL["oma-tool<br/>seven tools"]
             STORE["oma-storage<br/>JSONL session tree"]
-            CONF["oma-config<br/>settings.json + templates"]
+            CONF["oma-config<br/>settings.json"]
         end
     end
 
@@ -150,7 +130,6 @@ flowchart TB
     GW --> ROOM --> ENGINE
     ENGINE --> PROV --> VENDORS
     ENGINE --> TOOL
-    ENGINE --> MCP
     ENGINE --> STORE
     CONF -.->|"loaded at startup"| ENGINE
 ```
@@ -162,11 +141,10 @@ flowchart TB
 | `crates/contract` | Pure types and protocol contracts (`Role`, `Block`, `ClientMessage`, `ServerMessage`, `AgentEvent`, …) with no heavy dependencies |
 | `crates/storage` | JSONL session-tree persistence: one `session.jsonl` (pi-style id/parentId tree) plus an `attachments/` dir per session |
 | `crates/provider` | Hand-written SSE state machine normalizing four streaming protocols (tool calls and multimodal included) |
-| `crates/tool` | The six built-in tools, output truncation and tool allow-lists |
-| `crates/mcp` | MCP client over local stdio and remote HTTP (JSON-RPC over POST) with namespaced tool registration |
+| `crates/tool` | The seven built-in tools and output truncation |
 | `crates/plugin` | QuickJS plugins: register tools/commands/event hooks in JS, bridged through a Rust allow-listed host API |
-| `crates/config` | `settings.json` / `models.json` parsing, bundled agent templates, palettes and project-level overrides |
-| `crates/runtime` | Agent loop, session rooms, command queue, cascade cancel, circuit breaker, compaction, approval arbiter |
+| `crates/config` | `settings.json` / `models.json` parsing, system prompt, palettes and project-level overrides |
+| `crates/runtime` | Agent loop, session rooms, command queue, cascade cancel, compaction |
 | `crates/daemon` | Axum HTTP / WebSocket gateway, bearer auth middleware, REST routes |
 | `crates/client` | Pure Rust client SDK: `OmaClient` (event stream and commands) and `SessionApi` (session management) |
 | `crates/tui` | Ratatui terminal client |
@@ -270,7 +248,7 @@ First run:
 ```bash
 cd web
 pnpm dev        # Vite dev server; /api and /ws are proxied to 127.0.0.1:17431
-pnpm test       # unit-level checks (stream segmentation, subagent rendering)
+pnpm test       # unit-level checks (stream segmentation)
 pnpm test:e2e   # end-to-end: a real daemon plus a fake vendor SSE server
 ```
 
@@ -286,9 +264,9 @@ The config directory is `~/.config/oma/` (respecting `XDG_CONFIG_HOME`); data li
 
 ```text
 ~/.config/oma/
-├── settings.json       # general settings: defaults, theme, server, mcp_servers
+├── settings.json       # general settings: defaults, theme, server
 ├── models.json         # providers and model catalogue
-├── agents/             # global agent presets (*.md, YAML frontmatter + body)
+├── skills/             # oma's own skills (<id>/SKILL.md)
 ├── plugins/            # global QuickJS plugins (<id>/plugin.js)
 └── themes/             # custom palettes (*.json)
 ~/.local/share/oma/
@@ -305,12 +283,8 @@ Minimal example (`settings.json`):
 ```json
 {
   "default_model": "my_anthropic/claude-3-7-sonnet",
-  "default_agent": "task",
-  "default_approval_mode": "normal",
-  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" },
-  "mcp_servers": {
-    "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "demo.db"] }
-  }
+  "default_reasoning_level": "medium",
+  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" }
 }
 ```
 
@@ -343,24 +317,24 @@ Token precedence: `--token` on the command line > `OMA_AUTH_TOKEN` environment v
 When the file has no token yet, the daemon writes the default `admin` back to disk so it stays visible
 and editable.
 
-Agent presets are looked up as `<workspace>/.oma/agents/*.md` (project) overriding
-`~/.config/oma/agents/*.md` (global), falling back to the five bundled templates.
+Agent presets have been removed: oma uses the same single built-in system prompt as pi, with no
+role/preset concept. Use skills or plugins for extra behaviour.
 
 ---
 
-## Built-in tools and agent presets
+## Built-in tools
 
 | Tool | Description |
 |---|---|
 | `read` | Read a file by line range; images are inlined when the model can see them, otherwise a dimensions / channels / MIME summary is returned |
 | `write` | Overwrite or create a file |
 | `edit` | Atomic multi-hunk replacement with overlap checking and a unified diff |
-| `shell` | Run a command in its own process group with a `killpg` fallback and a configurable timeout |
-| `task` | Delegate a sub-task to a subagent with its own preset |
-| `ask` | Ask the user when information is missing (single or multi select; the UI always adds a free-form "Other" entry) |
+| `bash` | Run a command in its own process group with a `killpg` fallback and a configurable timeout |
+| `ls` | List directory entries |
+| `find` | Find files by glob pattern (`**` crosses directories) |
+| `grep` | Search file contents by regex or literal string |
 
-Bundled presets: **Build** (compilation and error diagnosis), **Explore** (read-only research),
-**Plan** (architecture and planning), **Review** (code review), **Task** (general execution with every tool).
+The tool set mirrors the pi core: only minimal read/write/search capability.
 
 ---
 
@@ -380,8 +354,8 @@ oma.registerTool({
 });
 
 oma.on("tool_call", (e) =>
-  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
-    ? { block: true, reason: "destructive shell command" }
+  e.name === "bash" && /rm\s+-rf/.test(e.input.command || "")
+    ? { block: true, reason: "destructive bash command" }
     : undefined);
 
 oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });
@@ -394,7 +368,7 @@ Host API:
 | `oma.log(...)` | Write a log line |
 | `oma.readFile(path)` / `oma.writeFile(path, content)` | Text file I/O (absolute paths and `..` rejected; sandboxed to the workspace) |
 | `oma.listDir(path)` / `oma.exists(path)` | List a directory / test existence |
-| `oma.exec(cmd)` | Run a shell command in the workspace, returns `{stdout, stderr, code}` |
+| `oma.exec(cmd)` | Run a command in the workspace, returns `{stdout, stderr, code}` |
 | `oma.registerTool(def)` | Register a tool (`execute` must return synchronously) |
 | `oma.registerCommand(def)` | Register a command (qualified as `plugin:command`) |
 | `oma.on(event, fn)` | Event hook; `tool_call` is supported (return `{block:true, reason}` to block) |
@@ -414,10 +388,9 @@ oma/
 ├── crates/
 │   ├── bin/          # the `oma` command-line entry point
 │   ├── client/       # Rust client SDK
-│   ├── config/       # config parsing and bundled templates
+│   ├── config/       # config parsing and system prompt
 │   ├── contract/     # protocol and data model
 │   ├── daemon/       # Axum gateway
-│   ├── mcp/          # MCP client
 │   ├── provider/     # vendor streaming adapters
 │   ├── runtime/      # agent runtime engine
 │   ├── storage/      # JSONL session-tree persistence
@@ -435,8 +408,8 @@ oma/
 ## Documentation
 
 - [Technical specification](docs/multi_client_agent_spec.md): architecture topology, WebSocket contract,
-  JSONL session format, configuration rules, REST API, tools and MCP extensibility, implementation notes.
-
+  JSONL session format, configuration rules, REST API, plugin extensibility, implementation notes.
+  JSONL session format, configuration rules, REST API, plugin extensibility, implementation notes.
 ---
 
 ## License
