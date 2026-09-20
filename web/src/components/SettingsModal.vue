@@ -9,6 +9,7 @@ import {
   LuLanguages,
   LuLoader,
   LuPalette,
+  LuPlug,
   LuPlugZap,
   LuPlus,
   LuServer,
@@ -30,6 +31,7 @@ import type {
   AgentFile,
   AgentSummary,
   ToolInfo,
+  McpServerConfig,
   ModelCapability,
   ModelInfo,
   ClientConfig,
@@ -55,7 +57,8 @@ type SectionId =
   | 'defaults'
   | 'providers'
   | 'presets'
-  | 'skills';
+  | 'skills'
+  | 'mcp';
 const section = ref<SectionId>('connection');
 
 const SECTION_IDS: SectionId[] = ['connection', 'theme', 'language', 'defaults', 'providers', 'skills'];
@@ -81,6 +84,7 @@ const navGroups = computed(() => [
       { id: 'providers' as SectionId, label: t('navProviders'), icon: LuServer },
       { id: 'presets' as SectionId, label: t('navPresets'), icon: LuSquareUserRound },
       { id: 'skills' as SectionId, label: t('navSkills'), icon: LuSparkles },
+      { id: 'mcp' as SectionId, label: t('navMcp'), icon: LuPlug },
     ],
   },
 ]);
@@ -528,6 +532,11 @@ function scopeLabel(scope: string): string {
   }
 }
 
+const mcpKindOptions = [
+  { value: 'local' as const, label: t('mcpKindLocal') },
+  { value: 'remote' as const, label: t('mcpKindRemote') },
+];
+
 // ---------- Agent 预设（决定角色与可用工具） ----------
 /** 预设作用域：oma 全局配置 + 项目 */
 type EditScope = 'global' | 'project';
@@ -575,7 +584,7 @@ function presetWriteScope(): EditScope {
 
 const presets = ref<AgentFile[]>([]);
 const presetsLoading = ref(false);
-/** 可勾选工具清单（内置 + 插件），进入预设页时拉取一次 */
+/** 可勾选工具清单（内置 + 已发现的 MCP），进入预设页时拉取一次 */
 const availableTools = ref<ToolInfo[]>([]);
 const toolOptions = computed(() => [
   ...availableTools.value
@@ -583,7 +592,7 @@ const toolOptions = computed(() => [
     .map((t) => ({ value: t.name, label: t.name, description: shortHint(t.description) })),
   ...availableTools.value
     .filter((t) => t.kind !== 'builtin')
-    .map((t) => ({ value: t.name, label: t.name, description: t.description ? shortHint(t.description) : 'plugin' })),
+    .map((t) => ({ value: t.name, label: t.name, description: t.description ? shortHint(t.description) : 'MCP' })),
 ]);
 
 /** 工具描述在选项里只作提示，过长会撑爆弹层 */
@@ -794,6 +803,61 @@ watch(
   },
 );
 
+// ---------- MCP 服务器（全局配置，保存后 daemon 自动重连） ----------
+interface McpDraft {
+  origName: string | null;
+  name: string;
+  kind: 'local' | 'remote';
+  command: string;
+  argsText: string;
+  envText: string;
+  url: string;
+  headersText: string;
+}
+
+const mcpDrafts = ref<McpDraft[]>([]);
+const savingMcp = ref(false);
+
+function toMcpDraft(name: string, cfg: McpServerConfig): McpDraft {
+  const envText = formatKvText(cfg.type === 'local' ? cfg.env : undefined);
+  const headersText = formatKvText(cfg.type === 'remote' ? cfg.headers : undefined);
+  return {
+    origName: name,
+    name,
+    kind: cfg.type,
+    command: cfg.type === 'local' ? cfg.command : '',
+    argsText: cfg.type === 'local' ? (cfg.args ?? []).join(', ') : '',
+    envText,
+    url: cfg.type === 'remote' ? cfg.url : '',
+    headersText,
+  };
+}
+
+function rebuildMcpDrafts() {
+  mcpDrafts.value = config.value
+    ? Object.entries(config.value.mcp_servers).map(([n, c]) => toMcpDraft(n, c))
+    : [];
+}
+
+function parseKvText(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const i = line.indexOf('=');
+    if (i <= 0) continue;
+    const k = line.slice(0, i).trim();
+    const v = line.slice(i + 1).trim();
+    if (k) out[k] = v;
+  }
+  return out;
+}
+
+/** 键值对 → 每行 KEY=value 的文本（与 parseKvText 互逆）。 */
+function formatKvText(kv: Record<string, string> | undefined): string {
+  return Object.entries(kv ?? {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+}
+
 /** JSON 对象 → 缩进文本；空对象与非法值一律渲染为空串，界面从干净状态开始编辑。 */
 function formatJsonText(value: unknown): string {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
@@ -842,6 +906,61 @@ function hasJsonKeys(value: Record<string, unknown>): boolean {
   return Object.keys(value).length > 0;
 }
 
+function addMcpServer() {
+  mcpDrafts.value.push({
+    origName: null,
+    name: '',
+    kind: 'local',
+    command: 'npx',
+    argsText: '-y, @modelcontextprotocol/server-xxx',
+    envText: '',
+    url: 'https://',
+    headersText: '',
+  });
+}
+
+/** 正在展开编辑的已有服务器名；null 表示无编辑（新增卡片由 origName === null 区分） */
+const editingMcp = ref<string | null>(null);
+
+function cancelEditMcp() {
+  editingMcp.value = null;
+  rebuildMcpDrafts();
+}
+
+function mcpSummary(d: McpDraft): string {
+  const raw = d.kind === 'local' ? [d.command, d.argsText].filter(Boolean).join(' ') : d.url;
+  return raw.replace(/\s+/g, ' ').trim() || '—';
+}
+
+async function saveMcp() {
+  if (!config.value) return;
+  const names = mcpDrafts.value.map((d) => d.name.trim());
+  if (names.some((n) => !n)) {
+    toast.error(t('mcpNameRequired'));
+    return;
+  }
+  if (new Set(names).size !== names.length) {
+    toast.error(t('mcpNameDuplicate'));
+    return;
+  }
+  savingMcp.value = true;
+  try {
+    const mcp_servers: Record<string, McpServerConfig> = {};
+    for (const d of mcpDrafts.value) {
+      mcp_servers[d.name.trim()] =
+        d.kind === 'local'
+          ? { type: 'local' as const, command: d.command.trim(), args: d.argsText.split(',').map((a) => a.trim()).filter(Boolean), env: parseKvText(d.envText) }
+          : { type: 'remote', url: d.url.trim(), headers: parseKvText(d.headersText) };
+    }
+    await saveConfig({ ...config.value, mcp_servers });
+    rebuildMcpDrafts();
+    toast.success(t('mcpSaved'));
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  } finally {
+    savingMcp.value = false;
+  }
+}
 
 // ---------- 模型提供商（草稿编辑，保存时统一校验与写回） ----------
 interface ModelDraft {
@@ -927,6 +1046,7 @@ watch(
   () => [props.open, section.value] as const,
   ([o, s]) => {
     if (o && s === 'providers') rebuildDrafts();
+    if (o && s === 'mcp') rebuildMcpDrafts();
   },
 );
 
@@ -1910,6 +2030,90 @@ function pickLocale(v: Locale) {
           </div>
         </section>
 
+        <!-- MCP 服务器 -->
+        <section v-else-if="section === 'mcp' && config" class="pane">
+          <header class="pane-head">
+            <h2 class="pane-title">{{ t('navMcp') }}</h2>
+            <div class="pane-head-actions">
+              <UiButton variant="soft" tone="neutral" size="sm" @click="addMcpServer">
+                <template #prefix><LuPlus :size="13" /></template>
+                {{ t('add') }}
+              </UiButton>
+            </div>
+          </header>
+          <div class="pane-scroll">
+            <p class="muted">{{ t('mcpHint') }}</p>
+            <div class="list">
+              <div v-for="(d, i) in mcpDrafts" :key="d.origName ?? `mcp-new-${i}`">
+                <!-- 编辑中 / 新增：展开卡片表单 -->
+                <div v-if="d.origName === null || d.origName === editingMcp" class="prov card">
+                  <div class="prov-head">
+                    <UiInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
+                    <UiSegmented
+                      :model-value="d.kind"
+                      :options="mcpKindOptions"
+                      @update:model-value="(v) => (d.kind = v as typeof d.kind)"
+                    />
+                    <UiTooltip :content="tc('delete')" align="end">
+                      <UiIconButton class="m-del" size="sm" :label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
+                        <LuTrash2 :size="14" />
+                      </UiIconButton>
+                    </UiTooltip>
+                  </div>
+                  <div class="fields">
+                    <template v-if="d.kind === 'local'">
+                      <div class="field">
+                        <label>{{ t('mcpCommand') }}</label>
+                        <UiInput v-model="d.command" />
+                      </div>
+                      <div class="field">
+                        <label>{{ t('mcpArgs') }}</label>
+                        <UiInput v-model="d.argsText" />
+                      </div>
+                      <div class="field span2">
+                        <label>{{ t('mcpEnv') }}</label>
+                        <UiInput v-model="d.envText" placeholder="KEY=value" />
+                      </div>
+                    </template>
+                    <template v-else>
+                      <div class="field span2">
+                        <label>{{ t('mcpUrl') }}</label>
+                        <UiInput v-model="d.url" />
+                      </div>
+                      <div class="field span2">
+                        <label>{{ t('mcpHeaders') }}</label>
+                        <UiInput v-model="d.headersText" placeholder="Authorization=Bearer xxx" />
+                      </div>
+                    </template>
+                  </div>
+                  <div v-if="d.origName !== null" class="card-foot">
+                    <UiButton variant="ghost" tone="neutral" size="sm" @click="cancelEditMcp">{{ tc('cancel') }}</UiButton>
+                  </div>
+                </div>
+                <!-- 未编辑：摘要行 -->
+                <div v-else class="srow">
+                  <div class="srow-main">
+                    <span class="srow-title">
+                      {{ d.name }}
+                      <span class="scope-tag">{{ d.kind === 'local' ? t('mcpKindLocal') : t('mcpKindRemote') }}</span>
+                    </span>
+                    <span class="srow-desc mono">{{ mcpSummary(d) }}</span>
+                  </div>
+                  <div class="srow-ctl">
+                    <UiButton variant="ghost" tone="neutral" size="sm" @click="editingMcp = d.origName">{{ t('edit') }}</UiButton>
+                    <UiButton variant="ghost" tone="neutral" size="sm" @click="mcpDrafts.splice(i, 1)">{{ tc('delete') }}</UiButton>
+                  </div>
+                </div>
+              </div>
+              <div v-if="mcpDrafts.length === 0" class="srow">
+                <span class="srow-desc">{{ t('mcpEmpty') }}</span>
+              </div>
+            </div>
+          </div>
+          <footer class="pane-foot">
+            <UiButton variant="solid" tone="accent" size="sm" :loading="savingMcp" @click="saveMcp">{{ t('saveAll') }}</UiButton>
+          </footer>
+        </section>
 
         <section v-else-if="section === 'defaults' || section === 'providers'" class="pane">
           <div class="pane-scroll">
@@ -2612,7 +2816,7 @@ function pickLocale(v: Locale) {
 .field.span2 {
   grid-column: span 2;
 }
-/* 预设/技能编辑卡片的两列表单（左侧名称、右侧控件） */
+/* MCP 编辑卡片的两列表单（左侧名称、右侧控件） */
 .fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2623,7 +2827,7 @@ function pickLocale(v: Locale) {
 .prov {
   margin-bottom: 10px;
 }
-/* 带底色的区块（提供商配置 / 每个模型）共用 */
+/* 带底色的区块（提供商配置 / 每个模型）与 MCP 编辑卡片共用 */
 .card {
   background: var(--surface);
   border-radius: 10px;

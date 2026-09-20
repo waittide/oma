@@ -4,7 +4,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use oma_contract::{ACCENTS, AgentSummary, ApprovalMode, ModelInfo, Palette, PaletteMode, ResolvedTheme, Theme};
+use oma_contract::{
+    ACCENTS, AgentSummary, ApprovalMode, McpServerConfig, ModelInfo, Palette, PaletteMode, ResolvedTheme, Theme,
+};
 pub use oma_contract::{PALETTE_TOKENS, is_valid_hex_color};
 use oma_provider::ModelConfig;
 pub use oma_provider::{ModelEntry, ProviderConfig};
@@ -270,7 +272,7 @@ impl PaletteLoader {
 /// 分文件存放，便于手改与版本管理。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigPaths {
-    /// 常规设置：默认模型/预设、审批模式与推理等级、主题、服务端
+    /// 常规设置：默认模型/预设、审批模式与推理等级、主题、服务端、MCP
     pub settings: PathBuf,
     /// 提供商与模型清单
     pub models:   PathBuf,
@@ -332,6 +334,8 @@ pub struct OmaConfig {
     pub server:                  ServerConfig,
     #[serde(default)]
     pub providers:               BTreeMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub mcp_servers:             BTreeMap<String, McpServerConfig>,
 }
 
 fn default_model_str() -> String {
@@ -355,6 +359,7 @@ impl Default for OmaConfig {
             theme:                   Theme::default(),
             server:                  ServerConfig::default(),
             providers:               BTreeMap::new(),
+            mcp_servers:             BTreeMap::new(),
         }
     }
 }
@@ -2195,6 +2200,10 @@ api_key = "env:DEEPSEEK_KEY"
             (
                 "model",
                 r#"{"providers": {"p": {"api_type": "completion", "base_url": "http://x/v1", "api_key": "k", "models": [{"id": "m", "ctx": 100}]}}}"#,
+            ),
+            (
+                "mcp server",
+                r#"{"mcp_servers": {"s": {"type": "local", "command": "x", "timeout": 1}}}"#,
             ),
         ];
 

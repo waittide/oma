@@ -1722,6 +1722,7 @@ dependencies = [
  "oma-config",
  "oma-contract",
  "oma-daemon",
+ "oma-mcp",
  "oma-runtime",
  "oma-storage",
  "oma-tool",
@@ -1784,6 +1785,7 @@ dependencies = [
  "oma-client",
  "oma-config",
  "oma-contract",
+ "oma-mcp",
  "oma-plugin",
  "oma-runtime",
  "oma-storage",
@@ -1799,6 +1801,25 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "oma-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "futures-util",
+ "oma-contract",
+ "oma-tool",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

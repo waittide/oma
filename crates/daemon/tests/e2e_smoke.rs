@@ -20,6 +20,7 @@ use axum::{
 use oma_client::{ConnectOptions, OmaClient, SessionApi};
 use oma_contract::{AgentCommand, AgentEvent, ApprovalMode, ClientType, StopReason};
 use oma_daemon::{DaemonState, create_router};
+use oma_mcp::McpManager;
 use oma_storage::StorageManager;
 use parking_lot::Mutex;
 
@@ -258,7 +259,13 @@ ultra = "think-ultra"
 
     let storage = StorageManager::new(&data_dir).await?;
     let token = "smoke-token".to_string();
-    let state = DaemonState::new(token.clone(), storage, config, config_paths);
+    let state = DaemonState::new(
+        token.clone(),
+        storage,
+        config,
+        config_paths,
+        Arc::new(McpManager::new()),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     tokio::spawn(async move {

@@ -549,6 +549,35 @@ pub struct AgentSummary {
     pub description: String,
 }
 
+/// MCP 服务器配置定义
+///
+/// 放在契约 crate 而不是 MCP 客户端：它是被配置与界面共用的**数据类型**，
+/// 而 MCP 客户端要依赖 `oma-tool`（注册工具）——若定义在客户端，
+/// `config → mcp → tool → config` 会成环。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum McpServerConfig {
+    Local {
+        command: String,
+        #[serde(default)]
+        args:    Vec<String>,
+        #[serde(default)]
+        env:     BTreeMap<String, String>,
+    },
+    Remote {
+        url:     String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+    },
+}
+
+/// MCP 服务器工具概览（供主界面指示器展示）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerSummary {
+    pub name:       String,
+    pub tool_count: usize,
+}
+
 /// 握手成功就绪载荷
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ready {
@@ -565,6 +594,8 @@ pub struct Ready {
     /// 可选模型目录（provider → 模型清单），与 OmaConfig.providers 的配置形态不同
     pub model_catalog:   BTreeMap<String, Vec<ModelInfo>>,
     pub agents:          Vec<AgentSummary>,
+    /// MCP 服务器概览（供主界面指示器展示）
+    pub mcp_summaries:   Vec<McpServerSummary>,
     /// 上次记录的上下文占用与模型窗口，供重连后立即恢复进度条；无记录时为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_usage:   Option<ContextUsage>,

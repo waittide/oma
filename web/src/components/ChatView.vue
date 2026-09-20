@@ -290,6 +290,9 @@ const approvalOptions = computed<{ value: ApprovalMode; label: string }[]>(() =>
   { value: 'strict', label: ta('strict') },
   { value: 'auto', label: ta('auto') },
 ]);
+
+// MCP 概览徽标已迁到 TopToolbar（工作区外壳），此处不再保留旧顶栏
+
 /** 规范推理等级：与后端 REASONING_LEVELS 一致 */
 const REASONING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { toast, UiIconButton, UiTooltip } from '@waittide/ui';
-import { LuDownload, LuListTree, LuPanelLeft, LuPanelRight, LuTerminal } from 'vue-icons-plus/lu';
+import { LuDownload, LuListTree, LuPanelLeft, LuPanelRight, LuPlug, LuTerminal } from 'vue-icons-plus/lu';
 import { useTranslations } from '../composables/i18n';
 import { activeSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
@@ -21,6 +21,12 @@ const systemOpen = ref(false);
  */
 const usage = computed(() => usageLine(sessionUsage(chat.messages.value)));
 const hasMessages = computed(() => chat.messages.value.length > 0);
+
+/** MCP 概览：已发现的服务端与它们提供的工具总数（悬停看逐个明细） */
+const mcpToolTotal = computed(() => chat.mcpServers.value.reduce((sum, s) => sum + s.tool_count, 0));
+const mcpTip = computed(() =>
+  chat.mcpServers.value.map((s) => `${s.name} (${s.tool_count})`).join('\n'),
+);
 
 /** 导出当前会话为 Markdown（纯前端，不落新接口）。 */
 function exportSession() {
@@ -59,6 +65,13 @@ function exportSession() {
 
     <div class="tb-right">
       <span v-if="usage" class="usage" :title="t('sessionUsage')">{{ usage }}</span>
+
+      <UiTooltip v-if="chat.mcpServers.value.length" :content="mcpTip" align="end" placement="bottom">
+        <span class="mcp-chip">
+          <LuPlug :size="11" />
+          {{ mcpToolTotal }}
+        </span>
+      </UiTooltip>
 
       <UiTooltip :content="t('exportSession')" align="end" placement="bottom">
         <UiIconButton
@@ -164,6 +177,21 @@ function exportSession() {
 }
 .icon-ghost.on {
   color: var(--accent);
+}
+/* MCP 概览：胶囊 + 工具总数，悬停展开服务端明细 */
+.mcp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .dot {
   width: 8px;

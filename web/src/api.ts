@@ -104,7 +104,7 @@ export const api = {
       `/api/sessions/${id}/messages/${messageId}`,
       { method: 'DELETE' },
     ),
-  /** 预设编辑器可勾选的工具（内置 + 插件） */
+  /** 预设编辑器可勾选的工具（内置 + 已发现的 MCP） */
   tools: () => request<ToolInfo[]>('/api/tools'),
 
   /** 工作区 git 变更（分支 + 文件清单） */
