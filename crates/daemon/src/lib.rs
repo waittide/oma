@@ -131,8 +131,19 @@ impl DaemonState {
         );
         // 推理等级来自会话自身（创建时即写入，不会为空），无需再回退
         *room.reasoning_level.write() = record.reasoning_level.clone();
-        // 插件宿主同时提供 `tool_call` 钩子（工具已在上面注册）
+        // 插件宿主同时提供各类事件钩子（工具已在上面注册）
         room.set_plugins(plugins);
+        // 生命周期事件：房间刚装配好（等价 pi 的 session_start）。
+        // 放在这里而不是建会话处：只有真被用到的会话才需要通知插件。
+        room.emit_plugin_event(
+            "session_start",
+            serde_json::json!({
+                "session_id": session_id,
+                "workspace":  workspace,
+                "model":      record.active_model,
+            }),
+        )
+        .await;
 
         self.rooms
             .write()
@@ -317,13 +328,18 @@ async fn handle_delete_session(
     }
 
     // 运行中的会话不允许删除，否则轮次会往已删除的库继续写入
-    if let Some(room) = state.rooms.read().get(&session_id) {
+    // 先把房间句柄取出再 await：读锁守卫不能跨 await（否则 future 不是 Send）
+    let loaded_room = state.rooms.read().get(&session_id).cloned();
+    if let Some(room) = loaded_room {
         if room.is_busy() {
             return Err((
                 StatusCode::CONFLICT,
                 "Cannot delete a session while a turn is running".into(),
             ));
         }
+        // 只对已装配过的房间发 shutdown：没加载过的会话本来就没发过 session_start
+        room.emit_plugin_event("session_shutdown", serde_json::json!({ "session_id": session_id }))
+            .await;
     }
     state.drop_room(&session_id);
     state

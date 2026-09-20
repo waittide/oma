@@ -47,6 +47,9 @@ oma.on = (event, fn) => {
   const k = String(event);
   (globalThis.__oma_hooks[k] || (globalThis.__oma_hooks[k] = [])).push(fn);
 };
+// 已支持的事件：tool_call / tool_result（可返回值阻断）、
+// user_input（可 { content } 改写或 { block, reason } 拦截）、
+// turn_start / turn_end（观察型）
 "#;
 
 const TOOL_META_EXPR: &str = r#"
@@ -75,6 +78,50 @@ const HOOK_TOOL_CALL_EXPR: &str = r#"
   return '';
 })()
 "#;
+
+/// 通用事件发射：把 `__oma_event_name` 对应的钩子全部跑一遍，收集非空返回值。
+///
+/// 与 `tool_call` / `user_input` 这类「返回值有语义」的钩子分开：这里只负责
+/// 观察型事件（turn_start / turn_end），调用方不关心返回值。
+const HOOK_EMIT_EXPR: &str = r#"
+(() => {
+  const hs = globalThis.__oma_hooks[globalThis.__oma_event_name] || [];
+  const out = [];
+  for (const h of hs) {
+    const r = h(JSON.parse(globalThis.__oma_event));
+    if (r !== undefined && r !== null) out.push(r);
+  }
+  return JSON.stringify(out);
+})()
+"#;
+
+/// `user_input` 钩子：可改写内容（`{ content }`）或拦截（`{ block, reason }`）。
+///
+/// 多个钩子按加载顺序依次运行，前一个的改写是后一个的输入。
+const HOOK_USER_INPUT_EXPR: &str = r#"
+(() => {
+  const hs = globalThis.__oma_hooks.user_input || [];
+  let content = String(globalThis.__oma_content);
+  for (const h of hs) {
+    const r = h({ content });
+    if (!r) continue;
+    if (r.block) return JSON.stringify({ block: true, reason: String(r.reason || 'blocked by plugin') });
+    if (typeof r.content === 'string') content = r.content;
+  }
+  return JSON.stringify({ content });
+})()
+"#;
+
+/// `user_input` 钩子的决策。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserInputDecision {
+    /// 原样放行
+    Allow,
+    /// 改为插件给出的内容
+    Replace(String),
+    /// 拦截，并把原因作为系统提示回给模型
+    Block(String),
+}
 
 /// 插件注册的工具元数据（JSON Schema 原样透传给模型）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +241,49 @@ impl LoadedPlugin {
                     .to_string(),
             ))
         })
+    }
+
+    /// 发射一个观察型事件，返回各钩子的返回值（调用方通常忽略）。
+    fn emit(&self, event: &str, payload: &serde_json::Value) -> anyhow::Result<Vec<serde_json::Value>> {
+        let payload = serde_json::to_string(payload)?;
+        let name = event.to_string();
+        let out: String = self.with_context(|ctx| {
+            ctx.globals()
+                .set("__oma_event_name", name.clone())
+                .map_err(js)?;
+            ctx.globals()
+                .set("__oma_event", payload.clone())
+                .map_err(js)?;
+            eval_string(ctx, HOOK_EMIT_EXPR)
+        })?;
+        serde_json::from_str(&out).map_err(|e| anyhow::anyhow!("plugin returned invalid hook results: {e}"))
+    }
+
+    /// 运行 `user_input` 钩子：可改写内容，也可拦截。
+    fn before_user_input(&self, content: &str) -> anyhow::Result<UserInputDecision> {
+        let out: String = self.with_context(|ctx| {
+            ctx.globals()
+                .set("__oma_content", content.to_string())
+                .map_err(js)?;
+            eval_string(ctx, HOOK_USER_INPUT_EXPR)
+        })?;
+        let value: serde_json::Value = serde_json::from_str(&out)?;
+        if value
+            .get("block")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+        {
+            let reason = value
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("blocked by plugin")
+                .to_string();
+            return Ok(UserInputDecision::Block(reason));
+        }
+        match value.get("content").and_then(|c| c.as_str()) {
+            Some(rewritten) if rewritten != content => Ok(UserInputDecision::Replace(rewritten.to_string())),
+            _ => Ok(UserInputDecision::Allow),
+        }
     }
 
     /// 运行命令处理器，返回其注入文本。
@@ -458,6 +548,38 @@ impl PluginHost {
         None
     }
 
+    /// 发射一个观察型生命周期事件（`turn_start` / `turn_end`）。
+    ///
+    /// 钩子抛错只告警：插件出问题不该让正在跑的轮次失败。
+    pub fn emit(&self, event: &str, payload: &serde_json::Value) {
+        for plugin in &self.plugins {
+            if let Err(e) = plugin.emit(event, payload) {
+                tracing::warn!(plugin = %plugin.id, event = %event, error = %e, "plugin hook failed");
+            }
+        }
+    }
+
+    /// 运行 `user_input` 钩子：任一插件可改写用户输入或拦截整轮。
+    ///
+    /// 改写按加载顺序链式传递（后一个看到前一个的结果）；拦截立即生效。
+    /// 钩子抛错时保守放行原内容（不让插件故障阻断用户说话）。
+    pub fn before_user_input(&self, content: &str) -> UserInputDecision {
+        let mut current = content.to_string();
+        for plugin in &self.plugins {
+            match plugin.before_user_input(&current) {
+                Ok(UserInputDecision::Allow) => {}
+                Ok(UserInputDecision::Replace(next)) => current = next,
+                Ok(UserInputDecision::Block(reason)) => return UserInputDecision::Block(reason),
+                Err(e) => tracing::warn!(plugin = %plugin.id, error = %e, "plugin user_input hook failed"),
+            }
+        }
+        if current == content {
+            UserInputDecision::Allow
+        } else {
+            UserInputDecision::Replace(current)
+        }
+    }
+
     /// 运行指定命令；未找到返回 None，找到则返回注入文本。
     pub fn run_command(&self, qualified: &str, args: &serde_json::Value) -> Option<anyhow::Result<String>> {
         let (plugin_id, command) = qualified.split_once(':')?;
@@ -612,6 +734,87 @@ oma.on("tool_call", (e) => (e.name === "bash" ? { block: true, reason: "bash dis
             host.before_tool_call("read", &serde_json::json!({}))
                 .is_none()
         );
+    }
+
+    /// `user_input` 钩子可以改写用户输入（例如先做模板展开）。
+    #[test]
+    fn test_user_input_hook_can_rewrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugin(
+            &tmp.path().join(".oma").join("plugins"),
+            "expand",
+            r#"
+oma.on("user_input", (e) => ({ content: e.content.replace("PREFIX", "展开后的内容") }));
+"#,
+        );
+
+        let host = PluginHost::load(tmp.path());
+        assert_eq!(
+            host.before_user_input("PREFIX 后面"),
+            UserInputDecision::Replace("展开后的内容 后面".into())
+        );
+        // 未命中改写时视作放行，不构造无意义的新字符串
+        assert_eq!(host.before_user_input("无关输入"), UserInputDecision::Allow);
+    }
+
+    /// 改写按加载顺序链式传递，且拦截立即生效。
+    #[test]
+    fn test_user_input_hooks_chain_and_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".oma").join("plugins");
+        write_plugin(
+            &dir,
+            "a-first",
+            r#"oma.on("user_input", (e) => ({ content: e.content + " +A" }));"#,
+        );
+        write_plugin(
+            &dir,
+            "b-second",
+            r#"oma.on("user_input", (e) => (e.content.includes("+A") ? { content: e.content + " +B" } : undefined));"#,
+        );
+
+        let host = PluginHost::load(tmp.path());
+        assert_eq!(
+            host.before_user_input("hi"),
+            UserInputDecision::Replace("hi +A +B".into())
+        );
+
+        // 拦截：后续钩子不再跑
+        let tmp2 = tempfile::tempdir().unwrap();
+        let dir2 = tmp2.path().join(".oma").join("plugins");
+        write_plugin(
+            &dir2,
+            "a-block",
+            r#"oma.on("user_input", () => ({ block: true, reason: "维护中" }));"#,
+        );
+        write_plugin(
+            &dir2,
+            "b-late",
+            r#"oma.on("user_input", () => ({ content: "不该生效" }));"#,
+        );
+        let host2 = PluginHost::load(tmp2.path());
+        assert_eq!(host2.before_user_input("hi"), UserInputDecision::Block("维护中".into()));
+    }
+
+    /// 观察型事件的返回值被收集；钩子抛错不影响其他钩子与调用方。
+    #[test]
+    fn test_emit_collects_results_and_survives_throw() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_plugin(
+            &tmp.path().join(".oma").join("plugins"),
+            "observer",
+            r#"
+oma.on("turn_start", (e) => ({ seen: e.turn_id }));
+oma.on("turn_start", () => { throw new Error("boom"); });
+"#,
+        );
+
+        let host = PluginHost::load(tmp.path());
+        // 同一插件内抛错会让这次发命中止，但宿主只告警、不 panic
+        host.emit("turn_start", &serde_json::json!({ "turn_id": "t1" }));
+
+        // 没有钩子的未知事件也不得报错
+        host.emit("nope", &serde_json::json!({}));
     }
 
     #[test]

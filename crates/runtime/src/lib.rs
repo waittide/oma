@@ -359,9 +359,21 @@ impl SessionRoom {
         })
     }
 
-    /// 注入插件宿主：工具已在装配期注册进 `ToolRegistry`，此处提供 `tool_call` 钩子。
+    /// 注入插件宿主：工具已在装配期注册进 `ToolRegistry`，此处提供事件钩子。
     pub fn set_plugins(&self, host: Arc<oma_plugin::PluginHost>) {
         *self.plugins.write() = Some(host);
+    }
+
+    /// 发射插件生命周期事件（`session_start` / `session_shutdown` / `turn_start` / `turn_end`）。
+    ///
+    /// 钩子是同步 JS，必须放到阻塞线程池；插件故障已在宿主内部降级为告警，
+    /// 因此这里不把错误回给调用方。
+    pub async fn emit_plugin_event(&self, event: &str, payload: serde_json::Value) {
+        let Some(host) = self.plugins.read().clone() else {
+            return;
+        };
+        let event = event.to_string();
+        let _ = tokio::task::spawn_blocking(move || host.emit(&event, &payload)).await;
     }
 
     /// 订阅该 Room 的实时事件流
@@ -489,6 +501,29 @@ impl SessionRoom {
         client_name: &str,
         client_type: ClientType,
     ) {
+        // 插件 `user_input` 钩子：可改写用户输入，也可直接拦截整轮。
+        // 同步 JS → 阻塞线程池；插件抛错时保守放行原内容（不让插件故障阻断用户说话）。
+        // 先单独取出 Arc：`if let` 会把读锁守卫活到整个 if 块结束，那样就跨 await 持锁了
+        let plugins = self.plugins.read().clone();
+        let content = if let Some(host) = plugins {
+            let original = content.clone();
+            match tokio::task::spawn_blocking(move || host.before_user_input(&original)).await {
+                Ok(oma_plugin::UserInputDecision::Allow) => content,
+                Ok(oma_plugin::UserInputDecision::Replace(next)) => next,
+                Ok(oma_plugin::UserInputDecision::Block(reason)) => {
+                    // 拦截后本轮不开始：不发 UserMessage、不入队、不落库，
+                    // 否则历史里会留下一条永远不会被回答的用户消息
+                    self.broadcast(AgentEvent::Error {
+                        message: format!("Input rejected by plugin: {reason}"),
+                    });
+                    return;
+                }
+                Err(_) => content,
+            }
+        } else {
+            content
+        };
+
         let accepted = self
             .is_running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -662,6 +697,11 @@ impl SessionRoom {
         self.broadcast(AgentEvent::TurnStarted {
             turn_id: turn_id.clone(),
         });
+        self.emit_plugin_event(
+            "turn_start",
+            serde_json::json!({ "session_id": self.session_id, "turn_id": turn_id }),
+        )
+        .await;
 
         // 1. 构造并持久化 User Message
         let user_msg_id = uuid::Uuid::new_v4().to_string();
@@ -1178,10 +1218,20 @@ impl SessionRoom {
     async fn finish_turn(self: &Arc<Self>, turn_id: String, stop_reason: StopReason, usage: TokenUsage) {
         *self.active_turn.write() = None;
         self.broadcast(AgentEvent::TurnFinished {
-            turn_id,
+            turn_id: turn_id.clone(),
             stop_reason,
             usage,
         });
+        self.emit_plugin_event(
+            "turn_end",
+            serde_json::json!({
+                "session_id":  self.session_id,
+                "turn_id":     turn_id,
+                "stop_reason": serde_json::to_value(stop_reason).unwrap_or(serde_json::Value::Null),
+                "usage":       serde_json::to_value(usage).unwrap_or(serde_json::Value::Null),
+            }),
+        )
+        .await;
 
         // 自动命名不在此处触发：模型首次回复落库时已后台发起（见 agent_loop），
         // 单靠工具调用、没有文本产出的轮次自然也没有可命名的对话内容
