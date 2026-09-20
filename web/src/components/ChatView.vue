@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import { toast } from '@waittide/ui';
+import { toast, UiButton, UiIconButton, UiTextarea } from '@waittide/ui';
 import {
   LuAlertTriangle,
   LuArrowDownToLine,
@@ -372,9 +372,14 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
           </span>
         </OTooltip>
         <OTooltip :label="t('historyTree')" align="end" placement="bottom">
-          <button type="button" class="icon-ghost" :aria-label="t('historyTree')" @click="treeOpen = true">
+          <UiIconButton
+            class="icon-ghost"
+            size="sm"
+            :label="t('historyTree')"
+            @click="treeOpen = true"
+          >
             <LuListTree :size="14" />
-          </button>
+          </UiIconButton>
         </OTooltip>
       </div>
     </header>
@@ -417,33 +422,36 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
                 <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
               </div>
               <div class="user-actions">
-                <button
-                  type="button"
+                <UiButton
                   class="fork"
-                  :aria-label="t('copyHint')"
+                  variant="ghost"
+                  tone="neutral"
+                  size="sm"
                   @click="copyMessage(m.id)"
                 >
                   <LuCheck v-if="copiedId === m.id" :size="11" />
                   <LuCopy v-else :size="11" />
                   {{ t('copy') }}
-                </button>
-                <button
+                </UiButton>
+                <UiButton
                   v-if="m.parent_id"
-                  type="button"
                   class="fork"
-                  :aria-label="t('editResendHint')"
+                  variant="ghost"
+                  tone="neutral"
+                  size="sm"
                   @click="startFork(m.parent_id, userText(m.id))"
                 >
                   <LuPencil :size="11" /> {{ t('editResend') }}
-                </button>
-                <button
-                  type="button"
+                </UiButton>
+                <UiButton
                   class="fork"
-                  :aria-label="t('deleteHint')"
+                  variant="ghost"
+                  tone="neutral"
+                  size="sm"
                   @click="chat.deleteMessage(m.id)"
                 >
                   <LuTrash2 :size="11" /> {{ t('delete') }}
-                </button>
+                </UiButton>
               </div>
             </template>
             <template v-else>
@@ -510,22 +518,29 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         <span v-for="(a, i) in pendingUploads" :key="a.ref" class="attach-chip">
           <LuPaperclip :size="11" />
           <span class="attach-name">{{ a.name }}</span>
-          <button type="button" :aria-label="t('removeAttachment')" @click="pendingUploads.splice(i, 1)">
+          <UiIconButton
+            class="chip-x"
+            size="sm"
+            :label="t('removeAttachment')"
+            @click="pendingUploads.splice(i, 1)"
+          >
             <LuX :size="11" />
-          </button>
+          </UiIconButton>
         </span>
       </div>
       <div v-if="previewing" class="preview-banner">
         <LuListTree :size="12" />
         <span>{{ t('previewBanner') }}</span>
-        <button type="button" class="preview-back" @click="chat.followCurrent()">
+        <UiButton class="preview-back" variant="ghost" tone="neutral" size="sm" @click="chat.followCurrent()">
           {{ t('backToLatest') }}
-        </button>
+        </UiButton>
       </div>
       <div v-if="forkFrom !== null" class="fork-banner">
         <LuGitBranch :size="12" />
         <span>{{ t('editResendBanner') }}</span>
-        <button type="button" class="fork-cancel" @click="cancelFork">{{ tc('cancel') }}</button>
+        <UiButton class="fork-cancel" variant="ghost" tone="neutral" size="sm" @click="cancelFork">
+          {{ tc('cancel') }}
+        </UiButton>
       </div>
       <div
         ref="boxEl"
@@ -554,13 +569,14 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         >
           <LuGripHorizontal :size="12" class="grip" />
         </div>
-        <textarea
-          v-model="draft"
-          rows="2"
-          :placeholder="activeSessionId ? t('placeholder') : t('placeholderNoSession')"
-          :disabled="!ready"
-          @keydown.enter.exact.prevent="send"
-        />
+        <div class="composer-input" @keydown.enter.exact.prevent="send">
+          <UiTextarea
+            v-model="draft"
+            :rows="2"
+            :placeholder="activeSessionId ? t('placeholder') : t('placeholderNoSession')"
+            :disabled="!ready"
+          />
+        </div>
         <!--
           隐藏的原生 file input 仅充当“文件选择器通道”（浏览器不允许
           自绘系统文件对话框）；可见的按钮、拖拽区与附件列表全部自实现。
@@ -575,15 +591,15 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         <div class="c-toolbar">
           <div class="c-controls">
             <OTooltip :label="t('attachHint')">
-              <button
-                type="button"
+              <UiIconButton
                 class="icon-btn"
-                :aria-label="t('attach')"
+                size="sm"
+                :label="t('attach')"
                 :disabled="!ready || uploading"
                 @click="fileInput?.click()"
               >
                 <LuPaperclip :size="13" />
-              </button>
+              </UiIconButton>
             </OTooltip>
             <span v-if="chat.queued.value > 0" class="queued-chip">
               {{ t('queuedCount', { count: chat.queued.value }) }}
@@ -623,20 +639,20 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
           </div>
           <div class="c-actions">
             <OTooltip v-if="chat.running.value" :label="t('stopHint')">
-              <button type="button" class="icon-btn stop" :aria-label="t('stopHint')" @click="cancel">
+              <UiIconButton class="icon-btn stop" size="sm" :label="t('stopHint')" @click="cancel">
                 <LuSquare :size="13" />
-              </button>
+              </UiIconButton>
             </OTooltip>
             <OTooltip :label="t('sendHint')">
-              <button
-                type="button"
+              <UiIconButton
                 class="icon-btn send"
-                :aria-label="t('sendHint')"
+                size="sm"
+                :label="t('sendHint')"
                 :disabled="(!draft.trim() && pendingUploads.length === 0) || !ready"
                 @click="send"
               >
                 <LuArrowUp :size="15" />
-              </button>
+              </UiIconButton>
             </OTooltip>
           </div>
         </div>
@@ -719,8 +735,9 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 0 !important;
   border: none;
   border-radius: 7px;
   background: transparent;
@@ -844,6 +861,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  height: auto;
   border: none;
   background: transparent;
   color: var(--overlay0);
@@ -852,6 +870,11 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   cursor: pointer;
   padding: 1px 5px;
   border-radius: 5px;
+}
+.fork :deep(.ui-button__label) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .fork:hover {
   color: var(--accent);
@@ -913,13 +936,19 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   color: var(--accent);
 }
 .preview-back {
+  height: auto;
   border: none;
   background: transparent;
   color: var(--text-tertiary);
   font-family: inherit;
   font-size: 11.5px;
   cursor: pointer;
+  padding: 0;
   text-decoration: underline;
+}
+.preview-back:hover {
+  background: transparent;
+  color: var(--ink);
 }
 .fork-banner {
   display: flex;
@@ -930,12 +959,18 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   color: var(--accent);
 }
 .fork-cancel {
+  height: auto;
   border: none;
   background: transparent;
   color: var(--text-tertiary);
   font-size: 11.5px;
   cursor: pointer;
+  padding: 0;
   text-decoration: underline;
+}
+.fork-cancel:hover {
+  background: transparent;
+  color: var(--ink);
 }
 .attach-row {
   display: flex;
@@ -967,6 +1002,18 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   color: var(--text-tertiary);
   cursor: pointer;
   padding: 0;
+}
+/* 附件胶囊里的移除按钮：压到与胶囊同高的小图标 */
+.chip-x {
+  width: 14px !important;
+  height: 14px !important;
+  min-width: 0 !important;
+  padding: 0;
+  color: var(--text-tertiary);
+}
+.chip-x:hover {
+  background: transparent;
+  color: var(--danger);
 }
 .attach-chip button:hover {
   color: var(--danger);
@@ -1050,19 +1097,24 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
 .resize-handle:focus-visible {
   outline: none;
 }
-textarea {
+.composer-input {
   flex: 1;
-  resize: none;
+  min-width: 0;
+}
+/* 组合器里的输入区去掉组件库默认边框与内边距，还原为无框文字区 */
+.composer-input :deep(textarea) {
   border: none;
   outline: none;
   background: transparent;
+  box-shadow: none;
   color: var(--ink);
   font-family: inherit;
   font-size: 13px;
   line-height: 20px;
   padding: 12px 16px 2px;
+  resize: none;
 }
-textarea::placeholder {
+.composer-input :deep(textarea)::placeholder {
   color: var(--overlay0);
 }
 .c-toolbar {
@@ -1088,8 +1140,9 @@ textarea::placeholder {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 0 !important;
   border: none;
   border-radius: 6px;
   background: var(--accent);
