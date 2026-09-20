@@ -15,7 +15,6 @@ import {
   LuX,
 } from 'vue-icons-plus/lu';
 import { UiButton, UiIconButton, UiTooltip } from '@waittide/ui';
-import OButton from './ui/OButton.vue';
 import OInput from './ui/OInput.vue';
 import OSelect from './ui/OSelect.vue';
 import OModal from './ui/OModal.vue';
@@ -172,10 +171,10 @@ const deleteTarget = computed(
       <span class="brand-name">Oma</span>
     </header>
     <div class="brand-actions">
-      <OButton variant="soft" class="new-ws" @click="createWorkspaceDialog">
-        <template #icon><LuFolder :size="14" /></template>
+      <UiButton variant="soft" tone="neutral" class="new-ws" @click="createWorkspaceDialog">
+        <template #prefix><LuFolder :size="14" /></template>
         {{ t('newWorkspace') }}
-      </OButton>
+      </UiButton>
     </div>
 
     <!-- 搜索与排序：搜工作区名与会话标题，结果仍按工作区分组展示 -->
@@ -322,10 +321,10 @@ const deleteTarget = computed(
         <span class="field-hint">{{ t('newWorkspaceHint') }}</span>
       </div>
       <template #footer>
-        <OButton variant="ghost" @click="showNewWorkspace = false">{{ tc('cancel') }}</OButton>
-        <OButton variant="primary" :disabled="!newWorkspacePath.trim()" @click="createWorkspace">
+        <UiButton variant="ghost" tone="neutral" @click="showNewWorkspace = false">{{ tc('cancel') }}</UiButton>
+        <UiButton variant="solid" tone="accent" :disabled="!newWorkspacePath.trim()" @click="createWorkspace">
           {{ tc('create') }}
-        </OButton>
+        </UiButton>
       </template>
     </OModal>
 
@@ -340,10 +339,10 @@ const deleteTarget = computed(
         <OInput v-model="newTitle" :placeholder="t('titleAutoPlaceholder')" autofocus @enter="createSession" />
       </div>
       <template #footer>
-        <OButton variant="ghost" @click="showNew = false">{{ tc('cancel') }}</OButton>
-        <OButton variant="primary" :disabled="!newWorkspace.trim()" @click="createSession">
+        <UiButton variant="ghost" tone="neutral" @click="showNew = false">{{ tc('cancel') }}</UiButton>
+        <UiButton variant="solid" tone="accent" :disabled="!newWorkspace.trim()" @click="createSession">
           {{ tc('create') }}
-        </OButton>
+        </UiButton>
       </template>
     </OModal>
 
@@ -357,10 +356,10 @@ const deleteTarget = computed(
         {{ t('clearConfirm', { label: clearTarget?.label ?? '', count: clearTarget?.items.length ?? 0 }) }}
       </p>
       <template #footer>
-        <OButton variant="ghost" @click="clearTarget = null">{{ tc('cancel') }}</OButton>
-        <OButton variant="danger" :loading="clearing" @click="clearSessions">
+        <UiButton variant="ghost" tone="neutral" @click="clearTarget = null">{{ tc('cancel') }}</UiButton>
+        <UiButton variant="solid" tone="danger" :loading="clearing" @click="clearSessions">
           {{ tc('delete') }}
-        </OButton>
+        </UiButton>
       </template>
     </OModal>
 
@@ -374,8 +373,8 @@ const deleteTarget = computed(
         {{ t('deleteWorkspaceConfirm', { label: removeTarget?.label ?? '' }) }}
       </p>
       <template #footer>
-        <OButton variant="ghost" @click="removeTarget = null">{{ tc('cancel') }}</OButton>
-        <OButton variant="danger" @click="removeWorkspace">{{ tc('delete') }}</OButton>
+        <UiButton variant="ghost" tone="neutral" @click="removeTarget = null">{{ tc('cancel') }}</UiButton>
+        <UiButton variant="solid" tone="danger" @click="removeWorkspace">{{ tc('delete') }}</UiButton>
       </template>
     </OModal>
 
@@ -384,13 +383,13 @@ const deleteTarget = computed(
         {{ t('deleteConfirm', { title: deleteTarget?.title ?? '' }) }}
       </p>
       <template #footer>
-        <OButton variant="ghost" @click="confirmDelete = null">{{ tc('cancel') }}</OButton>
-        <OButton
-          variant="danger"
+        <UiButton variant="ghost" tone="neutral" @click="confirmDelete = null">{{ tc('cancel') }}</UiButton>
+        <UiButton variant="solid" tone="danger"
+         
           @click="confirmDelete && store.remove(confirmDelete); confirmDelete = null"
         >
           {{ tc('delete') }}
-        </OButton>
+        </UiButton>
       </template>
     </OModal>
   </aside>

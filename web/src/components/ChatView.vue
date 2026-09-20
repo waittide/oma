@@ -30,7 +30,6 @@ import { copyText } from '../lib/clipboard';
 import { ensureNotificationPermission } from '../lib/notify';
 import AskPanel from './AskPanel.vue';
 import ContextGauge from './ContextGauge.vue';
-import OButton from './ui/OButton.vue';
 import HistoryTree from './HistoryTree.vue';
 import type { ApprovalMode } from '../types';
 import * as chat from '../stores/chat';
@@ -389,10 +388,10 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
           <LuBot :size="42" class="hero-icon" />
           <h2>{{ t('welcomeTitle') }}</h2>
           <p>{{ t('welcomeBody') }}</p>
-          <OButton variant="primary" size="md" @click="requestNewSession">
-            <template #icon><LuPlus :size="14" /></template>
+          <UiButton variant="solid" tone="accent" size="md" @click="requestNewSession">
+            <template #prefix><LuPlus :size="14" /></template>
             {{ t('newSession') }}
-          </OButton>
+          </UiButton>
         </div>
 
         <div v-else-if="!props.online" class="hero">
@@ -405,7 +404,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
           <LuZap :size="42" class="hero-icon" />
           <h2>{{ t('emptyTitle') }}</h2>
           <p>{{ t('emptyBody') }}</p>
-          <OButton v-if="!hasProviders" variant="soft" @click="emit('needSettings')">{{ t('goSettings') }}</OButton>
+          <UiButton variant="soft" tone="neutral" v-if="!hasProviders" @click="emit('needSettings')">{{ t('goSettings') }}</UiButton>
         </div>
 
         <template v-else>
@@ -495,17 +494,17 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
             {{ t('approvalRequest') }}<code>{{ prettyJson(chat.pendingApproval.value.input) }}</code>
           </div>
           <div class="ap-actions">
-            <OButton variant="primary" size="sm" @click="chat.respond('allow_once')">
-              <template #icon><LuCheck :size="13" /></template>
+            <UiButton variant="solid" tone="accent" size="sm" @click="chat.respond('allow_once')">
+              <template #prefix><LuCheck :size="13" /></template>
               {{ t('allowOnce') }}
-            </OButton>
-            <OButton variant="soft" size="sm" @click="chat.respond('allow_session')">
+            </UiButton>
+            <UiButton variant="soft" tone="neutral" size="sm" @click="chat.respond('allow_session')">
               {{ t('allowSession') }}
-            </OButton>
-            <OButton variant="danger" size="sm" @click="chat.respond('deny')">
-              <template #icon><LuX :size="13" /></template>
+            </UiButton>
+            <UiButton variant="solid" tone="danger" size="sm" @click="chat.respond('deny')">
+              <template #prefix><LuX :size="13" /></template>
               {{ t('deny') }}
-            </OButton>
+            </UiButton>
           </div>
         </div>
       </div>

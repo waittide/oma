@@ -18,7 +18,6 @@ import {
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu';
-import OButton from './ui/OButton.vue';
 import OInput from './ui/OInput.vue';
 import { api } from '../api';
 import OModal from './ui/OModal.vue';
@@ -1361,10 +1360,10 @@ function pickLocale(v: Locale) {
         <section v-if="section === 'connection'" class="pane">
           <header class="pane-head">
             <h2 class="pane-title">{{ t('navConnection') }}</h2>
-            <OButton v-if="clientConfigReady" variant="soft" size="sm" @click="newConnection">
-              <template #icon><LuPlus :size="13" /></template>
+            <UiButton variant="soft" tone="neutral" v-if="clientConfigReady" size="sm" @click="newConnection">
+              <template #prefix><LuPlus :size="13" /></template>
               {{ t('connAdd') }}
-            </OButton>
+            </UiButton>
           </header>
           <div class="pane-scroll">
             <!-- 已保存的连接：点击切换，活动项带勾选标记 -->
@@ -1462,12 +1461,12 @@ function pickLocale(v: Locale) {
             </div>
           </div>
           <footer class="pane-foot">
-            <OButton variant="ghost" size="sm" :loading="connTesting" @click="testConnection">
+            <UiButton variant="ghost" tone="neutral" size="sm" :loading="connTesting" @click="testConnection">
               {{ t('connTest') }}
-            </OButton>
-            <OButton variant="primary" size="sm" :loading="connTesting" @click="saveConnection">
+            </UiButton>
+            <UiButton variant="solid" tone="accent" size="sm" :loading="connTesting" @click="saveConnection">
               {{ t('connSave') }}
-            </OButton>
+            </UiButton>
           </footer>
         </section>
 
@@ -1534,7 +1533,7 @@ function pickLocale(v: Locale) {
                   <span class="srow-desc">{{ t('manageThemesDesc') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <OButton size="sm" variant="soft" @click="newPalette">{{ t('newTheme') }}</OButton>
+                  <UiButton variant="soft" tone="neutral" size="sm" @click="newPalette">{{ t('newTheme') }}</UiButton>
                 </div>
               </div>
               <div v-for="p in palettes" :key="p.id" class="srow">
@@ -1550,18 +1549,18 @@ function pickLocale(v: Locale) {
                   <span class="swatches" aria-hidden="true">
                     <span v-for="tok in ['base', 'text', 'blue', 'mauve']" :key="tok" :style="{ background: p[tok] }" />
                   </span>
-                  <OButton size="sm" variant="ghost" @click="editPalette(p)">{{ t('edit') }}</OButton>
+                  <UiButton variant="ghost" tone="neutral" size="sm" @click="editPalette(p)">{{ t('edit') }}</UiButton>
                   <UiTooltip :content="p.builtin ? t('paletteBuiltinLocked') : tc('delete')">
                     <span>
-                      <OButton
-                        size="sm"
+                      <UiButton
                         variant="ghost"
+                        tone="neutral"
+                        size="sm"
                         :disabled="p.builtin"
-                        :ariaLabel="tc('delete')"
                         @click="removePalette(p.id)"
                       >
                         {{ tc('delete') }}
-                      </OButton>
+                      </UiButton>
                     </span>
                   </UiTooltip>
                 </div>
@@ -1569,9 +1568,9 @@ function pickLocale(v: Locale) {
             </div>
           </div>
           <footer class="pane-foot">
-            <OButton variant="primary" size="sm" :loading="savingTheme" @click="applyTheme">
+            <UiButton variant="solid" tone="accent" size="sm" :loading="savingTheme" @click="applyTheme">
               {{ t('saveTheme') }}
-            </OButton>
+            </UiButton>
           </footer>
         </section>
 
@@ -1642,9 +1641,9 @@ function pickLocale(v: Locale) {
             </div>
           </div>
           <footer class="pane-foot">
-            <OButton variant="primary" size="sm" :loading="savingDefaults" @click="saveDefaults">
+            <UiButton variant="solid" tone="accent" size="sm" :loading="savingDefaults" @click="saveDefaults">
               {{ t('saveDefaults') }}
-            </OButton>
+            </UiButton>
           </footer>
         </section>
 
@@ -1669,19 +1668,19 @@ function pickLocale(v: Locale) {
                   </UiButton>
               </div>
               <div class="tabs-actions">
-                <OButton size="sm" variant="soft" @click="addProvider">
-                  <template #icon><LuPlus :size="13" /></template>
+                <UiButton variant="soft" tone="neutral" size="sm" @click="addProvider">
+                  <template #prefix><LuPlus :size="13" /></template>
                   {{ t('add') }}
-                </OButton>
-                <OButton
+                </UiButton>
+                <UiButton variant="ghost" tone="neutral"
                   size="sm"
-                  variant="ghost"
+                 
                   :disabled="!activeDraft"
                   @click="removeActiveProvider"
                 >
-                  <template #icon><LuTrash2 :size="13" /></template>
+                  <template #prefix><LuTrash2 :size="13" /></template>
                   {{ tc('delete') }}
-                </OButton>
+                </UiButton>
               </div>
             </div>
 
@@ -1764,10 +1763,10 @@ function pickLocale(v: Locale) {
               <!-- 模型配置：标题独占一行，每个模型各自一个区域 -->
               <header class="sec-head">
                 <span class="blk-title">{{ t('modelConfig') }}</span>
-                <OButton size="sm" variant="ghost" @click="addModel(d)">
-                  <template #icon><LuPlus :size="13" /></template>
+                <UiButton variant="ghost" tone="neutral" size="sm" @click="addModel(d)">
+                  <template #prefix><LuPlus :size="13" /></template>
                   {{ t('add') }}
-                </OButton>
+                </UiButton>
               </header>
               <p v-if="d.models.length === 0" class="muted">{{ t('modelsNone') }}</p>
 
@@ -1874,9 +1873,9 @@ function pickLocale(v: Locale) {
             <p v-if="providerDrafts.length === 0" class="muted">{{ t('providersEmpty') }}</p>
           </div>
           <footer class="pane-foot">
-            <OButton variant="primary" size="sm" :loading="savingProviders" @click="saveProviders">
+            <UiButton variant="solid" tone="accent" size="sm" :loading="savingProviders" @click="saveProviders">
               {{ t('saveAll') }}
-            </OButton>
+            </UiButton>
           </footer>
         </section>
 
@@ -1897,9 +1896,9 @@ function pickLocale(v: Locale) {
                 </UiButton>
             </div>
             <div class="pane-head-actions">
-              <OButton size="sm" variant="soft" :disabled="presetLayerReadonly" @click="newPreset">
+              <UiButton variant="soft" tone="neutral" size="sm" :disabled="presetLayerReadonly" @click="newPreset">
                 {{ t('add') }}
-              </OButton>
+              </UiButton>
             </div>
           </header>
           <div class="pane-scroll">
@@ -1948,7 +1947,7 @@ function pickLocale(v: Locale) {
                 </UiButton>
             </div>
             <div class="pane-head-actions">
-              <OButton size="sm" variant="soft" @click="newSkill">{{ t('add') }}</OButton>
+              <UiButton variant="soft" tone="neutral" size="sm" @click="newSkill">{{ t('add') }}</UiButton>
             </div>
           </header>
           <div class="pane-scroll">
@@ -1982,10 +1981,10 @@ function pickLocale(v: Locale) {
           <header class="pane-head">
             <h2 class="pane-title">{{ t('navMcp') }}</h2>
             <div class="pane-head-actions">
-              <OButton size="sm" variant="soft" @click="addMcpServer">
-                <template #icon><LuPlus :size="13" /></template>
+              <UiButton variant="soft" tone="neutral" size="sm" @click="addMcpServer">
+                <template #prefix><LuPlus :size="13" /></template>
                 {{ t('add') }}
-              </OButton>
+              </UiButton>
             </div>
           </header>
           <div class="pane-scroll">
@@ -2030,7 +2029,7 @@ function pickLocale(v: Locale) {
                     </template>
                   </div>
                   <div v-if="d.origName !== null" class="card-foot">
-                    <OButton size="sm" variant="ghost" @click="cancelEditMcp">{{ tc('cancel') }}</OButton>
+                    <UiButton variant="ghost" tone="neutral" size="sm" @click="cancelEditMcp">{{ tc('cancel') }}</UiButton>
                   </div>
                 </div>
                 <!-- 未编辑：摘要行 -->
@@ -2043,8 +2042,8 @@ function pickLocale(v: Locale) {
                     <span class="srow-desc mono">{{ mcpSummary(d) }}</span>
                   </div>
                   <div class="srow-ctl">
-                    <OButton size="sm" variant="ghost" @click="editingMcp = d.origName">{{ t('edit') }}</OButton>
-                    <OButton size="sm" variant="ghost" @click="mcpDrafts.splice(i, 1)">{{ tc('delete') }}</OButton>
+                    <UiButton variant="ghost" tone="neutral" size="sm" @click="editingMcp = d.origName">{{ t('edit') }}</UiButton>
+                    <UiButton variant="ghost" tone="neutral" size="sm" @click="mcpDrafts.splice(i, 1)">{{ tc('delete') }}</UiButton>
                   </div>
                 </div>
               </div>
@@ -2054,7 +2053,7 @@ function pickLocale(v: Locale) {
             </div>
           </div>
           <footer class="pane-foot">
-            <OButton variant="primary" size="sm" :loading="savingMcp" @click="saveMcp">{{ t('saveAll') }}</OButton>
+            <UiButton variant="solid" tone="accent" size="sm" :loading="savingMcp" @click="saveMcp">{{ t('saveAll') }}</UiButton>
           </footer>
         </section>
 
@@ -2113,18 +2112,18 @@ function pickLocale(v: Locale) {
       </div>
     </div>
     <template #footer>
-      <OButton
+      <UiButton variant="solid" tone="danger"
         v-if="!presetEdit.isNew && !presetEdit.readonly"
-        variant="danger"
+       
         size="sm"
         @click="removePreset"
       >
         {{ tc('delete') }}
-      </OButton>
-      <OButton variant="ghost" size="sm" @click="presetEdit.open = false">{{ tc('cancel') }}</OButton>
-      <OButton variant="primary" size="sm" :disabled="presetEdit.readonly || !presetEdit.id.trim() || (presetEdit.scope === 'project' && !skillWorkspace)" @click="savePreset">
+      </UiButton>
+      <UiButton variant="ghost" tone="neutral" size="sm" @click="presetEdit.open = false">{{ tc('cancel') }}</UiButton>
+      <UiButton variant="solid" tone="accent" size="sm" :disabled="presetEdit.readonly || !presetEdit.id.trim() || (presetEdit.scope === 'project' && !skillWorkspace)" @click="savePreset">
         {{ tc('save') }}
-      </OButton>
+      </UiButton>
     </template>
   </OModal>
 
@@ -2162,18 +2161,18 @@ function pickLocale(v: Locale) {
       </div>
     </div>
     <template #footer>
-      <OButton
+      <UiButton variant="solid" tone="danger"
         v-if="!skillEdit.isNew && !skillEdit.readonly"
-        variant="danger"
+       
         size="sm"
         @click="removeSkill"
       >
         {{ tc('delete') }}
-      </OButton>
-      <OButton variant="ghost" size="sm" @click="skillEdit.open = false">{{ tc('cancel') }}</OButton>
-      <OButton variant="primary" size="sm" :disabled="skillEdit.readonly || !skillEdit.id.trim() || (skillEdit.scope === 'project' && !skillWorkspace)" @click="saveSkill">
+      </UiButton>
+      <UiButton variant="ghost" tone="neutral" size="sm" @click="skillEdit.open = false">{{ tc('cancel') }}</UiButton>
+      <UiButton variant="solid" tone="accent" size="sm" :disabled="skillEdit.readonly || !skillEdit.id.trim() || (skillEdit.scope === 'project' && !skillWorkspace)" @click="saveSkill">
         {{ tc('save') }}
-      </OButton>
+      </UiButton>
     </template>
   </OModal>
 
@@ -2231,9 +2230,9 @@ function pickLocale(v: Locale) {
       </div>
     </div>
     <template #footer>
-      <OButton variant="ghost" size="sm" @click="applyBase(paletteEdit.base)">{{ t('themeReset') }}</OButton>
-      <OButton variant="ghost" size="sm" @click="paletteEdit.open = false">{{ tc('cancel') }}</OButton>
-      <OButton variant="primary" size="sm" @click="savePaletteEdit">{{ tc('save') }}</OButton>
+      <UiButton variant="ghost" tone="neutral" size="sm" @click="applyBase(paletteEdit.base)">{{ t('themeReset') }}</UiButton>
+      <UiButton variant="ghost" tone="neutral" size="sm" @click="paletteEdit.open = false">{{ tc('cancel') }}</UiButton>
+      <UiButton variant="solid" tone="accent" size="sm" @click="savePaletteEdit">{{ tc('save') }}</UiButton>
     </template>
   </OModal>
 
