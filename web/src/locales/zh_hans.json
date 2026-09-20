@@ -313,9 +313,21 @@
     "terminal": "终端",
     "close": "关闭面板",
     "noSession": "请先选择或新建会话",
-    "filesHint": "项目文件树与预览将在此显示。",
-    "changesHint": "Git 变更与 diff 将在此显示。",
-    "terminalHint": "内置终端将在此接入。"
+    "terminalHint": "内置终端将在此接入。",
+    "loading": "正在读取…",
+    "reload": "重新读取",
+    "refresh": "刷新",
+    "backToTree": "返回文件树",
+    "backToList": "返回变更列表",
+    "copyContent": "复制内容",
+    "emptyWorkspace": "工作区为空",
+    "gitUntracked": "新增",
+    "gitAdded": "新增",
+    "gitDeleted": "删除",
+    "gitRenamed": "改名",
+    "gitModified": "修改",
+    "gitClean": "工作区没有未提交的变更",
+    "gitNoDiff": "没有可显示的差异"
   },
   "status": {
     "queued": "{count} 条排队"

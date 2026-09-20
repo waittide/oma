@@ -313,9 +313,21 @@
     "terminal": "終端機",
     "close": "關閉面板",
     "noSession": "請先選擇或新建工作階段",
-    "filesHint": "專案檔案樹與預覽將在此顯示。",
-    "changesHint": "Git 變更與 diff 將在此顯示。",
-    "terminalHint": "內建終端機將在此接入。"
+    "terminalHint": "內建終端機將在此接入。",
+    "loading": "正在讀取…",
+    "reload": "重新讀取",
+    "refresh": "重新整理",
+    "backToTree": "返回檔案樹",
+    "backToList": "返回變更清單",
+    "copyContent": "複製內容",
+    "emptyWorkspace": "工作區是空的",
+    "gitUntracked": "新增",
+    "gitAdded": "新增",
+    "gitDeleted": "刪除",
+    "gitRenamed": "改名",
+    "gitModified": "修改",
+    "gitClean": "工作區沒有未提交的變更",
+    "gitNoDiff": "沒有可顯示的差異"
   },
   "status": {
     "queued": "{count} 筆排隊"

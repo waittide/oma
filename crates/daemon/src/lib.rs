@@ -583,6 +583,141 @@ async fn handle_system_prompt(
 }
 
 // =========================================================================
+// Git REST API (/api/git/*)
+// =========================================================================
+
+/// 跑一条 git 命令；工作区不是仓库时给出可读的错误。
+///
+/// 不引入 git 库：这里只要 status 与 diff 两种经典输出，用系统 `git` 既省一份依赖
+/// 又能直接得到与用户终端里一致的结果（含用户自己的 diff 配置）。
+async fn run_git(workspace: &str, args: &[&str]) -> Result<String, (StatusCode, String)> {
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to run git: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        // git 在非仓库目录下的报错很长，转成一句中间件能直接展示的话
+        let message = if stderr.contains("not a git repository") {
+            "Not a git repository".to_string()
+        } else if stderr.is_empty() {
+            format!("git exited with code {:?}", output.status.code())
+        } else {
+            stderr
+        };
+        let status = if message == "Not a git repository" {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        return Err((status, message));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[derive(Deserialize)]
+struct GitWorkspaceQuery {
+    workspace: String,
+}
+
+#[derive(Deserialize)]
+struct GitDiffQuery {
+    workspace: String,
+    /// 相对工作区的路径（不传则整个仓库的 diff）
+    path:      Option<String>,
+}
+
+/// `GET /api/git/status`：当前分支 + 变更文件清单。
+async fn handle_git_status(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<GitWorkspaceQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+
+    // `-z` 用 NUL 分隔项，路径含空格/引号时不必猜转义（与终端输出不同，故不直接展示）
+    let raw = run_git(&query.workspace, &["status", "--porcelain", "-z"]).await?;
+    let branch = run_git(&query.workspace, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .map(|b| b.trim().to_string())
+        // 空仓库（无提交）时 rev-parse 会失败，这不算错误
+        .unwrap_or_else(|_| "(no commits)".to_string());
+
+    let mut files = Vec::new();
+    for record in raw.split('\0').filter(|r| !r.is_empty()) {
+        // porcelain v1 的格式：XY<space>path；重命名还会压一个原路径项但可忽略
+        if record.len() < 4 {
+            continue;
+        }
+        let index_status = record.as_bytes()[0] as char;
+        let worktree_status = record.as_bytes()[1] as char;
+        let path = record[3..].to_string();
+        files.push(serde_json::json!({
+            "path": path,
+            "index": index_status.to_string(),
+            "worktree": worktree_status.to_string(),
+            // 未跟踪：git 不认为它在索引里，界面单独标记
+            "untracked": index_status == '?' && worktree_status == '?',
+        }));
+    }
+
+    Ok(Json(serde_json::json!({
+        "branch": branch,
+        "files": files,
+    })))
+}
+
+/// `GET /api/git/diff?workspace=&path=`：相对 HEAD 的 diff。
+///
+/// 未跟踪文件在 `diff HEAD` 里不会出现，此时改用 `diff --no-index` 把整篇算成新增，
+/// 否则界面上点一个新文件会“什么都看不到”。
+async fn handle_git_diff(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<GitDiffQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+
+    let mut args: Vec<&str> = vec!["diff", "HEAD", "--"];
+    if let Some(path) = query.path.as_deref().filter(|p| !p.is_empty()) {
+        args.push(path);
+    }
+    let diff = run_git(&query.workspace, &args).await?;
+    if !diff.trim().is_empty() {
+        return Ok(Json(serde_json::json!({ "diff": diff })));
+    }
+
+    // HEAD 无差异：可能是未跟踪的新文件
+    let Some(path) = query.path.as_deref().filter(|p| !p.is_empty()) else {
+        return Ok(Json(serde_json::json!({ "diff": "" })));
+    };
+    let target = resolve_path(Path::new(&query.workspace), path);
+    if !target.is_file() {
+        return Ok(Json(serde_json::json!({ "diff": "" })));
+    }
+    let shown = target.to_string_lossy().to_string();
+    // --no-index 在“有差异”时退出码为 1，故不能走 run_git 的成功分支
+    let diff = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(&query.workspace)
+        .args(["diff", "--no-index", "--", "/dev/null", &shown])
+        .output()
+        .await
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    Ok(Json(serde_json::json!({ "diff": diff })))
+}
+
+// =========================================================================
 // 附件上传 / 下载 REST API (/api/sessions/{id}/attachments)
 // =========================================================================
 
@@ -1356,6 +1491,8 @@ pub fn create_router(state: DaemonState) -> Router {
         .route("/api/system-prompt", get(handle_system_prompt))
         .route("/api/tools", get(handle_list_tools))
         .route("/api/skills", get(handle_list_skills))
+        .route("/api/git/status", get(handle_git_status))
+        .route("/api/git/diff", get(handle_git_diff))
         .route(
             "/api/skills/{skill_id}",
             get(handle_get_skill)

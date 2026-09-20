@@ -2,6 +2,7 @@ import { hasToken, resolveUrl, resolveWsUrl, token } from './stores/connection';
 import type {
   ChatMessage,
   ClientConfig,
+  GitStatusResp,
   OmaConfig,
   Palette,
   ServerStatus,
@@ -104,6 +105,16 @@ export const api = {
     ),
   /** 技能编辑器可勾选的工具（内置 + 插件） */
   tools: () => request<ToolInfo[]>('/api/tools'),
+
+  /** 工作区 git 变更（分支 + 文件清单） */
+  gitStatus: (workspace: string) =>
+    request<GitStatusResp>(`/api/git/status?workspace=${encodeURIComponent(workspace)}`),
+
+  /** 单个文件相对 HEAD 的 diff（未跟踪文件按整篇新增展示） */
+  gitDiff: (workspace: string, path: string) =>
+    request<{ diff: string }>(
+      `/api/git/diff?workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}`,
+    ),
 
   /** 当前工作区 + 模型下真正发给厂商的系统提示词（System 面板） */
   systemPrompt: (workspace: string, model: string) => {

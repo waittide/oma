@@ -313,9 +313,21 @@
     "terminal": "ターミナル",
     "close": "パネルを閉じる",
     "noSession": "先にセッションを選択または作成してください",
-    "filesHint": "プロジェクトのファイルツリーとプレビューがここに表示されます。",
-    "changesHint": "Git の変更と diff がここに表示されます。",
-    "terminalHint": "内蔵ターミナルはここに接続されます。"
+    "terminalHint": "内蔵ターミナルはここに接続されます。",
+    "loading": "読み込み中…",
+    "reload": "再読み込み",
+    "refresh": "更新",
+    "backToTree": "ファイルツリーに戻る",
+    "backToList": "変更一覧に戻る",
+    "copyContent": "内容をコピー",
+    "emptyWorkspace": "ワークスペースは空です",
+    "gitUntracked": "新規",
+    "gitAdded": "追加",
+    "gitDeleted": "削除",
+    "gitRenamed": "改名",
+    "gitModified": "変更",
+    "gitClean": "未コミットの変更はありません",
+    "gitNoDiff": "表示できる差分がありません"
   },
   "status": {
     "queued": "{count} 件待機"

@@ -76,6 +76,23 @@ export interface ActiveTurnCatchUp {
   active_tool_call?: ToolCallStartedData | null;
 }
 
+/** Git 变更文件（`GET /api/git/status`） */
+export interface GitFileChange {
+  /** 相对工作区的路径 */
+  path: string;
+  /** porcelain 的索引侧状态字符 */
+  index: string;
+  /** porcelain 的工作区侧状态字符 */
+  worktree: string;
+  /** 未跟踪的新文件 */
+  untracked: boolean;
+}
+
+export interface GitStatusResp {
+  branch: string;
+  files: GitFileChange[];
+}
+
 /** 系统提示词接口返回体（`GET /api/system-prompt`） */
 export interface SystemPromptResp {
   workspace: string;

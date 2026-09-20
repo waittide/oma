@@ -313,9 +313,21 @@
     "terminal": "Terminal",
     "close": "Close panel",
     "noSession": "Select or create a session first",
-    "filesHint": "Project file tree and preview will appear here.",
-    "changesHint": "Git changes and diffs will appear here.",
-    "terminalHint": "The built-in terminal will be wired up here."
+    "terminalHint": "The built-in terminal will be wired up here.",
+    "loading": "Loading…",
+    "reload": "Reload",
+    "refresh": "Refresh",
+    "backToTree": "Back to file tree",
+    "backToList": "Back to changes",
+    "copyContent": "Copy content",
+    "emptyWorkspace": "Workspace is empty",
+    "gitUntracked": "new",
+    "gitAdded": "added",
+    "gitDeleted": "deleted",
+    "gitRenamed": "renamed",
+    "gitModified": "modified",
+    "gitClean": "No uncommitted changes",
+    "gitNoDiff": "No diff to show"
   },
   "status": {
     "queued": "{count} queued"
