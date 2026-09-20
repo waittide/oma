@@ -50,9 +50,14 @@ impl Default for ServerConfig {
 /// 用户目录只放自己的调色板，不需要任何初始化写入。
 ///
 /// `pi-light` / `pi-dark` 为默认：中性灰阶 + 单一强调色，视觉对齐 pi-web。
+/// `mist` / `rose` / `pine` 是 pi-web 的其余三套主题（两个浅色一个深色），
+/// 映射方式与 pi-light / pi-dark 相同（只换强调色家族，语义色沿用同一批）。
 pub const BUILTIN_PALETTES: &[(&str, &str)] = &[
     ("pi-light", include_str!("themes/pi-light.json")),
     ("pi-dark", include_str!("themes/pi-dark.json")),
+    ("mist", include_str!("themes/mist.json")),
+    ("rose", include_str!("themes/rose.json")),
+    ("pine", include_str!("themes/pine.json")),
     ("latte", include_str!("themes/latte.json")),
     ("frappe", include_str!("themes/frappe.json")),
     ("macchiato", include_str!("themes/macchiato.json")),
@@ -1016,18 +1021,26 @@ mod tests {
     #[test]
     fn test_bundled_palettes_are_valid() {
         let palettes = PaletteLoader::builtin_all();
-        assert_eq!(palettes.len(), 6, "six bundled palettes expected");
+        assert_eq!(palettes.len(), 9, "nine bundled palettes expected");
         for p in &palettes {
             PaletteLoader::validate_palette(p).unwrap_or_else(|e| panic!("bundled palette {} invalid: {e}", p.id));
             assert_eq!(p.tokens().len(), PALETTE_TOKENS.len());
         }
-        // 浅色/深色基底：pi-light 为默认浅色，latte 为其后的 Catppuccin 浅色
+        // 浅色/深色基底：pi-light 为默认浅色，latte 为其后的 Catppuccin 浅色；
+        // mist / rose 是 pi-web 的两套浅色主题
         let light: Vec<&str> = palettes
             .iter()
             .filter(|p| p.mode == PaletteMode::Light)
             .map(|p| p.id.as_str())
             .collect();
-        assert_eq!(light, vec!["pi-light", "latte"]);
+        assert_eq!(light, vec!["pi-light", "mist", "rose", "latte"]);
+
+        let dark: Vec<&str> = palettes
+            .iter()
+            .filter(|p| p.mode == PaletteMode::Dark)
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(dark, vec!["pi-dark", "pine", "frappe", "macchiato", "mocha"]);
     }
 
     #[test]
