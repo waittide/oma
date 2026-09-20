@@ -14,6 +14,7 @@ import {
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu';
+import { UiButton, UiIconButton } from '@waittide/ui';
 import OButton from './ui/OButton.vue';
 import OInput from './ui/OInput.vue';
 import OSelect from './ui/OSelect.vue';
@@ -183,14 +184,14 @@ const deleteTarget = computed(
       <OInput v-model="store.query.value" :placeholder="t('searchPlaceholder')">
         <template #prefix><LuSearch :size="13" /></template>
         <template v-if="store.query.value" #suffix>
-          <button
-            type="button"
+          <UiIconButton
             class="clear-btn"
-            :aria-label="t('clearSearch')"
+            size="sm"
+            :label="t('clearSearch')"
             @click="store.query.value = ''"
           >
             <LuX :size="13" />
-          </button>
+          </UiIconButton>
         </template>
       </OInput>
       <OSelect
@@ -209,7 +210,13 @@ const deleteTarget = computed(
       <section v-for="g in groups" :key="g.workspace" class="group">
         <div class="group-head">
           <OTooltip :label="g.workspace" align="start" block>
-            <button type="button" class="gh-toggle" @click="store.toggleGroup(g.workspace)">
+            <UiButton
+              variant="ghost"
+              tone="neutral"
+              block
+              class="gh-toggle"
+              @click="store.toggleGroup(g.workspace)"
+            >
               <LuChevronRight
                 :size="14"
                 class="caret"
@@ -218,25 +225,30 @@ const deleteTarget = computed(
               <LuFolder :size="14" class="g-icon" />
               <span class="g-label">{{ g.label }}</span>
               <span class="g-count">{{ g.items.length }}</span>
-            </button>
+            </UiButton>
           </OTooltip>
           <div class="gh-actions">
             <OTooltip :label="t('addSessionHere')" align="end">
-              <button type="button" class="gh-add" :aria-label="t('addSessionHere')" @click="openNewFor(g.workspace)">
+              <UiIconButton
+                class="gh-add"
+                size="sm"
+                :label="t('addSessionHere')"
+                @click="openNewFor(g.workspace)"
+              >
                 <LuPlus :size="14" />
-              </button>
+              </UiIconButton>
             </OTooltip>
             <!-- 有会话时清空会话；已空的工作区则直接删除该工作区分组 -->
             <OTooltip :label="g.items.length > 0 ? t('clearWorkspace') : t('deleteWorkspace')" align="end">
-              <button
-                type="button"
+              <UiIconButton
                 class="gh-add danger"
-                :aria-label="g.items.length > 0 ? t('clearWorkspace') : t('deleteWorkspace')"
+                size="sm"
+                :label="g.items.length > 0 ? t('clearWorkspace') : t('deleteWorkspace')"
                 @click="g.items.length > 0 ? (clearTarget = g) : (removeTarget = g)"
               >
                 <LuEraser v-if="g.items.length > 0" :size="14" />
                 <LuTrash2 v-else :size="14" />
-              </button>
+              </UiIconButton>
             </OTooltip>
           </div>
         </div>
@@ -267,24 +279,24 @@ const deleteTarget = computed(
               </OTooltip>
               <span class="s-actions">
                 <OTooltip :label="t('rename')" align="end">
-                  <button
-                    type="button"
+                  <UiIconButton
                     class="mini"
-                    :aria-label="t('rename')"
+                    size="sm"
+                    :label="t('rename')"
                     @click.stop="startRename(s.session_id, s.title)"
                   >
                     <LuPencil :size="12" />
-                  </button>
+                  </UiIconButton>
                 </OTooltip>
                 <OTooltip :label="t('deleteAria')" align="end">
-                  <button
-                    type="button"
+                  <UiIconButton
                     class="mini danger"
-                    :aria-label="t('deleteAria')"
+                    size="sm"
+                    :label="t('deleteAria')"
                     @click.stop="confirmDelete = s.session_id"
                   >
                     <LuTrash2 :size="12" />
-                  </button>
+                  </UiIconButton>
                 </OTooltip>
               </span>
             </template>
@@ -294,9 +306,9 @@ const deleteTarget = computed(
     </nav>
 
     <footer class="foot">
-      <button type="button" class="foot-item" @click="emit('openSettings')">
+      <UiButton variant="ghost" tone="neutral" block class="foot-item" @click="emit('openSettings')">
         <LuSettings :size="14" /> {{ t('settings') }}
-      </button>
+      </UiButton>
     </footer>
 
     <OModal :open="showNewWorkspace" :title="t('newWorkspace')" width="480px" @close="showNewWorkspace = false">
@@ -432,8 +444,9 @@ const deleteTarget = computed(
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 20px !important;
+  height: 20px !important;
+  min-width: 0 !important;
   padding: 0;
   border: none;
   border-radius: 5px;
@@ -480,6 +493,7 @@ const deleteTarget = computed(
   gap: 6px;
   flex: 1;
   min-width: 0;
+  height: auto;
   padding: 10px 4px;
   border: none;
   border-radius: 6px;
@@ -491,6 +505,16 @@ const deleteTarget = computed(
   cursor: pointer;
   text-align: left;
 }
+.gh-toggle:hover {
+  background: transparent;
+}
+.gh-toggle :deep(.ui-button__label) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
 .gh-actions {
   display: inline-flex;
   align-items: center;
@@ -501,8 +525,9 @@ const deleteTarget = computed(
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 0 !important;
   flex-shrink: 0;
   border: none;
   border-radius: 6px;
@@ -627,8 +652,9 @@ const deleteTarget = computed(
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 22px !important;
+  height: 22px !important;
+  min-width: 0 !important;
   border-radius: 6px;
   background: transparent;
   color: var(--overlay0);
@@ -655,6 +681,8 @@ const deleteTarget = computed(
   align-items: center;
   gap: 8px;
   width: 100%;
+  height: auto;
+  justify-content: flex-start;
   padding: 8px 10px;
   border: none;
   border-radius: 8px;
@@ -663,6 +691,11 @@ const deleteTarget = computed(
   font-family: inherit;
   font-size: 13px;
   cursor: pointer;
+}
+.foot-item :deep(.ui-button__label) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .foot-item:hover {
   background: var(--surface-hover);
