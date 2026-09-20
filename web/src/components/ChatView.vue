@@ -29,6 +29,7 @@ import ContextGauge from './ContextGauge.vue';
 import HistoryTree from './HistoryTree.vue';
 import * as chat from '../stores/chat';
 import { activeSession, activeSessionId, requestNewSession } from '../stores/sessions';
+import * as layout from '../stores/layout';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{ online: boolean }>();
@@ -40,7 +41,6 @@ const { t } = useTranslations('chat');
 const modelGroups = computed(() => toModelSelectGroups(chat.modelCatalog.value));
 const modelLabel = computed(() => modelSelectorLabel(chat.modelCatalog.value, chat.activeModel.value));
 const { t: tc } = useTranslations('common');
-const treeOpen = ref(false);
 
 // 草稿与分叉目标放在 store 里：历史树切换对话时需回填输入框
 const draft = chat.draft;
@@ -328,30 +328,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
 
 <template>
   <div class="chat">
-    <header class="top">
-      <div class="top-left">
-        <span class="session-title">{{ activeSession?.title ?? t('noSession') }}</span>
-        <UiTooltip :content="activeSession?.workspace ?? ''" align="start" block placement="bottom">
-          <span class="ws-path">{{ activeSession?.workspace }}</span>
-        </UiTooltip>
-      </div>
-      <div v-if="activeSessionId" class="top-right">
-        <UiTooltip :content="chat.connected.value ? t('connected') : t('disconnected')" align="end" placement="bottom">
-          <span class="dot" :class="chat.connected.value ? 'ok' : 'off'" />
-        </UiTooltip>
-        <UiTooltip :content="t('historyTree')" align="end" placement="bottom">
-          <UiIconButton
-            class="icon-ghost"
-            size="sm"
-            :label="t('historyTree')"
-            @click="treeOpen = true"
-          >
-            <LuListTree :size="14" />
-          </UiIconButton>
-        </UiTooltip>
-      </div>
-    </header>
-
     <div class="stream-wrap">
       <div ref="scrollEl" class="stream" @scroll.passive="onScroll">
         <div v-if="!activeSessionId" class="hero">
@@ -590,7 +566,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         </div>
       </div>
     </footer>
-    <HistoryTree :open="treeOpen" @close="treeOpen = false" />
+    <HistoryTree :open="layout.treeOpen.value" @close="layout.setTreeOpen(false)" />
   </div>
 </template>
 
@@ -603,75 +579,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   background: var(--paper);
   /* 消息、审批条、输入框共用同一列宽，保证左右边缘对齐 */
   --chat-col: 1120px;
-}
-.top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  height: 48px;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--paper);
-  flex-shrink: 0;
-}
-.top-left {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.session-title {
-  font-size: 14px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ws-path {
-  font-size: 11.5px;
-  color: var(--overlay0);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-}
-.top-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 99px;
-  flex-shrink: 0;
-}
-.dot.ok {
-  background: var(--success);
-}
-.icon-ghost {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px !important;
-  height: 26px !important;
-  min-width: 0 !important;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    color 0.15s ease;
-}
-.icon-ghost:hover {
-  background: var(--surface-hover);
-  color: var(--ink);
-}
-.dot.off {
-  background: var(--overlay0);
 }
 .stream-wrap {
   position: relative;

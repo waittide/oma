@@ -101,7 +101,9 @@
     "queuedCount": "排隊 {count} 條",
     "queuedPending": "排隊中",
     "contextTip": "上下文 {tokens} / {total}（{percent}%）",
-    "contextUnknown": "已用 {tokens} tokens（模型視窗未知）"
+    "contextUnknown": "已用 {tokens} tokens（模型視窗未知）",
+    "toggleSidebar": "展開/收合側欄",
+    "toggleRightPanel": "展開/收合工作面板"
   },
   "blocks": {
     "thinking": "思考",
@@ -294,5 +296,18 @@
   },
   "notify": {
     "turnDone": "任務已完成"
+  },
+  "panel": {
+    "files": "檔案",
+    "changes": "變更",
+    "terminal": "終端機",
+    "close": "關閉面板",
+    "noSession": "請先選擇或新建工作階段",
+    "filesHint": "專案檔案樹與預覽將在此顯示。",
+    "changesHint": "Git 變更與 diff 將在此顯示。",
+    "terminalHint": "內建終端機將在此接入。"
+  },
+  "status": {
+    "queued": "{count} 筆排隊"
   }
 }

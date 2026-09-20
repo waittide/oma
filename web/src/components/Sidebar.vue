@@ -17,6 +17,7 @@ import {
 import { UiButton, UiIconButton, UiInput, UiModal, UiSelect, UiTooltip } from '@waittide/ui';
 import * as store from '../stores/sessions';
 import { activeSessionId } from '../stores/sessions';
+import * as layout from '../stores/layout';
 import type { SessionRecord } from '../types';
 import type { WorkspaceGroup } from '../stores/sessions';
 import { useTranslations } from '../composables/i18n';
@@ -174,7 +175,7 @@ const deleteTarget = computed(
 </script>
 
 <template>
-  <aside class="sidebar">
+  <aside class="sidebar" :style="{ width: layout.sidebarWidth.value + 'px' }">
     <header class="brand">
       <span class="logo"><LuSparkles :size="16" /></span>
       <span class="brand-name">Oma</span>
@@ -408,9 +409,8 @@ const deleteTarget = computed(
 .sidebar {
   display: flex;
   flex-direction: column;
-  width: 280px;
   flex-shrink: 0;
-  background: var(--sidebar);
+  background: var(--surface);
   border-right: 1px solid var(--line);
 }
 .brand {

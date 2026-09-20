@@ -6,6 +6,7 @@
  * 应用不再自带一套令牌或主题样式表。这里只补组件库未覆盖、oma 自己用到的别名。
  */
 :root {
-  --sidebar: var(--mantle, #181825);
-  --shadow: color-mix(in srgb, var(--crust, #11111b) 42%, transparent);
+  /* 侧栏底色：与 pi-web 一致取面板色（--surface ← palette.mantle） */
+  --sidebar: var(--mantle, #242424);
+  --shadow: color-mix(in srgb, var(--crust, #111111) 42%, transparent);
 }

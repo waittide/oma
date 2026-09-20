@@ -101,7 +101,9 @@
     "queuedCount": "{count} queued",
     "queuedPending": "Queued",
     "contextTip": "Context {tokens} / {total} ({percent}%)",
-    "contextUnknown": "{tokens} tokens used (model window unknown)"
+    "contextUnknown": "{tokens} tokens used (model window unknown)",
+    "toggleSidebar": "Toggle sidebar",
+    "toggleRightPanel": "Toggle workspace panel"
   },
   "blocks": {
     "thinking": "Thinking",
@@ -294,5 +296,18 @@
   },
   "notify": {
     "turnDone": "Task completed"
+  },
+  "panel": {
+    "files": "Files",
+    "changes": "Changes",
+    "terminal": "Terminal",
+    "close": "Close panel",
+    "noSession": "Select or create a session first",
+    "filesHint": "Project file tree and preview will appear here.",
+    "changesHint": "Git changes and diffs will appear here.",
+    "terminalHint": "The built-in terminal will be wired up here."
+  },
+  "status": {
+    "queued": "{count} queued"
   }
 }

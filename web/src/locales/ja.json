@@ -101,7 +101,9 @@
     "queuedCount": "{count} 件待機中",
     "queuedPending": "待機中",
     "contextTip": "コンテキスト {tokens} / {total} ({percent}%)",
-    "contextUnknown": "{tokens} トークン使用（モデルの上限は不明）"
+    "contextUnknown": "{tokens} トークン使用（モデルの上限は不明）",
+    "toggleSidebar": "サイドバーの表示切替",
+    "toggleRightPanel": "ワークスペースパネルの表示切替"
   },
   "blocks": {
     "thinking": "思考",
@@ -294,5 +296,18 @@
   },
   "notify": {
     "turnDone": "タスクが完了しました"
+  },
+  "panel": {
+    "files": "ファイル",
+    "changes": "変更",
+    "terminal": "ターミナル",
+    "close": "パネルを閉じる",
+    "noSession": "先にセッションを選択または作成してください",
+    "filesHint": "プロジェクトのファイルツリーとプレビューがここに表示されます。",
+    "changesHint": "Git の変更と diff がここに表示されます。",
+    "terminalHint": "内蔵ターミナルはここに接続されます。"
+  },
+  "status": {
+    "queued": "{count} 件待機"
   }
 }

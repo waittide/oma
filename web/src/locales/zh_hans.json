@@ -101,7 +101,9 @@
     "queuedCount": "排队 {count} 条",
     "queuedPending": "排队中",
     "contextTip": "上下文 {tokens} / {total}（{percent}%）",
-    "contextUnknown": "已用 {tokens} tokens（模型窗口未知）"
+    "contextUnknown": "已用 {tokens} tokens（模型窗口未知）",
+    "toggleSidebar": "展开/收起侧栏",
+    "toggleRightPanel": "展开/收起工作面板"
   },
   "blocks": {
     "thinking": "思考",
@@ -294,5 +296,18 @@
   },
   "notify": {
     "turnDone": "任务已完成"
+  },
+  "panel": {
+    "files": "文件",
+    "changes": "变更",
+    "terminal": "终端",
+    "close": "关闭面板",
+    "noSession": "请先选择或新建会话",
+    "filesHint": "项目文件树与预览将在此显示。",
+    "changesHint": "Git 变更与 diff 将在此显示。",
+    "terminalHint": "内置终端将在此接入。"
+  },
+  "status": {
+    "queued": "{count} 条排队"
   }
 }
