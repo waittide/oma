@@ -4,7 +4,8 @@
     "create": "Create",
     "delete": "Delete",
     "save": "Save",
-    "close": "Close"
+    "close": "Close",
+    "new": "New"
   },
   "sidebar": {
     "newSession": "New session",
@@ -38,7 +39,10 @@
     "sortCreatedAsc": "Created (oldest first)",
     "sortCreatedDesc": "Created (newest first)",
     "sortUpdatedAsc": "Modified (oldest first)",
-    "sortUpdatedDesc": "Modified (newest first)"
+    "sortUpdatedDesc": "Modified (newest first)",
+    "allWorkspaces": "All projects",
+    "models": "Models",
+    "skills": "Skills"
   },
   "sessions": {
     "created": "Session created",

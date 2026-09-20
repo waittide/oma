@@ -15,7 +15,13 @@ import { reset as resetChat } from './stores/chat';
 import * as layout from './stores/layout';
 
 const settingsOpen = ref(false);
+const settingsSection = ref<string | undefined>(undefined);
 const online = ref(false);
+
+function openSettings(section?: string) {
+  settingsSection.value = section;
+  settingsOpen.value = true;
+}
 
 async function probe() {
   try {
@@ -60,7 +66,7 @@ async function onReconnect() {
 
 <template>
   <div class="shell">
-    <Sidebar v-show="layout.sidebarOpen.value" @open-settings="settingsOpen = true" />
+    <Sidebar v-show="layout.sidebarOpen.value" @open-settings="openSettings" />
     <PanelResizer
       v-if="layout.sidebarOpen.value"
       @resize="(d) => layout.setSidebarWidth(layout.sidebarWidth.value + d)"
@@ -68,7 +74,7 @@ async function onReconnect() {
 
     <main class="main">
       <TopToolbar />
-      <ChatView :online="online" @need-settings="settingsOpen = true" />
+      <ChatView :online="online" @need-settings="openSettings()" />
       <StatusBar />
     </main>
 
@@ -80,6 +86,7 @@ async function onReconnect() {
     <SettingsModal
       :open="settingsOpen"
       :online="online"
+      :initial-section="settingsSection"
       @close="settingsOpen = false"
       @reconnect="onReconnect"
     />

@@ -4,7 +4,8 @@
     "create": "作成",
     "delete": "削除",
     "save": "保存",
-    "close": "閉じる"
+    "close": "閉じる",
+    "new": "新規"
   },
   "sidebar": {
     "newSession": "セッションを作成",
@@ -38,7 +39,10 @@
     "sortCreatedAsc": "作成日時 昇順",
     "sortCreatedDesc": "作成日時 降順",
     "sortUpdatedAsc": "更新日時 昇順",
-    "sortUpdatedDesc": "更新日時 降順"
+    "sortUpdatedDesc": "更新日時 降順",
+    "allWorkspaces": "すべてのプロジェクト",
+    "models": "モデル",
+    "skills": "スキル"
   },
   "sessions": {
     "created": "セッションを作成しました",

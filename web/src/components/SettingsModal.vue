@@ -39,7 +39,7 @@ import type {
 } from '../types';
 import { useTranslations } from '../composables/i18n';
 
-const props = defineProps<{ open: boolean; online?: boolean }>();
+const props = defineProps<{ open: boolean; online?: boolean; initialSection?: string }>();
 const emit = defineEmits<{ close: []; reconnect: [] }>();
 
 const { t } = useTranslations('settings');
@@ -53,6 +53,12 @@ type SectionId =
   | 'providers'
   | 'skills';
 const section = ref<SectionId>('connection');
+
+const SECTION_IDS: SectionId[] = ['connection', 'theme', 'language', 'defaults', 'providers', 'skills'];
+
+function isSectionId(value: string | undefined): value is SectionId {
+  return !!value && (SECTION_IDS as string[]).includes(value);
+}
 
 /** 参照 opencode 设置弹窗：导航按分组小标题聚类，底部展示应用版本。 */
 const navGroups = computed(() => [
@@ -438,6 +444,10 @@ watch(
   () => props.open,
   async (v) => {
     if (!v) return;
+    // 从侧栏快捷入口进入时直接落到目标页（模型 / 技能 / 连接）
+    if (isSectionId(props.initialSection) && section.value !== props.initialSection) {
+      section.value = props.initialSection;
+    }
     if (!config.value) await loadConfig();
     if (config.value) {
       defaults.model = config.value.default_model;

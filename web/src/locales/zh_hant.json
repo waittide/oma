@@ -4,7 +4,8 @@
     "create": "建立",
     "delete": "刪除",
     "save": "儲存",
-    "close": "關閉"
+    "close": "關閉",
+    "new": "新增"
   },
   "sidebar": {
     "newSession": "新增會話",
@@ -38,7 +39,10 @@
     "sortCreatedAsc": "建立時間正序",
     "sortCreatedDesc": "建立時間倒序",
     "sortUpdatedAsc": "修改時間正序",
-    "sortUpdatedDesc": "修改時間倒序"
+    "sortUpdatedDesc": "修改時間倒序",
+    "allWorkspaces": "全部工作區",
+    "models": "模型",
+    "skills": "技能"
   },
   "sessions": {
     "created": "會話已建立",

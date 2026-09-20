@@ -4,6 +4,7 @@ import {
   LuChevronRight,
   LuEraser,
   LuFolder,
+  LuBoxes,
   LuLoader,
   LuMessageSquare,
   LuPencil,
@@ -22,7 +23,7 @@ import type { SessionRecord } from '../types';
 import type { WorkspaceGroup } from '../stores/sessions';
 import { useTranslations } from '../composables/i18n';
 
-const emit = defineEmits<{ openSettings: [] }>();
+const emit = defineEmits<{ (e: 'openSettings', section?: string): void }>();
 
 /**
  * 本地指令：挂载时聚焦内部输入框。
@@ -66,6 +67,21 @@ watch(store.newSessionRequested, (v) => {
 });
 
 const groups = store.groups;
+
+/** 搜索框默认收起（对齐 pi-web：顶栏只留一个搜索图标）。 */
+const searchOpen = ref(false);
+/** 项目过滤：空串 = 全部工作区（保留分组展示）。 */
+const projectFilter = ref('');
+
+const projectOptions = computed(() => [
+  { value: '', label: t('allWorkspaces') },
+  ...groups.value.map((g) => ({ value: g.workspace, label: g.label })),
+]);
+
+/** 选定了项目就只展示该项目；否则保持既有分组。 */
+const visibleGroups = computed(() =>
+  projectFilter.value ? groups.value.filter((g) => g.workspace === projectFilter.value) : groups.value,
+);
 
 /** 排序下拉项：字段 x 方向共 6 种组合 */
 const sortOptions = computed(() => [
@@ -177,18 +193,40 @@ const deleteTarget = computed(
 <template>
   <aside class="sidebar" :style="{ width: layout.sidebarWidth.value + 'px' }">
     <header class="brand">
-      <span class="logo"><LuSparkles :size="16" /></span>
+      <span class="logo"><LuSparkles :size="15" /></span>
       <span class="brand-name">Oma</span>
+      <span class="brand-spacer" />
+      <UiTooltip :content="t('newWorkspace')" align="end">
+        <UiButton variant="soft" tone="neutral" size="sm" @click="createWorkspaceDialog">
+          <template #prefix><LuPlus :size="13" /></template>
+          {{ tc('new') }}
+        </UiButton>
+      </UiTooltip>
+      <UiTooltip :content="t('searchPlaceholder')" align="end">
+        <UiIconButton
+          class="ghost-btn"
+          size="sm"
+          :class="{ on: searchOpen }"
+          :label="t('searchPlaceholder')"
+          @click="searchOpen = !searchOpen"
+        >
+          <LuSearch :size="13" />
+        </UiIconButton>
+      </UiTooltip>
     </header>
-    <div class="brand-actions">
-      <UiButton variant="soft" tone="neutral" class="new-ws" @click="createWorkspaceDialog">
-        <template #prefix><LuFolder :size="14" /></template>
-        {{ t('newWorkspace') }}
-      </UiButton>
+
+    <!-- 项目选择：对齐 pi-web 的侧栏顶部项目下拉；选「全部」时保留按工作区分组 -->
+    <div class="project-row">
+      <UiSelect
+        :model-value="projectFilter"
+        :options="projectOptions"
+        style="width: 100%"
+        @update:model-value="(v) => (projectFilter = String(v ?? ''))"
+      />
     </div>
 
     <!-- 搜索与排序：搜工作区名与会话标题，结果仍按工作区分组展示 -->
-    <div class="filters">
+    <div v-if="searchOpen" class="filters">
       <UiInput v-model="store.query.value" :placeholder="t('searchPlaceholder')">
         <template #prefix><LuSearch :size="13" /></template>
         <template v-if="store.query.value" #suffix>
@@ -215,7 +253,7 @@ const deleteTarget = computed(
         {{ noMatch ? t('noMatch') : t('empty') }}
       </div>
 
-      <section v-for="g in groups" :key="g.workspace" class="group">
+      <section v-for="g in visibleGroups" :key="g.workspace" class="group">
         <div class="group-head">
           <UiTooltip :content="g.workspace" align="start" block>
             <UiButton
@@ -314,8 +352,14 @@ const deleteTarget = computed(
     </nav>
 
     <footer class="foot">
-      <UiButton variant="ghost" tone="neutral" block class="foot-item" @click="emit('openSettings')">
-        <LuSettings :size="14" /> {{ t('settings') }}
+      <UiButton variant="ghost" tone="neutral" size="sm" class="foot-item" @click="emit('openSettings', 'providers')">
+        <LuBoxes :size="13" /> {{ t('models') }}
+      </UiButton>
+      <UiButton variant="ghost" tone="neutral" size="sm" class="foot-item" @click="emit('openSettings', 'skills')">
+        <LuSparkles :size="13" /> {{ t('skills') }}
+      </UiButton>
+      <UiButton variant="ghost" tone="neutral" size="sm" class="foot-item" @click="emit('openSettings', 'connection')">
+        <LuSettings :size="13" /> {{ t('settings') }}
       </UiButton>
     </footer>
 
@@ -417,7 +461,24 @@ const deleteTarget = computed(
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 14px 12px;
+  padding: 12px 12px 10px;
+}
+.brand-spacer {
+  flex: 1;
+}
+.ghost-btn {
+  width: 26px !important;
+  height: 26px !important;
+  color: var(--muted);
+}
+.ghost-btn:hover,
+.ghost-btn.on {
+  background: var(--surface-hover);
+  color: var(--ink);
+}
+/* 项目选择行：与 pi-web 一致占满侧栏宽度 */
+.project-row {
+  padding: 0 12px 8px;
 }
 .logo {
   display: inline-flex;
@@ -680,17 +741,20 @@ const deleteTarget = computed(
   color: var(--danger);
 }
 .foot {
-  padding: 10px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 8px 10px;
   border-top: 1px solid var(--line);
 }
 .foot-item {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: auto;
-  justify-content: flex-start;
-  padding: 8px 10px;
+  gap: 6px;
+  height: 26px;
+  justify-content: center;
+  padding: 0 8px;
   border: none;
   border-radius: 8px;
   background: transparent;
