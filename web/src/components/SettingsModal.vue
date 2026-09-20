@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
-import { toast } from '@waittide/ui';
+import { toast, UiButton, UiIconButton, UiTextarea } from '@waittide/ui';
 import {
   LuCheck,
   LuChevronRight,
@@ -1337,17 +1337,19 @@ function pickLocale(v: Locale) {
       <nav class="nav">
         <div v-for="g in navGroups" :key="g.title" class="nav-group">
           <span class="nav-title">{{ g.title }}</span>
-          <button
+          <UiButton
             v-for="s in g.items"
             :key="s.id"
-            type="button"
+            variant="ghost"
+            tone="neutral"
+            block
             class="nav-item"
             :class="{ active: section === s.id }"
             @click="section = s.id"
           >
             <component :is="s.icon" :size="14" />
             <span>{{ s.label }}</span>
-          </button>
+          </UiButton>
         </div>
         <div class="nav-foot">
           <span class="nav-foot-name">Oma</span>
@@ -1384,14 +1386,14 @@ function pickLocale(v: Locale) {
                   <span class="conn-name">{{ c.name }}</span>
                   <span class="conn-url">{{ c.url }}</span>
                 </span>
-                <button
-                  type="button"
+                <UiIconButton
                   class="conn-del"
-                  :aria-label="tc('delete')"
+                  size="sm"
+                  :label="tc('delete')"
                   @click.stop="removeConnection(c.name)"
                 >
                   <LuTrash2 :size="13" />
-                </button>
+                </UiIconButton>
               </div>
             </div>
 
@@ -1514,9 +1516,11 @@ function pickLocale(v: Locale) {
                       :label="t(`accentNames.${a}`)"
                       :align="i % 7 === 0 ? 'start' : i % 7 === 6 ? 'end' : 'center'"
                     >
-                      <button
-                        type="button"
+                      <UiIconButton
                         class="dot"
+                        round="circle"
+                        size="sm"
+                        :label="t(`accentNames.${a}`)"
                         :class="{ active: a === accent }"
                         :style="{ '--dot-color': `var(--${a})` }"
                         @click="accent = a"
@@ -1653,16 +1657,17 @@ function pickLocale(v: Locale) {
           <div class="pane-scroll">
             <div class="tabs-row">
               <div class="tabs">
-                <button
+                <UiButton
                   v-for="d in providerDrafts"
                   :key="d.uid"
-                  type="button"
+                  variant="ghost"
+                  tone="neutral"
                   class="tab"
                   :class="{ active: d.uid === activeProviderUid }"
                   @click="activeProviderUid = d.uid"
-                >
+                  >
                   {{ d.name || t('providerName') }}
-                </button>
+                  </UiButton>
               </div>
               <div class="tabs-actions">
                 <OButton size="sm" variant="soft" @click="addProvider">
@@ -1712,46 +1717,46 @@ function pickLocale(v: Locale) {
                       @update:model-value="(v) => setApiKey(d, v)"
                     />
                     <OTooltip :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
-                      <button
-                        type="button"
+                      <UiIconButton
                         class="m-del"
-                        :aria-label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
+                        size="sm"
+                        :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
                         @click="toggleKeyVisibility(d)"
                       >
                         <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
                         <LuEye v-else :size="14" />
-                      </button>
+                      </UiIconButton>
                     </OTooltip>
                   </div>
 
                   <!-- 请求头/请求体覆写：默认收起，展开后内容与标签顶格对齐 -->
                   <label class="cfg-label">{{ t('requestOverride') }}</label>
                   <div class="cfg-ctl cfg-stack">
-                    <button
-                      type="button"
+                    <UiButton
+                      variant="ghost"
+                      tone="neutral"
+                      block
                       class="cfg-fold"
-                      :aria-expanded="d.requestOpen"
+                      v-bind="{ 'aria-expanded': d.requestOpen }"
                       @click="d.requestOpen = !d.requestOpen"
-                    >
+                      >
                       <span>{{ t('requestOverrideToggle') }}</span>
                       <LuChevronRight :size="13" class="caret" :class="{ open: d.requestOpen }" />
-                    </button>
+                      </UiButton>
                     <template v-if="d.requestOpen">
                       <p class="cfg-hint">{{ t('requestOverrideHint') }}</p>
                       <label class="cfg-sub-label">{{ t('requestHeaders') }}</label>
-                      <textarea
+                      <UiTextarea
                         v-model="d.headersText"
-                        rows="5"
-                        spellcheck="false"
+                        :rows="5"
                         placeholder='{ "X-Header": "value" }'
-                      />
+                        />
                       <label class="cfg-sub-label">{{ t('requestBody') }}</label>
-                      <textarea
+                      <UiTextarea
                         v-model="d.bodyText"
-                        rows="5"
-                        spellcheck="false"
+                        :rows="5"
                         placeholder='{ "temperature": 0.2 }'
-                      />
+                        />
                     </template>
                   </div>
                 </div>
@@ -1771,9 +1776,9 @@ function pickLocale(v: Locale) {
                 <header class="blk-head">
                   <span class="blk-sub">{{ m.name || m.id || t('modelIndex', { index: mi + 1 }) }}</span>
                   <OTooltip :label="t('removeModel')" align="end">
-                    <button type="button" class="m-del" :aria-label="t('removeModel')" @click="d.models.splice(mi, 1)">
+                    <UiIconButton class="m-del" size="sm" :label="t('removeModel')" @click="d.models.splice(mi, 1)">
                       <LuTrash2 :size="14" />
-                    </button>
+                    </UiIconButton>
                   </OTooltip>
                 </header>
                 <div class="cfg-rows">
@@ -1806,15 +1811,17 @@ function pickLocale(v: Locale) {
                   <template v-if="m.capabilities.includes('thinking')">
                     <label class="cfg-label">{{ t('reasoningMap') }}</label>
                     <div class="cfg-ctl cfg-stack">
-                      <button
-                        type="button"
+                      <UiButton
+                        variant="ghost"
+                        tone="neutral"
+                        block
                         class="cfg-fold"
-                        :aria-expanded="m.reasoningOpen"
+                        v-bind="{ 'aria-expanded': m.reasoningOpen }"
                         @click="m.reasoningOpen = !m.reasoningOpen"
-                      >
+                        >
                         <span>{{ t('reasoningMapToggle') }}</span>
                         <LuChevronRight :size="13" class="caret" :class="{ open: m.reasoningOpen }" />
-                      </button>
+                        </UiButton>
                       <template v-if="m.reasoningOpen">
                         <p class="cfg-hint">{{ t('reasoningMapHint') }}</p>
                         <div class="effort-map">
@@ -1834,31 +1841,31 @@ function pickLocale(v: Locale) {
                   <!-- 模型级请求头/请求体覆写：默认收起 -->
                   <label class="cfg-label">{{ t('requestOverride') }}</label>
                   <div class="cfg-ctl cfg-stack">
-                    <button
-                      type="button"
+                    <UiButton
+                      variant="ghost"
+                      tone="neutral"
+                      block
                       class="cfg-fold"
-                      :aria-expanded="m.requestOpen"
+                      v-bind="{ 'aria-expanded': m.requestOpen }"
                       @click="m.requestOpen = !m.requestOpen"
-                    >
+                      >
                       <span>{{ t('requestOverrideToggle') }}</span>
                       <LuChevronRight :size="13" class="caret" :class="{ open: m.requestOpen }" />
-                    </button>
+                      </UiButton>
                     <template v-if="m.requestOpen">
                       <p class="cfg-hint">{{ t('requestOverrideHint') }}</p>
                       <label class="cfg-sub-label">{{ t('requestHeaders') }}</label>
-                      <textarea
+                      <UiTextarea
                         v-model="m.headersText"
-                        rows="5"
-                        spellcheck="false"
+                        :rows="5"
                         placeholder='{ "X-Header": "value" }'
-                      />
+                        />
                       <label class="cfg-sub-label">{{ t('requestBody') }}</label>
-                      <textarea
+                      <UiTextarea
                         v-model="m.bodyText"
-                        rows="5"
-                        spellcheck="false"
+                        :rows="5"
                         placeholder='{ "temperature": 0.2 }'
-                      />
+                        />
                     </template>
                   </div>
                 </div>
@@ -1878,16 +1885,17 @@ function pickLocale(v: Locale) {
         <section v-else-if="section === 'presets'" class="pane">
           <header class="pane-head">
             <div class="tabs">
-              <button
+              <UiButton
                 v-for="l in presetLayers"
                 :key="l.value"
-                type="button"
+                variant="ghost"
+                tone="neutral"
                 class="tab"
                 :class="{ active: presetLayer === l.value }"
                 @click="presetLayer = l.value"
-              >
+                >
                 {{ l.label }}
-              </button>
+                </UiButton>
             </div>
             <div class="pane-head-actions">
               <OButton size="sm" variant="soft" :disabled="presetLayerReadonly" @click="newPreset">
@@ -1928,16 +1936,17 @@ function pickLocale(v: Locale) {
         <section v-else-if="section === 'skills'" class="pane">
           <header class="pane-head">
             <div class="tabs">
-              <button
+              <UiButton
                 v-for="l in skillScopeOptions"
                 :key="l.value"
-                type="button"
+                variant="ghost"
+                tone="neutral"
                 class="tab"
                 :class="{ active: skillLayer === l.value }"
                 @click="skillLayer = l.value"
-              >
+                >
                 {{ l.label }}
-              </button>
+                </UiButton>
             </div>
             <div class="pane-head-actions">
               <OButton size="sm" variant="soft" @click="newSkill">{{ t('add') }}</OButton>
@@ -1990,9 +1999,9 @@ function pickLocale(v: Locale) {
                     <OInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
                     <ORadio v-model="d.kind" :options="mcpKindOptions" />
                     <OTooltip :label="tc('delete')" align="end">
-                      <button type="button" class="m-del" :aria-label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
+                      <UiIconButton class="m-del" size="sm" :label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
                         <LuTrash2 :size="14" />
-                      </button>
+                      </UiIconButton>
                     </OTooltip>
                   </div>
                   <div class="fields">
@@ -2099,7 +2108,7 @@ function pickLocale(v: Locale) {
       <div class="field">
         <label>{{ t('skillContent') }}</label>
         <div class="skill-content-box">
-          <textarea v-model="presetEdit.body" rows="12" spellcheck="false" :disabled="presetEdit.readonly" />
+          <UiTextarea v-model="presetEdit.body" :rows="12" :disabled="presetEdit.readonly" class="skill-content-input" />
         </div>
         <p v-if="presetEdit.readonly" class="muted">{{ t('presetReadonly') }}</p>
       </div>
@@ -2148,7 +2157,7 @@ function pickLocale(v: Locale) {
       <div class="field">
         <label>{{ t('skillContent') }}</label>
         <div class="skill-content-box">
-          <textarea v-model="skillEdit.body" rows="12" spellcheck="false" :disabled="skillEdit.readonly" />
+          <UiTextarea v-model="skillEdit.body" :rows="12" :disabled="skillEdit.readonly" class="skill-content-input" />
         </div>
         <p v-if="skillEdit.readonly" class="muted">{{ t('skillReadonly') }}</p>
       </div>
@@ -2271,10 +2280,17 @@ function pickLocale(v: Locale) {
   font-family: inherit;
   font-size: 13px;
   text-align: left;
+  height: auto;
+  justify-content: flex-start;
   cursor: pointer;
   transition:
     background-color 0.12s ease,
     color 0.12s ease;
+}
+.nav-item :deep(.ui-button__label) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 .nav-item:hover {
   background: var(--surface-hover);
@@ -2372,9 +2388,14 @@ function pickLocale(v: Locale) {
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
+  height: auto;
   transition:
     background-color 0.15s ease,
     color 0.15s ease;
+}
+.tab :deep(.ui-button__label) {
+  display: inline-flex;
+  align-items: center;
 }
 .tab:hover {
   color: var(--ink);
@@ -2640,7 +2661,7 @@ function pickLocale(v: Locale) {
 .skill-content-box:focus-within {
   border-color: var(--accent);
 }
-.skill-content-box textarea {
+.skill-content-box :deep(textarea) {
   display: block;
   width: 100%;
   min-height: 220px;
@@ -2662,14 +2683,15 @@ function pickLocale(v: Locale) {
   justify-content: start;
 }
 .dot {
-  width: 16px;
-  height: 16px;
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 0 !important;
   padding: 0;
   border: none;
-  border-radius: 99px;
+  border-radius: 99px !important;
   /* 用独立变量名：--dot 与类名同名容易被误当作类选择器，
      也会和调色板令牌的命名空间混在一起 */
-  background: var(--dot-color);
+  background: var(--dot-color) !important;
   cursor: pointer;
   transition:
     box-shadow 0.12s ease,
@@ -2836,10 +2858,18 @@ function pickLocale(v: Locale) {
   font-family: inherit;
   font-size: 12.5px;
   text-align: left;
+  height: auto;
   cursor: pointer;
   transition:
     border-color 0.15s ease,
     color 0.15s ease;
+}
+.cfg-fold :deep(.ui-button__label) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
 }
 .cfg-fold:hover {
   border-color: var(--overlay0);
@@ -2859,7 +2889,7 @@ function pickLocale(v: Locale) {
   color: var(--text-tertiary);
 }
 /* 请求头/请求体文本域：默认即顶格换行，不引入额外内缩 */
-.cfg-ctl.cfg-stack > textarea {
+.cfg-ctl.cfg-stack :deep(textarea) {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--control-border);
@@ -2872,7 +2902,7 @@ function pickLocale(v: Locale) {
   resize: vertical;
   transition: border-color 0.15s ease;
 }
-.cfg-ctl.cfg-stack > textarea:focus {
+.cfg-ctl.cfg-stack :deep(textarea:focus) {
   outline: none;
   border-color: var(--accent);
 }
