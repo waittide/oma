@@ -1,18 +1,16 @@
 # Oma 多类型多客户端协同 Agent 技术规格书 (Technical Specification)
 
-> 版本：v2.2
-> 状态：Implementation Verified（文档与代码同步；差异项见文末）
+> 版本：v2.4
+> 状态：Implementation Verified（文档与代码同步）
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
 
-> **v2.2 变更（向 pi 对齐，移除 pi 内核没有的能力）**：
-> 本文档部分小节描述的能力已被删除，阅读时以本节为准：
-> - 熔断器（原 6.3 节）已移除
-> - 提问工具 `ask`（AskPanel / AskRequested / AskResponse）已移除
-> - 工具审批系统（审批模式 / 白名单 / 审批仲裁，原 6.4 节）已移除
-> - 内置 MCP 客户端（`crates/mcp` 与 `mcp_servers` 配置）已移除
-> - 子代理 `task` 工具与 Agent 预设（内置 5 套模板 / `/api/presets`）已移除，
->   系统提示词改为单一内置常量；事件中的 `subagent_id` 字段同步删除
-> - 工具集对齐 pi：`shell` 更名为 `bash`，新增 `ls` / `find` / `grep`
+> **v2.4 变更（向 pi 全面对齐）**：
+> - **工具实现方式**：`find` / `grep` 不再自研文件遍历，改为调用外部 `fd` / `ripgrep`
+>   （缺失时自动下载到 `<数据目录>/bin`，`OMA_OFFLINE=1` 可禁用）；工具输出截断统一为
+>   行数（2000）+ 字节（50KB）双上限，各工具条数限额与提示文案对齐 pi
+> - **能力裁剪**（pi 内核不内置，已删除）：熔断器、`ask` 提问工具、工具审批系统、
+>   内置 MCP 客户端、子代理 `task` 工具与 Agent 预设；系统提示词改为单一内置常量
+> - **工具集**：`shell` 更名为 `bash`，工具共 7 个（`bash` / `edit` / `find` / `grep` / `ls` / `read` / `write`）
 
 ---
 
@@ -48,18 +46,17 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  │  - Session Room Dispatcher & Connection Lifecycle Manager         │  │
 │  │  - Per-Session Command FIFO Queue & Cancel Cascader               │  │
 │  │  - Event Broadcaster (tokio::broadcast + In-memory Catch-Up)      │  │
-│  │  - Approval Arbiter (First-Response-Wins + 120s Auto-Deny)        │  │
 │  └─────────────────────────────────┬─────────────────────────────────┘  │
 │                                    │                                    │
 │  ┌─────────────────────────────────▼─────────────────────────────────┐  │
 │  │               Agent Runtime Engine & Subsystems                   │  │
 │  │  - oma-provider: LLM Streaming Normalization & Deep Merge         │  │
 │  │  - oma-storage:  JSONL Session Tree (pi-style id/parentId)         │  │
-│  │  - oma-tool:     6 Tools (read, write, edit, shell, task, ask)    │  │
-│  │  - oma-mcp:      MCP Client (stdio & HTTP POST, namespaced)       │  │
+│  │  - oma-tool:     7 Tools (read/write/edit/bash/ls/find/grep)      │  │
 │  │  - oma-plugin:   QuickJS Plugins (tools/commands/hooks)          │  │
-│  │  - oma-config:   JSON Config & Bundled Agent Templates             │  │
+│  │  - oma-config:   JSON Config & Built-in System Prompt             │  │
 │  │  - oma-contract: Shared Wire Protocol, Events, Data Models        │  │
+│  │  - external:     fd / ripgrep（find / grep 的后端，缺失时自动安装）   │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -71,16 +68,15 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | `crates/contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
 | `crates/storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）与 `attachments/` 目录；同会话写锁串行化。 |
 | `crates/provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
-| `crates/tool` | 内置 6 大工具（`read`, `write`, `edit` 原子替换补丁, `shell` 进程组守卫, `task` 子任务委托, `ask` 歧义提问），含输出截断与工具白名单。 |
-| `crates/mcp` | MCP 客户端，支持本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），按 `mcp__{server}__{tool}` 统一命名空间注册。 |
+| `crates/tool` | 内置 7 大工具（`read`, `write`, `edit` 原子替换补丁, `bash` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含 pi 对齐的输出截断与工具集定义。 |
 | `crates/plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API（文件/命令/日志）由 Rust 侧白名单桥接并限制在 workspace 内。 |
-| `crates/config` | 配置文件 `settings.json` 解析，内置 5 大 Agent 模板（`include_str!`）与本地/项目级覆盖、环境块动态注入。 |
-| `crates/runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、熔断器、70% 阈值两阶段上下文压缩与内存审批白名单。 |
+| `crates/config` | 配置文件 `settings.json` / `models.json` 解析、单一内置系统提示词（`include_str!`）与环境块/技能目录注入、调色板加载、数据目录定位。 |
+| `crates/runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、70% 阈值两阶段上下文压缩。 |
 | `crates/daemon` | 基于 Axum 的 HTTP REST 与 WebSocket 网关、Bearer Token 鉴权中间件、静态路由与 CORS。 |
-| `crates/client` | 纯 Rust 客户端 SDK：`OmaClient` 封装 WebSocket 握手/事件流/指令与审批，`SessionApi` 提供 REST 会话管理。 |
-| `crates/tui` | 基于 Ratatui 0.30 的终端交互客户端（流式渲染、审批弹窗、CJK 折行），由 `oma tui` 驱动。 |
+| `crates/client` | 纯 Rust 客户端 SDK：`OmaClient` 封装 WebSocket 握手/事件流/指令，`SessionApi` 提供 REST 会话管理。 |
+| `crates/tui` | 基于 Ratatui 0.30 的终端交互客户端（流式渲染、CJK 折行），由 `oma tui` 驱动。 |
 | `crates/bin` | 统一命令行可执行文件 `oma`，集成 `oma daemon`、`oma web`、`oma tui` 等子命令。 |
-| `web/` | 纯手写原生 Vue 3 + TypeScript + 手写 CSS（零外部 UI/CSS 库）的 Web 协同客户端。 |
+| `web/` | Vue 3 + TypeScript 的 Web 协同客户端；控件全部来自内部组件库 `@waittide/ui`（不用任何第三方 UI 框架）。 |
 
 ---
 
@@ -90,7 +86,8 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 - **默认监听地址**：`127.0.0.1:17431`；支持 `--addr 0.0.0.0:17431` 供局域网与远程服务器接入。
 - **单端口统一路由**：
   - `/ws`：双向 WebSocket（承载 `ClientMessage` / `ServerMessage` JSON 协议，基于 `session_id` 自动加入对应 Room）；
-  - `/api/*`：HTTP REST 接口（会话 CRUD、消息回放、状态探测、文件树、Diff 读取、附件上传）；
+  - `/api/*`：HTTP REST 接口（会话 CRUD、消息回放、状态探测、文件树与文件内容、
+    工具/技能清单、配置与调色板、附件上传与下载）；
   - Daemon 保持 Headless：不内置也不直出任何前端资产，只提供 API；
     界面统一由 `oma web` 提供（见 §9.1）。
 
@@ -183,7 +180,7 @@ pub struct ChatMessage {
 文件首行为会话头（不参与树）：
 
 ```json
-{"type":"session","version":3,"id":"<session_id>","timestamp":"2026-09-19T00:00:00.000Z","cwd":"/path/to/project","model":"p/m","agent":"task","approvalMode":"normal","reasoningLevel":"medium"}
+{"type":"session","version":3,"id":"<session_id>","timestamp":"2026-09-19T00:00:00.000Z","cwd":"/path/to/project","model":"p/m","reasoningLevel":"medium"}
 ```
 
 其后每行一个条目，靠 `id`/`parentId` 形成树（`parentId: null` 为根），
@@ -199,8 +196,7 @@ pub struct ChatMessage {
 
 `custom` 条目的 `customType`：
 - `oma.leaf`：当前叶子（`data.leafId`），分支切换与删除子树后显式落盘；
-- `oma.context_usage`：上下文占用（`data.tokens/contextLen/covered`）；
-- `oma.settings`：agent 与审批模式。
+- `oma.context_usage`：上下文占用（`data.tokens/contextLen/covered`）。
 
 消息条目示例：
 
@@ -263,13 +259,6 @@ pub enum ClientMessage {
     Command {
         command: AgentCommand,
     },
-    Approval {
-        response: ApprovalResponse,
-    },
-    /// 提问回答（ask 工具）；`is_cancelled = true` 表示跳过作答
-    Ask {
-        response: AskResponse,
-    },
     Cancel {},
 }
 
@@ -284,12 +273,6 @@ pub enum AgentCommand {
     SetModel {
         model: String, // 格式: "provider/model"
     },
-    SetAgent {
-        agent: String, // 切换预设 Agent (如 "task", "plan", "review")
-    },
-    SetApprovalMode {
-        mode: ApprovalMode,
-    },
     /// 设置当前会话的推理等级（必须在 REASONING_LEVELS 内，空串 = 未设置）
     SetReasoningLevel {
         level: String,
@@ -302,29 +285,10 @@ pub enum AgentCommand {
         leaf_message_id: String,
     },
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApprovalResponse {
-    pub request_id: String,
-    pub decision:   ApprovalDecision,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalDecision {
-    AllowOnce,
-    AllowSession,
-    Deny,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalMode {
-    Normal,     // Shell/危险操作弹窗确认，读写放行
-    Strict,     // 所有写文件与命令执行均需确认
-    Auto,       // 全自动免确认
-}
 ```
+
+> 上行只有「连接、命令、取消」三类：工具审批与提问已被移除（见 v2.4 变更），
+> 需要这类交互时应以插件/扩展形式实现，内核不再内建。
 
 ### 4.3 服务端推送消息 (`ServerMessage` & `AgentEvent`)
 
@@ -333,7 +297,7 @@ pub enum ApprovalMode {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ServerMessage {
     Ready { ready: Box<Ready> },   // 载荷内嵌两套完整调色板，体积远大于其他变体
-    Event { event: AgentEvent },
+    Event { event: Box<AgentEvent> },
     Error { message: String },
 }
 
@@ -343,13 +307,10 @@ pub struct Ready {
     pub session_id:       String,
     pub workspace:        String,
     pub active_model:     String,
-    pub active_agent:     String,
-    pub approval_mode:    ApprovalMode,
+    /// 当前会话的推理等级（空 = 未设置）
     pub reasoning_level:  String,
     pub current_leaf_id:  Option<String>,
-    pub model_catalog:    std::collections::BTreeMap<String, Vec<ModelInfo>>,
-    pub agents:           Vec<AgentSummary>,
-    pub mcp_summaries:    Vec<McpServerSummary>,
+    pub model_catalog:    BTreeMap<String, Vec<ModelInfo>>,
     pub context_usage:    Option<ContextUsage>,
     pub active_theme:     ResolvedTheme,   // 已解析主题（两套完整调色板）
 }
@@ -384,92 +345,20 @@ pub struct ModelInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentSummary {
-    pub id:          String,
-    pub name:        String,
-    pub description: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveTurnCatchUp {
     pub turn_id:              String,
     pub accumulated_thinking: String,
     pub accumulated_text:     String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tool_call:     Option<ToolCallStartedData>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_approval:     Option<PermissionRequestedData>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_ask:          Option<AskRequestedData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallStartedData {
-    pub call_id:     String,
+    pub call_id:   String,
     /// 被调用的工具名
-    pub tool_name:   String,
-    pub input:       serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PermissionRequestedData {
-    pub request_id: String,
-    /// 待执行的工具名
-    pub tool_name:  String,
-    /// 工具入参原文；与 ToolCallStartedData.input 同为结构化 JSON
-    pub input:      serde_json::Value,
-}
-
-/// ask 工具的提问载荷
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AskRequestedData {
-    pub request_id: String,
-    pub questions:  Vec<AskQuestion>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AskQuestion {
-    pub id:          String,
-    pub question:    String,
-    pub options:     Vec<AskOption>,
-    /// true = 多选（复选），false = 单选
-    #[serde(default)]
-    pub is_multi:    bool,
-    /// 推荐选项下标，供界面标注默认值；越界则忽略
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recommended: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AskOption {
-    pub label:       String,
-    /// 补充说明：解释该选项的取舍，展示在标签下方
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub description: String,
-}
-
-/// 提问回答（客户端上行）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AskResponse {
-    pub request_id:   String,
-    /// 与请求 questions 一一对应；为空数组表示用户取消
-    #[serde(default)]
-    pub answers:      Vec<AskAnswer>,
-    /// true = 用户取消/拒绝作答
-    #[serde(default)]
-    pub is_cancelled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AskAnswer {
-    /// 选中的选项标签（按选择顺序）
-    #[serde(default)]
-    pub selected:     Vec<String>,
-    /// 「其他」自定义输入；为空表示未使用
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub custom_input: String,
+    pub tool_name: String,
+    pub input:     serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -478,15 +367,11 @@ pub enum AgentEvent {
     // 1. 会话与轮次生命周期
     TurnStarted { 
         turn_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subagent_id: Option<String>,
     },
     TurnFinished { 
         turn_id: String, 
         stop_reason: StopReason,
         usage: TokenUsage,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subagent_id: Option<String>,
     },
     
     // 2. 多端用户输入广播与队列清空
@@ -515,13 +400,9 @@ pub enum AgentEvent {
     // 3. 模型推理流式增量
     ThinkingDelta { 
         delta: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subagent_id: Option<String>,
     },
     TextDelta { 
         delta: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subagent_id: Option<String>,
     },
 
     // 4. 工具生命周期
@@ -532,42 +413,21 @@ pub enum AgentEvent {
         tool_name: String,
         output:   String,
         is_error: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        subagent_id: Option<String>,
     },
 
-    // 5. 权限审批广播与先到先得
-    PermissionRequested(PermissionRequestedData),
-    PermissionResolved {
-        request_id:  String,
-        decision:    ApprovalDecision,
-        resolved_by: String,
-    },
-
-    // 5b. ask 工具提问：广播后被挂起，任一客户端作答（先到先得）
-    AskRequested(AskRequestedData),
-    AskResolved {
-        request_id:   String,
-        #[serde(default)]
-        is_cancelled: bool,
-        resolved_by:  String,
-    },
-
-    // 6. 分支、模型与 Agent 动态变更
+    // 5. 分支、模型与推理等级变更
     ActiveBranchChanged { current_leaf_id: String },
     ModelChanged        { active_model: String },
-    AgentChanged        { active_agent: String },
-    ApprovalModeChanged { mode: ApprovalMode },
     ReasoningLevelChanged { level: String },
 
-    // 6b. 上下文占用：每次模型请求拿到用量后广播，供界面展示进度。
+    // 5b. 上下文占用：每次模型请求拿到用量后广播，供界面展示进度。
     // tokens 为提示侧总量（含缓存），context_len 为模型窗口
     ContextUsage {
         tokens:      usize,
         context_len: usize,
     },
 
-    // 7. 重连快照与错误提示
+    // 6. 重连快照与错误提示
     ActiveTurnCatchUp(ActiveTurnCatchUp),
     SessionRenamed { session_id: String, title: String },
     MessagesDeleted { deleted_ids: Vec<String>, current_leaf_id: Option<String> },
@@ -597,17 +457,11 @@ pub struct ContextUsage {
     /// 模型上下文窗口
     pub context_len: usize,
 }
-
-/// MCP 服务器概览（仅名称与工具数，非完整配置）
-pub struct McpServerSummary {
-    pub name:       String,
-    pub tool_count: usize,
-}
 ```
 
 ---
 
-## 5. 配置体系、Provider 架构与 Agent/Skill 模板
+## 5. 配置体系、Provider 架构与提示词/技能
 
 ### 5.1 配置文件规范 (`~/.config/oma/settings.json` + `models.json`)
 
@@ -618,13 +472,14 @@ pub struct McpServerSummary {
 ```json
 {
   "default_model": "my_anthropic/claude-3-7-sonnet",
-  "default_agent": "task",
-  "default_approval_mode": "normal",
-  "server": { "listen_addr": "127.0.0.1:17431" },
-  "mcp_servers": {
-    "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "oma.db"], "env": { "DEBUG": "1" } },
-    "remote_docs": { "type": "remote", "url": "https://mcp.internal.example.com/sse", "headers": { "Authorization": "Bearer secret_token" } }
-  }
+  "default_reasoning_level": "medium",
+  "theme": {
+    "mode": "dark",
+    "dark_palette": "pi-dark",
+    "light_palette": "pi-light",
+    "accent": "blue"
+  },
+  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" }
 }
 ```
 
@@ -657,38 +512,37 @@ pub struct McpServerSummary {
 
 > `api_type` 取值 `anthropic | completion | response | google`。
 > 旧版 `config.toml` 首次加载时自动迁移为上述两个文件，原文件备份为 `config.toml.bak`。
+>
+> `OmaConfig` 启用 `deny_unknown_fields`：字段只有 `default_model` / `default_reasoning_level` /
+> `theme` / `server` / `providers`。已删除的能力（`default_agent` / `default_approval_mode` /
+> `mcp_servers`）不再接受，写进配置会直接被 `PUT /api/config` 拒绝。
 
 ### 5.2 请求头与请求体三级递归合并规范
 优先级：`Provider 级配置` $\prec$ `Model 级配置` $\prec$ `Reasoning Effort 覆盖`。
 - 同名 HTTP Header 强制后序覆盖前序；
 - JSON Body 字段执行递归对象合并，支持灵活注入厂商私有字段。
 
-### 5.3 内置 Agent 与 Skill 模板规范
-1. **Agent 模板加载与回退**：
-   - 编译期内嵌 5 个基础 Agent 模板：`task.md`、`plan.md`、`explore.md`、`review.md`、`build.md`；
-   - 优先检查项目级 `<workspace>/.oma/agents/` 与全局 `~/.config/oma/agents/`，存在同名文件则覆盖；
+### 5.3 系统提示词与技能（Skill）
+
+1. **单一内置系统提示词**：
+   - 不再有 Agent 模板/预设分层（内置 5 套模板、`.oma/agents/`、`~/.config/oma/agents/`
+     与 `GET /api/presets` 均已删除）——pi 内核也没有「角色切换」；
+   - 唯一来源是编译期内嵌常量 `oma_config::DEFAULT_SYSTEM_PROMPT`
+     （`crates/config/src/prompts/system_prompt.md`），
+     由 `build_system_prompt(workspace, model)` 拼装运行环境块与技能目录；
    - 系统动态向 System Prompt 追加实时环境信息：
      ```text
      <runtime_context>
      - Workspace: /absolute/path/to/project
      - Operating System: linux (x86_64)
-     - Today: 2026-09-03
+     - Today: 2026-09-20
      - Active Model: my_anthropic/claude-3-7-sonnet
      </runtime_context>
      ```
-2. **Agent 预设（Preset）动态发现**：
-   - 扫描 `~/.config/oma/agents/*.md`（global）与 `<workspace>/.oma/agents/*.md`（project），
-     文件名为权威 id，YAML frontmatter 提供可选的 `name` / `description` / `tools`；
-   - frontmatter 全部字段可缺省：`name` 缺省时回退为文件名，未知键（如 `role`）
-     予以忽略而非报错，YAML 损坏时整篇退化为正文——单个文件的格式瑕疵不应让预设不可用；
-   - 列表同时下发 `body`（仅正文）与 `content`（完整原文）：编辑器只展示/回写 `body`，
-     元信息由服务端按字段重新渲染，避免保存时把 frontmatter 当作提示词内容二次嵌入；
-   - 同名时 project 覆盖 global、global 覆盖内嵌模板；内嵌的 5 个模板为只读；
-   - 清单经 `GET /api/presets` 暴露，可在设置面板「预设」页增删改；
-     预设声明的 `tools` 同时约束下发给模型的工具清单与可执行工具集合
-     （声明为空表示不限制）。
+   - 因此工具清单不再受「预设声明的 tools」约束，会话下发全部已注册工具
+     （内置 7 个 + 插件注册的）。
 
-3. **技能（Skill）是按需取用的领域知识，与 Agent 预设相互独立**：
+2. **技能（Skill）是按需取用的领域知识**：
    - 按三层根目录发现，每层布局为 `<root>/<skill-name>/SKILL.md`
      （技能自带资源放同级的 `scripts/` 等子目录）：
      | 层 | 路径 |
@@ -697,9 +551,6 @@ pub struct McpServerSummary {
      | agent | `~/.config/oma/skills`（oma 自身的技能） |
      | project | `<workspace>/.agents/skills`（随仓库分发的技能） |
    - 同名时更具体的一层覆盖更宽泛的一层：project > agent > global；
-   - 两者存储、端点（`/api/skills` vs `/api/presets`）、语义均不重叠：
-     预设决定「以什么角色、能用哪些工具运行」，技能只是一段知识文档，
-     同名也不会互相覆盖；
    - 技能**不**常驻 System Prompt，而是以目录形式注入（仅 id、描述与磁盘绝对路径）：
      ```text
      <available_skills>
@@ -734,11 +585,11 @@ oma.on("tool_call", (e) => ({ block: true, reason?: string }) | undefined);
 | `oma.listDir` / `oma.exists` | 列目录 / 存在性 |
 | `oma.exec(cmd)` | workspace 下执行 shell，返回 `{stdout, stderr, code}` |
 
-- 插件工具在会话装配时注册进 `ToolRegistry`（与内置/ MCP 工具同权），并由
+- 插件工具在会话装配时注册进 `ToolRegistry`（与内置工具同权），并由
   `GET /api/tools?workspace=...` 以 `kind: "plugin"` 下发；
 - `execute`/`handler` 必须**同步**返回，返回 Promise 会被显式拒绝；每次调用新建
   JS 上下文，插件顶层状态不跨调用保留；
-- `tool_call` 钩子在审批通过后、工具执行前评估，任一插件返回 `block` 即拦截；
+- `tool_call` 钩子在工具执行前评估，任一插件返回 `block` 即拦截；
 - 单个插件加载失败（语法错误等）只告警跳过，不影响其余插件与会话。
 
 > **安全**：插件与 pi 扩展一样拥有宿主进程权限（文件访问限在 workspace），安装前需审查源码。
@@ -756,9 +607,9 @@ oma.on("tool_call", (e) => ({ block: true, reason?: string }) | undefined);
 
 ### 6.2 主动取消 (Cancel) 级联中断与队列清空
 - **级联中断**：任意客户端发送 `ClientMessage::Cancel {}` 时触发该 Session 的
-  `CancellationToken`。取消信号以 `select!` 短路三处等待：LLM 流式接收、
-  权限审批等待、工具执行本身，因此长命令与挂起审批都会立即返回；
-- **进程回收**：`shell` 工具以 `ProcessGroupGuard` 守卫独立进程组，在超时或
+  `CancellationToken`。取消信号以 `select!` 短路两处等待：LLM 流式接收与
+  工具执行本身，因此长命令会立即返回；
+- **进程回收**：`bash` 工具以 `ProcessGroupGuard` 守卫独立进程组，在超时或
   future 被取消（drop）时统一 `killpg(SIGKILL)`，不留孤儿进程；
 - **清空队列**：立即清空排队命令，广播 `AgentEvent::QueueCleared` 与 `QueueUpdated { pending: 0 }`；
 - **残存消息落库**：已生成的片段照常落库，未执行的 `tool_use` 补齐占位
@@ -766,18 +617,7 @@ oma.on("tool_call", (e) => ({ block: true, reason?: string }) | undefined);
 - **单一轮次所有权**：轮次名额由 `is_running` 的 CAS 抢占，取消与排队交棒都
   经过同一状态机，确保同一会话任意时刻至多一个执行中的轮次。
 
-### 6.3 Agent 循环熔断器 (Circuit Breaker)
-- 跟踪最近工具调用签名（`tool_name:input_json`）；
-- 若单工具**连续 3 次传入完全相同的参数**且结果未发生改变，自动触发系统熔断；
-- 拦截执行并注入引导性系统错误，提示模型切换思路。
-
-### 6.4 先到先得审批仲裁与会话白名单
-- **触发**：高危工具调用向所有连接客户端广播 `PermissionRequested`；
-- **抢占**：首个到达的 `ApprovalResponse` 立即生效并广播 `PermissionResolved`；
-- **超时与拒绝**：120 秒超时未响应或用户拒绝时，向模型注入标准错误 `ToolResult { is_error: true, content: "Execution rejected: Permission denied by user (or approval timed out after 120s)." }`；
-- **`AllowSession` 作用域**：放行当前会话内该工具名称后续的所有调用，白名单保存在 `SessionRoom` 内存状态中，会话销毁或服务重启自动失效。
-
-### 6.5 上下文预估与两阶段压缩 (Two-Stage Compaction)
+### 6.3 上下文预估与两阶段压缩 (Two-Stage Compaction)
 - **Token 预估机制（权威锚点 + 启发式增量）**：厂商每次响应上报的 `input_tokens`
   已包含 system prompt 与工具声明等固定开销，将其记录为**权威锚点**（覆盖发出该
   请求时的历史前缀）；此后只需对锚点之后新增的消息做字符折算增量
@@ -792,12 +632,11 @@ oma.on("tool_call", (e) => ({ block: true, reason?: string }) | undefined);
   assistant 消息成为首条，Anthropic 与 OpenAI 均会以 400 拒绝该请求。
   该阶段的候选是历史的尾部切片，锚点前缀已不完整，故改用字符折算评估保留量
   （保守：宁可多裁一点也不会低估后超窗）；
-- 压缩只作用于本次请求的副本，持久化历史保持完整；子 Agent 的多轮工具循环
-  同样受此约束（其上下文独立且不落库）。
+- 压缩只作用于本次请求的副本，持久化历史保持完整。
 
 ---
 
-## 7. 工具集与执行环境 (Tools & MCP)
+## 7. 工具集与执行环境 (Tools & Runtime)
 
 所有工具返回统一契约：
 
@@ -813,18 +652,32 @@ ToolOutput {
 `images` 由上层交付给模型：Anthropic 内联进 `tool_result.content`，其余协议
 拆为紧随回执的用户消息；模型不支持视觉时工具本身就不会产出图片。
 
-### 7.1 执行安全防护
-1. **输出字符截断 (`RESULT_MAX_CHARS = 24_000`)**：
-   超长输出自动截断并在末尾追加提示，防止单次打爆上下文。
-2. **Shell 进程组管理 (`libc::killpg`)**：
-   创建独立进程组，发生超时（默认 60s）或用户取消时统一 `killpg` 杀掉整个进程树。
-3. **宿主直跑与权限保护**：
-   不做 OS 容器沙箱与路径限制，相对路径按工作区解析，绝对路径直通；依靠 Normal / Strict 模式的人机交互确认提供安全底线。
+### 7.1 输出截断与执行安全
 
-### 7.2 6 大核心内置工具
+1. **统一的输出截断（行数 + 字节双上限）**：
+   `crates/tool/src/truncate.rs` 与 pi 的 `core/tools/truncate.ts` 等价：
+   - 默认上限：**2000 行 / 50KB**，先到者生效；除「末行本身超限」边界外不返回半行；
+   - 方向：`read` / `ls` / `find` / `grep` 用 `truncate_head`（保留开头）；
+     `bash` 用 `truncate_tail`（保留末尾，错误与结果在那里）；
+   - 截断时在末尾追加**可操作**提示而非静默截断，例如
+     `[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]`；
+   - `grep` 额外把单行截到 500 字符（`GREP_MAX_LINE_LENGTH`）；
+   - `edit` 的 diff 仍保留 24k 字符兜底（`RESULT_MAX_CHARS`）。
+2. **进程组管理 (`libc::killpg`)**：
+   `bash` 创建独立进程组，发生超时（默认 60s）或用户取消时统一 `killpg` 杀掉整个进程树；
+   `find` / `grep` 拉起的 `fd` / `rg` 用 `kill_on_drop` 随 future 一起回收。
+3. **宿主直跑与权限保护**：
+   不做 OS 容器沙箱与路径限制，相对路径按工作区解析，绝对路径直通；
+   也不再有审批弹窗——安全边界由「本地回环监听 + Bearer Token + 用户自控」提供。
+
+### 7.2 7 大核心内置工具
+
+工具集与 pi 对齐：`bash` / `edit` / `find` / `grep` / `ls` / `read` / `write`。
+
 1. **`read`**：
-   - 参数：`{ "path": "...", "offset": 1, "limit": 1000 }`（offset 为 1 起始行号，仅对文本生效）
-   - 按行分片安全读取文本文件。
+   - 参数：`{ "path": "...", "offset": 1, "limit": null }`（offset 为 1 起始行号，仅对文本生效）
+   - 按行分片读取文本文件，输出带行号前缀（oma 自有展示形式，pi 为原样内容）；
+     未给 `limit` 时由双上限决定，并在提示中给出续读用的 `offset`。
    - **图片文件**：按文件头识别 PNG / JPEG / GIF / WebP / BMP / TIFF（不引入解码器，
      仅解析头部取得宽高、通道数、alpha 与 MIME）：
      - 当前模型具备 `image_input` 能力时，图片经 `ToolOutput.images` 随工具回执
@@ -833,7 +686,7 @@ ToolOutput {
      - 模型不具备图像输入能力、或图片超过 5 MiB 时，只返回元数据块，不下发图片字节。
 2. **`write`**：
    - 参数：`{ "path": "...", "content": "..." }`
-   - 覆盖写入或新建文件。
+   - 覆盖写入或新建文件（自动建父目录）。
 3. **`edit`**（多 Hunk 原子替换与 Unified Diff）：
    - 参数：
      ```json
@@ -845,26 +698,48 @@ ToolOutput {
      }
      ```
    - 校验：原始基准唯一定位匹配、重叠区间拦截检测、全量原子事务；成功后返回统一 Diff。
-4. **`shell`**：
+4. **`bash`**：
    - 参数：`{ "command": "cargo test" }`
-   - 工作目录绑定当前 workspace，实时捕获标准输出与标准错误。
+   - 工作目录绑定当前 workspace，捕获标准输出与标准错误（合并后按尾部截断）。
    - 解释器与环境取自启动时的登录 shell 快照：Daemon 启动时以 `$SHELL -lic`
      采集一次完整环境（含 rc 文件里的 `export` 与 `PATH`）并缓存，
      因此命令与用户交互终端一致；采集失败时退回直接继承 Daemon 进程环境。
      （写死的 `/bin/sh` 不会读 rc，环境也只继承 Daemon 而未必是用户终端。）
-5. **`task`**（Subagent 子任务委托）：
-   - 参数：`{ "agent": "explore", "prompt": "..." }`
-   - 在后台启动指定角色的子运行时，事件携带 `subagent_id` 实时广播；
-   - 运行完成后的最终摘要文本作为该工具的 `output` 汇聚回主链路。
-6. **`ask`**（歧义时向用户提问）：
-   - 参数：`{ "questions": [{ "id", "question", "options": [{ "label", "description" }], "is_multi", "recommended" }] }`
-   - 广播 `AskRequested` 并挂起本轮，等待任一客户端作答（先到先得）；
-   - 结果的文本形式作为 `output` 交回模型；空 `questions` 由 schema 与运行时双重拦截。
+5. **`ls`**：
+   - 参数：`{ "path": ".", "limit": 500 }`
+   - 按名排序（大小写不敏感），目录名带 `/` 后缀，含 dotfile；默认 500 条上限。
+   - 不遵循 `.gitignore`（与 pi 一致：看目录就是看目录）。
+6. **`find`**（外部 `fd`）：
+   - 参数：`{ "pattern": "*.rs", "path": ".", "limit": 1000 }`
+   - 实际命令：`fd --glob --color=never --hidden [--no-require-git] --max-results N -- <pattern> <path>`；
+   - **遵循 `.gitignore`**；非 git 仓库补 `--no-require-git` 让 `.gitignore` 仍然生效；
+     含 `/` 的 pattern 改走 `--full-path` 并自动补 `**/` 前缀；
+   - 结果相对搜索根展示（正斜杠）；默认 1000 条上限。
+7. **`grep`**（外部 `ripgrep`）：
+   - 参数：
+     `{ "pattern": "...", "path": ".", "glob": "*.rs", "ignore_case": false, "literal": false, "context": 0, "limit": 100 }`
+   - 实际命令：`rg --json --line-number --color=never --hidden [--ignore-case] [--fixed-strings] [--glob G] -- <pattern> <path>`；
+   - **遵循 `.gitignore`**；流式解析 `--json` 输出；`context > 0` 时回读文件渲染
+     上下文行（命中 `path:12: text`，上下文 `path-12- text`）；默认 100 条上限。
 
-### 7.3 MCP 扩展机制
-- Daemon 全局单例管理本地 stdio 子进程与远程 HTTP（JSON-RPC over POST）客户端；
-- 导出工具名统一加前缀 `mcp__{server}__{tool}`，避免命名冲突；
-- 参数格式与返回统一桥接至 Agent 核心工具网格。
+### 7.3 外部二进制的获取（fd / ripgrep）
+
+`find` / `grep` 不自己实现文件遍历与正则匹配，而是调用外部二进制，
+因此 `.gitignore`、隐藏文件、二进制跳过等语义与 pi 完全一致。`binaries` 模块负责解析与安装：
+
+1. **解析顺序**：`<数据目录>/bin`（oma 先前下载的）→ 系统 `PATH`
+   （`fd` 兼容 Debian 的 `fdfind`）→ 从 GitHub Releases 下载解压到 `<数据目录>/bin`；
+2. **下载**：经 `https://github.com/<repo>/releases/latest` 的重定向头取版本号
+   （不用 GitHub API：匿名配额在共享出口 IP 上常已耗尽，且下载本身也不必额外请求），
+   再拉取对应平台的归档，解压后把二进制移到 `<数据目录>/bin` 并置 `0755`；
+   归档位于 `~/.local/share/oma/bin`，解压临时目录用完即删；
+3. **离线与缓存**：`OMA_OFFLINE=1|true|yes` 跳过下载；解析结果进程内缓存，
+   并用单飞锁避免多会话并发首次使用时重复下载；
+4. **失败即硬失败**：不可用（未安装且无法下载）时工具直接返回错误，
+   不回退到自研实现。
+
+> 与 pi 的差异：pi 的变量名是 `PI_OFFLINE`，且 fd 在 darwin/x64 上钉住了一个固定版本；
+> oma 不做 darwin 版本钉住。
 
 ---
 
@@ -886,9 +761,7 @@ ToolOutput {
 | `GET` | `/api/sessions/{id}/attachments/{name}` | 下载/预览附件 |
 | `GET` | `/api/workspace/tree?workspace=...` | 获取工作区目录文件树（深度 4、最多 2000 项） |
 | `GET` | `/api/workspace/file?workspace=...&path=...` | 读取工作区文件内容（供代码查看与编辑器） |
-| `GET` | `/api/tools` | 列出可授权工具（内置 + 已发现的 MCP，命名空间化），供预设编辑器勾选 |
-| `GET` | `/api/presets?workspace=...` | 列出 Agent 预设（bundled / global / project） |
-| `GET`/`PUT`/`DELETE` | `/api/presets/{preset_id}` | 读取 / 写入 / 删除预设；内置预设只读 |
+| `GET` | `/api/tools` | 列出可用工具（内置 7 个 + 插件注册的，插件项带 `kind: "plugin"`） |
 | `GET` | `/api/skills?workspace=...` | 列出技能（global / agent / project） |
 | `GET`/`PUT`/`DELETE` | `/api/skills/{skill_id}` | 读取 / 写入 / 删除技能 |
 | `GET`/`PUT` | `/api/config` | 读取（默认脱敏 `api_key`，`?reveal=1` 返回明文）/ 写入服务端配置 |
@@ -920,8 +793,9 @@ pub struct Palette {
 }
 ```
 
-- **存储**：内置 4 套（latte / frappé / macchiato / mocha）编译期以 `include_str!` 嵌入二进制
-  （与 Agent 模板同理，无启动写入）；用户调色板存于 `<配置目录>/oma/themes/<id>.json`，
+- **存储**：内置 6 套（`pi-light` / `pi-dark` 两套中性色为默认，`latte` / `frappé` /
+  `macchiato` / `mocha` 四套 Catppuccin 为备选）编译期以 `include_str!` 嵌入二进制
+  （与系统提示词同理，无启动写入）；用户调色板存于 `<配置目录>/oma/themes/<id>.json`，
   同名文件可覆盖内置。`settings.json` 中的 `theme` 仅保存引用，其 id 必须在调色板集合内。
 - **下发**：`Ready.active_theme` 携带已解析的 `ResolvedTheme { mode, accent, light, dark }`，
   即两套完整调色板。终端与浏览器因此共用同一份配色数据，客户端不需要读取配置目录，
@@ -956,33 +830,35 @@ pub struct Palette {
   重渲染解析错误（默认值现读自参数本身，不与帮助文案各写一份）。
 
 ### 9.2 原生 Web 前端工程 (`web/`)
-- 技术选型：**纯原生 Vue 3 + TypeScript + 手写 CSS**（不引入 Tailwind、UnoCSS、Element Plus、NaiveUI 等任何第三方 UI 或样式库）；
+- 技术选型：**Vue 3 + TypeScript**；UI 控件全部来自内部组件库 `@waittide/ui`
+  （本地 `link:` 引入），不引入任何第三方 UI 框架；
 - 工程约束：
   1. 包管理器统一使用 **pnpm**；
   2. 通知统一走 **vue-sonner**；
   3. 图标统一使用 **vue-icons-plus**（禁止用文字/字符充当图标）；
-  4. 不使用浏览器原生控件（`<select>`/`<dialog>`/`<details>` 等），改用 `components/ui/` 下
-     自实现组件，以保证各浏览器呈现一致；仅附件上传保留隐藏的 `<input type="file">`
-     作为“文件选择器通道”，其按钮与拖拽区均为自实现并在界面上同时标注两条入口；
+  4. 不使用浏览器原生控件（`<select>`/`<dialog>`/`<details>` 等），一律用 `@waittide/ui`
+     的 `UiSelect` / `UiModal` / `UiInput` 等，以保证跨浏览器呈现一致；
+     仅附件上传保留隐藏的 `<input type="file">` 作为「文件选择器通道」；
   5. 调色板不内置在前端：由服务端 `GET /api/palettes` 与 `Ready.active_theme` 提供，
      运行时注入 CSS 变量（见 8.1）。
 - 具备功能：
   1. 会话列表管理与工作区选择；
   2. 树状对话流展示、Markdown 渲染、Thinking 思维链折叠；
-  3. Tool 执行过程与参数/Diff 展示、Subagent 嵌套折叠；
-  4. 权限审批模态框（AllowOnce, AllowSession, Deny）；
-  5. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）；
-  6. 设置面板（连接、外观/主题与调色板、语言、默认参数、Provider、预设、技能、MCP）；
+  3. Tool 执行过程与参数/Diff 展示；
+  4. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）与历史树弹层；
+  5. 三栏工作区外壳（侧栏 / 消息区 / 右侧面板）、顶部工具栏与底部状态栏，
+     宽度与折叠状态可拖拽并持久化；
+  6. 设置面板（连接、外观/主题与调色板、语言、默认参数、提供商、技能）；
      其中「连接」页读写 `oma web` 同源接口的 `client.json`：列表可切换、增删连接，
      保存时 upsert 当前连接并置为 `active`；接口不可用（如 vite dev）时退回 localStorage；
   7. 界面 i18n 支持简体中文 / 繁体中文 / English / 日本語，缺键回退为键名；
      首次访问时按浏览器语言自动选择（`zh-Hans` / `zh-Hant` / `ja` / 其余为 `en`）；
   8. 用户消息操作区提供「复制」（与代码块复制共用降级到 `execCommand` 的剪贴板实现）；
-  9. 需要人参与的事件（任务完成、提问、审批）**仅在失焦时**发出通知：
-     Web 端应用内走 vue-sonner，并补一条浏览器系统通知；TUI 端发终端 OSC 9/777 通知
-     （crossterm `EnableFocusChange` / CSI `?1004h` 上报焦点，退出时关闭）。
-     页面/终端处于聚焦状态时不提示——审批条、提问面板与审批弹窗已把事件摆在眼前；
-     终端不上报焦点时按聚焦处理（始终不通知）。
+  9. 轮次完成等需要人参与的事件**仅在失焦时**发出通知：
+     应用内走 vue-sonner，并补一条浏览器系统通知；
+     页面聚焦时不提示（消息已在眼前）；
+  10. 右侧面板与顶部工具栏的部分入口（文件树/预览、Git 变更、终端、导出、
+      分支、System）仍为占位，待后续分期接入。
 
 ### 9.3 客户端本地配置 `client.json`
 - 路径：`<配置目录>/oma/client.json`，与 Daemon 的 `settings.json` 分离，属「这台机器上的客户端」信息；
@@ -1003,15 +879,16 @@ pub struct Palette {
 | 鉴权传输 | REST 仅接受 `Authorization: Bearer`；WebSocket 握手额外接受 `?token=`，因为浏览器无法为 WS 请求设置自定义头。 |
 | 前端静态资源 | `oma web` 提供界面：资产由 `rust-embed` 内嵌进二进制，debug 下从 `web/dist` 实时读取（改前端只需 `pnpm build`），release 下真正内嵌。Daemon 不直出资产、保持 Headless。 |
 | 上下文压缩 | 第一阶段只替换 `ToolResult` 内容（保持配对），第二阶段按**完整轮次**丢弃前缀；旧的「按消息条数切半」会切出孤儿回执或以 assistant 开头，长会话下必然被厂商 API 拒绝。 |
-| 工具白名单 | Agent 模板的 `tools` 声明是硬约束：既过滤下发给模型的清单，也拦截实际执行；为空表示不限制。 |
+| 工具实现 | `find` / `grep` 调用外部 `fd` / `ripgrep` 而非自研遍历：`.gitignore`、隐藏文件、二进制跳过等语义只有用同一批上游工具才能与 pi 一致；自研版只看 `.git`，会把 `target/`、`node_modules/` 当结果返回。 |
+| 外部二进制获取 | 先查 `<数据目录>/bin` 再查 `PATH`，都没有才从 GitHub Releases 下载（`OMA_OFFLINE=1` 可禁用）；不可用时**硬失败**，不回退到自研实现——两套行为不一致比「没有工具」更难排查。 |
+| 输出截断 | 统一走 `truncate` 模块（2000 行 / 50KB 双上限，先到者生效），不再每个工具一套字符数上限；截断必须给出可操作的后续动作（续读的 offset / 缩小 pattern），否则模型只能瞎猜。 |
 | 会话标识 | `session_id` 会被拼接进文件系统路径，因此全局校验为 `[A-Za-z0-9_-]{1,128}`；附件名同样只允许安全字符并丢弃任何目录成分。 |
 | 版本号来源 | `Cargo.toml` 的 `version` **不会**被 CI 自动递增，只在无标签的分支 / PR 构建里作为回退值被读取；正式版用人工推送的语义化标签（`v0.2.0`），每日快照用日期标签（`v2026.09.17`）。构建标识与制品名由 `.github/workflows/build.yml` 的 `meta` job 统一计算（标签优先），不再存在单独的发布工作流。 |
-| shell 执行环境 | 解释器取 `$SHELL`（兜底 `/bin/sh`），环境取自 Daemon 启动时对登录 shell 的一次快照（`$SHELL -lic`），而非写死的 `sh` + 继承 Daemon 进程环境：后者既读不到 rc 文件里的 alias / `export`，环境也未必是用户终端的。 |
-| MCP 远程传输 | 以 JSON-RPC over HTTP POST 实现 `tools/list` 与 `tools/call`，而非 SSE。 |
-| MCP / task 工具 | 工具注册表在交给 `SessionRoom` 之前完成装配（房间持有的是快照），`TaskTool` 通过一次性槽位回填 runner 解开构造环路。 |
-| 并发写 | 会话库写路径使用 `max_connections = 1` 的连接池，读快照走独立只读池；连接池按会话缓存并提供删除前驱逐。 |
+| bash 执行环境 | 解释器取 `$SHELL`（兜底 `/bin/sh`），环境取自 Daemon 启动时对登录 shell 的一次快照（`$SHELL -lic`），而非写死的 `sh` + 继承 Daemon 进程环境：后者既读不到 rc 文件里的 alias / `export`，环境也未必是用户终端的。 |
+| 会话存储并发 | 每会话一把写锁，写路径先重读文件再追加/重写，保证追加串行；读取始终以磁盘为准（不缓存快照），因此同数据目录上的多个实例能互相看到最新内容。旧的 `max_connections = 1` 连接池随 sqlx 一并移除。 |
 | 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
 | 配置校验 | `OmaConfig` 启用 `deny_unknown_fields`：拼错的键名（或前端字段映射错误）在 `PUT /api/config` 直接 400，不再「保存成功但配置没变」；启动时配置文件解析失败即报错退出，而非静默回退默认值。 |
-| 预设与技能 | 两者是独立机制：预设 = 角色 + 工具白名单；技能 = 按需读取的知识。分属 `/api/presets` 与 `/api/skills`，同名互不覆盖。技能按 `<root>/<name>/SKILL.md` 三层发现（global/agent/project），删除技能会连同其目录内的 `scripts/` 等资源一并移除（id 经严格校验，不可穿越）。 |
-| frontmatter 容错 | 预设/技能的 YAML 字段全部可选且忽略未知键：用户目录里存在只有 `description` 与自有键（如 `role`）的文件，名称即文件名，不应因严格解析而整条不可用。 |
-| 设置面板结构 | 提供商页：提供商配置为单个带底色容器（标题在其内），模型配置为容器外分区标题，其下每个模型各自一个容器。预设的工具授权使用多选下拉（标签可逐个移除），选项来自 `GET /api/tools`。 |
+| 能力裁剪 | MCP / 子代理 / 审批 / 提问 / 熔断器 / Agent 预设均为 pi 内核不内置的能力，已从内核删除；如需保留应以插件（QuickJS）形式重建，而不是在内核里重开一套并行机制。 |
+| 技能发现 | 按 `<root>/<name>/SKILL.md` 三层发现（global/agent/project），同名时更具体的一层覆盖更宽泛的一层；删除技能会连同其目录内的 `scripts/` 等资源一并移除（id 经严格校验，不可穿越）。改为系统提示词单一常量后，技能不再与任何「预设」概念发生关系。 |
+| skill frontmatter 容错 | 技能的 YAML 字段全部可选且忽略未知键：用户目录里存在只有 `description` 与自有键的文件时，名称即目录名，不应因严格解析而整条不可用。 |
+| 设置面板结构 | 提供商页：提供商配置为单个带底色容器（标题在其内），模型配置为容器外分区标题，其下每个模型各自一个容器；工具清单页只读展示 `GET /api/tools`（工具授权随预设一并移除）。 |
