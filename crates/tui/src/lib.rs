@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use oma_client::{ConnectOptions, OmaClient, SessionApi};
 use oma_contract::{
-    AgentCommand, AgentEvent, ApprovalDecision, AskAnswer, AskQuestion, AskResponse, ClientType, Palette,
+    AgentCommand, AgentEvent, ApprovalDecision, ClientType, Palette,
     ResolvedTheme, StopReason, ThemeMode,
 };
 use ratatui::{
@@ -202,54 +202,6 @@ struct PendingApproval {
     input:      serde_json::Value,
 }
 
-/// 待作答的提问（ask 工具）。终端里用数字键选择，`o` 进入自定义输入。
-struct PendingAsk {
-    request_id: String,
-    questions:  Vec<AskQuestion>,
-    /// 每题已选项（下标集合）
-    picked:     Vec<std::collections::BTreeSet<usize>>,
-    /// 当前题目序号
-    index:      usize,
-    /// 正在输入自定义答案的题目序号
-    custom_for: Option<usize>,
-    custom:     String,
-}
-
-impl PendingAsk {
-    fn new(request_id: String, questions: Vec<AskQuestion>) -> Self {
-        let picked = vec![std::collections::BTreeSet::new(); questions.len()];
-        Self {
-            request_id,
-            questions,
-            picked,
-            index: 0,
-            custom_for: None,
-            custom: String::new(),
-        }
-    }
-
-    /// 组装与请求 questions 对齐的回答
-    fn to_answers(&self) -> Vec<AskAnswer> {
-        self.questions
-            .iter()
-            .enumerate()
-            .map(|(i, q)| {
-                let selected: Vec<String> = self.picked[i]
-                    .iter()
-                    .filter_map(|&oi| q.options.get(oi).map(|o| o.label.clone()))
-                    .collect();
-                // 自定义输入单列回传，与选项标签区分
-                let custom_input = if self.custom_for == Some(i) {
-                    self.custom.trim().to_string()
-                } else {
-                    String::new()
-                };
-                AskAnswer { selected, custom_input }
-            })
-            .collect()
-    }
-}
-
 struct App {
     workspace:   String,
     model:       String,
@@ -263,7 +215,6 @@ struct App {
     scroll:      u16,
     stick:       bool,
     approval:    Option<PendingApproval>,
-    ask:         Option<PendingAsk>,
     /// 最近一次请求的上下文占用（tokens, context_len）
     context:     Option<(usize, usize)>,
     /// 可切换的已保存连接
@@ -293,7 +244,6 @@ impl App {
             scroll: 0,
             stick: true,
             approval: None,
-            ask: None,
             context: None,
             connections: Vec::new(),
             active_conn: None,
@@ -614,106 +564,8 @@ fn classify_input(app: &mut App, input: InputEvent) -> Option<KeyEvent> {
     }
 }
 
-/// ask 弹窗按键：数字选选项、`o` 自定义输入、`n/p` 切题、Enter 提交、Esc 取消。
-async fn handle_ask_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Result<()> {
-    let Some(ask) = app.ask.as_mut() else {
-        return Ok(());
-    };
-    let total = ask.questions.len();
-
-    // 自定义输入模式：接管全部字符
-    if ask.custom_for.is_some() {
-        match key.code {
-            KeyCode::Esc => {
-                ask.custom_for = None;
-                ask.custom.clear();
-            }
-            KeyCode::Enter => {
-                ask.custom_for = None;
-            }
-            KeyCode::Backspace => {
-                ask.custom.pop();
-            }
-            KeyCode::Char(c) => ask.custom.push(c),
-            _ => {}
-        }
-        return Ok(());
-    }
-
-    match key.code {
-        KeyCode::Esc => {
-            let request_id = ask.request_id.clone();
-            app.ask = None;
-            client
-                .respond_ask(AskResponse {
-                    request_id,
-                    answers: Vec::new(),
-                    is_cancelled: true,
-                })
-                .await?;
-            app.push("·", "已取消提问", Style::default().fg(app.theme.warning));
-        }
-        KeyCode::Enter => {
-            let answers = ask.to_answers();
-            let request_id = ask.request_id.clone();
-            app.ask = None;
-            client
-                .respond_ask(AskResponse {
-                    request_id,
-                    answers,
-                    is_cancelled: false,
-                })
-                .await?;
-            app.push("·", "已回答提问", Style::default().fg(app.theme.success));
-        }
-        KeyCode::Char('n') | KeyCode::Right => {
-            ask.index = (ask.index + 1).min(total.saturating_sub(1));
-        }
-        KeyCode::Char('p') | KeyCode::Left => {
-            ask.index = ask.index.saturating_sub(1);
-        }
-        KeyCode::Char('o') => {
-            ask.custom_for = Some(ask.index);
-        }
-        KeyCode::Char(c) => {
-            // 数字键切换该题对应选项；多选可叠加，单选替换
-            let Ok(n) = c.to_string().parse::<usize>() else {
-                return Ok(());
-            };
-            if n == 0 {
-                return Ok(());
-            }
-            let idx = n - 1;
-            let qi = ask.index;
-            let Some(q) = ask.questions.get(qi) else {
-                return Ok(());
-            };
-            if idx >= q.options.len() {
-                return Ok(());
-            }
-            let multi = q.is_multi;
-            let picked = &mut ask.picked[qi];
-            if multi {
-                if !picked.remove(&idx) {
-                    picked.insert(idx);
-                }
-            } else {
-                picked.clear();
-                picked.insert(idx);
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 /// 处理按键；返回 Some 表示离开当前会话（退出或切换连接）。
 async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Result<Option<Outcome>> {
-    // ask 弹窗优先级最高：采纳答案前不应误发消息
-    if app.ask.is_some() {
-        return handle_ask_key(app, client, key).await.map(|_| None);
-    }
-
     // 审批弹窗优先消费按键
     if let Some(pending) = &app.approval {
         let decision = match key.code {
@@ -736,7 +588,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
         return Ok(None);
     }
 
-    // 连接切换弹窗（无 ask/审批时）：先于普通输入消费按键
+    // 连接切换弹窗（无审批时）：先于普通输入消费按键
     if app.picker.is_some() {
         return Ok(handle_picker_key(app, key));
     }
@@ -925,23 +777,6 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             let suffix = if output.lines().count() > 6 { "\n…" } else { "" };
             app.push("  ", format!("{}: {}{}", tool_name, head, suffix), style);
         }
-        AgentEvent::AskRequested(data) => {
-            app.picker = None;
-            if let Some(question) = data.questions.first() {
-                app.notify(format!("需要确认：{}", question.question));
-            }
-            app.ask = Some(PendingAsk::new(data.request_id, data.questions));
-        }
-        AgentEvent::AskResolved { resolved_by, .. } => {
-            if app.ask.is_some() {
-                app.ask = None;
-                app.push(
-                    "·",
-                    format!("提问由 {} 处理", resolved_by),
-                    Style::default().fg(app.theme.muted),
-                );
-            }
-        }
         AgentEvent::PermissionRequested(data) => {
             app.picker = None;
             app.notify(format!("待授权：{}", data.tool_name));
@@ -994,10 +829,6 @@ fn apply_event(app: &mut App, event: AgentEvent) {
                 tool_name:  p.tool_name,
                 input:      p.input,
             });
-            // 追问接入时也要恢复未作答的提问
-            app.ask = snapshot
-                .pending_ask
-                .map(|a| PendingAsk::new(a.request_id, a.questions));
             app.busy = true;
         }
         AgentEvent::SyncRequired {} => app.push(
@@ -1074,9 +905,7 @@ fn draw(frame: &mut Frame, app: &App) {
     draw_transcript(frame, app, body, theme);
     draw_input(frame, app, input, theme);
 
-    if let Some(pending) = &app.ask {
-        draw_ask(frame, pending, area, theme);
-    } else if let Some(pending) = &app.approval {
+    if let Some(pending) = &app.approval {
         draw_approval(frame, pending, area, theme);
     } else if let Some(index) = app.picker {
         draw_picker(frame, app, index, area, theme);
@@ -1272,109 +1101,6 @@ fn draw_approval(frame: &mut Frame, pending: &PendingApproval, area: Rect, theme
         .border_style(Style::default().fg(theme.warning))
         .title("权限审批");
     frame.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: false }), popup);
-}
-
-/// 渲染 ask 弹窗：一题一行选项，多选用 [x]、单选用 (x) 标记。
-fn draw_ask(frame: &mut Frame, pending: &PendingAsk, area: Rect, theme: TuiTheme) {
-    let width = area.width.saturating_sub(8).min(90);
-    let inner_width = width.saturating_sub(2) as usize;
-    let mut lines: Vec<Line> = Vec::new();
-
-    if let Some(q) = pending.questions.get(pending.index) {
-        let mode = if q.is_multi { "多选" } else { "单选" };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("问题 {}/{} ", pending.index + 1, pending.questions.len()),
-                Style::default().fg(theme.muted),
-            ),
-            Span::styled(format!("[{}]", mode), Style::default().fg(theme.accent)),
-        ]));
-        lines.push(Line::raw(""));
-        for (li, seg) in wrap_text(&q.question, inner_width.saturating_sub(2))
-            .iter()
-            .enumerate()
-        {
-            lines.push(Line::styled(
-                if li == 0 {
-                    format!("  {}", seg)
-                } else {
-                    format!("    {}", seg)
-                },
-                Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-            ));
-        }
-        lines.push(Line::raw(""));
-        for (oi, opt) in q.options.iter().enumerate() {
-            let checked = pending.picked[pending.index].contains(&oi);
-            let mark = if q.is_multi {
-                if checked { "[x]" } else { "[ ]" }
-            } else if checked {
-                "(x)"
-            } else {
-                "( )"
-            };
-            let recommended = q.recommended == Some(oi);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {}{} ", oi + 1, mark),
-                    Style::default().fg(if checked { theme.success } else { theme.muted }),
-                ),
-                Span::styled(
-                    opt.label.clone(),
-                    Style::default().fg(if recommended { theme.warning } else { theme.text }),
-                ),
-                Span::styled(
-                    if recommended { " (推荐)" } else { "" },
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            if !opt.description.is_empty() {
-                for seg in wrap_text(&opt.description, inner_width.saturating_sub(7)) {
-                    lines.push(Line::styled(format!("      {}", seg), Style::default().fg(theme.muted)));
-                }
-            }
-        }
-        lines.push(Line::raw(""));
-        if pending.custom_for == Some(pending.index) {
-            lines.push(Line::from(vec![
-                Span::styled("  自定义> ", Style::default().fg(theme.thinking)),
-                Span::styled(pending.custom.clone(), Style::default().fg(theme.text)),
-            ]));
-        } else if !pending.custom.is_empty() && pending.custom_for.is_none() {
-            lines.push(Line::styled(
-                format!("  自定义: {}", pending.custom),
-                Style::default().fg(theme.thinking),
-            ));
-        }
-    }
-
-    lines.push(Line::raw(""));
-    let hint = if pending.custom_for.is_some() {
-        "输入内容  Enter 确认  Esc 取消输入"
-    } else {
-        "数字选择  o 自定义  n/p 切题  Enter 提交  Esc 取消"
-    };
-    lines.push(Line::styled(hint, Style::default().fg(theme.muted)));
-
-    let height = (lines.len() as u16 + 2).min(area.height);
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
-    frame.render_widget(Clear, popup);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Double)
-        .border_style(Style::default().fg(theme.thinking))
-        .title("提问");
-    frame.render_widget(
-        Paragraph::new(Text::from(lines))
-            .block(block)
-            .wrap(Wrap { trim: false }),
-        popup,
-    );
 }
 
 #[cfg(test)]

@@ -11,13 +11,12 @@ use std::{
 use anyhow::Result;
 use oma_config::{AgentLoader, AgentTemplate, OmaConfig};
 use oma_contract::{
-    ActiveTurnCatchUp, AgentCommand, AgentEvent, ApprovalDecision, ApprovalMode, AskAnswer, AskQuestion,
-    AskRequestedData, AskResponse, Block, ChatMessage, ClientType, PermissionRequestedData, Role, StopReason,
-    TokenUsage, ToolCallStartedData, ToolImage, ToolOutput,
+    ActiveTurnCatchUp, AgentCommand, AgentEvent, ApprovalDecision, ApprovalMode, Block, ChatMessage, ClientType,
+    PermissionRequestedData, Role, StopReason, TokenUsage, ToolCallStartedData, ToolImage, ToolOutput,
 };
 use oma_provider::{ModelConfig, ProviderStreamEvent, UniversalProvider};
 use oma_storage::{StorageError, StorageManager};
-use oma_tool::{AskRunner, SubagentRunner, ToolContext, ToolRegistry};
+use oma_tool::{SubagentRunner, ToolContext, ToolRegistry};
 use parking_lot::RwLock;
 use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -164,46 +163,6 @@ pub enum ApprovalOutcome {
     Denied,
     Cancelled,
 }
-
-// =========================================================================
-// 2b. 提问仲裁器 Ask Arbiter（与审批同构：先到先得 + 超时兜底）
-// =========================================================================
-
-#[derive(Default)]
-pub struct AskArbiter {
-    pending: Mutex<HashMap<String, oneshot::Sender<AskResponse>>>,
-}
-
-impl AskArbiter {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// 注册一个待作答项，返回 oneshot 接收端
-    pub async fn register(&self, request_id: String) -> oneshot::Receiver<AskResponse> {
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(request_id, tx);
-        rx
-    }
-
-    /// 接收到某个客户端的作答，先到先得完成 oneshot
-    pub async fn resolve(&self, request_id: &str, response: AskResponse) -> bool {
-        if let Some(tx) = self.pending.lock().await.remove(request_id) {
-            let _ = tx.send(response);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// 撤销未完成的等待项（超时/取消路径）
-    pub async fn forget(&self, request_id: &str) {
-        self.pending.lock().await.remove(request_id);
-    }
-}
-
-/// 提问等待上限：超时后模型收到超时说明并继续自主决策，不阻塞轮次
-const ASK_TIMEOUT: Duration = Duration::from_secs(600);
 
 // =========================================================================
 // 3. 上下文预估与两阶段压缩 (Two-Stage Compaction)
@@ -360,8 +319,6 @@ pub struct ActiveTurnState {
     pub accumulated_text:     String,
     pub active_tool_call:     Option<ToolCallStartedData>,
     pub pending_approval:     Option<PermissionRequestedData>,
-    /// 待作答的提问（ask 工具）；重连追赶时随快照下发
-    pub pending_ask:          Option<AskRequestedData>,
 }
 
 // =========================================================================
@@ -423,7 +380,6 @@ pub struct SessionRoom {
     pub command_queue:   Mutex<VecDeque<AgentCommand>>,
     pub active_turn:     RwLock<Option<ActiveTurnState>>,
     pub arbiter:         ApprovalArbiter,
-    pub ask_arbiter:     AskArbiter,
     pub cancel_token:    RwLock<CancellationToken>,
     /// 轮次占用权：由 CAS 抢占，确保同一房间任意时刻至多一个执行中的轮次
     pub is_running:      AtomicBool,
@@ -462,7 +418,6 @@ impl SessionRoom {
             command_queue: Mutex::new(VecDeque::new()),
             active_turn: RwLock::new(None),
             arbiter: ApprovalArbiter::new(),
-            ask_arbiter: AskArbiter::new(),
             cancel_token: RwLock::new(CancellationToken::new()),
             is_running: AtomicBool::new(false),
             plugins: RwLock::new(None),
@@ -498,7 +453,6 @@ impl SessionRoom {
             accumulated_text:     turn.accumulated_text,
             active_tool_call:     turn.active_tool_call,
             pending_approval:     turn.pending_approval,
-            pending_ask:          turn.pending_ask,
         })
     }
 
@@ -1844,80 +1798,6 @@ fn subagent_tool_results(parent_id: &str, results: Vec<(String, String, bool, Ve
             })
             .collect(),
         created_at: chrono::Utc::now().timestamp_millis(),
-    }
-}
-
-/// 把用户作答格式化为直接回交模型的文本。
-fn format_answers(questions: &[AskQuestion], answers: &[AskAnswer]) -> String {
-    let mut lines = vec!["User answers:".to_string()];
-    for (i, q) in questions.iter().enumerate() {
-        let Some(a) = answers.get(i) else {
-            lines.push(format!("- {} ({}): [no answer]", q.id, q.question));
-            continue;
-        };
-        let mut parts = a.selected.clone();
-        if !a.custom_input.trim().is_empty() {
-            parts.push(format!("Other: {}", a.custom_input.trim()));
-        }
-        let text = if parts.is_empty() {
-            "[no selection]".to_string()
-        } else {
-            parts.join(", ")
-        };
-        lines.push(format!("- {} ({}): {}", q.id, q.question, text));
-    }
-    lines.join("\n")
-}
-
-#[async_trait::async_trait]
-impl AskRunner for RoomSubagentRunner {
-    /// 广播提问事件并等待用户作答：先到先得，超时/取消均返回错误让模型自行决策。
-    async fn ask_questions(&self, questions: Vec<AskQuestion>) -> Result<String, String> {
-        let room = &self.room;
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let request = AskRequestedData {
-            request_id: request_id.clone(),
-            questions:  questions.clone(),
-        };
-        if let Some(turn) = room.active_turn.write().as_mut() {
-            turn.pending_ask = Some(request.clone());
-        }
-        room.broadcast(AgentEvent::AskRequested(request));
-
-        let rx = room.ask_arbiter.register(request_id.clone()).await;
-        let cancel = room.cancel_token.read().clone();
-        let waited = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => None,
-            waited = tokio::time::timeout(ASK_TIMEOUT, rx) => waited.ok(),
-        };
-
-        // 无论走哪条分支都要回收等待项，否则注册表会随轮次无限增长
-        room.ask_arbiter.forget(&request_id).await;
-        if let Some(turn) = room.active_turn.write().as_mut() {
-            turn.pending_ask = None;
-        }
-
-        let (response, cancelled) = match waited {
-            Some(Ok(r)) => (Some(r), false),
-            _ => (None, true),
-        };
-        room.broadcast(AgentEvent::AskResolved {
-            request_id,
-            is_cancelled: cancelled,
-            resolved_by: if cancelled {
-                "system (timeout)".into()
-            } else {
-                "user".into()
-            },
-        });
-
-        match response {
-            // 用户主动取消：不当作成功回答，让模型知道提问被拒
-            Some(r) if r.is_cancelled => Err("User cancelled the question without answering.".into()),
-            Some(r) => Ok(format_answers(&questions, &r.answers)),
-            None => Err("No answer received (the user did not respond in time). Proceed using your best judgement and clearly state the assumption you made.".into()),
-        }
     }
 }
 

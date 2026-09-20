@@ -89,49 +89,12 @@ export interface PermissionRequestedData {
   input: unknown;
 }
 
-/** ask 工具：单个选项 */
-export interface AskOption {
-  label: string;
-  description?: string;
-}
-
-/** ask 工具：单个问题 */
-export interface AskQuestion {
-  id: string;
-  question: string;
-  options: AskOption[];
-  /** true = 多选 */
-  is_multi?: boolean;
-  /** 推荐选项下标 */
-  recommended?: number | null;
-}
-
-/** ask 工具：用户对单个问题的回答 */
-export interface AskAnswer {
-  selected: string[];
-  custom_input?: string;
-}
-
-/** ask 工具：提问请求 */
-export interface AskRequestedData {
-  request_id: string;
-  questions: AskQuestion[];
-}
-
-/** ask 工具：作答响应 */
-export interface AskResponse {
-  request_id: string;
-  answers: AskAnswer[];
-  is_cancelled: boolean;
-}
-
 export interface ActiveTurnCatchUp {
   turn_id: string;
   accumulated_thinking: string;
   accumulated_text: string;
   active_tool_call?: ToolCallStartedData | null;
   pending_approval?: PermissionRequestedData | null;
-  pending_ask?: AskRequestedData | null;
 }
 
 export interface TokenUsage {
@@ -153,8 +116,6 @@ export type AgentEvent =
   | { type: 'tool_call_finished'; data?: { call_id: string; tool_name: string; output: string; is_error: boolean; subagent_id?: string | null } }
   | { type: 'permission_requested'; data?: PermissionRequestedData }
   | { type: 'permission_resolved'; data?: { request_id: string; decision: ApprovalDecision; resolved_by: string } }
-  | { type: 'ask_requested'; data?: AskRequestedData }
-  | { type: 'ask_resolved'; data?: { request_id: string; is_cancelled: boolean; resolved_by: string } }
   | { type: 'active_branch_changed'; data?: { current_leaf_id: string } }
   | { type: 'model_changed'; data?: { active_model: string } }
   | { type: 'agent_changed'; data?: { active_agent: string } }
@@ -260,7 +221,6 @@ export type ClientMessage =
     }
   | { kind: 'command'; command: AgentCommand }
   | { kind: 'approval'; response: { request_id: string; decision: ApprovalDecision } }
-  | { kind: 'ask'; response: AskResponse }
   | { kind: 'cancel' };
 
 /** 会话索引记录 (SessionRecord) */

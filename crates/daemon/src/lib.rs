@@ -163,15 +163,9 @@ impl DaemonState {
 
         // 回填 subagent runner：TaskTool 需要房间，房间持有注册表，一次性槽位解环
         let subagent_runner = Arc::new(RoomSubagentRunner::new(room.clone()));
-        if let Err(e) = runner_slot.set(subagent_runner.clone()) {
+        if let Err(e) = runner_slot.set(subagent_runner) {
             room.broadcast(AgentEvent::Error {
                 message: format!("Failed to bind subagent runner: {}", e),
-            });
-        }
-        // ask 工具与子 Agent 共用同一个房间代理
-        if let Err(e) = runner_slot.set_ask(subagent_runner) {
-            room.broadcast(AgentEvent::Error {
-                message: format!("Failed to bind ask runner: {}", e),
             });
         }
 
@@ -1450,18 +1444,6 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
                             room_clone.broadcast(AgentEvent::PermissionResolved {
                                 request_id:  response.request_id,
                                 decision:    response.decision,
-                                resolved_by: client_name.clone(),
-                            });
-                        }
-                    }
-                    ClientMessage::Ask { response } => {
-                        let request_id = response.request_id.clone();
-                        let is_cancelled = response.is_cancelled;
-                        let resolved = room_clone.ask_arbiter.resolve(&request_id, response).await;
-                        if resolved {
-                            room_clone.broadcast(AgentEvent::AskResolved {
-                                request_id,
-                                is_cancelled,
                                 resolved_by: client_name.clone(),
                             });
                         }

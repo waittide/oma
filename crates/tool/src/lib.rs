@@ -94,13 +94,6 @@ pub trait SubagentRunner: Send + Sync {
     async fn run_subagent(&self, agent: &str, prompt: &str) -> Result<String, String>;
 }
 
-/// 向用户提问的委托 Trait：实现方负责广播问题、等待作答并格式化结果。
-#[async_trait::async_trait]
-pub trait AskRunner: Send + Sync {
-    /// 返回可直接回交给模型的文本；用户取消或超时时返回 Err。
-    async fn ask_questions(&self, questions: Vec<oma_contract::AskQuestion>) -> Result<String, String>;
-}
-
 /// 统一 Tool Trait
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
@@ -797,7 +790,6 @@ impl Tool for ShellTool {
 #[derive(Default)]
 pub struct RunnerSlot {
     subagent: std::sync::OnceLock<Arc<dyn SubagentRunner>>,
-    ask:      std::sync::OnceLock<Arc<dyn AskRunner>>,
 }
 
 impl RunnerSlot {
@@ -813,103 +805,6 @@ impl RunnerSlot {
 
     pub fn get(&self) -> Option<&Arc<dyn SubagentRunner>> {
         self.subagent.get()
-    }
-
-    /// 回填提问 runner（与 subagent runner 同为一次性槽位，避免环状引用）
-    pub fn set_ask(&self, runner: Arc<dyn AskRunner>) -> Result<()> {
-        self.ask
-            .set(runner)
-            .map_err(|_| anyhow::anyhow!("Ask runner is already bound"))
-    }
-
-    pub fn get_ask(&self) -> Option<&Arc<dyn AskRunner>> {
-        self.ask.get()
-    }
-}
-
-// ==========================================
-// 6. Ask Tool（向用户提问）
-// ==========================================
-
-pub struct AskTool {
-    runner: Arc<RunnerSlot>,
-}
-
-impl AskTool {
-    pub fn new(runner: Arc<RunnerSlot>) -> Self {
-        Self { runner }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct AskInput {
-    questions: Vec<oma_contract::AskQuestion>,
-}
-
-#[async_trait::async_trait]
-impl Tool for AskTool {
-    fn name(&self) -> &'static str {
-        "ask"
-    }
-
-    fn description(&self) -> &'static str {
-        "Ask the user to choose among options when the right course of action is ambiguous. \
-         Use `is_multi: true` to allow multiple selections; the UI always adds an \"Other\" free-form \
-         entry, so never add one yourself. Prefer resolving ambiguity from the repository first."
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "questions": {
-                    "type": "array",
-                    "description": "Questions to ask; group related ones together",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "string", "description": "Stable identifier used in the answer" },
-                            "question": { "type": "string", "description": "Question text" },
-                            "options": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "label": { "type": "string", "description": "Short option label" },
-                                        "description": { "type": "string", "description": "Optional tradeoffs/explanations" }
-                                    },
-                                    "required": ["label"]
-                                }
-                            },
-                            "is_multi": { "type": "boolean", "description": "Allow multiple selections" },
-                            "recommended": { "type": "integer", "description": "Zero-based recommended option index" }
-                        },
-                        "required": ["id", "question", "options"]
-                    }
-                }
-            },
-            "required": ["questions"]
-        })
-    }
-
-    async fn execute(&self, _workspace: &Path, input: serde_json::Value) -> ToolOutput {
-        let input: AskInput = match serde_json::from_value(input) {
-            Ok(v) => v,
-            Err(e) => return ToolOutput::error(format!("Invalid arguments for ask: {}", e)),
-        };
-        if input.questions.is_empty() {
-            return ToolOutput::error("questions must not be empty");
-        }
-        let Some(runner) = self.runner.get_ask() else {
-            return ToolOutput::error("Ask runner is not configured in this runtime.");
-        };
-
-        match runner.ask_questions(input.questions).await {
-            Ok(text) => ToolOutput::success(truncate_output(&text)),
-            Err(e) => ToolOutput::error(format!("Ask failed: {}", e)),
-        }
     }
 }
 
@@ -997,8 +892,7 @@ impl ToolRegistry {
         reg.register(Arc::new(WriteTool));
         reg.register(Arc::new(EditTool));
         reg.register(Arc::new(ShellTool::default()));
-        reg.register(Arc::new(TaskTool::new(runner_slot.clone())));
-        reg.register(Arc::new(AskTool::new(runner_slot)));
+        reg.register(Arc::new(TaskTool::new(runner_slot)));
         reg
     }
 
@@ -1321,50 +1215,6 @@ mod tests {
             !marker.exists(),
             "background child survived cancellation: process group was not killed on drop"
         );
-        Ok(())
-    }
-
-    /// 未绑定 runner 时必须报错而不是静默返回成功，否则模型会拿到空答案。
-    #[tokio::test]
-    async fn test_ask_without_runner_reports_error() -> Result<()> {
-        let ask = AskTool::new(Arc::new(RunnerSlot::new()));
-        let out = ask
-            .execute(
-                Path::new("/tmp"),
-                serde_json::json!({
-                    "questions": [{
-                        "id": "q1",
-                        "question": "pick one",
-                        "options": [{ "label": "a" }, { "label": "b" }]
-                    }]
-                }),
-            )
-            .await;
-        assert!(out.is_error);
-        assert!(out.output.contains("Ask runner is not configured"));
-        Ok(())
-    }
-
-    /// 空 questions 由 schema 层与运行时双重拦截。
-    #[tokio::test]
-    async fn test_ask_rejects_empty_questions() -> Result<()> {
-        let ask = AskTool::new(Arc::new(RunnerSlot::new()));
-        let out = ask
-            .execute(Path::new("/tmp"), serde_json::json!({ "questions": [] }))
-            .await;
-        assert!(out.is_error);
-        Ok(())
-    }
-
-    /// 参数缺失必填字段时给出可读错误，而不是 panic。
-    #[tokio::test]
-    async fn test_ask_rejects_missing_question_fields() -> Result<()> {
-        let ask = AskTool::new(Arc::new(RunnerSlot::new()));
-        let out = ask
-            .execute(Path::new("/tmp"), serde_json::json!({ "questions": [{ "id": "q1" }] }))
-            .await;
-        assert!(out.is_error);
-        assert!(out.output.contains("Invalid arguments for ask"));
         Ok(())
     }
 

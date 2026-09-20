@@ -331,23 +331,8 @@
     "imageBlock": "[画像]",
     "emptySnippet": "(空)"
   },
-  "ask": {
-    "other": "その他（自由入力）",
-    "otherPlaceholder": "回答を入力…",
-    "submit": "送信",
-    "skip": "スキップ",
-    "recommended": "推奨",
-    "multiHint": "複数選択",
-    "singleHint": "単一選択",
-    "askTitle": "モデルが入力を求めています",
-    "questionOf": "質問 {current} / {total}",
-    "prev": "前へ",
-    "next": "次へ",
-    "customOn": "自由入力を使用"
-  },
   "notify": {
     "turnDone": "タスクが完了しました",
-    "askNeeded": "モデルが確認を求めています",
     "approvalNeeded": "ツール実行の承認が必要です"
   }
 }

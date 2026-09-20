@@ -27,7 +27,6 @@ import { prettyJson } from '../lib/format';
 import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
 import { copyText } from '../lib/clipboard';
 import { ensureNotificationPermission } from '../lib/notify';
-import AskPanel from './AskPanel.vue';
 import ContextGauge from './ContextGauge.vue';
 import HistoryTree from './HistoryTree.vue';
 import type { ApprovalMode } from '../types';
@@ -514,7 +513,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
     </Transition>
 
     <footer class="composer">
-      <AskPanel />
       <div v-if="pendingUploads.length > 0" class="attach-row">
         <span v-for="(a, i) in pendingUploads" :key="a.ref" class="attach-chip">
           <LuPaperclip :size="11" />

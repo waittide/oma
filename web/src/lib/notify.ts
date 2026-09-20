@@ -56,11 +56,10 @@ function pushSystem(title: string, body: string) {
 }
 
 /** 需要人参与的事件类型。 */
-export type HumanEvent = 'turn' | 'ask' | 'approval';
+export type HumanEvent = 'turn' | 'approval';
 
 const EVENT_TITLE: Record<HumanEvent, string> = {
   turn: 'notify.turnDone',
-  ask: 'notify.askNeeded',
   approval: 'notify.approvalNeeded',
 };
 

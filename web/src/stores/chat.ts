@@ -9,8 +9,6 @@ import type {
   AgentSummary,
   ApprovalDecision,
   ApprovalMode,
-  AskAnswer,
-  AskRequestedData,
   Block,
   ChatMessage,
   ClientMessage,
@@ -63,8 +61,6 @@ function setLive(next: LiveTurn) {
 
 export const running = ref(false);
 export const pendingApproval = ref<PermissionRequestedData | null>(null);
-/** 待作答的提问（ask 工具）；null 表示无待办 */
-export const pendingAsk = ref<AskRequestedData | null>(null);
 export const currentLeafId = ref<string | null>(null);
 /**
  * 视图截断点。
@@ -325,17 +321,6 @@ function handleEvent(ev: AgentEvent) {
         pendingApproval.value = null;
       }
       break;
-    case 'ask_requested':
-      pendingAsk.value = ev.data ?? null;
-      if (ev.data?.questions.length) {
-        notifyHumanEvent('ask', ev.data.questions[0]!.question);
-      }
-      break;
-    case 'ask_resolved':
-      if (ev.data && pendingAsk.value?.request_id === ev.data.request_id) {
-        pendingAsk.value = null;
-      }
-      break;
     case 'active_branch_changed':
       currentLeafId.value = ev.data?.current_leaf_id ?? null;
       // 编辑重发同样广播此事件：轮次进行中保留实时缓冲，避免打断流式渲染
@@ -400,7 +385,6 @@ function applyCatchUp(c: ActiveTurnCatchUp | null) {
     });
   setLive({ segments });
   pendingApproval.value = c.pending_approval ?? null;
-  pendingAsk.value = c.pending_ask ?? null;
 }
 
 function connect() {
@@ -496,7 +480,6 @@ export function reset() {
   tree.value = [];
   setLive(emptyLive());
   pendingApproval.value = null;
-  pendingAsk.value = null;
   running.value = false;
   finalizing.value = false;
   currentLeafId.value = null;
@@ -561,16 +544,6 @@ export function respond(decision: ApprovalDecision) {
   send({
     kind: 'approval',
     response: { request_id: pendingApproval.value.request_id, decision },
-  });
-}
-
-/** 回答 ask 提问；is_cancelled = true 表示跳过作答。 */
-export function respondAsk(answers: AskAnswer[], is_cancelled = false) {
-  const pending = pendingAsk.value;
-  if (!pending) return;
-  send({
-    kind: 'ask',
-    response: { request_id: pending.request_id, answers, is_cancelled },
   });
 }
 
