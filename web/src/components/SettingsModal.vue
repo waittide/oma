@@ -19,10 +19,10 @@ import {
   LuX,
 } from 'vue-icons-plus/lu';
 import { api } from '../api';
-import OModelSelect from './ui/OModelSelect.vue';
 import { ACCENTS, NEUTRAL_TOKENS, PALETTE_TOKENS, config, darkPalettes, lightPalettes, loadConfig, palettes, refreshPalettes, saveConfig, saveTheme, theme, type Palette } from '../stores/theme';
 import { agents } from '../stores/chat';
 import { baseUrl, normalizeBaseUrl, setConnection, token } from '../stores/connection';
+import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
 import { clientConfig, clientConfigReady, saveClientConfig } from '../stores/clientConfig';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
 import { activeSession, refresh as refreshSessions } from '../stores/sessions';
@@ -496,6 +496,10 @@ const providerGroups = computed<Record<string, ModelInfo[]>>(() => {
     Object.entries(config.value.providers).map(([id, p]) => [id, p.models ?? []]),
   );
 });
+
+/** 模型选择器的分组选项与当前展示名。 */
+const modelGroups = computed(() => toModelSelectGroups(providerGroups.value));
+const modelLabel = computed(() => modelSelectorLabel(providerGroups.value, defaults.model));
 
 const BUILTIN_AGENTS = ['task', 'plan', 'explore', 'review', 'build'];
 const agentOptions = computed<{ value: string; label: string }[]>(() => {
@@ -1619,7 +1623,14 @@ function pickLocale(v: Locale) {
                   <span class="srow-title">{{ t('defaultModel') }}</span>
                 </div>
                 <div class="srow-ctl wide">
-                  <OModelSelect v-model="defaults.model" :groups="providerGroups" width="300px" />
+                  <UiSelect
+                    :model-value="defaults.model"
+                    :groups="modelGroups"
+                    style="width: 300px"
+                    @update:model-value="(v) => (defaults.model = String(v ?? ''))"
+                  >
+                    <template v-if="modelLabel" #value>{{ modelLabel }}</template>
+                  </UiSelect>
                 </div>
               </div>
               <div class="srow">

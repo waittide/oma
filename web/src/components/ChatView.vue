@@ -21,10 +21,10 @@ import {
   LuX,
   LuZap,
 } from 'vue-icons-plus/lu';
-import OModelSelect from './ui/OModelSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
 import MessageRail from './MessageRail.vue';
 import { prettyJson } from '../lib/format';
+import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
 import { copyText } from '../lib/clipboard';
 import { ensureNotificationPermission } from '../lib/notify';
 import AskPanel from './AskPanel.vue';
@@ -39,6 +39,10 @@ const props = defineProps<{ online: boolean }>();
 const emit = defineEmits<{ needSettings: [] }>();
 
 const { t } = useTranslations('chat');
+
+/** 模型选择器的分组选项与当前展示名（provider 作分组标题）。 */
+const modelGroups = computed(() => toModelSelectGroups(chat.modelCatalog.value));
+const modelLabel = computed(() => modelSelectorLabel(chat.modelCatalog.value, chat.activeModel.value));
 const { t: tc } = useTranslations('common');
 const { t: ta } = useTranslations('approval');
 const treeOpen = ref(false);
@@ -613,12 +617,14 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
               style="width: 118px"
               @update:model-value="(v) => chat.setAgent(String(v ?? ''))"
             />
-            <OModelSelect
-              v-model="chat.activeModel.value"
-              :groups="chat.modelCatalog.value"
-              width="170px"
-              @update:model-value="chat.setModel"
-            />
+            <UiSelect
+              :model-value="chat.activeModel.value"
+              :groups="modelGroups"
+              style="width: 170px"
+              @update:model-value="(v) => chat.setModel(String(v ?? ''))"
+            >
+              <template v-if="modelLabel" #value>{{ modelLabel }}</template>
+            </UiSelect>
             <!-- 推理等级紧跟在模型选择右侧；仅支持思考的模型才展示 -->
             <UiSelect
               v-if="supportsThinking"
