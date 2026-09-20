@@ -1,16 +1,27 @@
 # Oma 多类型多客户端协同 Agent 技术规格书 (Technical Specification)
 
-> 版本：v2.4
+> 版本：v2.5
 > 状态：Implementation Verified（文档与代码同步）
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
 
-> **v2.4 变更（向 pi 全面对齐）**：
+> **v2.5 变更（恢复 Agent 预设）**：
+> 用户要求恢复被裁剪的预设能力（前后端），现回到「**模板即提示词**」：
+> - 重新引入 5 套内置模板（`task` / `plan` / `explore` / `review` / `build`）
+> - 项目级 `<workspace>/.oma/agents/` 与全局 `~/.config/oma/agents/` 可覆盖内置；
+>   清单经 `GET /api/presets` 暴露，设置面板「预设」页可增删改
+> - 预设声明的 `tools` 同时约束**下发给模型的工具清单**与**可执行工具集合**
+> - `settings.json` 重新有 `default_agent`；会话头重新记录 `agent`
+> - 预设正文之上仍依次拼接：运行环境块 → 项目上下文（`AGENTS.md`）→ 技能目录
+>
+> **仍然保持删除**（pi 内核不内置）：熔断器、`ask` 提问工具、工具审批系统、
+> 内置 MCP 客户端、子代理 `task` 工具。
+
+> **v2.4 变更（向 pi 对齐的部分）**：
 > - **工具实现方式**：`find` / `grep` 不再自研文件遍历，改为调用外部 `fd` / `ripgrep`
 >   （缺失时自动下载到 `<数据目录>/bin`，`OMA_OFFLINE=1` 可禁用）；工具输出截断统一为
 >   行数（2000）+ 字节（50KB）双上限，各工具条数限额与提示文案对齐 pi
-> - **能力裁剪**（pi 内核不内置，已删除）：熔断器、`ask` 提问工具、工具审批系统、
->   内置 MCP 客户端、子代理 `task` 工具与 Agent 预设；系统提示词改为单一内置常量
 > - **工具集**：`shell` 更名为 `bash`，工具共 7 个（`bash` / `edit` / `find` / `grep` / `ls` / `read` / `write`）
+> - 新增 `AGENTS.md` / `CLAUDE.md` 上下文文件加载与插件生命周期钩子
 
 ---
 
@@ -70,7 +81,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | `crates/provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
 | `crates/tool` | 内置 7 大工具（`read`, `write`, `edit` 原子替换补丁, `bash` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含 pi 对齐的输出截断与工具集定义。 |
 | `crates/plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API（文件/命令/日志）由 Rust 侧白名单桥接并限制在 workspace 内。 |
-| `crates/config` | 配置文件 `settings.json` / `models.json` 解析、单一内置系统提示词（`include_str!`）与环境块/技能目录注入、调色板加载、数据目录定位。 |
+| `crates/config` | 配置文件 `settings.json` / `models.json` 解析、内置 Agent 预设（5 套模板）与三层覆盖、上下文文件（`AGENTS.md`）加载、提示词拼装、调色板加载、数据目录定位。 |
 | `crates/runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、70% 阈值两阶段上下文压缩。 |
 | `crates/daemon` | 基于 Axum 的 HTTP REST 与 WebSocket 网关、Bearer Token 鉴权中间件、静态路由与 CORS。 |
 | `crates/client` | 纯 Rust 客户端 SDK：`OmaClient` 封装 WebSocket 握手/事件流/指令，`SessionApi` 提供 REST 会话管理。 |
@@ -472,6 +483,7 @@ pub struct ContextUsage {
 ```json
 {
   "default_model": "my_anthropic/claude-3-7-sonnet",
+  "default_agent": "task",
   "default_reasoning_level": "medium",
   "theme": {
     "mode": "dark",
@@ -513,36 +525,54 @@ pub struct ContextUsage {
 > `api_type` 取值 `anthropic | completion | response | google`。
 > 旧版 `config.toml` 首次加载时自动迁移为上述两个文件，原文件备份为 `config.toml.bak`。
 >
-> `OmaConfig` 启用 `deny_unknown_fields`：字段只有 `default_model` / `default_reasoning_level` /
-> `theme` / `server` / `providers`。已删除的能力（`default_agent` / `default_approval_mode` /
-> `mcp_servers`）不再接受，写进配置会直接被 `PUT /api/config` 拒绝。
+> `OmaConfig` 启用 `deny_unknown_fields`：字段只有 `default_model` / `default_agent` /
+> `default_reasoning_level` / `theme` / `server` / `providers`。仍未恢复的能力
+> （`default_approval_mode` / `mcp_servers`）不再接受，写进配置会直接被 `PUT /api/config` 拒绝。
 
 ### 5.2 请求头与请求体三级递归合并规范
 优先级：`Provider 级配置` $\prec$ `Model 级配置` $\prec$ `Reasoning Effort 覆盖`。
 - 同名 HTTP Header 强制后序覆盖前序；
 - JSON Body 字段执行递归对象合并，支持灵活注入厂商私有字段。
 
-### 5.3 系统提示词与技能（Skill）
+### 5.3 Agent 预设与技能（Skill）
 
-1. **单一内置系统提示词**：
-   - 不再有 Agent 模板/预设分层（内置 5 套模板、`.oma/agents/`、`~/.config/oma/agents/`
-     与 `GET /api/presets` 均已删除）——pi 内核也没有「角色切换」；
-   - 唯一来源是编译期内嵌常量 `oma_config::DEFAULT_SYSTEM_PROMPT`
-     （`crates/config/src/prompts/system_prompt.md`），
-     由 `build_system_prompt(workspace, model)` 拼装运行环境块与技能目录；
-   - 系统动态向 System Prompt 追加实时环境信息：
-     ```text
-     <runtime_context>
-     - Workspace: /absolute/path/to/project
-     - Operating System: linux (x86_64)
-     - Today: 2026-09-20
-     - Active Model: my_anthropic/claude-3-7-sonnet
-     </runtime_context>
-     ```
-   - 因此工具清单不再受「预设声明的 tools」约束，会话下发全部已注册工具
-     （内置 7 个 + 插件注册的）。
+1. **Agent 预设 = 角色 + 工具白名单，且模板即提示词**：
+   - 编译期内嵌 5 套模板：`task` / `plan` / `explore` / `review` / `build`
+     （`crates/config/src/templates/*.md`）；
+   - 同名文件优先取更具体的一层：项目 `<workspace>/.oma/agents/<id>.md`
+     > 全局 `~/.config/oma/agents/<id>.md` > 内置模板；
+   - 文件为 Markdown + YAML frontmatter，字段全部可选且忽略未知键：
+     `name` / `description` / `tools`；frontmatter 损坏时整篇退化为正文；
+   - 清单经 `GET /api/presets` 暴露（scope = bundled | global | project），
+     设置面板「预设」页可增删改；列表同时下发 `body`（仅正文）与 `content`
+     （完整原文），编辑器只展示/回写 `body`；
+   - **`tools` 是硬约束**：既过滤下发给模型的工具清单，也拦截实际执行
+     （为空表示不限制）。因此内置模板必须只声明真实存在的工具——
+     写过时的名字会静默地「少工具」，已加断言拦住；
+   - `settings.json` 的 `default_agent` 决定新会话默认角色，
+     会话内可切换（`SetAgent` 指令 → `AgentChanged` 事件），会话头记录 `agent`。
 
-2. **技能（Skill）是按需取用的领域知识**：
+2. **System Prompt 的拼装顺序**：
+   ```text
+   <预设正文>
+
+   <runtime_context>            ← 工作区 / 系统 / 日期 / 当前模型
+
+   <project_context>            ← AGENTS.md / CLAUDE.md（见 5.5）
+
+   <available_skills>           ← 仅目录（id + 描述 + 路径）
+   ```
+   环境块示例：
+   ```text
+   <runtime_context>
+   - Workspace: /absolute/path/to/project
+   - Operating System: linux (x86_64)
+   - Today: 2026-09-20
+   - Active Model: my_anthropic/claude-3-7-sonnet
+   </runtime_context>
+   ```
+
+3. **技能（Skill）是按需取用的领域知识**：
    - 按三层根目录发现，每层布局为 `<root>/<skill-name>/SKILL.md`
      （技能自带资源放同级的 `scripts/` 等子目录）：
      | 层 | 路径 |
@@ -589,10 +619,37 @@ oma.on("tool_call", (e) => ({ block: true, reason?: string }) | undefined);
   `GET /api/tools?workspace=...` 以 `kind: "plugin"` 下发；
 - `execute`/`handler` 必须**同步**返回，返回 Promise 会被显式拒绝；每次调用新建
   JS 上下文，插件顶层状态不跨调用保留；
-- `tool_call` 钩子在工具执行前评估，任一插件返回 `block` 即拦截；
+- 事件钩子（`oma.on(event, fn)`）目前支持：
+  | 事件 | 触发时机 | 返回值语义 |
+  |---|---|---|
+  | `tool_call` | 工具执行前 | `{ block, reason }` 拦截 |
+  | `tool_result` | 工具结果产出后 | — |
+  | `user_input` | 收到用户输入时 | `{ content }` 改写，或 `{ block, reason }` 拦截整轮 |
+  | `turn_start` / `turn_end` | 轮次起止 | —（载荷含 `turn_id`，`turn_end` 另有 `stop_reason` / `usage`） |
+  | `session_start` / `session_shutdown` | 房间装配完成 / 删除会话 | — |
+- 钩子抛错只告警（插件故障不该阻断用户说话或让轮次失败）；`user_input` 拦截时
+  本轮不会开始（不发 `UserMessage`、不入队、不落库）；
 - 单个插件加载失败（语法错误等）只告警跳过，不影响其余插件与会话。
 
 > **安全**：插件与 pi 扩展一样拥有宿主进程权限（文件访问限在 workspace），安装前需审查源码。
+
+### 5.5 上下文文件（AGENTS.md / CLAUDE.md）
+
+项目里写好的约定不该等模型想起去 `read` 才生效，因此常驻系统提示词：
+
+| 层 | 路径 |
+|---|---|
+| global | `<配置目录>/oma/AGENTS.md`（由 `oma_config::global_context_dir()` 定位） |
+| 祖先 | 自工作区向上**直到文件系统根**逐级查找 |
+
+- 候选名按优先级：`AGENTS.override.md` > `AGENTS.md` > `AGENTS.MD` > `CLAUDE.md` > `CLAUDE.MD`；
+  同一目录只取**一个**（两份互相矛盾的说明一起进上下文只会更糟）；
+- 顺序为「全局 → 根 → … → 工作区」，越靠近工作区越靠后（越具体）；
+- 注入形态：`<project_context>` 包一组 `<project_instructions path="…">`；
+- 去 BOM；单个文件不可读只跳过，不让整段提示词构建失败。
+
+> 与 pi 的差异：pi 对嵌套 git worktree 会跳过被「遮蔽」的那份，oma 尚未实现
+> （待 worktrees 能力一并做）；路径变量名也不同（pi 用 `~/.pi/agent/AGENTS.md`）。
 
 ---
 
@@ -761,7 +818,12 @@ ToolOutput {
 | `GET` | `/api/sessions/{id}/attachments/{name}` | 下载/预览附件 |
 | `GET` | `/api/workspace/tree?workspace=...` | 获取工作区目录文件树（深度 4、最多 2000 项） |
 | `GET` | `/api/workspace/file?workspace=...&path=...` | 读取工作区文件内容（供代码查看与编辑器） |
-| `GET` | `/api/tools` | 列出可用工具（内置 7 个 + 插件注册的，插件项带 `kind: "plugin"`） |
+| `GET` | `/api/tools` | 列出可用工具（内置 7 个 + 插件注册的，插件项带 `kind: "plugin"`），供预设编辑器勾选 |
+| `GET` | `/api/presets?workspace=...` | 列出 Agent 预设（bundled / global / project） |
+| `GET`/`PUT`/`DELETE` | `/api/presets/{preset_id}` | 读取 / 写入 / 删除预设；内置预设只读 |
+| `GET` | `/api/system-prompt?workspace=&model=&agent=` | 返回真正下发的系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录）；缺 `agent` 用 `default_agent` |
+| `GET` | `/api/git/status?workspace=...` | 当前分支 + 变更文件清单 |
+| `GET` | `/api/git/diff?workspace=&path=` | 单文件相对 HEAD 的 diff（未跟踪文件按整篇新增） |
 | `GET` | `/api/skills?workspace=...` | 列出技能（global / agent / project） |
 | `GET`/`PUT`/`DELETE` | `/api/skills/{skill_id}` | 读取 / 写入 / 删除技能 |
 | `GET`/`PUT` | `/api/config` | 读取（默认脱敏 `api_key`，`?reveal=1` 返回明文）/ 写入服务端配置 |
@@ -888,7 +950,7 @@ pub struct Palette {
 | 会话存储并发 | 每会话一把写锁，写路径先重读文件再追加/重写，保证追加串行；读取始终以磁盘为准（不缓存快照），因此同数据目录上的多个实例能互相看到最新内容。旧的 `max_connections = 1` 连接池随 sqlx 一并移除。 |
 | 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
 | 配置校验 | `OmaConfig` 启用 `deny_unknown_fields`：拼错的键名（或前端字段映射错误）在 `PUT /api/config` 直接 400，不再「保存成功但配置没变」；启动时配置文件解析失败即报错退出，而非静默回退默认值。 |
-| 能力裁剪 | MCP / 子代理 / 审批 / 提问 / 熔断器 / Agent 预设均为 pi 内核不内置的能力，已从内核删除；如需保留应以插件（QuickJS）形式重建，而不是在内核里重开一套并行机制。 |
-| 技能发现 | 按 `<root>/<name>/SKILL.md` 三层发现（global/agent/project），同名时更具体的一层覆盖更宽泛的一层；删除技能会连同其目录内的 `scripts/` 等资源一并移除（id 经严格校验，不可穿越）。改为系统提示词单一常量后，技能不再与任何「预设」概念发生关系。 |
+| 能力裁剪 | 已删除且未恢复：MCP / 子代理 / 审批 / 提问 / 熔断器。理由是这些能力 pi 内核不内置，如需保留应以插件（QuickJS）形式重建。**例外**：Agent 预设已应用户要求恢复（见 v2.5），因为它在本项目里承担「角色 + 工具白名单」的职责，不是 pi 式扩展的重复实现。 |
+| 技能发现 | 按 `<root>/<name>/SKILL.md` 三层发现（global/agent/project），同名时更具体的一层覆盖更宽泛的一层；删除技能会连同其目录内的 `scripts/` 等资源一并移除（id 经严格校验，不可穿越）。技能与预设是两套独立机制：预设决定「以什么角色、能用哪些工具运行」，技能只是一段按需读取的知识，同名也不会互相覆盖。 |
 | skill frontmatter 容错 | 技能的 YAML 字段全部可选且忽略未知键：用户目录里存在只有 `description` 与自有键的文件时，名称即目录名，不应因严格解析而整条不可用。 |
-| 设置面板结构 | 提供商页：提供商配置为单个带底色容器（标题在其内），模型配置为容器外分区标题，其下每个模型各自一个容器；工具清单页只读展示 `GET /api/tools`（工具授权随预设一并移除）。 |
+| 设置面板结构 | 提供商页：提供商配置为单个带底色容器（标题在其内），模型配置为容器外分区标题，其下每个模型各自一个容器；预设页的工具授权用多选下拉（标签可逐个移除），选项来自 `GET /api/tools`。 |
