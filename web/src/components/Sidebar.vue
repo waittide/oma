@@ -14,8 +14,7 @@ import {
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu';
-import { UiButton, UiIconButton, UiInput, UiModal, UiTooltip } from '@waittide/ui';
-import OSelect from './ui/OSelect.vue';
+import { UiButton, UiIconButton, UiInput, UiModal, UiSelect, UiTooltip } from '@waittide/ui';
 import * as store from '../stores/sessions';
 import { activeSessionId } from '../stores/sessions';
 import type { SessionRecord } from '../types';
@@ -202,11 +201,11 @@ const deleteTarget = computed(
           </UiIconButton>
         </template>
       </UiInput>
-      <OSelect
+      <UiSelect
         :model-value="store.sortValue.value"
         :options="sortOptions"
-        width="100%"
-        @update:model-value="store.setSort"
+        style="width: 100%"
+        @update:model-value="(v) => store.setSort(String(v ?? ''))"
       />
     </div>
 

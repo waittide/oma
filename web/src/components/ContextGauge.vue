@@ -72,7 +72,7 @@ const tip = computed(() => {
   justify-content: center;
   gap: 6px;
   flex-shrink: 0;
-  /* 高度与 OSelect/OModelSelect 保持一致（均 32px） */
+  /* 高度与选择控件保持一致（均 32px） */
   height: 32px;
   padding: 0 8px;
   border: 1px solid var(--line);

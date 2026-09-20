@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
-import { toast, UiButton, UiIconButton, UiInput, UiModal, UiTextarea, UiTooltip } from '@waittide/ui';
+import { toast, UiButton, UiIconButton, UiInput, UiModal, UiMultiSelect, UiSegmented, UiSelect, UiTextarea, UiTooltip } from '@waittide/ui';
 import {
   LuCheck,
   LuChevronRight,
@@ -19,10 +19,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu';
 import { api } from '../api';
-import ORadio from './ui/ORadio.vue';
-import OSelect from './ui/OSelect.vue';
 import OModelSelect from './ui/OModelSelect.vue';
-import OMultiSelect from './ui/OMultiSelect.vue';
 import { ACCENTS, NEUTRAL_TOKENS, PALETTE_TOKENS, config, darkPalettes, lightPalettes, loadConfig, palettes, refreshPalettes, saveConfig, saveTheme, theme, type Palette } from '../stores/theme';
 import { agents } from '../stores/chat';
 import { baseUrl, normalizeBaseUrl, setConnection, token } from '../stores/connection';
@@ -578,10 +575,10 @@ const availableTools = ref<ToolInfo[]>([]);
 const toolOptions = computed(() => [
   ...availableTools.value
     .filter((t) => t.kind === 'builtin')
-    .map((t) => ({ value: t.name, label: t.name, hint: shortHint(t.description) })),
+    .map((t) => ({ value: t.name, label: t.name, description: shortHint(t.description) })),
   ...availableTools.value
     .filter((t) => t.kind !== 'builtin')
-    .map((t) => ({ value: t.name, label: t.name, hint: t.description ? shortHint(t.description) : 'MCP' })),
+    .map((t) => ({ value: t.name, label: t.name, description: t.description ? shortHint(t.description) : 'MCP' })),
 ]);
 
 /** 工具描述在选项里只作提示，过长会撑爆弹层 */
@@ -1480,7 +1477,11 @@ function pickLocale(v: Locale) {
                   <span class="srow-title">{{ t('mode') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <ORadio v-model="mode" :options="modeOptions" />
+                  <UiSegmented
+                    :model-value="mode"
+                    :options="modeOptions"
+                    @update:model-value="(v) => (mode = v as typeof mode)"
+                  />
                 </div>
               </div>
               <div class="srow">
@@ -1489,7 +1490,12 @@ function pickLocale(v: Locale) {
                   <span class="srow-desc">{{ t('themeDesc') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <OSelect v-model="themeSel.light" :options="lightPaletteOptions" width="200px" />
+                  <UiSelect
+                    :model-value="themeSel.light"
+                    :options="lightPaletteOptions"
+                    style="width: 200px"
+                    @update:model-value="(v) => (themeSel.light = String(v ?? ''))"
+                  />
                 </div>
               </div>
               <div class="srow">
@@ -1497,7 +1503,12 @@ function pickLocale(v: Locale) {
                   <span class="srow-title">{{ t('themeRowDark') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <OSelect v-model="themeSel.dark" :options="darkPaletteOptions" width="200px" />
+                  <UiSelect
+                    :model-value="themeSel.dark"
+                    :options="darkPaletteOptions"
+                    style="width: 200px"
+                    @update:model-value="(v) => (themeSel.dark = String(v ?? ''))"
+                  />
                 </div>
               </div>
               <div class="srow">
@@ -1584,11 +1595,11 @@ function pickLocale(v: Locale) {
                   <span class="srow-title">{{ t('languageLabel') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <OSelect
+                  <UiSelect
                     :model-value="settingStore.locale"
                     :options="localeOptions"
-                    width="160px"
-                    @update:model-value="pickLocale"
+                    style="width: 160px"
+                    @update:model-value="(v) => pickLocale(v as typeof settingStore.locale)"
                   />
                 </div>
               </div>
@@ -1616,7 +1627,12 @@ function pickLocale(v: Locale) {
                   <span class="srow-title">{{ t('defaultAgent') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <OSelect v-model="defaults.agent" :options="agentOptions" width="200px" />
+                  <UiSelect
+                    :model-value="defaults.agent"
+                    :options="agentOptions"
+                    style="width: 200px"
+                    @update:model-value="(v) => (defaults.agent = String(v ?? ''))"
+                  />
                 </div>
               </div>
               <div class="srow">
@@ -1624,7 +1640,12 @@ function pickLocale(v: Locale) {
                   <span class="srow-title">{{ t('defaultApproval') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <OSelect v-model="defaults.approval" :options="approvalOptions" width="200px" />
+                  <UiSelect
+                    :model-value="defaults.approval"
+                    :options="approvalOptions"
+                    style="width: 200px"
+                    @update:model-value="(v) => (defaults.approval = v as typeof defaults.approval)"
+                  />
                 </div>
               </div>
               <div class="srow">
@@ -1633,7 +1654,12 @@ function pickLocale(v: Locale) {
                   <span class="srow-desc">{{ t('defaultReasoningDesc') }}</span>
                 </div>
                 <div class="srow-ctl">
-                  <OSelect v-model="defaults.reasoning" :options="effortOptions" width="200px" />
+                  <UiSelect
+                    :model-value="defaults.reasoning"
+                    :options="effortOptions"
+                    style="width: 200px"
+                    @update:model-value="(v) => (defaults.reasoning = String(v ?? ''))"
+                  />
                 </div>
               </div>
             </div>
@@ -1696,7 +1722,11 @@ function pickLocale(v: Locale) {
 
                   <label class="cfg-label">{{ t('fRequestFormat') }}</label>
                   <div class="cfg-ctl">
-                    <OSelect v-model="d.api_type" :options="apiTypeOptions" />
+                    <UiSelect
+                      :model-value="d.api_type"
+                      :options="apiTypeOptions"
+                      @update:model-value="(v) => (d.api_type = String(v ?? ''))"
+                    />
                   </div>
 
                   <label class="cfg-label">{{ t('fBaseUrl') }}</label>
@@ -1800,7 +1830,11 @@ function pickLocale(v: Locale) {
 
                   <label class="cfg-label">{{ t('capabilities') }}</label>
                   <div class="cfg-ctl">
-                    <OMultiSelect v-model="m.capabilities" :options="capabilityOptions" />
+                    <UiMultiSelect
+                      :model-value="m.capabilities"
+                      :options="capabilityOptions"
+                      @update:model-value="(v) => (m.capabilities = v.map(String) as typeof m.capabilities)"
+                    />
                   </div>
 
                   <!-- 推理映射仅在模型支持思考时才有意义；默认收起 -->
@@ -1993,7 +2027,11 @@ function pickLocale(v: Locale) {
                 <div v-if="d.origName === null || d.origName === editingMcp" class="prov card">
                   <div class="prov-head">
                     <UiInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
-                    <ORadio v-model="d.kind" :options="mcpKindOptions" />
+                    <UiSegmented
+                      :model-value="d.kind"
+                      :options="mcpKindOptions"
+                      @update:model-value="(v) => (d.kind = v as typeof d.kind)"
+                    />
                     <UiTooltip :content="tc('delete')" align="end">
                       <UiIconButton class="m-del" size="sm" :label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
                         <LuTrash2 :size="14" />
@@ -2078,8 +2116,9 @@ function pickLocale(v: Locale) {
         </div>
         <div class="field">
           <label>{{ t('scopeLabel') }}</label>
-          <OSelect
-            v-model="presetEdit.scope"
+          <UiSelect
+            :model-value="presetEdit.scope"
+            @update:model-value="(v) => (presetEdit.scope = v as typeof presetEdit.scope)"
             :options="[{ value: 'global', label: t('scopeGlobal') }, { value: 'project', label: t('scopeProject') }]"
             :disabled="!presetEdit.isNew"
           />
@@ -2095,10 +2134,11 @@ function pickLocale(v: Locale) {
       </div>
       <div class="field">
         <label>{{ t('skillTools') }}</label>
-        <OMultiSelect
-          v-model="presetEdit.tools"
+        <UiMultiSelect
+          :model-value="presetEdit.tools"
           :options="toolOptions"
           :placeholder="t('skillToolsAny')"
+          @update:model-value="(v) => (presetEdit.tools = v.map(String))"
         />
       </div>
       <div class="field">
@@ -2139,7 +2179,12 @@ function pickLocale(v: Locale) {
         </div>
         <div class="field">
           <label>{{ t('scopeLabel') }}</label>
-          <OSelect v-model="skillEdit.scope" :options="skillScopeOptions" :disabled="!skillEdit.isNew" />
+          <UiSelect
+          :model-value="skillEdit.scope"
+          :options="skillScopeOptions"
+          :disabled="!skillEdit.isNew"
+          @update:model-value="(v) => (skillEdit.scope = v as typeof skillEdit.scope)"
+        />
         </div>
       </div>
       <div class="field">
@@ -2188,21 +2233,21 @@ function pickLocale(v: Locale) {
         </div>
         <div class="field">
           <label>{{ t('themeModeLabel') }}</label>
-          <ORadio
-            v-model="paletteEdit.mode"
+          <UiSegmented
+            :model-value="paletteEdit.mode"
             :options="[{ value: 'light', label: t('modeLight') }, { value: 'dark', label: t('modeDark') }]"
             :disabled="!paletteEdit.isNew"
-            @update:model-value="newPaletteMode"
+            @update:model-value="(v) => newPaletteMode(v as typeof paletteEdit.mode)"
           />
         </div>
       </div>
       <div class="field">
         <label>{{ t('themeBaseLabel') }}</label>
-        <OSelect
+        <UiSelect
           :model-value="paletteEdit.base"
           :options="paletteBaseOptions"
-          width="100%"
-          @update:model-value="applyBase"
+          style="width: 100%"
+          @update:model-value="(v) => applyBase(String(v ?? ''))"
         />
         <span class="field-hint">{{ t('paletteBaseHint') }}</span>
       </div>
@@ -2349,7 +2394,7 @@ function pickLocale(v: Locale) {
   gap: 8px;
   margin-bottom: 12px;
 }
-/* 与「外观 / 技能」所用的 ORadio 分段控件保持同一视觉语言：
+/* 与「外观 / 技能」所用的 UiSegmented 分段控件保持同一视觉语言：
    同一容器底色与描边，选中项为强调色实底 + base 文字 */
 .tabs {
   display: flex;

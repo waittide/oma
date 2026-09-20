@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import { toast, UiButton, UiIconButton, UiTextarea, UiTooltip } from '@waittide/ui';
+import { toast, UiButton, UiIconButton, UiSelect, UiTextarea, UiTooltip } from '@waittide/ui';
 import {
   LuAlertTriangle,
   LuArrowDownToLine,
@@ -22,7 +22,6 @@ import {
   LuZap,
 } from 'vue-icons-plus/lu';
 import OModelSelect from './ui/OModelSelect.vue';
-import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
 import MessageRail from './MessageRail.vue';
 import { prettyJson } from '../lib/format';
@@ -602,17 +601,17 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
             <span v-if="chat.queued.value > 0" class="queued-chip">
               {{ t('queuedCount', { count: chat.queued.value }) }}
             </span>
-            <OSelect
-              v-model="chat.approvalMode.value"
+            <UiSelect
+              :model-value="chat.approvalMode.value"
               :options="approvalOptions"
-              width="96px"
-              @update:model-value="chat.setApprovalMode"
+              style="width: 96px"
+              @update:model-value="(v) => chat.setApprovalMode(v as ApprovalMode)"
             />
-            <OSelect
-              v-model="chat.activeAgent.value"
+            <UiSelect
+              :model-value="chat.activeAgent.value"
               :options="agentOptions"
-              width="118px"
-              @update:model-value="chat.setAgent"
+              style="width: 118px"
+              @update:model-value="(v) => chat.setAgent(String(v ?? ''))"
             />
             <OModelSelect
               v-model="chat.activeModel.value"
@@ -621,12 +620,12 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
               @update:model-value="chat.setModel"
             />
             <!-- 推理等级紧跟在模型选择右侧；仅支持思考的模型才展示 -->
-            <OSelect
+            <UiSelect
               v-if="supportsThinking"
-              v-model="chat.reasoningLevel.value"
+              :model-value="chat.reasoningLevel.value"
               :options="reasoningOptions"
-              width="110px"
-              @update:model-value="chat.setReasoningLevel"
+              style="width: 110px"
+              @update:model-value="(v) => chat.setReasoningLevel(String(v ?? ''))"
             />
             <!-- 上下文占用：位于推理等级右侧 -->
             <ContextGauge
