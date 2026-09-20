@@ -1,9 +1,20 @@
 # Oma 多类型多客户端协同 Agent 技术规格书 (Technical Specification)
 
-> 版本：v2.6
+> 版本：v2.7
 > 状态：Implementation Verified（文档与代码同步）
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
 
+> **v2.7 变更（恢复内置 MCP 客户端）**：
+> 恢复清单的最后一项。`crates/mcp` 回来了，支持两种传输：
+> - **本地 stdio**：拉起子进程，按行 JSON-RPC 通信
+> - **远程 HTTP**：JSON-RPC over POST（非 SSE）
+> 工具按 `mcp__{server}__{tool}` 统一命名空间注册，与内置工具/插件工具同权；
+> 配置在 `settings.json` 的 `mcp_servers`（`type: local | remote`），
+> 保存后自动重连，启动与配置变更时后台预热（建会话路径只取已预热缓存）。
+> 名单经 `Ready.mcp_summaries` 下发，Web 顶栏有概览徽标、设置面板有 MCP 页。
+>
+> **仍保持删除**：熔断器、`ask` 提问工具、子代理 `task` 工具。
+>
 > **v2.6 变更（恢复工具审批系统）**：
 > 审批回到内核，作为「人在回路」的唯一闸口：
 > - 三种模式：`normal`（默认，只有能改环境的命令工具要授权）/ `strict`（除白名单外全要）/
@@ -92,6 +103,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | `crates/storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）与 `attachments/` 目录；同会话写锁串行化。 |
 | `crates/provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
 | `crates/tool` | 内置 7 大工具（`read`, `write`, `edit` 原子替换补丁, `bash` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含 pi 对齐的输出截断与工具集定义。 |
+| `crates/mcp` | MCP 客户端：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），工具按 `mcp__{server}__{tool}` 统一命名空间注册；只暴露已预热的工具缓存。 |
 | `crates/plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API（文件/命令/日志）由 Rust 侧白名单桥接并限制在 workspace 内。 |
 | `crates/config` | 配置文件 `settings.json` / `models.json` 解析、内置 Agent 预设（5 套模板）与三层覆盖、上下文文件（`AGENTS.md`）加载、提示词拼装、调色板加载、数据目录定位。 |
 | `crates/runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、70% 阈值两阶段上下文压缩。 |
@@ -549,6 +561,10 @@ pub struct ContextUsage {
   "default_agent": "task",
   "default_approval_mode": "normal",
   "default_reasoning_level": "medium",
+  "mcp_servers": {
+    "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "oma.db"] },
+    "remote_docs": { "type": "remote", "url": "https://mcp.example.com/rpc", "headers": { "Authorization": "Bearer …" } }
+  },
   "theme": {
     "mode": "dark",
     "dark_palette": "pi-dark",
@@ -590,8 +606,8 @@ pub struct ContextUsage {
 > 旧版 `config.toml` 首次加载时自动迁移为上述两个文件，原文件备份为 `config.toml.bak`。
 >
 > `OmaConfig` 启用 `deny_unknown_fields`：字段为 `default_model` / `default_agent` /
-> `default_approval_mode` / `default_reasoning_level` / `theme` / `server` / `providers`。
-> 仍未恢复的能力（`mcp_servers`）不再接受，写进配置会直接被 `PUT /api/config` 拒绝。
+> `default_approval_mode` / `default_reasoning_level` / `theme` / `server` / `providers` /
+> `mcp_servers`。拼错的键名会被 `PUT /api/config` 直接 400，而不是「保存成功但配置没变」。
 
 ### 5.2 请求头与请求体三级递归合并规范
 优先级：`Provider 级配置` $\prec$ `Model 级配置` $\prec$ `Reasoning Effort 覆盖`。
@@ -1034,7 +1050,7 @@ pub struct Palette {
 | 会话存储并发 | 每会话一把写锁，写路径先重读文件再追加/重写，保证追加串行；读取始终以磁盘为准（不缓存快照），因此同数据目录上的多个实例能互相看到最新内容。旧的 `max_connections = 1` 连接池随 sqlx 一并移除。 |
 | 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
 | 配置校验 | `OmaConfig` 启用 `deny_unknown_fields`：拼错的键名（或前端字段映射错误）在 `PUT /api/config` 直接 400，不再「保存成功但配置没变」；启动时配置文件解析失败即报错退出，而非静默回退默认值。 |
-| 能力裁剪 | 已删除且未恢复：MCP / 子代理 / 提问 / 熔断器。理由是这些能力 pi 内核不内置，如需保留应以插件（QuickJS）形式重建。**例外**：Agent 预设（v2.5）与工具审批系统（v2.6）已应用户要求恢复——前者承担「角色 + 工具白名单」，后者是「人在回路」的唯一闸口，都不是 pi 式扩展的重复实现。 |
+| 能力裁剪 | 仅剩 MCP 之外的三项仍是删除状态：子代理 `task`、`ask` 提问、熔断器（均因 pi 内核不内置而移除，如需保留应以插件形式重建）。**已应用户要求恢复**：Agent 预设（v2.5）、工具审批系统（v2.6）、内置 MCP（v2.7）。 |
 | 技能发现 | 按 `<root>/<name>/SKILL.md` 三层发现（global/agent/project），同名时更具体的一层覆盖更宽泛的一层；删除技能会连同其目录内的 `scripts/` 等资源一并移除（id 经严格校验，不可穿越）。技能与预设是两套独立机制：预设决定「以什么角色、能用哪些工具运行」，技能只是一段按需读取的知识，同名也不会互相覆盖。 |
 | skill frontmatter 容错 | 技能的 YAML 字段全部可选且忽略未知键：用户目录里存在只有 `description` 与自有键的文件时，名称即目录名，不应因严格解析而整条不可用。 |
 | 设置面板结构 | 提供商页：提供商配置为单个带底色容器（标题在其内），模型配置为容器外分区标题，其下每个模型各自一个容器；预设页的工具授权用多选下拉（标签可逐个移除），选项来自 `GET /api/tools`。 |
