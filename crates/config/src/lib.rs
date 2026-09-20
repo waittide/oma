@@ -782,7 +782,106 @@ fn parse_template_parts(id: &str, raw: &str) -> ParsedTemplate {
     }
 }
 
-/// 动态拼装注入实时环境块与技能目录的最终 System Prompt。
+/// 上下文文件的候选名（按优先级）。
+///
+/// `AGENTS.override.md` 用于「临时改行为而不动仓库里的 AGENTS.md」，
+/// `CLAUDE.md` 是为了直接复用已有 Claude Code 项目里的说明（与 pi 一致）。
+const CONTEXT_FILE_NAMES: [&str; 5] = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+
+/// oma 的 agent 目录：全局上下文文件与用户级技能所在处。
+pub fn agent_dir() -> Option<PathBuf> {
+    dirs_config_dir().map(|d| d.join("oma"))
+}
+
+/// 一份上下文文件。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextFile {
+    pub path:    PathBuf,
+    pub content: String,
+}
+
+/// 在一个目录里找上下文文件：取候选名中第一个存在且为普通文件者。
+///
+/// 只取**一个**：同一目录同时放 `AGENTS.md` 与 `CLAUDE.md` 时应当以先命中者为准，
+/// 否则两份互相矛盾的说明会一起进上下文。
+fn load_context_file_from_dir(dir: &Path) -> Option<ContextFile> {
+    for name in CONTEXT_FILE_NAMES {
+        let path = dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            // 不可读（权限/编码）不该让整个提示词构建失败，跳过即可
+            continue;
+        };
+        // 去掉 BOM：它与提示词里的 `<` 相黏会被当成正文内容
+        let content = raw.trim_start_matches('\u{feff}').to_string();
+        return Some(ContextFile { path, content });
+    }
+    None
+}
+
+/// 收集上下文文件：全局（`<配置目录>/oma/AGENTS.md`）在前，
+/// 其后是从文件系统根到工作区逐级向下的祖先文件（越靠近工作区越靠后）。
+///
+/// 一路走到文件系统根而非停在仓库根：工作区常位于仓库子目录（如 monorepo 的
+/// `apps/web`），上层仓库的说明同样适用。
+pub fn load_project_context_files(workspace: &Path) -> Vec<ContextFile> {
+    let mut files: Vec<ContextFile> = Vec::new();
+    if let Some(global) = agent_dir().and_then(|dir| load_context_file_from_dir(&dir)) {
+        files.push(global);
+    }
+    for file in ancestor_context_files(workspace) {
+        // 与全局同路径时不重复收录（工作区就在 agent 目录之下的极端情形）
+        if !files.iter().any(|f| f.path == file.path) {
+            files.push(file);
+        }
+    }
+    files
+}
+
+/// 自工作区向上逐级查找上下文文件，返回「根 → 工作区」顺序。
+///
+/// 与全局部分分开：全局目录来自环境变量（测试里不可控），
+/// 而这里的输入完全由调用方给定。
+fn ancestor_context_files(workspace: &Path) -> Vec<ContextFile> {
+    let mut ancestors: Vec<ContextFile> = Vec::new();
+    let mut current = workspace.to_path_buf();
+    loop {
+        if let Some(file) = load_context_file_from_dir(&current) {
+            ancestors.push(file);
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    ancestors.reverse();
+    ancestors
+}
+
+/// 把上下文文件渲染成一个块；无文件时返回 `None`。
+fn render_project_context(files: &[ContextFile]) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    let body = files
+        .iter()
+        .map(|f| {
+            format!(
+                "<project_instructions path=\"{}\">\n{}\n</project_instructions>",
+                f.path.display(),
+                f.content.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Some(format!(
+        "<project_context>\nProject-specific instructions and guidelines:\n\n{body}\n</project_context>"
+    ))
+}
+
+/// 动态拼装注入上下文文件、实时环境块与技能目录的最终 System Prompt。
 pub fn build_system_prompt(workspace: &Path, active_model: &str) -> String {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let os = std::env::consts::OS;
@@ -797,6 +896,13 @@ pub fn build_system_prompt(workspace: &Path, active_model: &str) -> String {
         today,
         active_model
     );
+
+    // 项目说明常驻上下文（与 pi 的 project_context 一致）：
+    // 它是「这个仓库要遵守的约定」，不该等模型想起去 read 才生效
+    if let Some(section) = render_project_context(&load_project_context_files(workspace)) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&section);
+    }
 
     // 技能只在目录里列名与路径，需要时由模型自行 read：
     // 常驻全文会持续挤占上下文，而多数轮次用不到任何技能
@@ -1127,6 +1233,81 @@ mod tests {
         let prompt = build_system_prompt(tmp.path(), "my_anthropic/claude-3-7");
         assert!(prompt.contains("<runtime_context>"));
         assert!(prompt.contains("Active Model: my_anthropic/claude-3-7"));
+    }
+
+    /// 同一目录里多个候选文件只取一个，且 `override` 优先。
+    #[test]
+    fn test_context_file_candidate_precedence() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("CLAUDE.md"), "from claude").unwrap();
+        assert_eq!(load_context_file_from_dir(tmp.path()).unwrap().content, "from claude");
+
+        std::fs::write(tmp.path().join("AGENTS.md"), "from agents").unwrap();
+        assert_eq!(load_context_file_from_dir(tmp.path()).unwrap().content, "from agents");
+
+        std::fs::write(tmp.path().join("AGENTS.override.md"), "from override").unwrap();
+        assert_eq!(load_context_file_from_dir(tmp.path()).unwrap().content, "from override");
+    }
+
+    /// BOM 不该黏在正文开头（它会跟标签搅在一起）。
+    #[test]
+    fn test_context_file_strips_bom() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "\u{feff}hello").unwrap();
+        assert_eq!(load_context_file_from_dir(tmp.path()).unwrap().content, "hello");
+    }
+
+    /// 祖先文件按「根 → 工作区」排序：越靠近工作区的越靠后（越具体）。
+    #[test]
+    fn test_ancestor_context_files_are_root_to_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inner = tmp.path().join("packages/app");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "outer").unwrap();
+        std::fs::write(tmp.path().join("packages/AGENTS.md"), "middle").unwrap();
+        std::fs::write(inner.join("CLAUDE.md"), "inner").unwrap();
+
+        let files = ancestor_context_files(&inner);
+        let contents: Vec<&str> = files.iter().map(|f| f.content.as_str()).collect();
+        // 末尾三份一定是「外 → 中 → 内」，前面可能还有测试环境里真实存在的其它祖先文件
+        assert!(
+            contents.len() >= 3,
+            "expected at least our three files, got {contents:?}"
+        );
+        assert_eq!(contents[contents.len() - 3..], ["outer", "middle", "inner"]);
+    }
+
+    /// 渲染出的块带路径，便于模型/用户区分来自哪个文件。
+    #[test]
+    fn test_project_context_renders_paths() {
+        let files = vec![ContextFile {
+            path:    PathBuf::from("/repo/AGENTS.md"),
+            content: "run cargo test".into(),
+        }];
+        let section = render_project_context(&files).unwrap();
+        assert!(section.contains("<project_context>"));
+        assert!(section.contains("Project-specific instructions and guidelines:"));
+        assert!(section.contains("<project_instructions path=\"/repo/AGENTS.md\">"));
+        assert!(section.contains("run cargo test"));
+
+        assert!(render_project_context(&[]).is_none());
+    }
+
+    /// 端到端：工作区里的 AGENTS.md 会进系统提示词，别的工作区不会。
+    #[test]
+    fn test_system_prompt_includes_project_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "MARKER-ONLY-IN-THIS-WORKSPACE").unwrap();
+        let prompt = build_system_prompt(tmp.path(), "p/m");
+        assert!(prompt.contains("<project_context>"));
+        assert!(prompt.contains("MARKER-ONLY-IN-THIS-WORKSPACE"));
+        // 上下文块在环境块之后、技能目录之前
+        let ctx_at = prompt.find("<project_context>").unwrap();
+        assert!(prompt.find("</runtime_context>").unwrap() < ctx_at);
+
+        let clean = tempfile::tempdir().unwrap();
+        let other = build_system_prompt(clean.path(), "p/m");
+        assert!(!other.contains("MARKER-ONLY-IN-THIS-WORKSPACE"));
     }
 
     #[test]
