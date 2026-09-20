@@ -113,6 +113,7 @@ pub struct SessionRecord {
     pub workspace:       String,
     pub title:           String,
     pub active_model:    String,
+    pub active_agent:    String,
     /// 会话推理等级（REASONING_LEVELS 之一；空 = 未设置，回退模型默认）
     #[serde(default)]
     pub reasoning_level: String,
@@ -133,6 +134,8 @@ const SESSION_VERSION: u32 = 3;
 const CUSTOM_LEAF: &str = "oma.leaf";
 /// custom 条目类型：上下文占用
 const CUSTOM_CONTEXT_USAGE: &str = "oma.context_usage";
+/// custom 条目类型：agent 设置
+const CUSTOM_SETTINGS: &str = "oma.settings";
 
 /// 会话头（文件首行，不参与树）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,12 +148,21 @@ struct SessionHeader {
     cwd:             String,
     #[serde(default)]
     model:           String,
+    #[serde(default)]
+    agent:           String,
     #[serde(default, rename = "reasoningLevel")]
     reasoning_level: String,
 }
 
 impl SessionHeader {
-    fn new(session_id: &str, workspace: &str, active_model: &str, reasoning_level: &str, now_ms: i64) -> Self {
+    fn new(
+        session_id: &str,
+        workspace: &str,
+        active_model: &str,
+        active_agent: &str,
+        reasoning_level: &str,
+        now_ms: i64,
+    ) -> Self {
         Self {
             kind:            "session".to_string(),
             version:         SESSION_VERSION,
@@ -158,6 +170,7 @@ impl SessionHeader {
             timestamp:       iso_from_ms(now_ms),
             cwd:             workspace.to_string(),
             model:           active_model.to_string(),
+            agent:           active_agent.to_string(),
             reasoning_level: reasoning_level.to_string(),
         }
     }
@@ -440,6 +453,7 @@ impl SessionStore {
     fn record(&self) -> SessionRecord {
         let mut title = String::new();
         let mut model = self.header.model.clone();
+        let mut agent = self.header.agent.clone();
         let mut reasoning = self.header.reasoning_level.clone();
         let created_at = ms_from_iso(&self.header.timestamp);
         let mut updated_at = created_at;
@@ -450,6 +464,11 @@ impl SessionStore {
                 Entry::SessionInfo(s) => title = s.name.clone(),
                 Entry::ModelChange(m) => model = join_model(&m.provider, &m.model_id),
                 Entry::ThinkingLevelChange(t) => reasoning = t.thinking_level.clone(),
+                Entry::Custom(c) if c.custom_type == CUSTOM_SETTINGS => {
+                    if let Some(a) = c.data.get("agent").and_then(|v| v.as_str()) {
+                        agent = a.to_string();
+                    }
+                }
                 _ => {}
             }
         }
@@ -459,6 +478,7 @@ impl SessionStore {
             workspace: self.header.cwd.clone(),
             title,
             active_model: model,
+            active_agent: agent,
             reasoning_level: reasoning,
             current_leaf_id: self.leaf(),
             created_at,
@@ -563,6 +583,7 @@ impl StorageManager {
         workspace: &str,
         title: &str,
         active_model: &str,
+        active_agent: &str,
         reasoning_level: &str,
     ) -> Result<SessionRecord> {
         validate_session_id(session_id)?;
@@ -574,7 +595,7 @@ impl StorageManager {
         }
 
         let now = chrono::Utc::now().timestamp_millis();
-        let header = SessionHeader::new(session_id, workspace, active_model, reasoning_level, now);
+        let header = SessionHeader::new(session_id, workspace, active_model, active_agent, reasoning_level, now);
         let mut entries = Vec::new();
         if !title.is_empty() {
             entries.push(Entry::SessionInfo(SessionInfoEntry {
@@ -669,11 +690,12 @@ impl StorageManager {
         .await
     }
 
-    /// 更新会话配置 (model, reasoning_level)
+    /// 更新会话配置 (model, agent, reasoning_level)
     pub async fn update_session_settings(
         &self,
         session_id: &str,
         active_model: Option<&str>,
+        active_agent: Option<&str>,
         reasoning_level: Option<&str>,
     ) -> Result<()> {
         self.with_store_mut(session_id, |store| {
@@ -695,6 +717,17 @@ impl StorageManager {
                     parent_id:      parent.clone(),
                     timestamp:      iso_from_ms(now),
                     thinking_level: level.to_string(),
+                }))?;
+            }
+            if let Some(a) = active_agent {
+                let mut data = serde_json::Map::new();
+                data.insert("agent".into(), serde_json::Value::String(a.to_string()));
+                store.append(Entry::Custom(CustomEntry {
+                    id:          new_entry_id(),
+                    parent_id:   parent,
+                    timestamp:   iso_from_ms(now),
+                    custom_type: CUSTOM_SETTINGS.to_string(),
+                    data:        serde_json::Value::Object(data),
                 }))?;
             }
             Ok(())
@@ -917,7 +950,7 @@ mod tests {
 
         // 1. 创建会话
         let s1 = storage
-            .create_session("s_1", "/workspace/test", "Test Session", "claude-3-7", "medium")
+            .create_session("s_1", "/workspace/test", "Test Session", "claude-3-7", "task", "medium")
             .await?;
         assert_eq!(s1.session_id, "s_1");
 
@@ -967,7 +1000,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_del", "/w", "Del", "m", "medium")
+            .create_session("s_del", "/w", "Del", "m", "task", "medium")
             .await?;
 
         // 树：m1 → m2 → m3（活跃链），m1 → m4（兄弟分支）
@@ -1030,7 +1063,7 @@ mod tests {
         assert!(victim.join("keep.txt").exists(), "victim dir must be untouched");
 
         storage
-            .create_session("sess_OK-1", "/w", "T", "m", "medium")
+            .create_session("sess_OK-1", "/w", "T", "m", "task", "medium")
             .await?;
         storage.delete_session("sess_OK-1").await?;
         Ok(())
@@ -1043,13 +1076,13 @@ mod tests {
         let storage = StorageManager::new(tmp.path()).await?;
 
         storage
-            .create_session("s_user", "/w", "我的标题", "m", "medium")
+            .create_session("s_user", "/w", "我的标题", "m", "task", "medium")
             .await?;
         assert!(!storage.set_title_if_empty("s_user", "模型起的名字").await?);
         assert_eq!(storage.get_session("s_user").await?.unwrap().title, "我的标题");
 
         storage
-            .create_session("s_auto", "/w", "", "m", "medium")
+            .create_session("s_auto", "/w", "", "m", "task", "medium")
             .await?;
         assert!(storage.set_title_if_empty("s_auto", "自动命名").await?);
         assert_eq!(storage.get_session("s_auto").await?.unwrap().title, "自动命名");
@@ -1058,7 +1091,7 @@ mod tests {
         assert_eq!(storage.get_session("s_auto").await?.unwrap().title, "自动命名");
 
         storage
-            .create_session("s_blank", "/w", "", "m", "medium")
+            .create_session("s_blank", "/w", "", "m", "task", "medium")
             .await?;
         assert!(!storage.set_title_if_empty("s_blank", "   ").await?);
         assert_eq!(storage.get_session("s_blank").await?.unwrap().title, "");
@@ -1071,7 +1104,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_ctx", "/w", "T", "m", "medium")
+            .create_session("s_ctx", "/w", "T", "m", "task", "medium")
             .await?;
 
         assert!(storage.context_usage("s_ctx").await?.is_none());
@@ -1096,7 +1129,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_bad", "/w", "T", "m", "medium")
+            .create_session("s_bad", "/w", "T", "m", "task", "medium")
             .await?;
 
         // 直接向 JSONL 追加一条字段缺失的 context_usage 条目
@@ -1120,7 +1153,8 @@ mod tests {
         let a = StorageManager::new(tmp.path()).await?;
         let b = StorageManager::new(tmp.path()).await?;
 
-        a.create_session("s_x", "/w", "T", "m", "medium").await?;
+        a.create_session("s_x", "/w", "T", "m", "task", "medium")
+            .await?;
         b.append_message("s_x", &msg("m1", None, "from b", 1000))
             .await?;
 
@@ -1137,7 +1171,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_att", "/w", "T", "m", "medium")
+            .create_session("s_att", "/w", "T", "m", "task", "medium")
             .await?;
 
         assert!(storage.attachment_path("s_att", "shot-1.png").is_ok());

@@ -5,6 +5,7 @@ import type {
   ActiveTurnCatchUp,
   AgentCommand,
   AgentEvent,
+  AgentSummary,
   Block,
   ChatMessage,
   ClientMessage,
@@ -73,10 +74,12 @@ export const forkFrom = ref<string | null>(null);
 export const finalizing = ref(false);
 
 export const activeModel = ref('');
+export const activeAgent = ref('');
 /** 当前会话推理等级；空串 = 未设置（回退模型默认） */
 export const reasoningLevel = ref('');
 /** 可选模型目录（provider → 模型清单），来自握手载荷的 model_catalog */
 export const modelCatalog = ref<Record<string, ModelInfo[]>>({});
+export const agents = ref<AgentSummary[]>([]);
 export const lastUsage = ref<TokenUsage | null>(null);
 /**
  * call_id → 工具执行耗时（秒）。
@@ -304,6 +307,9 @@ function handleEvent(ev: AgentEvent) {
     case 'model_changed':
       if (ev.data) activeModel.value = ev.data.active_model;
       break;
+    case 'agent_changed':
+      if (ev.data) activeAgent.value = ev.data.active_agent;
+      break;
     case 'reasoning_level_changed':
       if (ev.data) reasoningLevel.value = ev.data.level;
       break;
@@ -393,8 +399,10 @@ function connect() {
       // 保证终端与浏览器看到的配色完全一致
       if (r.active_theme) applyResolvedTheme(r.active_theme);
       activeModel.value = r.active_model;
+      activeAgent.value = r.active_agent;
       reasoningLevel.value = r.reasoning_level ?? '';
       modelCatalog.value = r.model_catalog;
+      agents.value = r.agents;
       // 重启/重连后无内存态：用握手携带的上次占用立即恢复进度条
       contextUsage.value = r.context_usage
         ? { tokens: r.context_usage.tokens, contextLen: r.context_usage.context_len }
@@ -505,6 +513,10 @@ export function cancel(): boolean {
 
 export function setModel(model: string) {
   command({ type: 'set_model', data: { model } });
+}
+
+export function setAgent(agent: string) {
+  command({ type: 'set_agent', data: { agent } });
 }
 
 /** 设置当前会话推理等级；空串 = 回退模型默认。 */

@@ -1,5 +1,6 @@
 import { hasToken, resolveUrl, resolveWsUrl, token } from './stores/connection';
 import type {
+  AgentFile,
   ChatMessage,
   ClientConfig,
   GitStatusResp,
@@ -103,7 +104,7 @@ export const api = {
       `/api/sessions/${id}/messages/${messageId}`,
       { method: 'DELETE' },
     ),
-  /** 技能编辑器可勾选的工具（内置 + 插件） */
+  /** 预设编辑器可勾选的工具（内置 + 插件） */
   tools: () => request<ToolInfo[]>('/api/tools'),
 
   /** 工作区 git 变更（分支 + 文件清单） */
@@ -116,11 +117,40 @@ export const api = {
       `/api/git/diff?workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}`,
     ),
 
-  /** 当前工作区 + 模型下真正发给厂商的系统提示词（System 面板） */
-  systemPrompt: (workspace: string, model: string) => {
+  /** 当前工作区 + 模型（+ 预设）下真正发给厂商的系统提示词（System 面板） */
+  systemPrompt: (workspace: string, model: string, agent?: string) => {
     const params = new URLSearchParams({ workspace });
     if (model) params.set('model', model);
+    if (agent) params.set('agent', agent);
     return request<SystemPromptResp>(`/api/system-prompt?${params.toString()}`);
+  },
+
+  presets: (workspace?: string) =>
+    request<AgentFile[]>(
+      `/api/presets${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,
+    ),
+
+  getPreset: (id: string, workspace?: string) =>
+    request<AgentFile>(
+      `/api/presets/${id}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,
+    ),
+
+  putPreset: (
+    id: string,
+    body: { name: string; description: string; tools: string[]; content: string; scope: string },
+    workspace?: string,
+  ) =>
+    request<{ success: boolean; path: string }>(
+      `/api/presets/${id}${workspace ? `?workspace=${encodeURIComponent(workspace)}` : ''}`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    ),
+
+  deletePreset: (id: string, scope: string, workspace?: string) => {
+    const qs = new URLSearchParams({ scope });
+    if (workspace) qs.set('workspace', workspace);
+    return request<{ success: boolean }>(`/api/presets/${id}?${qs.toString()}`, {
+      method: 'DELETE',
+    });
   },
 
   skills: (workspace?: string) =>

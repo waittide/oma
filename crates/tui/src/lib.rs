@@ -195,6 +195,7 @@ struct Entry {
 struct App {
     workspace:   String,
     model:       String,
+    agent:       String,
     connected:   bool,
     busy:        bool,
     queue:       usize,
@@ -218,10 +219,11 @@ struct App {
 }
 
 impl App {
-    fn new(workspace: String, model: String, theme: TuiTheme) -> Self {
+    fn new(workspace: String, model: String, agent: String, theme: TuiTheme) -> Self {
         Self {
             workspace,
             model,
+            agent,
             connected: true,
             busy: false,
             queue: 0,
@@ -458,7 +460,12 @@ async fn run_session(
     let mut app = {
         let ready = client.ready();
         let theme = TuiTheme::new(&ready.active_theme);
-        let mut app = App::new(ready.workspace.clone(), ready.active_model.clone(), theme);
+        let mut app = App::new(
+            ready.workspace.clone(),
+            ready.active_model.clone(),
+            ready.active_agent.clone(),
+            theme,
+        );
         app.connections = options.connections.clone();
         // 活动连接：优先调用方给出的名字，否则按地址匹配已保存的条目
         app.active_conn = active.or_else(|| {
@@ -716,6 +723,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             app.push("  ", format!("{}: {}{}", tool_name, head, suffix), style);
         }
         AgentEvent::ModelChanged { active_model } => app.model = active_model,
+        AgentEvent::AgentChanged { active_agent } => app.agent = active_agent,
         AgentEvent::ActiveTurnCatchUp(snapshot) => {
             if !snapshot.accumulated_thinking.is_empty() {
                 app.push(
@@ -995,7 +1003,7 @@ mod tests {
 
     #[test]
     fn test_append_stream_groups_same_kind() {
-        let mut app = App::new("/w".into(), "m".into(), TuiTheme::test());
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
         app.append_stream("AI", "hello ", Style::default().fg(Color::Green));
         app.append_stream("AI", "world", Style::default().fg(Color::Green));
         app.append_stream("思", "thinking", Style::default().fg(Color::Magenta));
@@ -1031,7 +1039,7 @@ mod tests {
             light:  palette_with("latte", "#111111", "#222222"),
             dark:   palette_with("mocha", "#eeeeee", "#dddddd"),
         });
-        let mut app = App::new("/w".into(), "m".into(), theme);
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), theme);
         app.connections = vec![
             TuiConnection {
                 name:  "a".into(),
@@ -1081,7 +1089,7 @@ mod tests {
             light:  palette_with("latte", "#111111", "#222222"),
             dark:   palette_with("mocha", "#eeeeee", "#dddddd"),
         });
-        let mut app = App::new("/w".into(), "m".into(), theme);
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), theme);
 
         // 初始（终端未上报过焦点）视为聚焦：不发通知
         assert!(app.focused);

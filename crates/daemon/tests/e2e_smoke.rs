@@ -226,6 +226,7 @@ async fn start_harness_with(context_len: usize, supports_vision: bool) -> Result
     let config_toml = format!(
         r#"
 default_model = "mock/model-x"
+default_agent = "task"
 
 [providers.mock]
 api_type = "completion"
@@ -552,6 +553,12 @@ async fn test_authoritative_anchor_suppresses_premature_compaction() -> Result<(
     })
     .await?;
 
+    // 切到 explore（只读，无 task）：让主 Agent 自己连做两轮 read
+    client
+        .send_command(AgentCommand::SetAgent {
+            agent: "explore".into(),
+        })
+        .await?;
     client
         .send_command(AgentCommand::UserInput {
             content:     "读取 note.txt".into(),
@@ -828,6 +835,17 @@ async fn test_read_image_reaches_provider_and_persists() -> Result<()> {
     })
     .await?;
 
+    // 固定为带 read 的角色：默认 agent 模板的白名单差异会让 mock 走到别的分支
+    client
+        .send_command(AgentCommand::SetAgent {
+            agent: "explore".into(),
+        })
+        .await?;
+    drain_for_event(&mut client, Duration::from_secs(10), |e| {
+        matches!(e, AgentEvent::AgentChanged { .. })
+    })
+    .await?;
+
     // 触发链路：主 Agent → read(pic.png) → 图片随回执回到模型
     client
         .send_command(AgentCommand::UserInput {
@@ -897,6 +915,16 @@ async fn test_read_image_metadata_only_for_text_model() -> Result<()> {
         session_id:  session.session_id.clone(),
         client_type: ClientType::Cli,
         client_name: "text-only".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::SetAgent {
+            agent: "explore".into(),
+        })
+        .await?;
+    drain_for_event(&mut client, Duration::from_secs(10), |e| {
+        matches!(e, AgentEvent::AgentChanged { .. })
     })
     .await?;
 

@@ -19,6 +19,7 @@ import {
 } from 'vue-icons-plus/lu';
 import { api } from '../api';
 import { ACCENTS, NEUTRAL_TOKENS, PALETTE_TOKENS, config, darkPalettes, lightPalettes, loadConfig, palettes, refreshPalettes, saveConfig, saveTheme, theme, type Palette } from '../stores/theme';
+import { agents } from '../stores/chat';
 import { baseUrl, normalizeBaseUrl, setConnection, token } from '../stores/connection';
 import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
 import { clientConfig, clientConfigReady, saveClientConfig } from '../stores/clientConfig';
@@ -26,6 +27,8 @@ import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting
 import { activeSession, refresh as refreshSessions } from '../stores/sessions';
 import { MODEL_CAPABILITIES } from '../types';
 import type {
+  AgentFile,
+  AgentSummary,
   ToolInfo,
   ModelCapability,
   ModelInfo,
@@ -51,6 +54,7 @@ type SectionId =
   | 'language'
   | 'defaults'
   | 'providers'
+  | 'presets'
   | 'skills';
 const section = ref<SectionId>('connection');
 
@@ -75,6 +79,7 @@ const navGroups = computed(() => [
     items: [
       { id: 'defaults' as SectionId, label: t('navDefaults'), icon: LuSquareUserRound },
       { id: 'providers' as SectionId, label: t('navProviders'), icon: LuServer },
+      { id: 'presets' as SectionId, label: t('navPresets'), icon: LuSquareUserRound },
       { id: 'skills' as SectionId, label: t('navSkills'), icon: LuSparkles },
     ],
   },
@@ -436,6 +441,7 @@ async function removePalette(id: string) {
 // ---------- 默认参数 ----------
 const defaults = reactive({
   model: '',
+  agent: '',
   reasoning: '',
 });
 const savingDefaults = ref(false);
@@ -451,6 +457,7 @@ watch(
     if (!config.value) await loadConfig();
     if (config.value) {
       defaults.model = config.value.default_model;
+      defaults.agent = config.value.default_agent;
       defaults.reasoning = config.value.default_reasoning_level || DEFAULT_REASONING_LEVEL;
     }
     mode.value = theme.value.mode;
@@ -469,11 +476,12 @@ async function saveDefaults() {
   savingDefaults.value = true;
   try {
     // 必须映射到 OmaConfig 的真实字段名：直接展开 defaults 会写入
-    // model/reasoning 这两个无效键，服务端忽略后配置纹丝不动，
+    // model/agent/reasoning 这三个无效键，服务端忽略后配置纹丝不动，
     // 但请求本身成功 —— 表现为「提示保存成功，实际没生效」。
     await saveConfig({
       ...config.value,
       default_model: defaults.model,
+      default_agent: defaults.agent,
       default_reasoning_level: defaults.reasoning,
     });
     toast.success(t('defaultsSaved'));
@@ -496,21 +504,42 @@ const providerGroups = computed<Record<string, ModelInfo[]>>(() => {
 const modelGroups = computed(() => toModelSelectGroups(providerGroups.value));
 const modelLabel = computed(() => modelSelectorLabel(providerGroups.value, defaults.model));
 
+const BUILTIN_AGENTS = ['task', 'plan', 'explore', 'review', 'build'];
+const agentOptions = computed<{ value: string; label: string }[]>(() => {
+  const list: AgentSummary[] = agents.value.length
+    ? agents.value
+    : BUILTIN_AGENTS.map((id) => ({ id, name: id, description: '' }));
+  return list.map((a) => ({ value: a.id, label: a.name }));
+});
+
 function scopeLabel(scope: string): string {
   switch (scope) {
-    case 'agent':
-      return t('scopeAgent');
+    case 'bundled':
+      return t('scopeBundled');
     case 'project':
       return t('scopeProject');
+    case 'agent':
+      return t('scopeAgent');
     default:
       return t('scopeGlobal');
   }
 }
 
+// ---------- Agent 预设（决定角色与可用工具） ----------
+/** 预设作用域：oma 全局配置 + 项目 */
+type EditScope = 'global' | 'project';
 /** 技能作用域：跨工具全局 + oma 自身 + 项目（越靠后越具体） */
 type SkillScopeName = 'global' | 'agent' | 'project';
+/** 预设的来源层：内置（只读）+ 可写的全局与项目 */
+type PresetLayer = 'bundled' | EditScope;
 
 const skillWorkspace = computed(() => activeSession.value?.workspace ?? '');
+
+/** 新建位置候选（内置层不可写，故不含在内） */
+const scopeOptions = computed(() => [
+  { value: 'global' as EditScope, label: t('scopeGlobal') },
+  { value: 'project' as EditScope, label: t('scopeProject') },
+]);
 
 const skillScopeOptions = computed(() => [
   { value: 'global' as SkillScopeName, label: t('scopeGlobal') },
@@ -519,10 +548,147 @@ const skillScopeOptions = computed(() => [
 ]);
 
 /** 当前查看的来源层：兼作新建位置，上方标签页即为此切换 */
+const presetLayer = ref<PresetLayer>('bundled');
 const skillLayer = ref<SkillScopeName>('global');
 
+/** 预设的来源层多一层只读的内置；技能三层皆可写 */
+const presetLayers = computed(() => [
+  { value: 'bundled' as PresetLayer, label: t('scopeBundled') },
+  { value: 'global' as PresetLayer, label: t('scopeGlobal') },
+  { value: 'project' as PresetLayer, label: t('scopeProject') },
+]);
+
+/** 内置预设只读：不可新建 */
+const presetLayerReadonly = computed(() => presetLayer.value === 'bundled');
+
+/** 仅当前层的条目（各层列表一次性取回，切层纯前端过滤） */
+const visiblePresets = computed(() => presets.value.filter((a) => a.scope === presetLayer.value));
 const visibleSkills = computed(() => skills.value.filter((sk) => sk.scope === skillLayer.value));
 
+/** 新建预设的落点：内置层不可写，回落到全局 */
+function presetWriteScope(): EditScope {
+  return presetLayer.value === 'bundled' ? 'global' : presetLayer.value;
+}
+
+const presets = ref<AgentFile[]>([]);
+const presetsLoading = ref(false);
+/** 可勾选工具清单（内置 + 插件），进入预设页时拉取一次 */
+const availableTools = ref<ToolInfo[]>([]);
+const toolOptions = computed(() => [
+  ...availableTools.value
+    .filter((t) => t.kind === 'builtin')
+    .map((t) => ({ value: t.name, label: t.name, description: shortHint(t.description) })),
+  ...availableTools.value
+    .filter((t) => t.kind !== 'builtin')
+    .map((t) => ({ value: t.name, label: t.name, description: t.description ? shortHint(t.description) : 'plugin' })),
+]);
+
+/** 工具描述在选项里只作提示，过长会撑爆弹层 */
+function shortHint(desc: string): string {
+  const flat = desc.replace(/\s+/g, ' ').trim();
+  return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
+}
+
+async function loadTools() {
+  try {
+    availableTools.value = await api.tools();
+  } catch {
+    // 工具清单不可用时退化为空列表，预设编辑仍可保存已声明的工具名
+    availableTools.value = [];
+  }
+}
+
+async function loadPresets() {
+  presetsLoading.value = true;
+  try {
+    if (availableTools.value.length === 0) await loadTools();
+    // 始终带上工作区：项目层才能一并取回，各层在列表中按标签区分
+    presets.value = await api.presets(skillWorkspace.value || undefined);
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  } finally {
+    presetsLoading.value = false;
+  }
+}
+
+const presetEdit = reactive({
+  open: false,
+  isNew: false,
+  readonly: false,
+  id: '',
+  name: '',
+  description: '',
+  tools: [] as string[],
+  body: '',
+  scope: 'global' as EditScope,
+});
+
+function editPreset(a: AgentFile) {
+  presetEdit.open = true;
+  presetEdit.isNew = false;
+  presetEdit.readonly = a.scope === 'bundled';
+  presetEdit.id = a.id;
+  presetEdit.name = a.name;
+  presetEdit.description = a.description;
+  presetEdit.tools = [...a.tools];
+  presetEdit.body = a.body;
+  presetEdit.scope = a.scope === 'bundled' ? presetWriteScope() : (a.scope as EditScope);
+}
+
+function newPreset() {
+  presetEdit.open = true;
+  presetEdit.isNew = true;
+  presetEdit.readonly = false;
+  presetEdit.id = '';
+  presetEdit.name = '';
+  presetEdit.description = '';
+  presetEdit.tools = [];
+  presetEdit.body = '';
+  presetEdit.scope = presetWriteScope();
+}
+
+async function savePreset() {
+  const id = presetEdit.id.trim();
+  if (presetEdit.scope === 'project' && !skillWorkspace.value) {
+    toast.error(t('skillNoWorkspace'));
+    return;
+  }
+  try {
+    await api.putPreset(
+      id,
+      {
+        name: presetEdit.name.trim() || id,
+        description: presetEdit.description.trim(),
+        tools: presetEdit.tools,
+        content: presetEdit.body,
+        scope: presetEdit.scope,
+      },
+      presetEdit.scope === 'project' ? skillWorkspace.value : '',
+    );
+    presetEdit.open = false;
+    // 落点可能与当前层不同（编辑器内可改），切过去以免列表里找不到
+    presetLayer.value = presetEdit.scope;
+    toast.success(t('presetSaved'));
+    await loadPresets();
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  }
+}
+
+async function removePreset() {
+  try {
+    await api.deletePreset(
+      presetEdit.id,
+      presetEdit.scope,
+      presetEdit.scope === 'project' ? skillWorkspace.value : '',
+    );
+    presetEdit.open = false;
+    toast.success(t('presetDeleted'));
+    await loadPresets();
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  }
+}
 
 // ---------- 技能（按需取用的领域知识，与预设相互独立） ----------
 const skills = ref<SkillFile[]>([]);
@@ -620,6 +786,7 @@ watch(
     if (!o) return;
     // 进入连接页先探一次：用户开箱即见当前是否连得上，不用先点「测试」
     if (s === 'connection') void testConnection();
+    if (s === 'presets') void loadPresets();
     if (s === 'skills') void loadSkills();
   },
 );
@@ -1347,6 +1514,19 @@ function pickLocale(v: Locale) {
               </div>
               <div class="srow">
                 <div class="srow-main">
+                  <span class="srow-title">{{ t('defaultAgent') }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <UiSelect
+                    :model-value="defaults.agent"
+                    :options="agentOptions"
+                    style="width: 200px"
+                    @update:model-value="(v) => (defaults.agent = String(v ?? ''))"
+                  />
+                </div>
+              </div>
+              <div class="srow">
+                <div class="srow-main">
                   <span class="srow-title">{{ t('defaultReasoning') }}</span>
                   <span class="srow-desc">{{ t('defaultReasoningDesc') }}</span>
                 </div>
@@ -1609,6 +1789,56 @@ function pickLocale(v: Locale) {
           </footer>
         </section>
 
+        <!-- Agent 预设（按来源层分标签页） -->
+        <section v-else-if="section === 'presets'" class="pane">
+          <header class="pane-head">
+            <div class="tabs">
+              <UiButton
+                v-for="l in presetLayers"
+                :key="l.value"
+                variant="ghost"
+                tone="neutral"
+                class="tab"
+                :class="{ active: presetLayer === l.value }"
+                @click="presetLayer = l.value"
+                >
+                {{ l.label }}
+                </UiButton>
+            </div>
+            <div class="pane-head-actions">
+              <UiButton variant="soft" tone="neutral" size="sm" :disabled="presetLayerReadonly" @click="newPreset">
+                {{ t('add') }}
+              </UiButton>
+            </div>
+          </header>
+          <div class="pane-scroll">
+            <p class="muted">{{ t('presetsHint') }}</p>
+            <p v-if="presetLayer === 'project' && !skillWorkspace" class="muted">{{ t('skillNoWorkspace') }}</p>
+            <div class="list">
+              <div
+                v-for="a in visiblePresets"
+                :key="a.scope + '/' + a.id"
+                class="srow skill-row"
+                role="button"
+                @click="editPreset(a)"
+              >
+                <div class="srow-main">
+                  <span class="srow-title">
+                    {{ a.name }}
+                    <span class="scope-tag" :class="'scope-' + a.scope">{{ scopeLabel(a.scope) }}</span>
+                  </span>
+                  <span class="srow-desc">{{ a.description || a.id }}</span>
+                </div>
+                <div class="srow-ctl">
+                  <span class="srow-desc mono">{{ a.tools.join(', ') }}</span>
+                </div>
+              </div>
+              <div v-if="visiblePresets.length === 0 && !presetsLoading" class="srow">
+                <span class="srow-desc">{{ t('presetsEmpty') }}</span>
+              </div>
+            </div>
+          </div>
+        </section>
 
         <!-- 技能（按来源层分标签页） -->
         <section v-else-if="section === 'skills'" class="pane">
@@ -1666,6 +1896,68 @@ function pickLocale(v: Locale) {
     </div>
   </UiModal>
 
+  <UiModal
+    :open="presetEdit.open"
+    :title="presetEdit.isNew ? t('newPreset') : t('editPreset')"
+    width="640px"
+    @close="presetEdit.open = false"
+  >
+    <div class="skill-form">
+      <div class="sk-grid">
+        <div class="field">
+          <label>{{ t('presetId') }}</label>
+          <UiInput v-model="presetEdit.id" :disabled="!presetEdit.isNew" placeholder="my-preset" />
+        </div>
+        <div class="field">
+          <label>{{ t('scopeLabel') }}</label>
+          <UiSelect
+            :model-value="presetEdit.scope"
+            @update:model-value="(v) => (presetEdit.scope = v as typeof presetEdit.scope)"
+            :options="[{ value: 'global', label: t('scopeGlobal') }, { value: 'project', label: t('scopeProject') }]"
+            :disabled="!presetEdit.isNew"
+          />
+        </div>
+      </div>
+      <div class="field">
+        <label>{{ t('modelName') }}</label>
+        <UiInput v-model="presetEdit.name" />
+      </div>
+      <div class="field">
+        <label>{{ t('skillDesc') }}</label>
+        <UiInput v-model="presetEdit.description" />
+      </div>
+      <div class="field">
+        <label>{{ t('skillTools') }}</label>
+        <UiMultiSelect
+          :model-value="presetEdit.tools"
+          :options="toolOptions"
+          :placeholder="t('skillToolsAny')"
+          @update:model-value="(v) => (presetEdit.tools = v.map(String))"
+        />
+      </div>
+      <div class="field">
+        <label>{{ t('skillContent') }}</label>
+        <div class="skill-content-box">
+          <UiTextarea v-model="presetEdit.body" :rows="12" :disabled="presetEdit.readonly" class="skill-content-input" />
+        </div>
+        <p v-if="presetEdit.readonly" class="muted">{{ t('presetReadonly') }}</p>
+      </div>
+    </div>
+    <template #footer>
+      <UiButton variant="solid" tone="danger"
+        v-if="!presetEdit.isNew && !presetEdit.readonly"
+       
+        size="sm"
+        @click="removePreset"
+      >
+        {{ tc('delete') }}
+      </UiButton>
+      <UiButton variant="ghost" tone="neutral" size="sm" @click="presetEdit.open = false">{{ tc('cancel') }}</UiButton>
+      <UiButton variant="solid" tone="accent" size="sm" :disabled="presetEdit.readonly || !presetEdit.id.trim() || (presetEdit.scope === 'project' && !skillWorkspace)" @click="savePreset">
+        {{ tc('save') }}
+      </UiButton>
+    </template>
+  </UiModal>
 
   <UiModal
     :open="skillEdit.open"

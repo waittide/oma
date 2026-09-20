@@ -17,7 +17,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use futures_util::{SinkExt, StreamExt};
-use oma_config::{OmaConfig, PaletteLoader, SkillLoader};
+use oma_config::{AgentLoader, OmaConfig, PaletteLoader, SkillLoader};
 use oma_contract::{AgentEvent, ChatMessage, ClientMessage, Palette, Ready, ServerMessage};
 use oma_runtime::{RoomError, SessionRoom, estimate_tokens};
 use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachment_name};
@@ -97,15 +97,26 @@ impl DaemonState {
 
         let mut record = self.storage.get_session(session_id).await?;
         if record.is_none() {
-            let (default_model, default_level) = {
+            let (default_model, default_agent, default_level) = {
                 let cfg = self.config.read();
-                (cfg.default_model.clone(), cfg.default_reasoning_level.clone())
+                (
+                    cfg.default_model.clone(),
+                    cfg.default_agent.clone(),
+                    cfg.default_reasoning_level.clone(),
+                )
             };
             // 由外部直接指定 session_id 时的兜底创建：标题留空，
             // 交由模型在首轮结束后命名（与 POST /api/sessions 行为一致）
             let new_rec = self
                 .storage
-                .create_session(session_id, workspace, "", &default_model, &default_level)
+                .create_session(
+                    session_id,
+                    workspace,
+                    "",
+                    &default_model,
+                    &default_agent,
+                    &default_level,
+                )
                 .await?;
             record = Some(new_rec);
         }
@@ -128,6 +139,7 @@ impl DaemonState {
             self.config.clone(),
             reg,
             &record.active_model,
+            &record.active_agent,
         );
         // 推理等级来自会话自身（创建时即写入，不会为空），无需再回退
         *room.reasoning_level.write() = record.reasoning_level.clone();
@@ -279,6 +291,7 @@ struct CreateSessionReq {
     workspace: String,
     title:     Option<String>,
     model:     Option<String>,
+    agent:     Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -300,15 +313,20 @@ async fn handle_create_session(
     // 标题留空表示「交给模型根据首轮对话自动命名」；
     // 用户填写时原样保留，模型不会再覆盖（见 set_title_if_empty）。
     let title = payload.title.unwrap_or_default().trim().to_string();
-    let (default_model, default_level) = {
+    let (default_model, default_agent, default_level) = {
         let cfg = state.config.read();
-        (cfg.default_model.clone(), cfg.default_reasoning_level.clone())
+        (
+            cfg.default_model.clone(),
+            cfg.default_agent.clone(),
+            cfg.default_reasoning_level.clone(),
+        )
     };
     let model = payload.model.unwrap_or(default_model);
+    let agent = payload.agent.unwrap_or(default_agent);
 
     let rec = state
         .storage
-        .create_session(&session_id, &payload.workspace, &title, &model, &default_level)
+        .create_session(&session_id, &payload.workspace, &title, &model, &agent, &default_level)
         .await
         .map_err(storage_error)?;
 
@@ -560,6 +578,8 @@ async fn handle_workspace_file(
 struct SystemPromptQuery {
     workspace: Option<String>,
     model:     Option<String>,
+    /// 预设 id；缺省用配置里的 `default_agent`
+    agent:     Option<String>,
 }
 
 async fn handle_system_prompt(
@@ -590,10 +610,26 @@ async fn handle_system_prompt(
         .map(str::to_string)
         .unwrap_or_else(|| state.config.read().default_model.clone());
 
-    let prompt = oma_config::build_system_prompt(Path::new(workspace), &model);
+    // 预设决定提示词正文与工具白名单，因此必须与真正跑会话时取同一份
+    let agent_id = query
+        .agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| state.config.read().default_agent.clone());
+    let template = oma_config::AgentLoader::load_agent(&agent_id, Path::new(workspace)).map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("Failed to load preset '{agent_id}': {e}"),
+        )
+    })?;
+
+    let prompt = oma_config::AgentLoader::build_system_prompt(&template, Path::new(workspace), &model);
     Ok(Json(serde_json::json!({
         "workspace": workspace,
         "model": model,
+        "agent": agent_id,
         "prompt": prompt,
     })))
 }
@@ -921,7 +957,7 @@ async fn handle_list_tools(
 }
 
 // =========================================================================
-// 技能与作用域 REST API (/api/skills)
+// Agent 预设 REST API (/api/presets)
 // =========================================================================
 
 #[derive(Deserialize)]
@@ -929,6 +965,19 @@ struct ScopeQuery {
     workspace: Option<String>,
     /// global | project；删除时必须显式指定
     scope:     Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PresetWriteReq {
+    name:        String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    tools:       Vec<String>,
+    content:     String,
+    /// global | project；缺省为 project（project 必须提供 workspace）
+    #[serde(default)]
+    scope:       Option<String>,
 }
 
 /// workspace 可选：global 作用域无需提供
@@ -968,6 +1017,82 @@ struct SkillWriteReq {
     content:     String,
     #[serde(default)]
     scope:       Option<String>,
+}
+
+async fn handle_list_presets(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<ScopeQuery>,
+) -> Result<Json<Vec<oma_config::AgentFile>>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    Ok(Json(AgentLoader::list_agent_files(scoped_workspace(&query).as_deref())))
+}
+
+async fn handle_get_preset(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(preset_id): AxumPath<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Result<Json<oma_config::AgentFile>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    AgentLoader::read_agent_file(scoped_workspace(&query).as_deref(), &preset_id)
+        .map(Json)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
+}
+
+async fn handle_put_preset(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(preset_id): AxumPath<String>,
+    Query(query): Query<ScopeQuery>,
+    Json(payload): Json<PresetWriteReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    let scope = payload.scope.as_deref().unwrap_or("project");
+    let ws = resolve_scope_workspace(&query, scope)?;
+    match AgentLoader::write_agent_file(
+        ws.as_deref(),
+        &preset_id,
+        scope,
+        payload.name.trim(),
+        payload.description.trim(),
+        &payload.tools,
+        &payload.content,
+    ) {
+        Ok(path) => Ok(Json(
+            serde_json::json!({ "success": true, "path": path.display().to_string() }),
+        )),
+        Err(e) if e.to_string().contains("read-only") => Err((StatusCode::FORBIDDEN, e.to_string())),
+        Err(e) if e.to_string().contains("Invalid") => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn handle_delete_preset(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    AxumPath(preset_id): AxumPath<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+    // 删除必须显式指定作用域：内置预设不可删
+    let scope = query.scope.as_deref().unwrap_or("global");
+    let ws = resolve_scope_workspace(&query, scope)?;
+
+    match AgentLoader::delete_agent_file(ws.as_deref(), &preset_id, scope) {
+        Ok(_) => Ok(Json(serde_json::json!({ "success": true }))),
+        Err(e) if e.to_string().contains("not found") => Err((StatusCode::NOT_FOUND, e.to_string())),
+        Err(e) if e.to_string().contains("Invalid") => Err((StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
 }
 
 // =========================================================================
@@ -1336,11 +1461,12 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     };
 
     // 3. 发送 Ready 握手确认（model_catalog 携带配置的真实模型清单）
-    let (model_catalog, active_model, reasoning_level, active_theme) = {
+    let (model_catalog, active_model, active_agent, reasoning_level, active_theme) = {
         let cfg = state.config.read();
         (
             cfg.model_catalog(),
             room.active_model.read().clone(),
+            room.active_agent.read().clone(),
             room.reasoning_level.read().clone(),
             // 已解析主题随握手下发：终端客户端无需自读配置或内置色值
             PaletteLoader::resolve(&cfg.theme),
@@ -1379,6 +1505,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
         session_id: room.session_id.clone(),
         workspace: room.workspace.to_string_lossy().to_string(),
         active_model,
+        active_agent,
         reasoning_level,
         current_leaf_id: room
             .storage
@@ -1388,6 +1515,7 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
             .flatten()
             .and_then(|rec| rec.current_leaf_id),
         model_catalog,
+        agents: AgentLoader::list_agents(&room.workspace),
         context_usage,
         active_theme,
     };
@@ -1506,6 +1634,13 @@ pub fn create_router(state: DaemonState) -> Router {
         .route("/api/workspace/file", get(handle_workspace_file))
         .route("/api/system-prompt", get(handle_system_prompt))
         .route("/api/tools", get(handle_list_tools))
+        .route("/api/presets", get(handle_list_presets))
+        .route(
+            "/api/presets/{preset_id}",
+            get(handle_get_preset)
+                .put(handle_put_preset)
+                .delete(handle_delete_preset),
+        )
         .route("/api/skills", get(handle_list_skills))
         .route("/api/git/status", get(handle_git_status))
         .route("/api/git/diff", get(handle_git_diff))
@@ -1752,6 +1887,23 @@ mod tests {
         Ok(())
     }
 
+    /// Agent 模板白名单必须同时约束「下发给模型的工具」与「实际可执行的工具」。
+    #[tokio::test]
+    async fn test_agent_tool_whitelist_filters_definitions() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let state = test_state(tmp.path()).await?;
+        let room = state.get_or_create_room("sess_wl", "/tmp").await?;
+
+        let template = AgentLoader::load_agent("explore", &room.workspace)?;
+        assert!(!template.tools.is_empty(), "explore template declares tools");
+        let defs = room.tools.to_definitions(&template.tools);
+        let names: Vec<&str> = defs.iter().filter_map(|d| d["name"].as_str()).collect();
+        assert!(names.contains(&"read"));
+        assert!(!names.contains(&"write"), "write must not be advertised: {:?}", names);
+        assert!(!names.contains(&"edit"));
+        Ok(())
+    }
+
     /// 上传的附件必须落在会话附件目录内，且文件名不可越权。
     #[tokio::test]
     async fn test_attachment_upload_and_fetch() -> Result<()> {
@@ -1760,7 +1912,7 @@ mod tests {
         let state = test_state(tmp.path()).await?;
         state
             .storage
-            .create_session("sess_att", "/w", "T", "m", "medium")
+            .create_session("sess_att", "/w", "T", "m", "task", "medium")
             .await?;
         let base = spawn_app(state).await?;
         let client = reqwest::Client::new();
@@ -1941,9 +2093,9 @@ mod tests {
         Ok(())
     }
 
-    /// 技能端点的写入 / 读取 / 删除：落盘为 <name>/SKILL.md。
+    /// 预设与技能是两套独立端点与存储：同名互不影响。
     #[tokio::test]
-    async fn test_skills_crud() -> Result<()> {
+    async fn test_presets_and_skills_are_separate() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let ws = tmp.path().join("proj");
         std::fs::create_dir_all(&ws)?;
@@ -1953,7 +2105,30 @@ mod tests {
         let auth = format!("Bearer {}", token);
         let ws_param = format!("workspace={}", ws.to_string_lossy());
 
-        // 项目内初始为空
+        // 预设端点：内置 5 个模板始终可见
+        let presets: Vec<serde_json::Value> = client
+            .get(format!("{}/api/presets?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .send()
+            .await?
+            .json()
+            .await?;
+        let ids: Vec<&str> = presets.iter().filter_map(|p| p["id"].as_str()).collect();
+        for expected in ["task", "plan", "explore", "review", "build"] {
+            assert!(
+                ids.contains(&expected),
+                "bundled preset {} missing: {:?}",
+                expected,
+                ids
+            );
+        }
+        assert!(
+            presets
+                .iter()
+                .any(|p| p["scope"] == "bundled" && p["tools"].is_array())
+        );
+
+        // 技能端点：项目内初始为空（不把预设当作技能）
         let skills: Vec<serde_json::Value> = client
             .get(format!("{}/api/skills?{}", base, ws_param))
             .header("Authorization", &auth)
@@ -1967,46 +2142,79 @@ mod tests {
             skills
         );
 
+        // 写入同名技能与预设
         let put_skill = client
-            .put(format!("{}/api/skills/cargo?{}", base, ws_param))
+            .put(format!("{}/api/skills/task?{}", base, ws_param))
             .header("Authorization", &auth)
             .json(&serde_json::json!({
-                "name": "Cargo", "description": "Rust 构建约定", "content": "正文", "scope": "project"
+                "name": "同名技能", "description": "与预设同名", "content": "正文", "scope": "project"
             }))
             .send()
             .await?;
         assert_eq!(put_skill.status(), StatusCode::OK);
 
-        // 读取：带磁盘路径（供 System Prompt 目录注入）
-        let skill: serde_json::Value = client
-            .get(format!("{}/api/skills/cargo?{}", base, ws_param))
+        let put_preset = client
+            .put(format!("{}/api/presets/my-preset?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .json(&serde_json::json!({
+                "name": "My Preset", "description": "自定义", "tools": ["read"], "content": "body", "scope": "project"
+            }))
+            .send()
+            .await?;
+        assert_eq!(put_preset.status(), StatusCode::OK);
+
+        // 技能写入不影响预设
+        let preset_task: serde_json::Value = client
+            .get(format!("{}/api/presets/task?{}", base, ws_param))
             .header("Authorization", &auth)
             .send()
             .await?
             .json()
             .await?;
-        assert_eq!(skill["scope"], "project");
-        assert_eq!(skill["name"], "Cargo");
+        assert_eq!(preset_task["scope"], "bundled");
+        assert_ne!(preset_task["name"], "同名技能");
+
+        // 技能带磁盘路径（供 System Prompt 目录注入）
+        let skill_task: serde_json::Value = client
+            .get(format!("{}/api/skills/task?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .send()
+            .await?
+            .json()
+            .await?;
+        assert_eq!(skill_task["scope"], "project");
+        assert_eq!(skill_task["name"], "同名技能");
         // 技能以 <name>/SKILL.md 落盘，并额外暴露技能目录（scripts/ 等资源的基准）
         assert!(
-            skill["path"]
+            skill_task["path"]
                 .as_str()
-                .is_some_and(|p| p.ends_with("cargo/SKILL.md")),
+                .is_some_and(|p| p.ends_with("task/SKILL.md")),
             "skill must expose its SKILL.md path: {}",
-            skill["path"]
+            skill_task["path"]
         );
         assert!(
-            skill["dir"]
+            skill_task["dir"]
                 .as_str()
-                .is_some_and(|p| p.ends_with("skills/cargo")),
+                .is_some_and(|p| p.ends_with("agents/skills/task")),
             "skill must expose its directory: {}",
-            skill["dir"]
+            skill_task["dir"]
         );
 
-        // 删除
+        // 内置预设只读
+        let bundled_write = client
+            .put(format!("{}/api/presets/task?{}", base, ws_param))
+            .header("Authorization", &auth)
+            .json(&serde_json::json!({
+                "name": "X", "description": "", "tools": [], "content": "b", "scope": "project"
+            }))
+            .send()
+            .await?;
+        assert_eq!(bundled_write.status(), StatusCode::FORBIDDEN);
+
+        // 两个端点各自删除互不影响
         let del = client
             .delete(format!(
-                "{}/api/skills/cargo?scope=project&workspace={}",
+                "{}/api/skills/task?scope=project&workspace={}",
                 base,
                 ws.to_string_lossy()
             ))
@@ -2024,7 +2232,17 @@ mod tests {
         assert!(
             remaining
                 .iter()
-                .all(|s| s["id"] != "cargo" || s["scope"] != "project")
+                .all(|s| s["id"] != "task" || s["scope"] != "project")
+        );
+        // 预设仍在
+        assert!(
+            client
+                .get(format!("{}/api/presets/my-preset?{}", base, ws_param))
+                .header("Authorization", &auth)
+                .send()
+                .await?
+                .status()
+                .is_success()
         );
         Ok(())
     }
