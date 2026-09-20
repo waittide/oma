@@ -485,13 +485,6 @@ pub struct AgentSummary {
     pub description: String,
 }
 
-/// MCP 服务器工具概览（供主界面指示器展示）
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpServerSummary {
-    pub name:       String,
-    pub tool_count: usize,
-}
-
 /// 握手成功就绪载荷
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ready {
@@ -507,8 +500,6 @@ pub struct Ready {
     /// 可选模型目录（provider → 模型清单），与 OmaConfig.providers 的配置形态不同
     pub model_catalog:   BTreeMap<String, Vec<ModelInfo>>,
     pub agents:          Vec<AgentSummary>,
-    /// MCP 服务器概览（名称 + 工具数），非完整配置
-    pub mcp_summaries:   Vec<McpServerSummary>,
     /// 上次记录的上下文占用与模型窗口，供重连后立即恢复进度条；无记录时为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_usage:   Option<ContextUsage>,

@@ -3,7 +3,6 @@ import { toast } from '@waittide/ui';
 import { api, getToken, wsUrl } from '../api';
 import type {
   ActiveTurnCatchUp,
-  McpServerSummary,
   AgentCommand,
   AgentEvent,
   AgentSummary,
@@ -91,7 +90,6 @@ export const reasoningLevel = ref('');
 /** 可选模型目录（provider → 模型清单），来自握手载荷的 model_catalog */
 export const modelCatalog = ref<Record<string, ModelInfo[]>>({});
 export const agents = ref<AgentSummary[]>([]);
-export const mcpServers = ref<McpServerSummary[]>([]);
 export const lastUsage = ref<TokenUsage | null>(null);
 /** 最近一次模型请求的上下文占用（提示侧总量，含缓存） */
 export const contextUsage = ref<{ tokens: number; contextLen: number } | null>(null);
@@ -412,7 +410,6 @@ function connect() {
       reasoningLevel.value = r.reasoning_level ?? '';
       modelCatalog.value = r.model_catalog;
       agents.value = r.agents;
-      mcpServers.value = r.mcp_summaries ?? [];
       // 重启/重连后无内存态：用握手携带的上次占用立即恢复进度条
       contextUsage.value = r.context_usage
         ? { tokens: r.context_usage.tokens, contextLen: r.context_usage.context_len }

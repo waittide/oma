@@ -15,7 +15,6 @@ import {
   LuLoader,
   LuPaperclip,
   LuPencil,
-  LuPlug,
   LuSquare,
   LuTrash2,
   LuX,
@@ -282,15 +281,6 @@ async function copyMessage(id: string) {
 
 const agentOptions = computed(() => chat.agents.value.map((a) => ({ value: a.id, label: a.name })));
 
-const mcpToolTotal = computed(() =>
-  chat.mcpServers.value.reduce((sum, s) => sum + s.tool_count, 0)
-);
-const mcpTip = computed(() =>
-  chat.mcpServers.value
-    .map((s) => `${s.name} (${s.tool_count})`)
-    .join('  ·  ')
-);
-
 /** 规范推理等级：与后端 REASONING_LEVELS 一致 */
 const REASONING_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 
@@ -350,17 +340,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
       <div v-if="activeSessionId" class="top-right">
         <UiTooltip :content="chat.connected.value ? t('connected') : t('disconnected')" align="end" placement="bottom">
           <span class="dot" :class="chat.connected.value ? 'ok' : 'off'" />
-        </UiTooltip>
-        <UiTooltip
-          v-if="chat.mcpServers.value.length"
-          :content="mcpTip"
-          align="end"
-          placement="bottom"
-        >
-          <span class="mcp-chip">
-            <LuPlug :size="11" />
-            {{ mcpToolTotal }}
-          </span>
         </UiTooltip>
         <UiTooltip :content="t('historyTree')" align="end" placement="bottom">
           <UiIconButton
@@ -678,19 +657,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
 }
 .dot.ok {
   background: var(--success);
-}
-.mcp-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 99px;
-  background: var(--surface);
-  color: var(--text-tertiary);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
 }
 .icon-ghost {
   display: inline-flex;

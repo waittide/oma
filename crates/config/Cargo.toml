@@ -10,7 +10,6 @@ description = "settings.json/models.json 解析、内置 Agent 模板与调色�
 [dependencies]
 anyhow = { workspace = true }
 oma-contract = { workspace = true }
-oma-mcp = { workspace = true }
 oma-provider = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

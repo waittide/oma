@@ -13,7 +13,6 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 oma-config = { workspace = true }
 oma-contract = { workspace = true }
-oma-mcp = { workspace = true }
 oma-plugin = { workspace = true }
 oma-provider = { workspace = true }
 oma-storage = { workspace = true }

@@ -18,8 +18,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use oma_config::{AgentLoader, OmaConfig, PaletteLoader, SkillLoader};
-use oma_contract::{AgentEvent, ChatMessage, ClientMessage, McpServerSummary, Palette, Ready, ServerMessage};
-use oma_mcp::McpManager;
+use oma_contract::{AgentEvent, ChatMessage, ClientMessage, Palette, Ready, ServerMessage};
 use oma_runtime::{RoomError, RoomSubagentRunner, SessionRoom, estimate_tokens};
 use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachment_name};
 use oma_tool::{RunnerSlot, ToolRegistry, resolve_path};
@@ -69,7 +68,6 @@ pub struct DaemonState {
     pub storage:     StorageManager,
     pub config:      Arc<RwLock<OmaConfig>>,
     pub config_path: oma_config::ConfigPaths,
-    pub mcp:         Arc<McpManager>,
     pub rooms:       Arc<RwLock<HashMap<String, Arc<SessionRoom>>>>,
     pub start_time:  Instant,
 }
@@ -80,14 +78,12 @@ impl DaemonState {
         storage: StorageManager,
         config: OmaConfig,
         config_path: oma_config::ConfigPaths,
-        mcp: Arc<McpManager>,
     ) -> Self {
         Self {
             token,
             storage,
             config: Arc::new(RwLock::new(config)),
             config_path,
-            mcp,
             rooms: Arc::new(RwLock::new(HashMap::new())),
             start_time: Instant::now(),
         }
@@ -127,15 +123,10 @@ impl DaemonState {
 
         let record = record.expect("session record present after create");
 
-        // 先装配完整工具注册表（含 task 与 MCP），再交给房间：
+        // 先装配完整工具注册表（含 task），再交给房间：
         // 房间持有的是注册表快照，注册必须发生在构造之前。
-        // MCP 只取已预热好的缓存：发现涉及网络/子进程握手，放在这里会直接
-        // 拖慢每次打开会话；预热在进程启动与配置变更时后台完成。
         let runner_slot = Arc::new(RunnerSlot::new());
         let mut reg = ToolRegistry::with_builtins(runner_slot.clone());
-        for mcp_tool in self.mcp.cached_tools() {
-            reg.register(mcp_tool);
-        }
         // 插件工具：按 workspace 发现并注册（JS 由内嵌 QuickJS 执行）
         let plugins = Arc::new(oma_plugin::PluginHost::load(std::path::Path::new(workspace)));
         for tool in plugins.tools() {
@@ -716,7 +707,7 @@ fn mime_for(name: &str) -> &'static str {
 // 工具清单 REST API (/api/tools)
 // =========================================================================
 
-/// 预设编辑器可勾选的工具：内置工具 + 已发现的 MCP 工具（命名空间化）
+/// 预设编辑器可勾选的工具：内置工具 + 插件工具
 #[derive(Deserialize)]
 struct ToolsQuery {
     /// 指定 workspace 时一并列出该项目/全局发现到的插件工具
@@ -744,14 +735,6 @@ async fn handle_list_tools(
             })
         })
         .collect();
-
-    for (name, description) in state.mcp.cached_tool_names().await {
-        out.push(serde_json::json!({
-            "name": name,
-            "description": description,
-            "kind": "mcp",
-        }));
-    }
 
     if let Some(ws) = query.workspace.as_deref().filter(|w| !w.is_empty()) {
         let plugins = oma_plugin::PluginHost::load(std::path::Path::new(ws));
@@ -1174,12 +1157,6 @@ async fn handle_put_config(
         )
     })?;
     *state.config.write() = cfg.clone();
-    state.mcp.sync_servers(&cfg.mcp_servers);
-    // 配置变更后后台重新发现工具：新接入的服务器需预热完成后才注入新建房间
-    {
-        let mcp = state.mcp.clone();
-        tokio::spawn(async move { mcp.warm_up().await });
-    }
 
     Ok(Json(serde_json::json!({ "success": true })))
 }
@@ -1333,13 +1310,6 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
             .and_then(|rec| rec.current_leaf_id),
         model_catalog,
         agents: AgentLoader::list_agents(&room.workspace),
-        mcp_summaries: state
-            .mcp
-            .server_tool_counts()
-            .await
-            .into_iter()
-            .map(|(name, tool_count)| McpServerSummary { name, tool_count })
-            .collect(),
         context_usage,
         active_theme,
     };
@@ -1525,7 +1495,6 @@ mod tests {
             storage,
             OmaConfig::default(),
             oma_config::ConfigPaths::in_dir(tmp),
-            Arc::new(McpManager::new()),
         ))
     }
 
@@ -1709,7 +1678,7 @@ mod tests {
         Ok(())
     }
 
-    /// 房间必须暴露完整的工具集（含 task 与 MCP）：注册表在交给房间前就绪。
+    /// 房间必须暴露完整的工具集（含 task）：注册表在交给房间前就绪。
     #[tokio::test]
     async fn test_room_exposes_task_tool() -> Result<()> {
         let tmp = tempfile::tempdir()?;
@@ -1883,10 +1852,9 @@ mod tests {
             },
         );
         let config_paths = oma_config::ConfigPaths::in_dir(tmp.path());
-        let mcp = Arc::new(McpManager::new());
         let token = "test_secret_token".to_string();
 
-        let state = DaemonState::new(token.clone(), storage, config, config_paths.clone(), mcp);
+        let state = DaemonState::new(token.clone(), storage, config, config_paths.clone());
         let base = spawn_app(state).await?;
         let client = reqwest::Client::new();
         let auth = format!("Bearer {}", token);

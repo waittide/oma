@@ -21,7 +21,6 @@ oma-runtime = { workspace = true }
 oma-storage = { workspace = true }
 oma-tool = { workspace = true }
 oma-tui = { workspace = true }
-oma-mcp = { workspace = true }
 axum = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }

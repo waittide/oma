@@ -48,7 +48,6 @@ oma-client = { path = "crates/client" }
 oma-config = { path = "crates/config" }
 oma-contract = { path = "crates/contract" }
 oma-daemon = { path = "crates/daemon" }
-oma-mcp = { path = "crates/mcp" }
 oma-plugin = { path = "crates/plugin" }
 oma-provider = { path = "crates/provider" }
 oma-runtime = { path = "crates/runtime" }

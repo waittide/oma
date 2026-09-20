@@ -102,7 +102,7 @@ export const api = {
       `/api/sessions/${id}/messages/${messageId}`,
       { method: 'DELETE' },
     ),
-  /** 预设编辑器可勾选的工具（内置 + 已发现的 MCP） */
+  /** 预设编辑器可勾选的工具（内置 + 插件） */
   tools: () => request<ToolInfo[]>('/api/tools'),
 
   presets: (workspace?: string) =>

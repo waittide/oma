@@ -113,11 +113,6 @@ export type AgentEvent =
   | { type: 'messages_deleted'; data?: { deleted_ids: string[]; current_leaf_id: string | null } }
   | { type: 'error'; data?: { message: string } };
 
-/** MCP 服务器配置（与 Rust McpServerConfig 的内部 tag 序列化一致） */
-export type McpServerConfig =
-  | { type: 'local'; command: string; args?: string[]; env?: Record<string, string> }
-  | { type: 'remote'; url: string; headers?: Record<string, string> };
-
 /** Agent 预设文件条目：决定以什么角色、能用哪些工具运行；scope = bundled | global | project */
 export interface AgentFile {
   id: string;
@@ -147,11 +142,6 @@ export interface SkillFile {
   dir: string;
 }
 
-export interface McpServerSummary {
-  name: string;
-  tool_count: number;
-}
-
 export interface Ready {
   version: string;
   session_id: string;
@@ -164,8 +154,6 @@ export interface Ready {
   /** 可选模型目录（provider → 模型清单），与 OmaConfig.providers 的配置形态不同 */
   model_catalog: Record<string, ModelInfo[]>;
   agents: AgentSummary[];
-  /** MCP 服务器概览（名称 + 工具数），非完整配置 */
-  mcp_summaries: McpServerSummary[];
   /** 上次记录的上下文占用；用于重连/重启后立即恢复进度条 */
   context_usage?: ContextUsage | null;
   /** 已解析主题：终端与浏览器共用同一份配色数据 */
@@ -388,7 +376,6 @@ export interface OmaConfig {
   /** `token` 由 GET 原样下发、又随整份配置回传，缺字段会把配置里已设的 token 清空 */
   server: { listen_addr: string; token: string };
   providers: Record<string, ProviderConfig>;
-  mcp_servers: Record<string, McpServerConfig>;
 }
 
 export interface FileNode {
@@ -408,7 +395,7 @@ export interface ServerStatus {
 export interface ToolInfo {
   name: string;
   description: string;
-  /** builtin | mcp */
+  /** builtin | plugin */
   kind: string;
 }
 

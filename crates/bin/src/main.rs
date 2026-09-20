@@ -13,7 +13,6 @@ use axum::{
 use cli::Commands;
 use oma_config::{ClientConfig, OmaConfig};
 use oma_daemon::{DaemonState, create_router, resolve_token};
-use oma_mcp::McpManager;
 use oma_storage::StorageManager;
 use rust_embed::Embed;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -147,15 +146,8 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
     let _ = tokio::task::spawn_blocking(oma_tool::init_shell_env).await;
 
     let storage = StorageManager::new(&data_dir).await?;
-    let mcp = Arc::new(McpManager::new());
-    mcp.sync_servers(&config.mcp_servers);
-    // 后台预热 MCP 工具发现：不阻塞监听端口，也不拖慢首次打开会话
-    {
-        let mcp = mcp.clone();
-        tokio::spawn(async move { mcp.warm_up().await });
-    }
 
-    let state = DaemonState::new(token.clone(), storage, config, config_paths, mcp);
+    let state = DaemonState::new(token.clone(), storage, config, config_paths);
     let app = create_router(state);
 
     let listener = tokio::net::TcpListener::bind(addr)
