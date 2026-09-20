@@ -31,6 +31,7 @@ import * as chat from '../stores/chat';
 import { activeSession, activeSessionId, requestNewSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
 import { useTranslations } from '../composables/i18n';
+import type { TokenUsage } from '../types';
 
 const props = defineProps<{ online: boolean }>();
 const emit = defineEmits<{ needSettings: [] }>();
@@ -297,6 +298,33 @@ const reasoningOptions = computed(() =>
 );
 
 const isEmpty = computed(() => chat.messages.value.length === 0 && !chat.running.value);
+
+/**
+ * 消息上的模型标签（`provider/model` → 模型显示名）。
+ *
+ * 会话中途可切模型，因此模型跟着消息走（见后端 `ChatMessage.model`）；
+ * 旧数据没有该字段，退回当前模型名（与 pi-web 一致）。
+ */
+function messageModelLabel(model?: string | null): string {
+  const selector = model || chat.activeModel.value;
+  if (!selector) return '';
+  return modelSelectorLabel(chat.modelCatalog.value, selector) ?? selector;
+}
+
+/**
+ * 本轮 token 开销行（`in · out · cache R · cache W`）。
+ *
+ * 与 pi-web 的 `formatUsage` 对齐；oma 的模型配置里没有价格字段，故不展示成本。
+ */
+function usageText(usage?: TokenUsage | null): string {
+  if (!usage) return '';
+  const parts: string[] = [];
+  if (usage.input_tokens) parts.push(`${usage.input_tokens.toLocaleString()} in`);
+  if (usage.output_tokens) parts.push(`${usage.output_tokens.toLocaleString()} out`);
+  if (usage.cache_read_tokens) parts.push(`${usage.cache_read_tokens.toLocaleString()} cache R`);
+  if (usage.cache_write_tokens) parts.push(`${usage.cache_write_tokens.toLocaleString()} cache W`);
+  return parts.join(' · ');
+}
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */
 const ready = computed(() => !!activeSessionId.value && props.online && chat.connected.value);
 
@@ -399,11 +427,14 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
               </div>
             </template>
             <template v-else>
+              <div v-if="messageModelLabel(m.model)" class="model-label">{{ messageModelLabel(m.model) }}</div>
               <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
+              <div v-if="usageText(m.usage)" class="turn-usage">{{ usageText(m.usage) }}</div>
             </template>
           </article>
 
           <article v-if="chat.running.value || chat.finalizing.value" class="msg assistant">
+            <div v-if="chat.activeModel.value" class="model-label">{{ messageModelLabel(null) }}</div>
             <MessageBlocks :blocks="chat.renderBlocks.value" :streaming="true" />
             <div v-if="chat.running.value" class="live-row">
               <LuLoader :size="13" class="spin" />
@@ -678,6 +709,19 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   /* 与上方回复内容拉开距离；与下方到输入框的间距（消息底边距 + 输入框上边距）
      取值一致，图标上下留白相等 */
   margin-top: 16px;
+}
+/* 每轮的模型标签：弱色小字，压在消息内容上方（对齐 pi-web） */
+.model-label {
+  font-size: 11px;
+  color: var(--overlay0);
+  margin-bottom: 4px;
+}
+/* 本轮 token 开销：与 pi-web 的 `N in · N out · …` 行一致 */
+.turn-usage {
+  font-size: 11px;
+  color: var(--overlay0);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
 }
 /* 加载动画：与完成态标签同一高度感，不把行高撑出多余的空白 */
 .live-row svg {

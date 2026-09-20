@@ -45,6 +45,10 @@ export interface ChatMessage {
   role: Role;
   content: Block[];
   created_at: number;
+  /** 产出该消息时生效的模型（`provider/model`）；用户消息与旧数据缺省 */
+  model?: string | null;
+  /** 产生该消息时本轮累计的 token 消耗；用户消息与旧数据缺省 */
+  usage?: TokenUsage | null;
 }
 
 export interface ModelInfo {
@@ -75,6 +79,10 @@ export interface ActiveTurnCatchUp {
 export interface TokenUsage {
   input_tokens: number;
   output_tokens: number;
+  /** 缓存命中的输入 token */
+  cache_read_tokens?: number;
+  /** 写入缓存的输入 token */
+  cache_write_tokens?: number;
 }
 
 export type AgentEvent =

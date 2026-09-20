@@ -24,7 +24,7 @@ use std::{
 };
 
 use chrono::{SecondsFormat, TimeZone};
-use oma_contract::{Block, ChatMessage, Role};
+use oma_contract::{Block, ChatMessage, Role, TokenUsage};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
@@ -190,6 +190,12 @@ struct StoredMessage {
     role:      Role,
     content:   Vec<Block>,
     timestamp: i64,
+    /// 产出该消息的模型（`provider/model`）；用户消息与旧数据缺省
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model:     Option<String>,
+    /// 产生该消息时的本轮 token 消耗；用户消息与旧数据缺省
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage:     Option<TokenUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,6 +407,8 @@ impl SessionStore {
                     role:       m.message.role,
                     content:    m.message.content.clone(),
                     created_at: m.message.timestamp,
+                    model:      m.message.model.clone(),
+                    usage:      m.message.usage,
                 }),
                 _ => None,
             })
@@ -695,13 +703,7 @@ impl StorageManager {
     }
 
     /// 追加消息并使其成为当前叶子。
-    pub async fn append_message(
-        &self,
-        session_id: &str,
-        message: &ChatMessage,
-        _input_tokens: usize,
-        _output_tokens: usize,
-    ) -> Result<()> {
+    pub async fn append_message(&self, session_id: &str, message: &ChatMessage) -> Result<()> {
         self.with_store_mut(session_id, |store| {
             store.append(Entry::Message(MessageEntry {
                 id:        message.id.clone(),
@@ -711,6 +713,8 @@ impl StorageManager {
                     role:      message.role,
                     content:   message.content.clone(),
                     timestamp: message.created_at,
+                    model:     message.model.clone(),
+                    usage:     message.usage,
                 },
             }))
         })
@@ -901,6 +905,8 @@ mod tests {
             role:       Role::User,
             content:    vec![Block::Text { text: text.into() }],
             created_at: at,
+            model:      None,
+            usage:      None,
         }
     }
 
@@ -922,11 +928,11 @@ mod tests {
 
         // 3. 追加消息 m1 (User)
         storage
-            .append_message("s_1", &msg("m_1", None, "Hello", 1000), 10, 0)
+            .append_message("s_1", &msg("m_1", None, "Hello", 1000))
             .await?;
         // 4. 追加消息 m2 (Assistant)
         storage
-            .append_message("s_1", &msg("m_2", Some("m_1"), "Hi there", 2000), 0, 15)
+            .append_message("s_1", &msg("m_2", Some("m_1"), "Hi there", 2000))
             .await?;
 
         // 5. 校验当前线性链路 [m_1, m_2]
@@ -937,7 +943,7 @@ mod tests {
 
         // 6. 分叉：从 m_1 分叉产生 m_3
         storage
-            .append_message("s_1", &msg("m_3", Some("m_1"), "Alternative branch", 3000), 0, 20)
+            .append_message("s_1", &msg("m_3", Some("m_1"), "Alternative branch", 3000))
             .await?;
         let linear_fork = storage.get_linear_messages("s_1", None).await?;
         assert_eq!(linear_fork.len(), 2);
@@ -966,9 +972,7 @@ mod tests {
 
         // 树：m1 → m2 → m3（活跃链），m1 → m4（兄弟分支）
         for (id, p) in [("m1", None), ("m2", Some("m1")), ("m3", Some("m2")), ("m4", Some("m1"))] {
-            storage
-                .append_message("s_del", &msg(id, p, id, 0), 0, 0)
-                .await?;
+            storage.append_message("s_del", &msg(id, p, id, 0)).await?;
         }
 
         // 删除 m2 子树：{m2, m3}；当前叶子 m4 不在子树内 → 保持不变
@@ -1117,7 +1121,7 @@ mod tests {
         let b = StorageManager::new(tmp.path()).await?;
 
         a.create_session("s_x", "/w", "T", "m", "medium").await?;
-        b.append_message("s_x", &msg("m1", None, "from b", 1000), 0, 0)
+        b.append_message("s_x", &msg("m1", None, "from b", 1000))
             .await?;
 
         // a 未参与写入，但读取时应看到 b 的写入

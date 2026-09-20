@@ -708,11 +708,13 @@ impl SessionRoom {
             role:       Role::User,
             content:    user_blocks,
             created_at: chrono::Utc::now().timestamp_millis(),
+            model:      None,
+            usage:      None,
         };
 
         if let Err(e) = self
             .storage
-            .append_message(&self.session_id, &user_msg, 0, 0)
+            .append_message(&self.session_id, &user_msg)
             .await
         {
             self.broadcast(AgentEvent::Error {
@@ -887,9 +889,13 @@ impl SessionRoom {
                     ProviderStreamEvent::Usage {
                         input_tokens,
                         output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
                     } => {
                         turn_usage.input_tokens += input_tokens;
                         turn_usage.output_tokens += output_tokens;
+                        turn_usage.cache_read_tokens += cache_read_tokens;
+                        turn_usage.cache_write_tokens += cache_write_tokens;
                         if input_tokens > 0 {
                             request_input_tokens = input_tokens;
                         }
@@ -951,15 +957,14 @@ impl SessionRoom {
                     role:       Role::Assistant,
                     content:    assistant_blocks,
                     created_at: chrono::Utc::now().timestamp_millis(),
+                    // 记下产出这一轮时生效的模型：会话中途切模型后，历史里
+                    // 每一轮的归属仍然可读（界面据此显示每轮模型标签）
+                    model:      Some(active_model_sel.clone()),
+                    usage:      Some(*turn_usage),
                 };
                 if let Err(e) = self
                     .storage
-                    .append_message(
-                        &self.session_id,
-                        &assistant_msg,
-                        turn_usage.input_tokens,
-                        turn_usage.output_tokens,
-                    )
+                    .append_message(&self.session_id, &assistant_msg)
                     .await
                 {
                     self.broadcast(AgentEvent::Error {
@@ -1066,12 +1071,10 @@ impl SessionRoom {
             role:       Role::User,
             content:    blocks,
             created_at: chrono::Utc::now().timestamp_millis(),
+            model:      None,
+            usage:      None,
         };
-        if let Err(e) = self
-            .storage
-            .append_message(&self.session_id, &msg, 0, 0)
-            .await
-        {
+        if let Err(e) = self.storage.append_message(&self.session_id, &msg).await {
             self.broadcast(AgentEvent::Error {
                 message: format!("Failed to save tool results: {}", e),
             });
@@ -1130,6 +1133,8 @@ impl SessionRoom {
             role:       Role::User,
             content:    vec![Block::Text { text: prompt }],
             created_at: chrono::Utc::now().timestamp_millis(),
+            model:      None,
+            usage:      None,
         }];
 
         // 复用流式接口：命名请求不带工具、不需要 thinking，仅拼接文本增量
@@ -1340,6 +1345,8 @@ mod tests {
             role,
             content: vec![Block::Text { text: body.into() }],
             created_at: 0,
+            model: None,
+            usage: None,
         }
     }
 
@@ -1354,6 +1361,8 @@ mod tests {
                 input: serde_json::json!({ "path": "big.rs" }),
             }],
             created_at: 0,
+            model:      None,
+            usage:      None,
         }
     }
 
@@ -1368,6 +1377,8 @@ mod tests {
                 is_error:    false,
             }],
             created_at: 0,
+            model:      None,
+            usage:      None,
         }
     }
 
@@ -1394,6 +1405,8 @@ mod tests {
                 data:      "QUJD".into(),
             }],
             created_at: 0,
+            model:      None,
+            usage:      None,
         };
         assert!(is_turn_start(&user_image), "a user-sent image opens a turn");
         user_image.content.push(Block::Text { text: "hi".into() });
@@ -1416,6 +1429,8 @@ mod tests {
                     text: format!("看看图 {i} {}", "详情".repeat(200)),
                 }],
                 created_at: i as i64,
+                model:      None,
+                usage:      None,
             });
             let call_id = format!("call_{i}");
             let assistant_id = format!("a{i}");
@@ -1843,6 +1858,8 @@ mod tests {
             role,
             content: vec![Block::Text { text: text.to_string() }],
             created_at: 0,
+            model: None,
+            usage: None,
         }
     }
 
@@ -1886,6 +1903,8 @@ mod tests {
                     input: serde_json::json!({ "path": "x" }),
                 }],
                 created_at: 0,
+                model:      None,
+                usage:      None,
             },
             msg(Role::Assistant, "好的，我先看索引"),
         ];
@@ -1908,6 +1927,8 @@ mod tests {
                 is_error:    false,
             }],
             created_at: 0,
+            model:      None,
+            usage:      None,
         }];
         assert!(build_naming_prompt(&only_tools).is_none());
     }

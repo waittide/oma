@@ -16,7 +16,7 @@ import { UiButton } from '@waittide/ui';
 import { prettyJson, renderMarkdown } from '../lib/format';
 import { enhanceCodeBlocks } from '../lib/codeCopy';
 import { imageSrc } from '../lib/attachments';
-import { currentSessionId } from '../stores/chat';
+import { currentSessionId, toolDurations } from '../stores/chat';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{
@@ -172,6 +172,38 @@ function toolSubtitle(it: Item): string {
   return text.length > 64 ? `${text.slice(0, 64)}…` : text;
 }
 
+/** 工具执行耗时（秒）；服务端不记录，仅本次连接内采集到的调用有值 */
+function toolDuration(it: Item): string {
+  const seconds = toolDurations.value[it.key];
+  if (seconds === undefined) return '';
+  return `${seconds}s`;
+}
+
+/**
+ * 去掉 Markdown 标记，用于折叠态的一行预览。
+ *
+ * 折叠时只需要“像内容的一句话”，保留符号反而徒增噪声。
+ */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/[*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** 思考块的折叠态预览（与 pi-web 一致：单行、去标记、截断） */
+function thinkingPreview(it: Item, max = 96): string {
+  const text = stripMarkdown(it.thinking ?? '');
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 // ---------- 代码块右上角复制按钮 ----------
 // v-html 注入的 DOM 里挂不了组件，因此在每次渲染后由脚本补按钮（幂等）
 const blocksRoot = ref<HTMLElement | null>(null);
@@ -194,10 +226,11 @@ onMounted(() => void nextTick(syncCodeCopy));
   <div ref="blocksRoot" class="blocks">
     <template v-for="it in items" :key="it.key">
       <div v-if="it.kind === 'text' && it.text" class="md" v-html="renderMarkdown(it.text)" />
-      <div v-else-if="it.kind === 'thinking'" class="fold" :class="{ open: isOpen(it) }">
+      <div v-else-if="it.kind === 'thinking'" class="fold think" :class="{ open: isOpen(it) }">
         <UiButton variant="ghost" tone="neutral" block class="fold-head think" @click="toggleFold(it)">
-          <LuBrain :size="13" />
-          <span class="fold-title">{{ t('thinking') }}</span>
+          <LuBrain :size="13" class="think-icon" />
+          <span v-if="isOpen(it)" class="fold-title">{{ t('thinking') }}</span>
+          <span v-else class="fold-preview">{{ thinkingPreview(it) || t('thinking') }}</span>
           <LuChevronRight :size="13" class="caret" />
         </UiButton>
         <div
@@ -211,15 +244,13 @@ onMounted(() => void nextTick(syncCodeCopy));
 
       <img v-else-if="it.kind === 'image' && it.imageSrc" class="att" :src="it.imageSrc" alt="attachment" />
 
-      <div v-else-if="it.kind === 'tool'" class="fold" :class="{ open: isOpen(it), error: it.resultDone && it.resultError }">
-        <UiButton variant="ghost" tone="neutral" block class="fold-head" @click="toggleFold(it)">
+      <div v-else-if="it.kind === 'tool'" class="fold tool" :class="{ open: isOpen(it), error: it.resultDone && it.resultError }">
+        <UiButton variant="ghost" tone="neutral" block class="fold-head tool-head" @click="toggleFold(it)">
           <component :is="toolIcon(it.toolName)" :size="13" class="tool-icon" />
-          <span class="fold-title">{{ it.toolName }}</span>
-          <span v-if="toolSubtitle(it)" class="fold-sep">·</span>
+          <span class="tool-name">{{ it.toolName }}</span>
           <span v-if="toolSubtitle(it)" class="fold-sub">{{ toolSubtitle(it) }}</span>
           <span v-if="!it.resultDone" class="tstatus running">{{ t('running') }}</span>
-          <span v-else-if="it.resultError" class="tstatus err">{{ t('failed') }}</span>
-          <span v-else class="tstatus ok">{{ t('done') }}</span>
+          <span v-else-if="toolDuration(it)" class="tool-dur">{{ toolDuration(it) }}</span>
           <LuChevronRight :size="13" class="caret" />
         </UiButton>
         <div v-show="isOpen(it)" class="fold-body-wrap">
@@ -417,6 +448,37 @@ onMounted(() => void nextTick(syncCodeCopy));
 }
 .fold.think .fold-head {
   color: var(--mauve);
+}
+/* 折叠态的思考预览：一行灰字，与 pi-web 的紧凑折叠条一致 */
+.fold-preview {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--overlay1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.think-icon {
+  flex-shrink: 0;
+}
+.tool-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.fold.tool.error .tool-name {
+  color: var(--danger);
+}
+/* 工具耗时：紧贴折叠箭头，等宽数字避免行内跳动 */
+.tool-dur {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--overlay1);
+  font-variant-numeric: tabular-nums;
 }
 .tool-icon {
   color: var(--overlay1);

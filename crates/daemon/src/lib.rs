@@ -1457,10 +1457,10 @@ mod tests {
             role:       oma_contract::Role::User,
             content:    vec![oma_contract::Block::Text { text: big }],
             created_at: 0,
+            model:      None,
+            usage:      None,
         };
-        storage
-            .append_message(&created.session_id, &msg, 0, 0)
-            .await?;
+        storage.append_message(&created.session_id, &msg).await?;
 
         // 不带 Accept-Encoding 时不得压缩
         let plain = client

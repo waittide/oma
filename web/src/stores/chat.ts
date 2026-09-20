@@ -78,6 +78,15 @@ export const reasoningLevel = ref('');
 /** 可选模型目录（provider → 模型清单），来自握手载荷的 model_catalog */
 export const modelCatalog = ref<Record<string, ModelInfo[]>>({});
 export const lastUsage = ref<TokenUsage | null>(null);
+/**
+ * call_id → 工具执行耗时（秒）。
+ *
+ * 由 `tool_call_started` / `tool_call_finished` 的到达时间差算出（与 pi-web 一致），
+ * 服务端不记录耗时，因此重连后历史里的工具没有耗时。
+ */
+export const toolDurations = ref<Record<string, number>>({});
+/** 未完成调用的开始时刻（仅内存，不对外暴露） */
+const toolStartedAt = new Map<string, number>();
 /** 最近一次模型请求的上下文占用（提示侧总量，含缓存） */
 export const contextUsage = ref<{ tokens: number; contextLen: number } | null>(null);
 export const queued = ref(0);
@@ -215,6 +224,7 @@ function handleEvent(ev: AgentEvent) {
           tool: { ...d, done: false },
         });
       }
+      if (d) toolStartedAt.set(d.call_id, Date.now());
       break;
     }
     case 'tool_call_finished': {
@@ -227,6 +237,14 @@ function handleEvent(ev: AgentEvent) {
           seg.tool.is_error = d.is_error;
           seg.tool.done = true;
         }
+      }
+      const startedAt = toolStartedAt.get(d.call_id);
+      if (startedAt !== undefined) {
+        toolStartedAt.delete(d.call_id);
+        toolDurations.value = {
+          ...toolDurations.value,
+          [d.call_id]: Math.round(((Date.now() - startedAt) / 1000) * 10) / 10,
+        };
       }
       break;
     }
@@ -432,6 +450,8 @@ export function reset() {
   forkFrom.value = null;
   lastUsage.value = null;
   contextUsage.value = null;
+  toolDurations.value = {};
+  toolStartedAt.clear();
   queued.value = 0;
   queuedMessages.value = [];
 }

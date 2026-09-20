@@ -380,8 +380,13 @@ pub enum ProviderStreamEvent {
     },
     Usage {
         /// 提示侧（输入）总量：统一含缓存读写，与各厂商口径对齐
-        input_tokens:  usize,
-        output_tokens: usize,
+        input_tokens:       usize,
+        output_tokens:      usize,
+        /// 缓存命中的输入 token（Anthropic `cache_read_input_tokens` /
+        /// OpenAI `prompt_tokens_details.cached_tokens` / Google `cachedContentTokenCount`）
+        cache_read_tokens:  usize,
+        /// 写入缓存的输入 token（Anthropic `cache_creation_input_tokens`）
+        cache_write_tokens: usize,
     },
     Done {
         stop_reason: StopReason,
@@ -1235,15 +1240,18 @@ where
                 "message_start" => {
                     if let Some(usage) = val.get("message").and_then(|m| m.get("usage")) {
                         // Anthropic 的 input_tokens 不含缓存部分：上下文占用必须把
-                        // cache_creation/cache_read 一并计入，否则开启 caching 后严重低估
+                        // cache_creation/cache_read 一并计入，否则开启 caching 后严重低估。
+                        // 两者同时单独上报，供界面展示缓存命中情况。
                         let field = |k: &str| usage.get(k).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                        let input_tokens = field("input_tokens")
-                            + field("cache_creation_input_tokens")
-                            + field("cache_read_input_tokens");
+                        let cache_read_tokens = field("cache_read_input_tokens");
+                        let cache_write_tokens = field("cache_creation_input_tokens");
+                        let input_tokens = field("input_tokens") + cache_write_tokens + cache_read_tokens;
                         let _ = tx
                             .send(ProviderStreamEvent::Usage {
                                 input_tokens,
                                 output_tokens: 0,
+                                cache_read_tokens,
+                                cache_write_tokens,
                             })
                             .await;
                     }
@@ -1324,6 +1332,8 @@ where
                             .send(ProviderStreamEvent::Usage {
                                 input_tokens: 0,
                                 output_tokens,
+                                cache_read_tokens: 0,
+                                cache_write_tokens: 0,
                             })
                             .await;
                     }
@@ -1457,7 +1467,8 @@ where
                 // 统计 Usage
                 if let Some(usage) = val.get("usage") {
                     // prompt_tokens 已包含缓存命中部分（与 Anthropic 口径不同，
-                    // 这里不得再加 prompt_tokens_details.cached_tokens，否则重复计数）
+                    // 这里不得再加 prompt_tokens_details.cached_tokens，否则重复计数）；
+                    // cached_tokens 仅用于展示缓存命中量。
                     let input_tokens = usage
                         .get("prompt_tokens")
                         .and_then(|v| v.as_u64())
@@ -1466,10 +1477,16 @@ where
                         .get("completion_tokens")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0) as usize;
+                    let cached = usage
+                        .pointer("/prompt_tokens_details/cached_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
                     let _ = tx
                         .send(ProviderStreamEvent::Usage {
                             input_tokens,
                             output_tokens,
+                            cache_read_tokens: cached,
+                            cache_write_tokens: 0,
                         })
                         .await;
                 }
@@ -1671,10 +1688,16 @@ where
                                 .get("output_tokens")
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(0) as usize;
+                            let cached = usage
+                                .pointer("/input_tokens_details/cached_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize;
                             let _ = tx
                                 .send(ProviderStreamEvent::Usage {
                                     input_tokens,
                                     output_tokens,
+                                    cache_read_tokens: cached,
+                                    cache_write_tokens: 0,
                                 })
                                 .await;
                         }
@@ -1801,10 +1824,16 @@ where
                         .get("candidatesTokenCount")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0) as usize;
+                    let cached = usage
+                        .get("cachedContentTokenCount")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
                     let _ = tx
                         .send(ProviderStreamEvent::Usage {
                             input_tokens,
                             output_tokens,
+                            cache_read_tokens: cached,
+                            cache_write_tokens: 0,
                         })
                         .await;
                 }
@@ -1917,6 +1946,8 @@ mod tests {
                 },
             ],
             created_at: 0,
+            model:      None,
+            usage:      None,
         }
     }
 
@@ -1933,6 +1964,8 @@ mod tests {
                     input: serde_json::json!({ "path": "shot.png" }),
                 }],
                 created_at: 0,
+                model:      None,
+                usage:      None,
             },
             ChatMessage {
                 id:         "u1".into(),
@@ -1950,6 +1983,8 @@ mod tests {
                     },
                 ],
                 created_at: 0,
+                model:      None,
+                usage:      None,
             },
         ]
     }
@@ -2058,6 +2093,8 @@ mod tests {
                 input: serde_json::json!({ "path": "x.rs" }),
             }],
             created_at: 0,
+            model:      None,
+            usage:      None,
         };
         let tool_result = ChatMessage {
             id:         "r1".into(),
@@ -2069,6 +2106,8 @@ mod tests {
                 is_error:    false,
             }],
             created_at: 0,
+            model:      None,
+            usage:      None,
         };
         let tools = vec![serde_json::json!({
             "name": "read",
@@ -2141,8 +2180,10 @@ mod tests {
         assert_eq!(
             events[2],
             ProviderStreamEvent::Usage {
-                input_tokens:  7,
-                output_tokens: 3,
+                input_tokens:       7,
+                output_tokens:      3,
+                cache_read_tokens:  0,
+                cache_write_tokens: 0,
             }
         );
         assert_eq!(
@@ -2440,8 +2481,10 @@ data: [DONE]\n\n";
         assert_eq!(
             events[4],
             ProviderStreamEvent::Usage {
-                input_tokens:  100,
-                output_tokens: 42,
+                input_tokens:       100,
+                output_tokens:      42,
+                cache_read_tokens:  0,
+                cache_write_tokens: 0,
             }
         );
         assert_eq!(
@@ -2466,8 +2509,10 @@ data: [DONE]\n\n";
         assert_eq!(
             ev,
             ProviderStreamEvent::Usage {
-                input_tokens:  1,
-                output_tokens: 5,
+                input_tokens:       1,
+                output_tokens:      5,
+                cache_read_tokens:  0,
+                cache_write_tokens: 0,
             }
         );
         ev = rx.recv().await.unwrap();
@@ -2494,8 +2539,10 @@ data: [DONE]\n\n";
         assert_eq!(
             rx.recv().await.unwrap(),
             ProviderStreamEvent::Usage {
-                input_tokens:  0,
-                output_tokens: 0,
+                input_tokens:       0,
+                output_tokens:      0,
+                cache_read_tokens:  0,
+                cache_write_tokens: 0,
             }
         );
         assert_eq!(
@@ -2573,6 +2620,8 @@ data: [DONE]\n\n";
             role:       Role::User,
             content:    vec![Block::Text { text: text.into() }],
             created_at: 0,
+            model:      None,
+            usage:      None,
         }]
     }
 
@@ -2751,6 +2800,8 @@ data: [DONE]\n\n";
             role: Role::Assistant,
             content,
             created_at: 0,
+            model: None,
+            usage: None,
         }
     }
 
@@ -2793,6 +2844,8 @@ data: [DONE]\n\n";
                 thinking: "想到一半就被打断".into(),
             }],
             created_at: 0,
+            model:      None,
+            usage:      None,
         };
         let messages = vec![user_text("q").remove(0), interrupted, user_text("继续").remove(0)];
 

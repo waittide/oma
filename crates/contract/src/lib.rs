@@ -74,6 +74,18 @@ pub struct ChatMessage {
     pub role:       Role,
     pub content:    Vec<Block>,
     pub created_at: i64,
+    /// 产出该消息时生效的模型（`provider/model`）。
+    ///
+    /// 会话中途可以切模型，而「这轮是哪个模型产出的」只能跟消息走；
+    /// 用户消息与早期数据没有该字段（`None`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model:      Option<String>,
+    /// 产生该消息时本轮累计的 token 消耗；用户消息与早期数据为 `None`。
+    ///
+    /// 一次用户输入可能产生多条助手消息（工具循环），每条都记下当时的累计值，
+    /// 界面按「本轮最后一条」展示整轮开销。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage:      Option<TokenUsage>,
 }
 
 /// 客户端类型
@@ -517,8 +529,15 @@ pub enum StopReason {
 /// Token 消耗统计
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
-    pub input_tokens:  usize,
-    pub output_tokens: usize,
+    /// 提示侧（输入）总量：统一含缓存读写，与各厂商口径对齐
+    pub input_tokens:       usize,
+    pub output_tokens:      usize,
+    /// 缓存命中的输入 token（Anthropic `cache_read_input_tokens` / OpenAI `cached_tokens`）
+    #[serde(default)]
+    pub cache_read_tokens:  usize,
+    /// 写入缓存的输入 token（Anthropic `cache_creation_input_tokens`）
+    #[serde(default)]
+    pub cache_write_tokens: usize,
 }
 
 /// 工具调用发起数据

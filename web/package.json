@@ -2,7 +2,7 @@
   "name": "oma-web",
   "private": true,
   "version": "0.1.0",
-  "description": "Oma 多端协同 AI Agent 的 Web 客户端（Vue 3 + TypeScript，零外部 UI 库）",
+  "description": "Oma 多端协同 AI Agent 的 Web 客户端（Vue 3 + TypeScript，控件来自 @waittide/ui）",
   "author": "waittide <waittide@outlook.com>",
   "license": "MIT",
   "repository": {
