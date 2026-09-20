@@ -19,8 +19,8 @@ pub mod truncate;
 
 /// 最大工具输出字符数限制。
 ///
-/// 仅用于未按 pi 语义改造的工具（`read` / `write` / `edit` / `bash`）；
-/// `ls` / `find` / `grep` 已改用 [`truncate`] 里的行数 + 字节双上限，与 pi 一致。
+/// 现在只剩 `edit` 的 diff 在用（作为超大 diff 的兜底）；
+/// `read` / `bash` 与 `ls` / `find` / `grep` 已统一走 [`truncate`] 的行数 + 字节双上限，与 pi 一致。
 pub const RESULT_MAX_CHARS: usize = 24_000;
 
 /// 工具输出截断保护函数（字符数口径）。
@@ -148,15 +148,12 @@ struct ReadInput {
     path:   String,
     #[serde(default = "default_offset")]
     offset: usize,
-    #[serde(default = "default_limit")]
-    limit:  usize,
+    #[serde(default)]
+    limit:  Option<usize>,
 }
 
 fn default_offset() -> usize {
     1
-}
-fn default_limit() -> usize {
-    1000
 }
 
 #[async_trait::async_trait]
@@ -166,8 +163,10 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read file content with line slicing. Image files return the image itself when the active \
-         model can view images, otherwise a metadata summary (dimensions, channels, alpha, MIME)."
+        "Read file content with line slicing. Text output is truncated to 2000 lines or 50KB \
+         (whichever is hit first); the notice tells you the offset to continue from. Image files \
+         return the image itself when the active model can view images, otherwise a metadata \
+         summary (dimensions, channels, alpha, MIME)."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -184,7 +183,7 @@ impl Tool for ReadTool {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of lines to read (default: 1000), text files only"
+                    "description": "Maximum number of lines to read (default: 2000 lines or 50KB, whichever comes first), text files only"
                 }
             },
             "required": ["path"]
@@ -242,16 +241,78 @@ impl Tool for ReadTool {
             ));
         }
 
-        let slice = lines
-            .into_iter()
-            .skip(start_idx)
-            .take(input.limit)
-            .enumerate()
-            .map(|(i, line)| format!("{:4} | {}", start_idx + i + 1, line))
+        // 行号前缀是 oma 自有的展示形式（pi 给原样内容），只在这里拼接；
+        // 截断后的行数与源文件行一一对应，提示里的行号因此仍指向文件真实行号。
+        let numbered = |line_no: usize, text: &str| format!("{line_no:4} | {text}");
+
+        // 用户显式给了 limit 就先按它切片，否则交给 truncate_head 双上限决定
+        let (selected, user_limited): (Vec<(usize, &str)>, Option<usize>) = match input.limit {
+            Some(limit) => {
+                let end = (start_idx + limit).min(total_lines);
+                let selected = lines[start_idx..end]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| (start_idx + i + 1, *line))
+                    .collect();
+                let count = end - start_idx;
+                (selected, Some(count))
+            }
+            None => (
+                lines[start_idx..]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| (start_idx + i + 1, *line))
+                    .collect(),
+                None,
+            ),
+        };
+
+        let slice = selected
+            .iter()
+            .map(|(no, line)| numbered(*no, line))
             .collect::<Vec<_>>()
             .join("\n");
+        let truncation = truncate::truncate_head(&slice);
+        let start_display = start_idx + 1;
 
-        ToolOutput::success(truncate_output(&slice))
+        let output = if truncation.first_line_exceeds_limit {
+            // 单行就超过字节上限：直接给出可操作的 bash 回退
+            let first_line_size = lines.get(start_idx).map(|l| l.len()).unwrap_or(0);
+            format!(
+                "[Line {start_display} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
+                truncate::format_size(first_line_size),
+                truncate::format_size(truncate::DEFAULT_MAX_BYTES),
+                start_display,
+                input.path,
+                truncate::DEFAULT_MAX_BYTES
+            )
+        } else if truncation.truncated {
+            let end_display = start_display + truncation.output_lines - 1;
+            let next_offset = end_display + 1;
+            let mut text = truncation.content.clone();
+            if truncation.truncated_by == Some(truncate::TruncatedBy::Lines) {
+                text.push_str(&format!(
+                    "\n\n[Showing lines {start_display}-{end_display} of {total_lines}. Use offset={next_offset} to continue.]"
+                ));
+            } else {
+                text.push_str(&format!(
+                    "\n\n[Showing lines {start_display}-{end_display} of {total_lines} ({} limit). Use offset={next_offset} to continue.]",
+                    truncate::format_size(truncate::DEFAULT_MAX_BYTES)
+                ));
+            }
+            text
+        } else if let Some(read_lines) = user_limited.filter(|n| start_idx + n < total_lines) {
+            let remaining = total_lines - (start_idx + read_lines);
+            let next_offset = start_idx + read_lines + 1;
+            format!(
+                "{}\n\n[{remaining} more lines in file. Use offset={next_offset} to continue.]",
+                truncation.content
+            )
+        } else {
+            truncation.content.clone()
+        };
+
+        ToolOutput::success(output)
     }
 }
 
@@ -684,6 +745,41 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
+/// 命令输出格式化：保留末尾（错误与最终结果在末尾），
+/// 用与 pi 相同的 2000 行 / 50KB 双上限，并在截断时给出可读的范围提示。
+fn format_command_output(combined: &str) -> String {
+    if combined.is_empty() {
+        return "(no output)".to_string();
+    }
+
+    let truncation = truncate::truncate_tail(combined);
+    if !truncation.truncated {
+        return truncation.content;
+    }
+
+    let start_line = truncation.total_lines - truncation.output_lines + 1;
+    let end_line = truncation.total_lines;
+    let mut text = truncation.content;
+    if truncation.last_line_partial {
+        text.push_str(&format!(
+            "\n\n[Showing last {} of line {end_line}.]",
+            truncate::format_size(truncation.output_bytes)
+        ));
+    } else if truncation.truncated_by == Some(truncate::TruncatedBy::Lines) {
+        text.push_str(&format!(
+            "\n\n[Showing lines {start_line}-{end_line} of {}.]",
+            truncation.total_lines
+        ));
+    } else {
+        text.push_str(&format!(
+            "\n\n[Showing lines {start_line}-{end_line} of {} ({} limit).]",
+            truncation.total_lines,
+            truncate::format_size(truncate::DEFAULT_MAX_BYTES)
+        ));
+    }
+    text
+}
+
 #[async_trait::async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &'static str {
@@ -691,7 +787,8 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a bash command with process group management and timeout."
+        "Execute a bash command with process group management and timeout. Returns stdout and \
+         stderr. Output is truncated to the last 2000 lines or 50KB (whichever is hit first)."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -761,7 +858,7 @@ impl Tool for BashTool {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let combined = format!("{}{}", stdout, stderr);
-                let truncated = truncate_output(&combined);
+                let truncated = format_command_output(&combined);
                 if output.status.success() {
                     ToolOutput::success(truncated)
                 } else {
@@ -1017,6 +1114,69 @@ mod tests {
             .await;
         assert!(out_of_range.is_error);
         assert!(out_of_range.output.contains("out of range"));
+        Ok(())
+    }
+
+    /// read 默认不再固定取 1000 行，而是行数（2000）+ 字节（50KB）双上限，
+    /// 并给出可操作的续读提示。
+    #[tokio::test]
+    async fn test_read_truncation_notice_and_continue_offset() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        // 超过 2000 行，truncate_head 的行数上限先到
+        let many: String = (1..=2500).map(|n| format!("line {n}\n")).collect();
+        tokio::fs::write(tmp.path().join("many.txt"), many).await?;
+
+        let out = ReadTool
+            .execute(tmp.path(), serde_json::json!({ "path": "many.txt" }))
+            .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert!(out.output.contains("2000 | line 2000"), "{}", out.output);
+        assert!(!out.output.contains("line 2001"), "只应给前 2000 行");
+        assert!(
+            out.output
+                .contains("[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]"),
+            "{}",
+            out.output
+        );
+
+        // 按提示续读，拿到剩下的部分
+        let next = ReadTool
+            .execute(tmp.path(), serde_json::json!({ "path": "many.txt", "offset": 2001 }))
+            .await;
+        assert!(next.output.contains("2001 | line 2001"), "{}", next.output);
+        assert!(next.output.contains("2500 | line 2500"), "{}", next.output);
+
+        // 显式 limit 提前停下时，提示剩下的行数
+        let limited = ReadTool
+            .execute(tmp.path(), serde_json::json!({ "path": "many.txt", "limit": 10 }))
+            .await;
+        assert!(!limited.is_error, "{}", limited.output);
+        assert!(limited.output.contains("10 | line 10"), "{}", limited.output);
+        assert!(
+            limited
+                .output
+                .contains("[2490 more lines in file. Use offset=11 to continue.]"),
+            "{}",
+            limited.output
+        );
+        Ok(())
+    }
+
+    /// bash 保留输出末尾（错误与最终结果），超限时给出范围提示。
+    #[tokio::test]
+    async fn test_bash_keeps_tail_of_long_output() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let out = BashTool::default()
+            .execute(tmp.path(), serde_json::json!({ "command": "seq 1 3000" }))
+            .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert!(out.output.contains("3000"), "末尾必须保留：{}", out.output);
+        assert!(!out.output.contains("\n1\n"), "开头的行应被丢弃");
+        assert!(
+            out.output.contains("[Showing lines 1001-3000 of 3000.]"),
+            "{}",
+            out.output
+        );
         Ok(())
     }
 
