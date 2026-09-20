@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
-import { toast, UiButton, UiIconButton, UiInput, UiTextarea, UiTooltip } from '@waittide/ui';
+import { toast, UiButton, UiIconButton, UiInput, UiModal, UiTextarea, UiTooltip } from '@waittide/ui';
 import {
   LuCheck,
   LuChevronRight,
@@ -19,7 +19,6 @@ import {
   LuX,
 } from 'vue-icons-plus/lu';
 import { api } from '../api';
-import OModal from './ui/OModal.vue';
 import ORadio from './ui/ORadio.vue';
 import OSelect from './ui/OSelect.vue';
 import OModelSelect from './ui/OModelSelect.vue';
@@ -1329,7 +1328,7 @@ function pickLocale(v: Locale) {
 </script>
 
 <template>
-  <OModal :open="open" width="min(calc(100vw - 32px), 980px)" flush floating-close @close="emit('close')">
+  <UiModal :open="open" width="min(calc(100vw - 32px), 980px)" flush floating-close @close="emit('close')">
     <div class="split">
       <nav class="nav">
         <div v-for="g in navGroups" :key="g.title" class="nav-group">
@@ -2063,9 +2062,9 @@ function pickLocale(v: Locale) {
         </section>
       </div>
     </div>
-  </OModal>
+  </UiModal>
 
-  <OModal
+  <UiModal
     :open="presetEdit.open"
     :title="presetEdit.isNew ? t('newPreset') : t('editPreset')"
     width="640px"
@@ -2124,9 +2123,9 @@ function pickLocale(v: Locale) {
         {{ tc('save') }}
       </UiButton>
     </template>
-  </OModal>
+  </UiModal>
 
-  <OModal
+  <UiModal
     :open="skillEdit.open"
     :title="skillEdit.isNew ? t('newSkill') : t('editSkill')"
     width="640px"
@@ -2173,9 +2172,9 @@ function pickLocale(v: Locale) {
         {{ tc('save') }}
       </UiButton>
     </template>
-  </OModal>
+  </UiModal>
 
-  <OModal
+  <UiModal
     :open="paletteEdit.open"
     :title="paletteEdit.isNew ? t('newTheme') : t('editTheme')"
     width="620px"
@@ -2233,7 +2232,7 @@ function pickLocale(v: Locale) {
       <UiButton variant="ghost" tone="neutral" size="sm" @click="paletteEdit.open = false">{{ tc('cancel') }}</UiButton>
       <UiButton variant="solid" tone="accent" size="sm" @click="savePaletteEdit">{{ tc('save') }}</UiButton>
     </template>
-  </OModal>
+  </UiModal>
 
 </template>
 

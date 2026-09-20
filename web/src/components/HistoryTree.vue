@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { LuChevronRight } from 'vue-icons-plus/lu';
-import { UiButton } from '@waittide/ui';
-import OModal from './ui/OModal.vue';
+import { UiButton, UiModal } from '@waittide/ui';
 import * as chat from '../stores/chat';
 import type { ChatMessage } from '../types';
 import { useTranslations } from '../composables/i18n';
@@ -180,7 +179,7 @@ function pick(r: Row) {
 </script>
 
 <template>
-  <OModal :open="props.open" :title="t('title')" width="760px" @close="emit('close')">
+  <UiModal :open="props.open" :title="t('title')" width="760px" @close="emit('close')">
     <div class="tree">
       <UiButton
         v-for="r in rows"
@@ -230,7 +229,7 @@ function pick(r: Row) {
       </UiButton>
       <p v-if="rows.length === 0" class="empty">{{ t('empty') }}</p>
     </div>
-  </OModal>
+  </UiModal>
 </template>
 
 <style scoped>

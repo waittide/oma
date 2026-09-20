@@ -14,9 +14,8 @@ import {
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu';
-import { UiButton, UiIconButton, UiInput, UiTooltip } from '@waittide/ui';
+import { UiButton, UiIconButton, UiInput, UiModal, UiTooltip } from '@waittide/ui';
 import OSelect from './ui/OSelect.vue';
-import OModal from './ui/OModal.vue';
 import * as store from '../stores/sessions';
 import { activeSessionId } from '../stores/sessions';
 import type { SessionRecord } from '../types';
@@ -320,7 +319,7 @@ const deleteTarget = computed(
       </UiButton>
     </footer>
 
-    <OModal :open="showNewWorkspace" :title="t('newWorkspace')" width="480px" @close="showNewWorkspace = false">
+    <UiModal :open="showNewWorkspace" :title="t('newWorkspace')" width="480px" @close="showNewWorkspace = false">
       <div class="form">
         <label>{{ t('workspacePath') }}</label>
         <UiInput
@@ -337,9 +336,9 @@ const deleteTarget = computed(
           {{ tc('create') }}
         </UiButton>
       </template>
-    </OModal>
+    </UiModal>
 
-    <OModal :open="showNew" :title="t('newSession')" width="480px" @close="showNew = false">
+    <UiModal :open="showNew" :title="t('newSession')" width="480px" @close="showNew = false">
       <div class="form">
         <!-- 工作区已由分组决定；只会在侧栏存在的工作区下新建会话 -->
         <div class="field">
@@ -355,9 +354,9 @@ const deleteTarget = computed(
           {{ tc('create') }}
         </UiButton>
       </template>
-    </OModal>
+    </UiModal>
 
-    <OModal
+    <UiModal
       :open="clearTarget !== null"
       :title="t('clearWorkspaceTitle')"
       width="380px"
@@ -372,9 +371,9 @@ const deleteTarget = computed(
           {{ tc('delete') }}
         </UiButton>
       </template>
-    </OModal>
+    </UiModal>
 
-    <OModal
+    <UiModal
       :open="removeTarget !== null"
       :title="t('deleteWorkspace')"
       width="380px"
@@ -387,9 +386,9 @@ const deleteTarget = computed(
         <UiButton variant="ghost" tone="neutral" @click="removeTarget = null">{{ tc('cancel') }}</UiButton>
         <UiButton variant="solid" tone="danger" @click="removeWorkspace">{{ tc('delete') }}</UiButton>
       </template>
-    </OModal>
+    </UiModal>
 
-    <OModal :open="confirmDelete !== null" :title="t('deleteSession')" width="380px" @close="confirmDelete = null">
+    <UiModal :open="confirmDelete !== null" :title="t('deleteSession')" width="380px" @close="confirmDelete = null">
       <p class="confirm-text">
         {{ t('deleteConfirm', { title: deleteTarget?.title ?? '' }) }}
       </p>
@@ -402,7 +401,7 @@ const deleteTarget = computed(
           {{ tc('delete') }}
         </UiButton>
       </template>
-    </OModal>
+    </UiModal>
   </aside>
 </template>
 
