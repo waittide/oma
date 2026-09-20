@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import { toast, UiButton, UiIconButton, UiTextarea } from '@waittide/ui';
+import { toast, UiButton, UiIconButton, UiTextarea, UiTooltip } from '@waittide/ui';
 import {
   LuAlertTriangle,
   LuArrowDownToLine,
@@ -22,7 +22,6 @@ import {
   LuZap,
 } from 'vue-icons-plus/lu';
 import OModelSelect from './ui/OModelSelect.vue';
-import OTooltip from './ui/OTooltip.vue';
 import OSelect from './ui/OSelect.vue';
 import MessageBlocks from './MessageBlocks.vue';
 import MessageRail from './MessageRail.vue';
@@ -352,17 +351,17 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
     <header class="top">
       <div class="top-left">
         <span class="session-title">{{ activeSession?.title ?? t('noSession') }}</span>
-        <OTooltip :label="activeSession?.workspace ?? ''" align="start" block placement="bottom">
+        <UiTooltip :content="activeSession?.workspace ?? ''" align="start" block placement="bottom">
           <span class="ws-path">{{ activeSession?.workspace }}</span>
-        </OTooltip>
+        </UiTooltip>
       </div>
       <div v-if="activeSessionId" class="top-right">
-        <OTooltip :label="chat.connected.value ? t('connected') : t('disconnected')" align="end" placement="bottom">
+        <UiTooltip :content="chat.connected.value ? t('connected') : t('disconnected')" align="end" placement="bottom">
           <span class="dot" :class="chat.connected.value ? 'ok' : 'off'" />
-        </OTooltip>
-        <OTooltip
+        </UiTooltip>
+        <UiTooltip
           v-if="chat.mcpServers.value.length"
-          :label="mcpTip"
+          :content="mcpTip"
           align="end"
           placement="bottom"
         >
@@ -370,8 +369,8 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
             <LuPlug :size="11" />
             {{ mcpToolTotal }}
           </span>
-        </OTooltip>
-        <OTooltip :label="t('historyTree')" align="end" placement="bottom">
+        </UiTooltip>
+        <UiTooltip :content="t('historyTree')" align="end" placement="bottom">
           <UiIconButton
             class="icon-ghost"
             size="sm"
@@ -380,7 +379,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
           >
             <LuListTree :size="14" />
           </UiIconButton>
-        </OTooltip>
+        </UiTooltip>
       </div>
     </header>
 
@@ -590,7 +589,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         />
         <div class="c-toolbar">
           <div class="c-controls">
-            <OTooltip :label="t('attachHint')">
+            <UiTooltip :content="t('attachHint')">
               <UiIconButton
                 class="icon-btn"
                 size="sm"
@@ -600,7 +599,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
               >
                 <LuPaperclip :size="13" />
               </UiIconButton>
-            </OTooltip>
+            </UiTooltip>
             <span v-if="chat.queued.value > 0" class="queued-chip">
               {{ t('queuedCount', { count: chat.queued.value }) }}
             </span>
@@ -638,12 +637,12 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
             />
           </div>
           <div class="c-actions">
-            <OTooltip v-if="chat.running.value" :label="t('stopHint')">
+            <UiTooltip v-if="chat.running.value" :content="t('stopHint')">
               <UiIconButton class="icon-btn stop" size="sm" :label="t('stopHint')" @click="cancel">
                 <LuSquare :size="13" />
               </UiIconButton>
-            </OTooltip>
-            <OTooltip :label="t('sendHint')">
+            </UiTooltip>
+            <UiTooltip :content="t('sendHint')">
               <UiIconButton
                 class="icon-btn send"
                 size="sm"
@@ -653,7 +652,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
               >
                 <LuArrowUp :size="15" />
               </UiIconButton>
-            </OTooltip>
+            </UiTooltip>
           </div>
         </div>
       </div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import OTooltip from './ui/OTooltip.vue';
+import { UiTooltip } from '@waittide/ui';
 import { useTranslations } from '../composables/i18n';
 
 const props = defineProps<{
@@ -55,14 +55,14 @@ const tip = computed(() => {
 </script>
 
 <template>
-  <OTooltip :label="tip" placement="bottom">
+  <UiTooltip :content="tip" placement="bottom">
     <span class="ctx" :class="level" role="status">
       <span class="bar" aria-hidden="true">
         <span v-for="i in 10" :key="i" class="cell" :class="{ on: i <= filled }" />
       </span>
       <span class="pct">{{ percentText }}</span>
     </span>
-  </OTooltip>
+  </UiTooltip>
 </template>
 
 <style scoped>

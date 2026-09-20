@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
-import { toast, UiButton, UiIconButton, UiTextarea } from '@waittide/ui';
+import { toast, UiButton, UiIconButton, UiTextarea, UiTooltip } from '@waittide/ui';
 import {
   LuCheck,
   LuChevronRight,
@@ -24,7 +24,6 @@ import { api } from '../api';
 import OModal from './ui/OModal.vue';
 import ORadio from './ui/ORadio.vue';
 import OSelect from './ui/OSelect.vue';
-import OTooltip from './ui/OTooltip.vue';
 import OModelSelect from './ui/OModelSelect.vue';
 import OMultiSelect from './ui/OMultiSelect.vue';
 import { ACCENTS, NEUTRAL_TOKENS, PALETTE_TOKENS, config, darkPalettes, lightPalettes, loadConfig, palettes, refreshPalettes, saveConfig, saveTheme, theme, type Palette } from '../stores/theme';
@@ -1510,10 +1509,10 @@ function pickLocale(v: Locale) {
                 </div>
                 <div class="srow-ctl">
                   <div class="dots">
-                    <OTooltip
+                    <UiTooltip
                       v-for="(a, i) in ACCENTS"
                       :key="a"
-                      :label="t(`accentNames.${a}`)"
+                      :content="t(`accentNames.${a}`)"
                       :align="i % 7 === 0 ? 'start' : i % 7 === 6 ? 'end' : 'center'"
                     >
                       <UiIconButton
@@ -1525,7 +1524,7 @@ function pickLocale(v: Locale) {
                         :style="{ '--dot-color': `var(--${a})` }"
                         @click="accent = a"
                       />
-                    </OTooltip>
+                    </UiTooltip>
                   </div>
                 </div>
               </div>
@@ -1552,7 +1551,7 @@ function pickLocale(v: Locale) {
                     <span v-for="tok in ['base', 'text', 'blue', 'mauve']" :key="tok" :style="{ background: p[tok] }" />
                   </span>
                   <OButton size="sm" variant="ghost" @click="editPalette(p)">{{ t('edit') }}</OButton>
-                  <OTooltip :label="p.builtin ? t('paletteBuiltinLocked') : tc('delete')">
+                  <UiTooltip :content="p.builtin ? t('paletteBuiltinLocked') : tc('delete')">
                     <span>
                       <OButton
                         size="sm"
@@ -1564,7 +1563,7 @@ function pickLocale(v: Locale) {
                         {{ tc('delete') }}
                       </OButton>
                     </span>
-                  </OTooltip>
+                  </UiTooltip>
                 </div>
               </div>
             </div>
@@ -1716,7 +1715,7 @@ function pickLocale(v: Locale) {
                       :placeholder="d.keyMasked ? '*'.repeat(d.keyLen) : ''"
                       @update:model-value="(v) => setApiKey(d, v)"
                     />
-                    <OTooltip :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
+                    <UiTooltip :content="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
                       <UiIconButton
                         class="m-del"
                         size="sm"
@@ -1726,7 +1725,7 @@ function pickLocale(v: Locale) {
                         <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
                         <LuEye v-else :size="14" />
                       </UiIconButton>
-                    </OTooltip>
+                    </UiTooltip>
                   </div>
 
                   <!-- 请求头/请求体覆写：默认收起，展开后内容与标签顶格对齐 -->
@@ -1775,11 +1774,11 @@ function pickLocale(v: Locale) {
               <section v-for="(m, mi) in d.models" :key="mi" class="card cfg-block model-block">
                 <header class="blk-head">
                   <span class="blk-sub">{{ m.name || m.id || t('modelIndex', { index: mi + 1 }) }}</span>
-                  <OTooltip :label="t('removeModel')" align="end">
+                  <UiTooltip :content="t('removeModel')" align="end">
                     <UiIconButton class="m-del" size="sm" :label="t('removeModel')" @click="d.models.splice(mi, 1)">
                       <LuTrash2 :size="14" />
                     </UiIconButton>
-                  </OTooltip>
+                  </UiTooltip>
                 </header>
                 <div class="cfg-rows">
                   <label class="cfg-label">{{ t('modelId') }}</label>
@@ -1998,11 +1997,11 @@ function pickLocale(v: Locale) {
                   <div class="prov-head">
                     <OInput v-model="d.name" class="prov-name" :placeholder="t('mcpNamePlaceholder')" />
                     <ORadio v-model="d.kind" :options="mcpKindOptions" />
-                    <OTooltip :label="tc('delete')" align="end">
+                    <UiTooltip :content="tc('delete')" align="end">
                       <UiIconButton class="m-del" size="sm" :label="tc('delete')" @click="mcpDrafts.splice(i, 1)">
                         <LuTrash2 :size="14" />
                       </UiIconButton>
-                    </OTooltip>
+                    </UiTooltip>
                   </div>
                   <div class="fields">
                     <template v-if="d.kind === 'local'">
@@ -2675,7 +2674,7 @@ function pickLocale(v: Locale) {
   line-height: 1.65;
   resize: vertical;
 }
-/* 强调色点阵：两行各 7 个，整齐排列；悬停经 OTooltip 显示名称 */
+/* 强调色点阵：两行各 7 个，整齐排列；悬停经 UiTooltip 显示名称 */
 .dots {
   display: grid;
   grid-template-columns: repeat(7, 18px);

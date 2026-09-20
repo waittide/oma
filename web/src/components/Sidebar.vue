@@ -14,11 +14,10 @@ import {
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu';
-import { UiButton, UiIconButton } from '@waittide/ui';
+import { UiButton, UiIconButton, UiTooltip } from '@waittide/ui';
 import OButton from './ui/OButton.vue';
 import OInput from './ui/OInput.vue';
 import OSelect from './ui/OSelect.vue';
-import OTooltip from './ui/OTooltip.vue';
 import OModal from './ui/OModal.vue';
 import * as store from '../stores/sessions';
 import { activeSessionId } from '../stores/sessions';
@@ -209,7 +208,7 @@ const deleteTarget = computed(
 
       <section v-for="g in groups" :key="g.workspace" class="group">
         <div class="group-head">
-          <OTooltip :label="g.workspace" align="start" block>
+          <UiTooltip :content="g.workspace" align="start" block>
             <UiButton
               variant="ghost"
               tone="neutral"
@@ -226,9 +225,9 @@ const deleteTarget = computed(
               <span class="g-label">{{ g.label }}</span>
               <span class="g-count">{{ g.items.length }}</span>
             </UiButton>
-          </OTooltip>
+          </UiTooltip>
           <div class="gh-actions">
-            <OTooltip :label="t('addSessionHere')" align="end">
+            <UiTooltip :content="t('addSessionHere')" align="end">
               <UiIconButton
                 class="gh-add"
                 size="sm"
@@ -237,9 +236,9 @@ const deleteTarget = computed(
               >
                 <LuPlus :size="14" />
               </UiIconButton>
-            </OTooltip>
+            </UiTooltip>
             <!-- 有会话时清空会话；已空的工作区则直接删除该工作区分组 -->
-            <OTooltip :label="g.items.length > 0 ? t('clearWorkspace') : t('deleteWorkspace')" align="end">
+            <UiTooltip :content="g.items.length > 0 ? t('clearWorkspace') : t('deleteWorkspace')" align="end">
               <UiIconButton
                 class="gh-add danger"
                 size="sm"
@@ -249,7 +248,7 @@ const deleteTarget = computed(
                 <LuEraser v-if="g.items.length > 0" :size="14" />
                 <LuTrash2 v-else :size="14" />
               </UiIconButton>
-            </OTooltip>
+            </UiTooltip>
           </div>
         </div>
 
@@ -274,11 +273,11 @@ const deleteTarget = computed(
             <template v-else>
               <LuLoader v-if="isRunning(s)" :size="13" class="s-icon spin" />
               <LuMessageSquare v-else :size="13" class="s-icon" />
-              <OTooltip :label="s.title || t('untitled')" align="start" block>
+              <UiTooltip :content="s.title || t('untitled')" align="start" block>
                 <span class="s-title" :class="{ untitled: !s.title }">{{ s.title || t('untitled') }}</span>
-              </OTooltip>
+              </UiTooltip>
               <span class="s-actions">
-                <OTooltip :label="t('rename')" align="end">
+                <UiTooltip :content="t('rename')" align="end">
                   <UiIconButton
                     class="mini"
                     size="sm"
@@ -287,8 +286,8 @@ const deleteTarget = computed(
                   >
                     <LuPencil :size="12" />
                   </UiIconButton>
-                </OTooltip>
-                <OTooltip :label="t('deleteAria')" align="end">
+                </UiTooltip>
+                <UiTooltip :content="t('deleteAria')" align="end">
                   <UiIconButton
                     class="mini danger"
                     size="sm"
@@ -297,7 +296,7 @@ const deleteTarget = computed(
                   >
                     <LuTrash2 :size="12" />
                   </UiIconButton>
-                </OTooltip>
+                </UiTooltip>
               </span>
             </template>
           </div>
