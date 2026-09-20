@@ -76,6 +76,15 @@ export interface ActiveTurnCatchUp {
   active_tool_call?: ToolCallStartedData | null;
 }
 
+/** 系统提示词接口返回体（`GET /api/system-prompt`） */
+export interface SystemPromptResp {
+  workspace: string;
+  /** 环境块里生效的模型（未显式指定时为服务端默认模型） */
+  model: string;
+  /** 已拼好环境块与技能目录的完整提示词 */
+  prompt: string;
+}
+
 export interface TokenUsage {
   input_tokens: number;
   output_tokens: number;

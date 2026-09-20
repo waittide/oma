@@ -7,6 +7,7 @@ import type {
   ServerStatus,
   SessionRecord,
   SkillFile,
+  SystemPromptResp,
   ToolInfo,
   UploadAttachmentResp,
 } from './types';
@@ -103,6 +104,13 @@ export const api = {
     ),
   /** 技能编辑器可勾选的工具（内置 + 插件） */
   tools: () => request<ToolInfo[]>('/api/tools'),
+
+  /** 当前工作区 + 模型下真正发给厂商的系统提示词（System 面板） */
+  systemPrompt: (workspace: string, model: string) => {
+    const params = new URLSearchParams({ workspace });
+    if (model) params.set('model', model);
+    return request<SystemPromptResp>(`/api/system-prompt?${params.toString()}`);
+  },
 
   skills: (workspace?: string) =>
     request<SkillFile[]>(

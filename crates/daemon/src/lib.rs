@@ -536,6 +536,52 @@ async fn handle_workspace_file(
         .map_err(|e| (StatusCode::NOT_FOUND, format!("Failed to read file: {}", e)))
 }
 
+/// 系统提示词面板：展示当前工作区 + 模型下真正发给厂商的那段提示词。
+///
+/// 提示词是由内置常量拼环境块与技能目录得到的，用户看不到配置里对应的文件，
+/// 因此只能由服务端拼好回给界面（与 pi-web 的 System 面板一致）。
+#[derive(Deserialize)]
+struct SystemPromptQuery {
+    workspace: Option<String>,
+    model:     Option<String>,
+}
+
+async fn handle_system_prompt(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<SystemPromptQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+
+    let workspace = query
+        .workspace
+        .as_deref()
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .ok_or((StatusCode::BAD_REQUEST, "workspace is required".to_string()))?;
+    if !Path::new(workspace).is_dir() {
+        return Err((StatusCode::NOT_FOUND, format!("Workspace not found: {workspace}")));
+    }
+
+    // 模型只用于环境块里的 `Active Model` 一行；缺省时取配置里的默认模型
+    let model = query
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| state.config.read().default_model.clone());
+
+    let prompt = oma_config::build_system_prompt(Path::new(workspace), &model);
+    Ok(Json(serde_json::json!({
+        "workspace": workspace,
+        "model": model,
+        "prompt": prompt,
+    })))
+}
+
 // =========================================================================
 // 附件上传 / 下载 REST API (/api/sessions/{id}/attachments)
 // =========================================================================
@@ -1307,6 +1353,7 @@ pub fn create_router(state: DaemonState) -> Router {
         .route("/api/sessions/{id}/attachments/{name}", get(handle_get_attachment))
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
+        .route("/api/system-prompt", get(handle_system_prompt))
         .route("/api/tools", get(handle_list_tools))
         .route("/api/skills", get(handle_list_skills))
         .route(
