@@ -85,7 +85,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  ┌─────────────────────────────────▼─────────────────────────────────┐  │
 │  │               Agent Runtime Engine & Subsystems                   │  │
 │  │  - oma-provider: LLM Streaming Normalization & Deep Merge         │  │
-│  │  - oma-storage:  JSONL Session Tree (pi-style id/parentId)         │  │
+│  │  - oma-storage:  SQLite Session Store (index + per-session DB)   │  │
 │  │  - oma-tool:     7 Tools (read/write/edit/bash/ls/find/grep)      │  │
 │  │  - oma-plugin:   QuickJS Plugins (tools/commands/hooks)          │  │
 │  │  - oma-config:   JSON Config & Built-in System Prompt             │  │
@@ -100,7 +100,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | Crate / 目录 | 职责与依赖 |
 |---|---|
 | `crates/oma-contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
-| `crates/oma-storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）与 `attachments/` 目录；同会话写锁串行化。 |
+| `crates/oma-storage` | SQLite 双层持久化：全局索引库 `oma.db` 的 `sessions_index` 存会话元数据，每会话库 `sessions/<id>/session.db` 存 `messages` 消息树与 `session_meta` 运行时状态；附件仍落 `attachments/` 目录。WAL + 写池串行、读池并行，同数据目录多实例互相可见。 |
 | `crates/oma-provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
 | `crates/oma-tool` | 内置 7 大工具（`read`, `write`, `edit` 原子替换补丁, `bash` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含 pi 对齐的输出截断与工具集定义。 |
 | `crates/oma-mcp` | MCP 客户端：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），工具按 `mcp__{server}__{tool}` 统一命名空间注册；只暴露已预热的工具缓存。 |
@@ -149,7 +149,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 
 ---
 
-## 3. 数据模型与 JSONL 会话树持久化规范 (Data Contracts & Session Tree)
+## 3. 数据模型与 SQLite 会话持久化规范 (Data Contracts & Session Store)
 
 ### 3.1 消息块模型 (Message Block Model & Multimodal)
 Oma 采用结构化 Content Block 表达混合与多模态消息：
@@ -202,51 +202,69 @@ pub struct ChatMessage {
 > - 存储中 `ToolResult` 统一包裹在 `role: Role::User` 消息中；  
 > - 发送给各厂商 API 时：Anthropic 协议保持 `role: "user"`；OpenAI / DeepSeek 协议在适配层自动将 `Block::ToolResult` 解构成独立的 `role: "tool"` 消息。
 
-### 3.2 JSONL 会话树持久化规范
+### 3.2 SQLite 会话持久化规范
 
-会话以 pi 风格的 JSONL 树文件保存，每会话一个目录：
+会话数据落 SQLite：全局索引库 + 每会话库的双层结构；附件本体仍留在磁盘。
 
 ```text
-~/.local/share/oma/sessions/<session_id>/
-├── session.jsonl      # 首行 header，其后每行一个条目
-└── attachments/       # 会话附件
+~/.local/share/oma/
+├── oma.db                     # 全局索引库：会话元数据，列表与详情只查它
+└── sessions/<session_id>/
+    ├── session.db             # 会话库：messages 消息树 + session_meta 运行时状态
+    └── attachments/           # 会话附件
 ```
 
-文件首行为会话头（不参与树）：
+索引库 `sessions_index`：
 
-```json
-{"type":"session","version":3,"id":"<session_id>","timestamp":"2026-09-19T00:00:00.000Z","cwd":"/path/to/project","model":"p/m","reasoningLevel":"medium"}
+```sql
+CREATE TABLE sessions_index (
+    session_id      TEXT PRIMARY KEY,
+    workspace       TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    active_model    TEXT NOT NULL,
+    active_agent    TEXT NOT NULL DEFAULT 'task',
+    approval_mode   TEXT NOT NULL DEFAULT 'normal',
+    reasoning_level TEXT NOT NULL DEFAULT '',
+    current_leaf_id TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+CREATE INDEX idx_sessions_workspace ON sessions_index(workspace);
+CREATE INDEX idx_sessions_updated_at ON sessions_index(updated_at DESC);
 ```
 
-其后每行一个条目，靠 `id`/`parentId` 形成树（`parentId: null` 为根），
-从而在不新建文件的前提下原地分叉。条目类型：
+会话库：
 
-| type | 作用 |
-|---|---|
-| `message` | 对话消息（`message.role` / `message.content`） |
-| `session_info` | 会话标题（`name`） |
-| `model_change` | 切换模型（`provider` / `modelId`） |
-| `thinking_level_change` | 切换推理等级（`thinkingLevel`） |
-| `custom` | oma 运行时状态；不参与 LLM 上下文 |
+```sql
+CREATE TABLE session_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
-`custom` 条目的 `customType`：
-- `oma.leaf`：当前叶子（`data.leafId`），分支切换与删除子树后显式落盘；
-- `oma.context_usage`：上下文占用（`data.tokens/contextLen/covered`）。
-
-消息条目示例：
-
-```json
-{"type":"message","id":"<uuid>","parentId":null,"timestamp":"2026-09-19T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Hello"}],"timestamp":1758240001000}}
+CREATE TABLE messages (
+    id          TEXT PRIMARY KEY,
+    parent_id   TEXT,                            -- 靠 parent_id 成树，可原地分叉
+    role        TEXT NOT NULL,                   -- user / assistant
+    blocks_json TEXT NOT NULL,                   -- oma 契约的 Block 数组
+    model       TEXT,                            -- 产出该消息的模型（provider/modelId）
+    usage_json  TEXT,                            -- 该轮的 token 用量（TokenUsage）
+    created_at  INTEGER NOT NULL,
+    FOREIGN KEY(parent_id) REFERENCES messages(id)
+);
+CREATE INDEX idx_parent_id ON messages(parent_id);
 ```
+
+`session_meta` 的键：
+- `current_leaf_id`：当前叶子。会话库是树的真相，索引库同名列供列表直接使用；
+- `context_usage`：上下文占用 `{"tokens":n,"contextLen":n,"covered":n}`（`covered` 为上次请求覆盖的历史条数），重启后据此恢复进度条；
+- `workspace` / `title`：会话级副本。
 
 #### 并发与一致性
-- 读操作始终以磁盘为准（不缓存快照）；
-- 写操作在同会话写锁内先重读文件再落盘，保证追加串行；
-- 同数据目录上的多个 `StorageManager` 实例也能互相看到最新内容；
-- 单行损坏只跳过该行，不影响整个会话可读；
-- 删除消息子树需要移除既有行，此时全量原子重写文件（临时文件 + rename）。
+- 每会话两套连接池：写池 `max_connections = 1` 严格串行，读池只读并行，读写互不阻塞；
+- 库以 WAL 打开，`busy_timeout = 5s` 容忍跨进程短暂争用，`foreign_keys = ON`；
+- 同数据目录上的多个 `StorageManager` 实例互相可见（一切以库为准，不缓存快照）；
+- 删除消息子树按「父先子后」的逆序 `DELETE`（外键要求），并把当前叶子回退到被删消息的父节点；
+- 索引库表结构在启动时逐列校验，缺列即报错并提示重建或补列，不做静默容忍；
+- SQLite 时代的老会话库仍可读：`messages` 缺 `model` / `usage_json` 时打开即补列，`context_usage` 的旧冒号串（`tokens:context_len:covered`）按兼容格式解析，无法解析时退化为「未知占用」而非报错。
 
-> 内容块沿用 oma 契约的 `Block` 形态（`tool_use`/`tool_result`），因此文件可被本仓库完整回读，但不是 pi 的逐字节格式。
+> 内容块沿用 oma 契约的 `Block` 形态（`tool_use`/`tool_result`），以 JSON 文本存于 `blocks_json`，可被本仓库完整回读。
 
 ---
 
@@ -907,7 +925,7 @@ ToolOutput {
 | `GET` | `/api/server/status` | 服务端探活、版本号、活跃 Session 与连接数 |
 | `GET` | `/api/sessions?workspace=...` | 获取指定 Workspace 下的所有会话列表元数据 |
 | `POST` | `/api/sessions` | 在指定 Workspace 下创建新会话，返回 `session_id` |
-| `DELETE` | `/api/sessions/{id}` | 删除会话目录（JSONL 会话树与全部附件；运行中的轮次拒绝删除） |
+| `DELETE` | `/api/sessions/{id}` | 删除会话库与该会话的全部附件（运行中的轮次拒绝删除） |
 | `PATCH` | `/api/sessions/{id}` | 重命名会话（广播 `SessionRenamed`） |
 | `GET` | `/api/sessions/{id}/messages?leaf_id=...` | 获取指定会话当前激活消息链的全部 `ChatMessage` |
 | `GET` | `/api/sessions/{id}/messages/tree` | 获取该会话全部消息（含兄弟分支），用于构建历史树 |
@@ -1047,7 +1065,7 @@ pub struct Palette {
 | 会话标识 | `session_id` 会被拼接进文件系统路径，因此全局校验为 `[A-Za-z0-9_-]{1,128}`；附件名同样只允许安全字符并丢弃任何目录成分。 |
 | 版本号来源 | `Cargo.toml` 的 `version` **不会**被 CI 自动递增，只在无标签的分支 / PR 构建里作为回退值被读取；正式版用人工推送的语义化标签（`v0.2.0`），每日快照用日期标签（`v2026.09.17`）。构建标识与制品名由 `.github/workflows/build.yml` 的 `meta` job 统一计算（标签优先），不再存在单独的发布工作流。 |
 | bash 执行环境 | 解释器取 `$SHELL`（兜底 `/bin/sh`），环境取自 Daemon 启动时对登录 shell 的一次快照（`$SHELL -lic`），而非写死的 `sh` + 继承 Daemon 进程环境：后者既读不到 rc 文件里的 alias / `export`，环境也未必是用户终端的。 |
-| 会话存储并发 | 每会话一把写锁，写路径先重读文件再追加/重写，保证追加串行；读取始终以磁盘为准（不缓存快照），因此同数据目录上的多个实例能互相看到最新内容。旧的 `max_connections = 1` 连接池随 sqlx 一并移除。 |
+| 会话存储并发 | 每会话两套连接池：写池 `max_connections = 1` 严格串行、读池只读并行，读写互不阻塞；库以 WAL 打开并设 `busy_timeout`，因此同数据目录上的多个实例能互相看到最新提交。 |
 | 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
 | 配置校验 | `OmaConfig` 启用 `deny_unknown_fields`：拼错的键名（或前端字段映射错误）在 `PUT /api/config` 直接 400，不再「保存成功但配置没变」；启动时配置文件解析失败即报错退出，而非静默回退默认值。 |
 | 能力裁剪 | 仅剩 MCP 之外的三项仍是删除状态：子代理 `task`、`ask` 提问、熔断器（均因 pi 内核不内置而移除，如需保留应以插件形式重建）。**已应用户要求恢复**：Agent 预设（v2.5）、工具审批系统（v2.6）、内置 MCP（v2.7）。 |

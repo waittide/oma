@@ -117,7 +117,7 @@ flowchart TB
             direction LR
             PROV["oma-provider<br/>stream normalization"]
             TOOL["oma-tool<br/>seven tools"]
-            STORE["oma-storage<br/>JSONL session tree"]
+            STORE["oma-storage<br/>SQLite session store"]
             CONF["oma-config<br/>settings.json"]
         end
     end
@@ -139,7 +139,7 @@ flowchart TB
 | Crate / directory | Responsibility |
 |---|---|
 | `crates/oma-contract` | Pure types and protocol contracts (`Role`, `Block`, `ClientMessage`, `ServerMessage`, `AgentEvent`, …) with no heavy dependencies |
-| `crates/oma-storage` | JSONL session-tree persistence: one `session.jsonl` (pi-style id/parentId tree) plus an `attachments/` dir per session |
+| `crates/oma-storage` | SQLite two-layer persistence: global index `oma.db` (session metadata) plus a per-session `session.db` (message tree and runtime state); attachments stay in `attachments/` |
 | `crates/oma-provider` | Hand-written SSE state machine normalizing four streaming protocols (tool calls and multimodal included) |
 | `crates/oma-tool` | The seven built-in tools and output truncation |
 | `crates/oma-plugin` | QuickJS plugins: register tools/commands/event hooks in JS, bridged through a Rust allow-listed host API |
@@ -270,8 +270,9 @@ The config directory is `~/.config/oma/` (respecting `XDG_CONFIG_HOME`); data li
 ├── plugins/            # global QuickJS plugins (<id>/plugin.js)
 └── themes/             # custom palettes (*.json)
 ~/.local/share/oma/
+├── oma.db                     # global index: session metadata (lists and details read only this)
 └── sessions/<id>/             # one directory per session
-    ├── session.jsonl          # pi-style JSONL session tree (header + id/parentId entries)
+    ├── session.db             # session DB: message tree + session_meta runtime state
     └── attachments/           # session attachments
 ```
 
@@ -393,7 +394,7 @@ oma/
 │   ├── oma-daemon/   # Axum gateway
 │   ├── oma-provider/ # vendor streaming adapters
 │   ├── oma-runtime/  # agent runtime engine
-│   ├── oma-storage/  # JSONL session-tree persistence
+│   ├── oma-storage/  # SQLite session persistence
 │   ├── oma-tool/     # built-in tools
 │   └── oma-tui/      # terminal client
 ├── docs/

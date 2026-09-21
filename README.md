@@ -106,7 +106,7 @@ flowchart TB
             direction LR
             PROV["oma-provider<br/>流式归一化"]
             TOOL["oma-tool<br/>七个工具"]
-            STORE["oma-storage<br/>JSONL 会话树"]
+            STORE["oma-storage<br/>SQLite 会话库"]
             CONF["oma-config<br/>settings.json"]
         end
     end
@@ -128,7 +128,7 @@ flowchart TB
 | Crate / 目录 | 职责 |
 |---|---|
 | `crates/oma-contract` | 纯类型与协议契约（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` 等），零重依赖 |
-| `crates/oma-storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）+ `attachments/` 目录 |
+| `crates/oma-storage` | SQLite 双层持久化：全局索引库 `oma.db`（会话元数据）+ 每会话库 `session.db`（messages 消息树与运行时状态），附件落 `attachments/` 目录 |
 | `crates/oma-provider` | 手写 SSE 状态机，归一化四家流式协议（含工具调用与多模态） |
 | `crates/oma-tool` | 七个内置工具与输出截断 |
 | `crates/oma-plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API 白名单桥接 |
@@ -252,8 +252,9 @@ pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
 ├── plugins/            # 全局 QuickJS 插件（<id>/plugin.js）
 └── themes/             # 自定义调色板（*.json）
 ~/.local/share/oma/
+├── oma.db                     # 全局索引库：会话元数据（列表与详情只查它）
 └── sessions/<id>/             # 每个会话一个目录
-    ├── session.jsonl          # pi 风格的 JSONL 会话树（首行 header + 条目带 id/parentId）
+    ├── session.db             # 会话库：messages 消息树 + session_meta 运行时状态
     └── attachments/           # 会话附件
 ```
 
@@ -370,7 +371,7 @@ oma/
 │   ├── oma-daemon/   # Axum 网关
 │   ├── oma-provider/ # 模型厂商流式适配
 │   ├── oma-runtime/  # Agent 运行引擎
-│   ├── oma-storage/  # JSONL 会话树持久化
+│   ├── oma-storage/  # SQLite 会话持久化
 │   ├── oma-tool/     # 内置工具
 │   └── oma-tui/      # 终端客户端
 ├── docs/
@@ -384,7 +385,7 @@ oma/
 
 ## 文档
 
-- [技术规格书](docs/multi_client_agent_spec.md)：架构拓扑、WebSocket 契约、JSONL 会话格式、
+- [技术规格书](docs/multi_client_agent_spec.md)：架构拓扑、WebSocket 契约、SQLite 会话存储、
   配置规范、REST 接口、插件扩展机制、实现一致性说明。
 
 ---

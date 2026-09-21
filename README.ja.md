@@ -117,7 +117,7 @@ flowchart TB
             direction LR
             PROV["oma-provider<br/>ストリーム正規化"]
             TOOL["oma-tool<br/>7 つのツール"]
-            STORE["oma-storage<br/>JSONL セッション木"]
+            STORE["oma-storage<br/>SQLite セッションストア"]
             CONF["oma-config<br/>settings.json"]
         end
     end
@@ -139,7 +139,7 @@ flowchart TB
 | クレート / ディレクトリ | 責務 |
 |---|---|
 | `crates/oma-contract` | 純粋な型とプロトコル契約（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` など）。重い依存なし |
-| `crates/oma-storage` | JSONL セッション木の永続化：セッションごとに `session.jsonl`（pi 風の id/parentId 木）と `attachments/` ディレクトリ |
+| `crates/oma-storage` | SQLite 二層永続化：グローバル索引 `oma.db`（セッションメタデータ）とセッションごとの `session.db`（メッセージ木と実行時状態）。添付は `attachments/` に保存 |
 | `crates/oma-provider` | 自作 SSE ステートマシンによる 4 プロトコルの正規化（ツール呼び出し・マルチモーダル含む） |
 | `crates/oma-tool` | 7 つの組み込みツール、出力切り詰め |
 | `crates/oma-plugin` | QuickJS プラグイン：JS でツール/コマンド/イベントフックを登録、host API は Rust 側で許可制ブリッジ |
@@ -266,8 +266,9 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
 ├── skills/             # oma 自身のスキル（<id>/SKILL.md）
 └── themes/             # カスタムパレット（*.json）
 ~/.local/share/oma/
+├── oma.db                     # グローバル索引：セッションメタデータ（一覧と詳細はここだけ参照）
 └── sessions/<id>/             # セッションごとに 1 ディレクトリ
-    ├── session.jsonl          # pi 風 JSONL セッション木（先頭 header + id/parentId 付きエントリ）
+    ├── session.db             # セッション DB：メッセージ木 + session_meta 実行時状態
     └── attachments/           # セッション添付
 ```
 
@@ -389,7 +390,7 @@ oma/
 │   ├── oma-contract/ # プロトコルとデータモデル
 │   ├── oma-daemon/   # Axum ゲートウェイ
 │   ├── oma-runtime/  # エージェント・ランタイム
-│   ├── oma-storage/  # JSONL セッション木の永続化
+│   ├── oma-storage/  # SQLite セッション永続化
 │   ├── oma-tool/     # 組み込みツール
 │   └── oma-tui/      # ターミナルクライアント
 ├── docs/
@@ -403,7 +404,7 @@ oma/
 
 ## ドキュメント
 
-- [技術仕様書](docs/multi_client_agent_spec.md)：アーキテクチャ、WebSocket 契約、JSONL セッション形式、
+- [技術仕様書](docs/multi_client_agent_spec.md)：アーキテクチャ、WebSocket 契約、SQLite セッションストア、
   設定仕様、REST API、プラグイン拡張、実装との一致に関する注記。
 
 ---
