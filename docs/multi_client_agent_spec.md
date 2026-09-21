@@ -1,8 +1,23 @@
 # Oma 多类型多客户端协同 Agent 技术规格书 (Technical Specification)
 
-> 版本：v2.7
+> 版本：v2.8
 > 状态：Implementation Verified（文档与代码同步）
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
+
+> **v2.8 变更（工具命名与形态、默认预设与调色板、配置字段、前端外壳）**：
+> - **工具命名与形态**：终端执行工具与 pi 对齐为 `shell`，工具集即 `read` / `write` /
+>   `edit` / `shell` / `ls` / `find` / `grep`；`edit` 改为 apply_patch 形态——输入是单个
+>   `input` 字符串，内容为 `*** Begin Patch` … `*** End Patch` 包裹的补丁，支持
+>   `*** Add File` / `*** Delete File` / `*** Update File`（含 `*** Move to:`）、
+>   `@@` 上下文 hunk 与 `*** End of File`，一次可改多个文件
+> - **默认预设**：删除内置 `Task`，默认预设改为 `Build`（拥有全部工具，模板不再声明
+>   工具清单）；无配置文件时写入 `default_agent: build`
+> - **调色板**：删除两套中性色调色板，默认改为深色 `mocha` + 浅色 `latte`
+>   （内置 7 套：`mist` / `rose` / `pine` / `latte` / `frappé` / `macchiato` / `mocha`）
+> - **配置字段**：`settings.json` 的 `server` 段拆为 `host` + `port`（`oma daemon --addr` 仍可覆盖）
+> - **前端外壳**：删除底部状态栏与顶栏「导出为 markdown」「系统提示词」两个入口
+>   （`GET /api/system-prompt` 端点保留）；右侧面板的关闭按钮移到面板最右端，
+>   与顶栏展开 / 折叠同图标；空态主按钮为「新建会话」；设置里的默认 Agent 可选全局预设
 
 > **v2.7 变更（恢复内置 MCP 客户端）**：
 > 恢复清单的最后一项。`crates/oma-mcp` 回来了，支持两种传输：
@@ -31,7 +46,7 @@
 > - **工具实现方式**：`find` / `grep` 不再自研文件遍历，改为调用外部 `fd` / `ripgrep`
 >   （缺失时自动下载到 `<数据目录>/bin`，`OMA_OFFLINE=1` 可禁用）；工具输出截断统一为
 >   行数（2000）+ 字节（50KB）双上限，各工具条数限额与提示文案对齐 pi
-> - **工具集**：`shell` 更名为 `bash`，工具共 7 个（`bash` / `edit` / `find` / `grep` / `ls` / `read` / `write`）
+> - **工具集**：内置工具共 7 个（`edit` / `find` / `grep` / `ls` / `read` / `write` + 终端执行）
 > - 新增 `AGENTS.md` / `CLAUDE.md` 上下文文件加载与插件生命周期钩子
 
 ---
@@ -74,7 +89,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  │               Agent Runtime Engine & Subsystems                   │  │
 │  │  - oma-provider: LLM Streaming Normalization & Deep Merge         │  │
 │  │  - oma-storage:  SQLite Session Store (index + per-session DB)   │  │
-│  │  - oma-tool:     7 Tools (read/write/edit/bash/ls/find/grep)      │  │
+│  │  - oma-tool:     7 Tools (read/write/edit/shell/ls/find/grep)     │  │
 │  │  - oma-plugin:   QuickJS Plugins (tools/commands/hooks)          │  │
 │  │  - oma-config:   JSON Config & Built-in System Prompt             │  │
 │  │  - oma-contract: Shared Wire Protocol, Events, Data Models        │  │
@@ -90,10 +105,10 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | `crates/oma-contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
 | `crates/oma-storage` | SQLite 双层持久化：全局索引库 `oma.db` 的 `sessions_index` 存会话元数据，每会话库 `sessions/<id>/session.db` 存 `messages` 消息树与 `session_meta` 运行时状态；附件仍落 `attachments/` 目录。WAL + 写池串行、读池并行，同数据目录多实例互相可见。 |
 | `crates/oma-provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
-| `crates/oma-tool` | 内置 7 大工具（`read`, `write`, `edit` 原子替换补丁, `bash` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含 pi 对齐的输出截断与工具集定义。 |
+| `crates/oma-tool` | 内置 7 大工具（`read`, `write`, `edit` apply_patch 补丁, `shell` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含 pi 对齐的输出截断与工具集定义。 |
 | `crates/oma-mcp` | MCP 客户端：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），工具按 `mcp__{server}__{tool}` 统一命名空间注册；只暴露已预热的工具缓存。 |
 | `crates/oma-plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API（文件/命令/日志）由 Rust 侧白名单桥接并限制在 workspace 内。 |
-| `crates/oma-config` | 配置文件 `settings.json` / `models.json` 解析、内置 Agent 预设（5 套模板）与三层覆盖、上下文文件（`AGENTS.md`）加载、提示词拼装、调色板加载、数据目录定位。 |
+| `crates/oma-config` | 配置文件 `settings.json` / `models.json` 解析、内置 Agent 预设（4 套模板：`plan` / `explore` / `review` / `build`）与三层覆盖、上下文文件（`AGENTS.md`）加载、提示词拼装、调色板加载、数据目录定位。 |
 | `crates/oma-runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、70% 阈值两阶段上下文压缩。 |
 | `crates/oma-daemon` | 基于 Axum 的 HTTP REST 与 WebSocket 网关、Bearer Token 鉴权中间件、静态路由与 CORS。 |
 | `crates/oma-client` | 纯 Rust 客户端 SDK：`OmaClient` 封装 WebSocket 握手/事件流/指令，`SessionApi` 提供 REST 会话管理。 |
@@ -106,7 +121,8 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 ## 2. 传输协议与鉴权规范 (Transport & Security)
 
 ### 2.1 端口与网络拓扑
-- **默认监听地址**：`127.0.0.1:17431`；支持 `--addr 0.0.0.0:17431` 供局域网与远程服务器接入。
+- **默认监听地址**：`127.0.0.1:17431`（`settings.json` 的 `server.host` / `server.port`）；
+  支持 `oma daemon --addr 0.0.0.0:17431` 覆盖，供局域网与远程服务器接入。
 - **单端口统一路由**：
   - `/ws`：双向 WebSocket（承载 `ClientMessage` / `ServerMessage` JSON 协议，基于 `session_id` 自动加入对应 Room）；
   - `/api/*`：HTTP REST 接口（会话 CRUD、消息回放、状态探测、文件树与文件内容、
@@ -210,7 +226,7 @@ CREATE TABLE sessions_index (
     workspace       TEXT NOT NULL,
     title           TEXT NOT NULL,
     active_model    TEXT NOT NULL,
-    active_agent    TEXT NOT NULL DEFAULT 'task',
+    active_agent    TEXT NOT NULL DEFAULT 'build',
     reasoning_level TEXT NOT NULL DEFAULT '',
     current_leaf_id TEXT,
     created_at      INTEGER NOT NULL,
@@ -513,7 +529,7 @@ pub struct ContextUsage {
 ```json
 {
   "default_model": "my_anthropic/claude-3-7-sonnet",
-  "default_agent": "task",
+  "default_agent": "build",
   "default_reasoning_level": "medium",
   "mcp_servers": {
     "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "oma.db"] },
@@ -521,11 +537,11 @@ pub struct ContextUsage {
   },
   "theme": {
     "mode": "dark",
-    "dark_palette": "pi-dark",
-    "light_palette": "pi-light",
+    "dark_palette": "mocha",
+    "light_palette": "latte",
     "accent": "blue"
   },
-  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" }
+  "server": { "host": "127.0.0.1", "port": 17431, "token": "admin" }
 }
 ```
 
@@ -558,6 +574,9 @@ pub struct ContextUsage {
 
 > `api_type` 取值 `anthropic | completion | response | google`。
 >
+> `server` 段为 `host` + `port`（默认 `127.0.0.1` / `17431`），`token` 为空时启动补写 `admin`；
+> 命令行 `oma daemon --addr` 仍可覆盖监听地址，优先级高于配置文件。
+>
 > `OmaConfig` 启用 `deny_unknown_fields`：字段为 `default_model` / `default_agent` /
 > `default_reasoning_level` / `theme` / `server` / `providers` / `mcp_servers`。
 > 拼错的键名会被 `PUT /api/config` 直接 400，而不是「保存成功但配置没变」。
@@ -570,8 +589,11 @@ pub struct ContextUsage {
 ### 5.3 Agent 预设与技能（Skill）
 
 1. **Agent 预设 = 角色 + 工具白名单，且模板即提示词**：
-   - 编译期内嵌 5 套模板：`task` / `plan` / `explore` / `review` / `build`
+   - 编译期内嵌 4 套模板：`plan` / `explore` / `review` / `build`
      （`crates/oma-config/src/templates/*.md`）；
+   - `default_agent` 默认指向 `build`：它拥有全部 7 个内置工具，
+     因此 `build.md` 不声明 `tools`（空 = 不限制，新装即完整可用）；
+     `plan` / `explore` / `review` 各自声明受限的工具子集；
    - 同名文件优先取更具体的一层：项目 `<workspace>/.oma/agents/<id>.md`
      > 全局 `~/.config/oma/agents/<id>.md` > 内置模板；
    - 文件为 Markdown + YAML frontmatter，字段全部可选且忽略未知键：
@@ -580,9 +602,10 @@ pub struct ContextUsage {
      设置面板「预设」页可增删改；列表同时下发 `body`（仅正文）与 `content`
      （完整原文），编辑器只展示/回写 `body`；
    - **`tools` 是硬约束**：既过滤下发给模型的工具清单，也拦截实际执行
-     （为空表示不限制）。因此内置模板必须只声明真实存在的工具——
+     （为空表示不限制）。因此预设若声明工具，必须只写真实存在的名字——
      写过时的名字会静默地「少工具」，已加断言拦住；
    - `settings.json` 的 `default_agent` 决定新会话默认角色，
+     设置面板「默认参数」页的选择器列出三层全部预设（bundled / global / project），
      会话内可切换（`SetAgent` 指令 → `AgentChanged` 事件），会话头记录 `agent`。
 
 2. **System Prompt 的拼装顺序**：
@@ -699,7 +722,7 @@ oma.on("tool_call", (e) => ({ block: true, reason?: string }) | undefined);
 - **级联中断**：任意客户端发送 `ClientMessage::Cancel {}` 时触发该 Session 的
   `CancellationToken`。取消信号以 `select!` 短路两处等待：LLM 流式接收与
   工具执行本身，因此长命令会立即返回；
-- **进程回收**：`bash` 工具以 `ProcessGroupGuard` 守卫独立进程组，在超时或
+- **进程回收**：`shell` 工具以 `ProcessGroupGuard` 守卫独立进程组，在超时或
   future 被取消（drop）时统一 `killpg(SIGKILL)`，不留孤儿进程；
 - **清空队列**：立即清空排队命令，广播 `AgentEvent::QueueCleared` 与 `QueueUpdated { pending: 0 }`；
 - **残存消息落库**：已生成的片段照常落库，未执行的 `tool_use` 补齐占位
@@ -748,13 +771,13 @@ ToolOutput {
    `crates/oma-tool/src/truncate.rs` 与 pi 的 `core/tools/truncate.ts` 等价：
    - 默认上限：**2000 行 / 50KB**，先到者生效；除「末行本身超限」边界外不返回半行；
    - 方向：`read` / `ls` / `find` / `grep` 用 `truncate_head`（保留开头）；
-     `bash` 用 `truncate_tail`（保留末尾，错误与结果在那里）；
+     `shell` 用 `truncate_tail`（保留末尾，错误与结果在那里）；
    - 截断时在末尾追加**可操作**提示而非静默截断，例如
      `[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]`；
    - `grep` 额外把单行截到 500 字符（`GREP_MAX_LINE_LENGTH`）；
-   - `edit` 的 diff 仍保留 24k 字符兜底（`RESULT_MAX_CHARS`）。
+   - `edit` 的结果（成功文案 + unified diff）另受 24k 字符兜底限制。
 2. **进程组管理 (`libc::killpg`)**：
-   `bash` 创建独立进程组，发生超时（默认 60s）或用户取消时统一 `killpg` 杀掉整个进程树；
+   `shell` 创建独立进程组，发生超时（默认 60s）或用户取消时统一 `killpg` 杀掉整个进程树；
    `find` / `grep` 拉起的 `fd` / `rg` 用 `kill_on_drop` 随 future 一起回收。
 3. **宿主直跑与安全边界**：
    不做 OS 容器沙箱与路径限制，相对路径按工作区解析，绝对路径直通；
@@ -762,7 +785,7 @@ ToolOutput {
 
 ### 7.2 7 大核心内置工具
 
-工具集与 pi 对齐：`bash` / `edit` / `find` / `grep` / `ls` / `read` / `write`。
+工具集与 pi 对齐：`shell` / `edit` / `find` / `grep` / `ls` / `read` / `write`。
 
 1. **`read`**：
    - 参数：`{ "path": "...", "offset": 1, "limit": null }`（offset 为 1 起始行号，仅对文本生效）
@@ -777,18 +800,25 @@ ToolOutput {
 2. **`write`**：
    - 参数：`{ "path": "...", "content": "..." }`
    - 覆盖写入或新建文件（自动建父目录）。
-3. **`edit`**（多 Hunk 原子替换与 Unified Diff）：
-   - 参数：
-     ```json
-     {
-       "path": "src/lib.rs",
-       "edits": [
-         { "old_text": "...", "new_text": "..." }
-       ]
-     }
-     ```
-   - 校验：原始基准唯一定位匹配、重叠区间拦截检测、全量原子事务；成功后返回统一 Diff。
-4. **`bash`**：
+3. **`edit`**（apply_patch：一次可改多个文件）：
+   - 参数：`{ "input": "<patch>" }`——补丁文本必须包在 `*** Begin Patch` /
+     `*** End Patch` 之间（两行允许首尾空白），也接受 `<<'EOF'` heredoc 包裹；
+   - 段落指令（一个补丁可含多段，覆盖多个文件）：
+     - `*** Add File: <path>`：新建文件，其后每行都必须以 `+` 开头；
+     - `*** Delete File: <path>`：删除文件；
+     - `*** Update File: <path>`：修改文件，其后可跟一行 `*** Move to: <new path>` 表示改名；
+   - `*** Update File` 之下是一个或多个 `@@` hunk：裸 `@@`、`@@ <上下文 / 函数名>`、
+     统一 diff 的 `@@ -a,b +c,d @@`、行号提示 `@@ lines 5-7` / `@@ top of file`
+     （可叠加多行 `@@`）；hunk 内以空格 / `-` / `+` 标记上下文 / 删除 / 新增行；
+     末尾可写 `*** End of File` 表示补丁贴在文件结尾；
+   - **两阶段落盘**：所有段落先在工作区内存里算好（任一段匹配失败即整体放弃，
+     多文件补丁会附上 `No files were modified — sections apply atomically.`），
+     再统一写盘；写盘阶段发生 IO 错误时返回已写入的文件清单，指明工作区处于部分更新状态；
+   - 错误信息带问题文件前缀与 hunk 上下文：
+     `[b.txt]: Failed to find expected lines in b.txt:` 后接期望内容与最接近的匹配；
+   - 路径按工作区解析（相对路径相对 workspace）；成功后返回
+     `Successfully applied N file operation(s).` 与一段 `Unified Diff:`。
+4. **`shell`**：
    - 参数：`{ "command": "cargo test" }`
    - 工作目录绑定当前 workspace，捕获标准输出与标准错误（合并后按尾部截断）。
    - 解释器与环境取自启动时的登录 shell 快照：Daemon 启动时以 `$SHELL -lic`
@@ -888,10 +918,11 @@ pub struct Palette {
 }
 ```
 
-- **存储**：内置 6 套（`pi-light` / `pi-dark` 两套中性色为默认，`latte` / `frappé` /
-  `macchiato` / `mocha` 四套 Catppuccin 为备选）编译期以 `include_str!` 嵌入二进制
-  （与系统提示词同理，无启动写入）；用户调色板存于 `<配置目录>/oma/themes/<id>.json`，
-  同名文件可覆盖内置。`settings.json` 中的 `theme` 仅保存引用，其 id 必须在调色板集合内。
+- **存储**：内置 7 套编译期以 `include_str!` 嵌入二进制（与系统提示词同理，无启动写入）：
+  浅色 `mist` / `rose` / `latte`，深色 `pine` / `frappé` / `macchiato` / `mocha`；
+  默认主题为深色 `mocha` + 浅色 `latte`。用户调色板存于 `<配置目录>/oma/themes/<id>.json`，
+  内置 id 保留给内置文件（同名用户文件被忽略，写入亦被拒绝）。
+  `settings.json` 中的 `theme` 仅保存引用，其 id 必须在调色板集合内。
 - **下发**：`Ready.active_theme` 携带已解析的 `ResolvedTheme { mode, accent, light, dark }`，
   即两套完整调色板。终端与浏览器因此共用同一份配色数据，客户端不需要读取配置目录，
   也不需要在各自语言里再内置一份色值。
@@ -907,7 +938,8 @@ pub struct Palette {
 ## 9. 命令行入口与 Web 前端工程
 
 ### 9.1 统一 `oma` 命令行入口 (`crates/oma`)
-- `oma daemon`：独立启动后台 Daemon 服务（默认监听 `127.0.0.1:17431`）；
+- `oma daemon`：独立启动后台 Daemon 服务（默认监听 `127.0.0.1:17431`，
+  取自 `settings.json` 的 `server.host` / `server.port`，`--addr` 可覆盖）；
 - `oma web`：启动 web 客户端（仅内嵌前端静态服务，**不会**顺便拉起 Daemon，也不再依赖 Vite/pnpm）；
   构建产物经 `rust-embed` 内嵌进二进制（release 下不依赖任何外部目录），
   仅打印 `web 监听地址: http://…`（不打印 token），需 `--open` 才自动打开浏览器；
@@ -941,10 +973,12 @@ pub struct Palette {
   2. 树状对话流展示、Markdown 渲染、Thinking 思维链折叠；
   3. Tool 执行过程与参数/Diff 展示；
   4. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）与历史树弹层；
-  5. 三栏工作区外壳（侧栏 / 消息区 / 右侧面板）、顶部工具栏与底部状态栏，
-     宽度与折叠状态可拖拽并持久化；
+  5. 三栏工作区外壳（侧栏 / 消息区 / 右侧面板）与顶部工具栏，
+     宽度与折叠状态可拖拽并持久化；右侧面板的关闭按钮位于面板标题栏最右端，
+     与顶栏的展开 / 折叠按钮同图标；未选中会话时消息区显示空态主按钮「新建会话」；
   6. 设置面板（连接、外观/主题与调色板、语言、默认参数、提供商、预设、技能），
-     组合器内含 预设 / 模型 两个选择器；
+     组合器内含 预设 / 模型 两个选择器；「默认参数」页的默认 Agent 选择器列出三层
+     全部预设（bundled / global / project）；
      其中「连接」页读写 `oma web` 同源接口的 `client.json`：列表可切换、增删连接，
      保存时 upsert 当前连接并置为 `active`；接口不可用（如 vite dev）时退回 localStorage；
   7. 界面 i18n 支持简体中文 / 繁体中文 / English / 日本語，缺键回退为键名；
@@ -953,8 +987,9 @@ pub struct Palette {
   9. 轮次完成等需要人参与的事件**仅在失焦时**发出通知：
      应用内走 vue-sonner，并补一条浏览器系统通知；
      页面聚焦时不提示（消息已在眼前）；
-  10. 右侧面板与顶部工具栏的部分入口（文件树/预览、Git 变更、终端、导出、
-      分支、System）仍为占位，待后续分期接入。
+  10. 右侧面板与顶部工具栏的部分入口（文件树/预览、Git 变更、终端、分支）
+      仍为占位，待后续分期接入；顶栏不做会话导出与系统提示词入口
+      （`GET /api/system-prompt` 端点保留，供外部客户端调用）。
 
 ### 9.3 客户端本地配置 `client.json`
 - 路径：`<配置目录>/oma/client.json`，与 Daemon 的 `settings.json` 分离，属「这台机器上的客户端」信息；
@@ -979,11 +1014,16 @@ pub struct Palette {
 | 输出截断 | 统一走 `truncate` 模块（2000 行 / 50KB 双上限，先到者生效），不再每个工具一套字符数上限；截断必须给出可操作的后续动作（续读的 offset / 缩小 pattern），否则模型只能瞎猜。 |
 | 会话标识 | `session_id` 会被拼接进文件系统路径，因此全局校验为 `[A-Za-z0-9_-]{1,128}`；附件名同样只允许安全字符并丢弃任何目录成分。 |
 | 版本号来源 | `Cargo.toml` 的 `version` **不会**被 CI 自动递增，只在无标签的分支 / PR 构建里作为回退值被读取；正式版用人工推送的语义化标签（`v0.2.0`），每日快照用日期标签（`v2026.09.17`）。构建标识与制品名由 `.github/workflows/build.yml` 的 `meta` job 统一计算（标签优先），不再存在单独的发布工作流。 |
-| bash 执行环境 | 解释器取 `$SHELL`（兜底 `/bin/sh`），环境取自 Daemon 启动时对登录 shell 的一次快照（`$SHELL -lic`），而非写死的 `sh` + 继承 Daemon 进程环境：后者既读不到 rc 文件里的 alias / `export`，环境也未必是用户终端的。 |
+| shell 执行环境 | 解释器取 `$SHELL`（兜底 `/bin/sh`），环境取自 Daemon 启动时对登录 shell 的一次快照（`$SHELL -lic`），而非写死的 `sh` + 继承 Daemon 进程环境：后者既读不到 rc 文件里的 alias / `export`，环境也未必是用户终端的。 |
 | 会话存储并发 | 每会话两套连接池：写池 `max_connections = 1` 严格串行、读池只读并行，读写互不阻塞；库以 WAL 打开并设 `busy_timeout`，因此同数据目录上的多个实例能互相看到最新提交。 |
 | 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
 | 配置校验 | `OmaConfig` 启用 `deny_unknown_fields`：拼错的键名（或前端字段映射错误）在 `PUT /api/config` 直接 400，不再「保存成功但配置没变」；启动时配置文件解析失败即报错退出，而非静默回退默认值。 |
 | 能力裁剪 | 仅剩 MCP 之外的三项仍是删除状态：子代理 `task`、`ask` 提问、熔断器（均因 pi 内核不内置而移除，如需保留应以插件形式重建）。**已应用户要求恢复**：Agent 预设（v2.5）、内置 MCP（v2.7）。 |
 | 技能发现 | 按 `<root>/<name>/SKILL.md` 三层发现（global/agent/project），同名时更具体的一层覆盖更宽泛的一层；删除技能会连同其目录内的 `scripts/` 等资源一并移除（id 经严格校验，不可穿越）。技能与预设是两套独立机制：预设决定「以什么角色、能用哪些工具运行」，技能只是一段按需读取的知识，同名也不会互相覆盖。 |
 | skill frontmatter 容错 | 技能的 YAML 字段全部可选且忽略未知键：用户目录里存在只有 `description` 与自有键的文件时，名称即目录名，不应因严格解析而整条不可用。 |
+| 工具命名与 `edit` 形态 | 终端执行工具名为 `shell`（与 pi 对齐）。`edit` 放弃 `{path, edits[]}` 结构化替换，改为 apply_patch 形态——单个 `input` 字符串承载 `*** Begin Patch` 信封，可一次增 / 删 / 改 / 改名多个文件并整包原子落盘：多文件改动不再需要多次调用，也不会出现「改到一半失败、各文件状态不一致」。 |
+| 默认预设 | 内置 `Task` 删除，默认改为 `Build`：`Build` 不声明 `tools`（= 不限制，拥有全部工具），承担「装完即用」的默认角色；无配置文件时写入 `default_agent: build`，会话库列的 `active_agent` 默认值同步为 `build`。 |
+| 调色板默认 | 删除两套中性色调色板，内置 7 套全部为 Catppuccin 族（浅色 `mist` / `rose` / `latte`，深色 `pine` / `frappé` / `macchiato` / `mocha`），默认深色 `mocha` + 浅色 `latte`。 |
+| `server` 配置字段 | 监听地址由单个字符串字段拆成 `host` + `port`：设置面板本就分两个字段编辑，拆开后前后端不必再做「host:port」字符串的拼装与解析；`oma daemon --addr` 仍可覆盖。 |
+| 前端外壳 | 删除底部状态栏（模型 / 推理 / 上下文占用 / 队列 / 工作区路径）与顶栏「导出为 markdown」「系统提示词」两个入口：这几处信息与入口在侧栏、设置面板、组合器中已各有归属，重复展示只增加维护面；`GET /api/system-prompt` 端点保留，供外部客户端取用。右侧面板关闭按钮移到面板标题栏最右端并与顶栏展开 / 折叠同图标，空态主按钮固定为「新建会话」。 |
 | 设置面板结构 | 提供商页：提供商配置为单个带底色容器（标题在其内），模型配置为容器外分区标题，其下每个模型各自一个容器；预设页的工具授权用多选下拉（标签可逐个移除），选项来自 `GET /api/tools`。 |

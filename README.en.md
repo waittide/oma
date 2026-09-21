@@ -65,17 +65,18 @@ ships Traditional Chinese, English and Japanese.
   onto one shared `Block` model.
 - **Three-level recursive merge** for headers and request bodies: provider $\prec$ model $\prec$
   reasoning-level override, so vendor-specific fields can be injected freely.
-- **Seven built-in tools**: `read` (including images), `write`, `edit` (atomic multi-hunk replacement with
-  unified diff), `bash` (process-group guard with configurable timeout), `ls`, `find` (glob) and `grep`
-  (regex or literal search). The tool set mirrors the pi core: only minimal read/write/search capability.
+- **Seven built-in tools**: `read` (including images), `write`, `edit` (apply_patch envelopes, several
+  files per call), `shell` (process-group guard with configurable timeout), `ls`, `find` (glob) and
+  `grep` (regex or literal search). The tool set mirrors the pi core: only minimal read/write/search
+  capability.
 - **Per-model capabilities**: thinking / text / image and audio input-output are declared per model,
   and the UI decides from that whether to inline images or expose the thinking toggle.
 
 ### Clients
 
 - **Web (`web/`)**: Vue 3 + TypeScript with hand-written CSS and **zero external UI or CSS libraries**;
-  four Catppuccin palettes for dark and light, four locales, Markdown rendering, a history tree,
-  a message rail, attachments and image previews.
+  seven built-in palettes (three light, four dark, defaulting to dark `mocha` / light `latte`),
+  four locales, Markdown rendering, a history tree, a message rail, attachments and image previews.
 - **TUI (`crates/oma-tui`)**: a Ratatui terminal client with streaming output and CJK-aware line wrapping.
 - **CLI**: `oma daemon | web | tui | status`, with fully localized (Chinese) help and parse errors.
 - **No runtime dependencies**: the frontend build output is embedded into the binary at compile time via
@@ -264,8 +265,9 @@ The config directory is `~/.config/oma/` (respecting `XDG_CONFIG_HOME`); data li
 
 ```text
 ~/.config/oma/
-├── settings.json       # general settings: defaults, theme, server
+├── settings.json       # general settings: defaults, agent, theme, server
 ├── models.json         # providers and model catalogue
+├── agents/             # agent presets (<id>.md, overriding the bundled templates)
 ├── skills/             # oma's own skills (<id>/SKILL.md)
 ├── plugins/            # global QuickJS plugins (<id>/plugin.js)
 └── themes/             # custom palettes (*.json)
@@ -282,8 +284,9 @@ Minimal example (`settings.json`):
 ```json
 {
   "default_model": "my_anthropic/claude-3-7-sonnet",
+  "default_agent": "build",
   "default_reasoning_level": "medium",
-  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" }
+  "server": { "host": "127.0.0.1", "port": 17431, "token": "admin" }
 }
 ```
 
@@ -316,8 +319,12 @@ Token precedence: `--token` on the command line > `OMA_AUTH_TOKEN` environment v
 When the file has no token yet, the daemon writes the default `admin` back to disk so it stays visible
 and editable.
 
-Agent presets have been removed: oma uses the same single built-in system prompt as pi, with no
-role/preset concept. Use skills or plugins for extra behaviour.
+Agent presets decide which system prompt a session uses and which tools it may call; four templates are
+bundled: `plan` / `explore` / `review` / `build` (the template *is* the prompt). The default preset is
+`build`, which declares no `tools` list and therefore has every tool available. Files in
+`<workspace>/.oma/agents/<id>.md` (project) and `~/.config/oma/agents/<id>.md` (global) override the
+bundled templates or add new presets; the settings panel's presets page can create, edit and delete
+them, and tool grants come from `GET /api/tools`. For lighter-weight extras, use skills or plugins.
 
 ---
 
@@ -327,8 +334,8 @@ role/preset concept. Use skills or plugins for extra behaviour.
 |---|---|
 | `read` | Read a file by line range; images are inlined when the model can see them, otherwise a dimensions / channels / MIME summary is returned |
 | `write` | Overwrite or create a file |
-| `edit` | Atomic multi-hunk replacement with overlap checking and a unified diff |
-| `bash` | Run a command in its own process group with a `killpg` fallback and a configurable timeout |
+| `edit` | apply_patch: `input` holds a patch wrapped in `*** Begin Patch` … `*** End Patch`, adding / deleting / updating files (with `*** Move to:` for renames), several files per call, and nothing is written unless the whole patch applies |
+| `shell` | Run a command in its own process group with a `killpg` fallback and a configurable timeout |
 | `ls` | List directory entries |
 | `find` | Find files by glob pattern (`**` crosses directories) |
 | `grep` | Search file contents by regex or literal string |
@@ -353,8 +360,8 @@ oma.registerTool({
 });
 
 oma.on("tool_call", (e) =>
-  e.name === "bash" && /rm\s+-rf/.test(e.input.command || "")
-    ? { block: true, reason: "destructive bash command" }
+  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
+    ? { block: true, reason: "destructive shell command" }
     : undefined);
 
 oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });

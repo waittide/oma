@@ -55,8 +55,8 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 - **四种协议归一化**（手写 SSE 状态机）：Anthropic Messages、OpenAI / DeepSeek Chat Completions、
   Responses、Google Gemini。工具调用与多模态图片在四种协议下统一成同一套 `Block`。
 - **请求头 / 请求体三级递归合并**：Provider 级 $\prec$ Model 级 $\prec$ 推理等级覆盖，可注入厂商私有字段。
-- **七个内置工具**：`read`（支持读图片）、`write`、`edit`（原子多段替换 + 统一 diff）、
-  `bash`（进程组守卫 + 可配置超时）、`ls`、`find`（glob）、`grep`（正则 / 字面量搜索）。
+- **七个内置工具**：`read`（支持读图片）、`write`、`edit`（apply_patch 补丁，一次可改多个文件）、
+  `shell`（进程组守卫 + 可配置超时）、`ls`、`find`（glob）、`grep`（正则 / 字面量搜索）。
   工具集与 pi 对齐：内核只保留最小可用的读写与检索能力。
 - **可配置的展示能力**：模型能力（思考 / 文本 / 图片输入输出 / 音频）逐模型声明，
   界面据此决定是否内联图片、是否展示思考开关。
@@ -64,7 +64,8 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 ### 客户端
 
 - **Web（`web/`）**：Vue 3 + TypeScript，手写 CSS，**零外部 UI / CSS 库**；
-  深色浅色各四套 Catppuccin 调色板、四语言文案、Markdown 渲染、历史树、消息导航栏、附件与图片预览。
+  内置 7 套调色板（浅色 3 套 / 深色 4 套，默认深色 `mocha` + 浅色 `latte`）、
+  四语言文案、Markdown 渲染、历史树、消息导航栏、附件与图片预览。
 - **TUI（`crates/oma-tui`）**：基于 Ratatui 的终端客户端，流式渲染、CJK 折行。
 - **CLI**：`oma daemon | web | tui | status`，帮助与解析错误全部中文化。
 - **零运行时依赖**：前端构建产物在编译期经 `rust-embed` 内嵌进二进制，发布时不需要目标机器安装 Node。
@@ -245,8 +246,9 @@ pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
 
 ```text
 ~/.config/oma/
-├── settings.json       # 常规设置：默认模型、推理等级、theme、server
+├── settings.json       # 常规设置：默认模型、默认预设、推理等级、theme、server
 ├── models.json         # 提供商与模型清单（providers）
+├── agents/             # Agent 预设（<id>.md，覆盖内置模板）
 ├── skills/             # oma 自身技能（<id>/SKILL.md）
 ├── plugins/            # 全局 QuickJS 插件（<id>/plugin.js）
 └── themes/             # 自定义调色板（*.json）
@@ -263,8 +265,9 @@ pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
 ```json
 {
   "default_model": "my_anthropic/claude-3-7-sonnet",
+  "default_agent": "build",
   "default_reasoning_level": "medium",
-  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" }
+  "server": { "host": "127.0.0.1", "port": 17431, "token": "admin" }
 }
 ```
 
@@ -295,8 +298,11 @@ pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
 Token 优先级：命令行 `--token` > 环境变量 `OMA_AUTH_TOKEN` > 配置文件。
 配置文件缺省时，Daemon 启动会补写默认值 `admin` 并落盘，方便直接查看与修改。
 
-Agent 预设已移除：oma 使用与 pi 相同的单一内置系统提示词，不再有角色/预设概念；
-需要额外行为请使用技能或插件。
+Agent 预设决定会话用哪套系统提示词、能用哪些工具，共 4 套内置模板：`plan` / `explore` /
+`review` / `build`（模板即提示词）。默认预设为 `build`，它不声明 `tools`，因此拥有全部工具。
+`<workspace>/.oma/agents/<id>.md`（项目级）与 `~/.config/oma/agents/<id>.md`（全局级）
+可覆盖内置模板，也能新增自定义预设；设置面板「预设」页可增删改，工具授权来自 `GET /api/tools`。
+需要更轻量的额外行为请使用技能或插件。
 
 ---
 
@@ -306,8 +312,8 @@ Agent 预设已移除：oma 使用与 pi 相同的单一内置系统提示词，
 |---|---|
 | `read` | 按行区间读文件；图片在模型支持视觉时直接内联，否则返回尺寸 / 通道 / MIME 摘要 |
 | `write` | 覆盖或创建文件 |
-| `edit` | 原子多段替换，带重叠检查与统一 diff |
-| `bash` | 执行命令，独立进程组 + 兜底 `killpg`，超时可配置 |
+| `edit` | apply_patch：`input` 为 `*** Begin Patch` … `*** End Patch` 包裹的补丁，支持增 / 删 / 改文件与 `*** Move to:` 改名，一次可改多个文件，失败则整体不落盘 |
+| `shell` | 执行命令，独立进程组 + 兜底 `killpg`，超时可配置 |
 | `ls` | 列出目录条目 |
 | `find` | 按 glob 模式查找文件（支持 `**` 跨目录） |
 | `grep` | 按正则 / 字面量搜索文件内容 |
@@ -331,8 +337,8 @@ oma.registerTool({
 });
 
 oma.on("tool_call", (e) =>
-  e.name === "bash" && /rm\s+-rf/.test(e.input.command || "")
-    ? { block: true, reason: "destructive bash command" }
+  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
+    ? { block: true, reason: "destructive shell command" }
     : undefined);
 
 oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });

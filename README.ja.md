@@ -65,8 +65,8 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
   共通の `Block` モデルにマッピングされます。
 - **ヘッダー / リクエストボディの 3 段階マージ**: プロバイダー $\prec$ モデル $\prec$ 推論レベル上書き。
   ベンダー固有フィールドを自由に注入できます。
-- **7 つの組み込みツール**: `read`（画像対応）、`write`、`edit`（重複検査付きの原子的マルチハンク置換 + unified diff）、
-  `bash`（プロセスグループ監視 + 設定可能なタイムアウト）、`ls`、`find`（glob）、`grep`（正規表現 / リテラル検索）。
+- **7 つの組み込みツール**: `read`（画像対応）、`write`、`edit`（apply_patch 形式。1 回の呼び出しで複数ファイルを変更）、
+  `shell`（プロセスグループ監視 + 設定可能なタイムアウト）、`ls`、`find`（glob）、`grep`（正規表現 / リテラル検索）。
   ツールセットは pi のコアと同じで、読み書きと検索の最小限のみを内蔵します。
 - **モデル単位の能力宣言**: 思考・テキスト・画像・音声の入出力をモデルごとに宣言し、
   画像をインライン表示するか思考トグルを出すかを UI が判断します。
@@ -74,8 +74,8 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
 ### クライアント
 
 - **Web（`web/`）**: Vue 3 + TypeScript、CSS は手書きで**外部 UI / CSS ライブラリはゼロ**。
-  Catppuccin のダーク / ライト各 4 パレット、4 言語、Markdown レンダリング、履歴ツリー、
-  メッセージレール、添付と画像プレビュー。
+  組み込みパレット 7 種（ライト 3 / ダーク 4、既定はダーク `mocha` + ライト `latte`）、4 言語、
+  Markdown レンダリング、履歴ツリー、メッセージレール、添付と画像プレビュー。
 - **TUI（`crates/oma-tui`）**: Ratatui 製のターミナルクライアント。ストリーミング表示、CJK 対応の折り返し。
 - **CLI**: `oma daemon | web | tui | status`。ヘルプと解析エラーはすべて中国語化されています。
 - **実行時依存なし**: フロントエンドのビルド成果物はコンパイル時に `rust-embed` でバイナリへ埋め込まれるため、
@@ -248,7 +248,7 @@ cargo build --release
 cd web
 pnpm dev        # Vite 開発サーバー。/api と /ws は 127.0.0.1:17431 へプロキシ
 pnpm test       # 単体レベルの検証（ストリーム分割）
-pnpm test       # 単体レベルの検証（ストリーム分割）
+pnpm test:e2e   # エンドツーエンド：実デーモン + 偽プロバイダの SSE サーバー
 ```
 
 debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディスクから直接読むため、
@@ -262,8 +262,11 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
 
 ```text
 ~/.config/oma/
-├── settings.json       # 一般設定: 既定値、theme、server
+├── settings.json       # 一般設定: 既定値、エージェント、theme、server
+├── models.json         # プロバイダとモデル一覧（providers）
+├── agents/             # Agent プリセット（<id>.md、内蔵テンプレートを上書き）
 ├── skills/             # oma 自身のスキル（<id>/SKILL.md）
+├── plugins/            # グローバル QuickJS プラグイン（<id>/plugin.js）
 └── themes/             # カスタムパレット（*.json）
 ~/.local/share/oma/
 ├── oma.db                     # グローバル索引：セッションメタデータ（一覧と詳細はここだけ参照）
@@ -278,8 +281,9 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
 ```json
 {
   "default_model": "my_anthropic/claude-3-7-sonnet",
+  "default_agent": "build",
   "default_reasoning_level": "medium",
-  "server": { "listen_addr": "127.0.0.1:17431", "token": "admin" }
+  "server": { "host": "127.0.0.1", "port": 17431, "token": "admin" }
 }
 ```
 
@@ -312,8 +316,13 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
 設定ファイルにトークンが無い場合、デーモンは既定値 `admin` を書き戻して保存します
 （ユーザーが確認・変更できるようにするため）。
 
-エージェント・プリセットは削除されました：oma は pi と同じ単一の組み込みシステムプロンプトを使い、
-ロール / プリセットの概念はありません。追加の振る舞いはスキルまたはプラグインで実装してください。
+Agent プリセットは「どのシステムプロンプトで、どのツールを使って動くか」を決めます。内蔵テンプレートは
+`plan` / `explore` / `review` / `build` の 4 種で、テンプレート本文がそのままプロンプトになります。
+既定は `build` で、`tools` を宣言しないため全ツールを利用できます。
+`<workspace>/.oma/agents/<id>.md`（プロジェクト）と `~/.config/oma/agents/<id>.md`（グローバル）で
+内蔵テンプレートを上書きしたり、独自プリセットを追加できます。設定パネルの「プリセット」ページで
+追加・編集・削除ができ、ツールの許可リストは `GET /api/tools` から取得します。
+より軽量な追加動作はスキルまたはプラグインで実装してください。
 
 ---
 
@@ -323,8 +332,8 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
 |---|---|
 | `read` | 行範囲を指定してファイルを読む。画像はモデルが視覚対応ならインライン、そうでなければ寸法 / チャンネル / MIME の要約を返す |
 | `write` | ファイルの上書きまたは新規作成 |
-| `edit` | 重複検査付きの原子的マルチハンク置換（unified diff を出力） |
-| `bash` | 専用プロセスグループでコマンドを実行し、`killpg` でフォールバック。タイムアウトは設定可能 |
+| `edit` | apply_patch 形式：`input` に `*** Begin Patch` … `*** End Patch` で囲んだパッチを渡し、ファイルの追加 / 削除 / 更新（`*** Move to:` で改名）を 1 回で複数ファイルに適用。全体が適用できなければ何も書き込まない |
+| `shell` | 専用プロセスグループでコマンドを実行し、`killpg` でフォールバック。タイムアウトは設定可能 |
 | `ls` | ディレクトリのエントリを一覧 |
 | `find` | glob パターンでファイルを検索（`**` はディレクトリを跨ぐ） |
 | `grep` | 正規表現 / リテラル文字列でファイル内容を検索 |
@@ -350,8 +359,8 @@ oma.registerTool({
 });
 
 oma.on("tool_call", (e) =>
-  e.name === "bash" && /rm\s+-rf/.test(e.input.command || "")
-    ? { block: true, reason: "destructive bash command" }
+  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
+    ? { block: true, reason: "destructive shell command" }
     : undefined);
 
 oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });
