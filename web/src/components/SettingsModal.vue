@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue';
 import { toast, UiButton, UiIconButton, UiInput, UiModal, UiMultiSelect, UiSegmented, UiSelect, UiTextarea, UiTooltip } from '@waittide/ui';
 import {
   LuCheck,
-  LuChevronRight,
+  LuChevronDown,
   LuEye,
   LuEyeOff,
   LuLanguages,
@@ -1829,7 +1829,7 @@ function pickLocale(v: Locale) {
                       @click="d.requestOpen = !d.requestOpen"
                       >
                       <span>{{ t('requestOverrideToggle') }}</span>
-                      <LuChevronRight :size="13" class="caret" :class="{ open: d.requestOpen }" />
+                      <LuChevronDown :size="14" class="caret" :class="{ open: d.requestOpen }" />
                       </UiButton>
                     <template v-if="d.requestOpen">
                       <p class="cfg-hint">{{ t('requestOverrideHint') }}</p>
@@ -1913,7 +1913,7 @@ function pickLocale(v: Locale) {
                         @click="m.reasoningOpen = !m.reasoningOpen"
                         >
                         <span>{{ t('reasoningMapToggle') }}</span>
-                        <LuChevronRight :size="13" class="caret" :class="{ open: m.reasoningOpen }" />
+                        <LuChevronDown :size="14" class="caret" :class="{ open: m.reasoningOpen }" />
                         </UiButton>
                       <template v-if="m.reasoningOpen">
                         <p class="cfg-hint">{{ t('reasoningMapHint') }}</p>
@@ -1943,7 +1943,7 @@ function pickLocale(v: Locale) {
                       @click="m.requestOpen = !m.requestOpen"
                       >
                       <span>{{ t('requestOverrideToggle') }}</span>
-                      <LuChevronRight :size="13" class="caret" :class="{ open: m.requestOpen }" />
+                      <LuChevronDown :size="14" class="caret" :class="{ open: m.requestOpen }" />
                       </UiButton>
                     <template v-if="m.requestOpen">
                       <p class="cfg-hint">{{ t('requestOverrideHint') }}</p>
@@ -3019,8 +3019,9 @@ function pickLocale(v: Locale) {
   color: var(--muted);
   transition: transform 0.15s ease;
 }
+/* 与组件库下拉框一致：展开时向下箭头翻转 180°，而不是向右箭头转 90° */
 .cfg-fold .caret.open {
-  transform: rotate(90deg);
+  transform: rotate(180deg);
 }
 /* 折叠区内的子标签：同样顶格，与上方提示、下方输入框左边缘齐平 */
 .cfg-sub-label {
