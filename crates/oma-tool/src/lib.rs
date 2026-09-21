@@ -617,14 +617,30 @@ fn capture_login_shell_env() -> Option<ShellEnv> {
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
     let program = login_shell();
-    let mut child = std::process::Command::new(&program)
-        .arg("-lic")
+    let mut cmd = std::process::Command::new(&program);
+    cmd.arg("-lic")
         .arg("command env")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(std::process::Stdio::null());
+
+    // 这次采集必须跑在自己的会话里（setsid，无控制终端）。
+    //
+    // `-i` 的 zsh 会为作业控制把**终端的前台进程组**改成自己（tcsetpgrp），
+    // 子进程退出后终端的 TPGID 就永久停在一个已死的进程组上，从此键盘
+    // Ctrl+C / Ctrl+Z 送不到该终端里的任何进程——守护进程自己也就再也杀不掉。
+    // 脱离控制终端后交互 shell 无从抢占，而 `.zshrc` / `.bashrc` 仍会照读。
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+
+    let mut child = cmd.spawn().ok()?;
 
     // 先起读取线程：环境变量总量可能超过管道缓冲区，等进程退出后再读会死锁
     let mut stdout = child.stdout.take()?;
