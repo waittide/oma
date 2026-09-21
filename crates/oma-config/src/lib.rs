@@ -133,7 +133,7 @@ impl PaletteLoader {
                     match Self::parse(&raw, id) {
                         Ok(p) => match palettes.iter_mut().find(|e| e.id == p.id) {
                             // 已存在的 id 只可能是内置（save 拒绝了内置 id 的落盘），
-                            // 此处不得覆盖：否则手写一个 mocha.toml 就能改掉内置配色。
+                            // 此处不得覆盖：否则手写一个 mocha.json 就能改掉内置配色。
                             Some(_) => tracing::warn!(palette = id, "ignoring user palette that shadows a bundled id"),
                             None => palettes.push(p),
                         },
@@ -302,14 +302,6 @@ impl ConfigPaths {
             .unwrap_or_else(|| PathBuf::from("models.json"));
         Self { settings, models }
     }
-
-    /// 旧版单一 TOML 配置路径（迁移用）
-    fn legacy_config(&self) -> PathBuf {
-        self.settings
-            .parent()
-            .map(|p| p.join("config.toml"))
-            .unwrap_or_else(|| PathBuf::from("config.toml"))
-    }
 }
 
 /// Oma 根配置文件 (`~/.config/oma/settings.json` + `models.json`)
@@ -366,8 +358,6 @@ impl Default for OmaConfig {
 
 impl OmaConfig {
     /// 从「settings 文件路径」加载配置；同目录 `models.json` 提供 providers。
-    ///
-    /// 旧的 `config.toml` 存在而 `settings.json` 不存在时自动迁移。
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
         Self::load_from_paths(&ConfigPaths::from_settings_file(path))
     }
@@ -388,7 +378,6 @@ impl OmaConfig {
     /// 以默认值为基底做浅合并：文件里缺省的键沿用默认值，未知键仍会被
     /// `deny_unknown_fields` 拒绝。
     pub fn load_from_paths(paths: &ConfigPaths) -> Result<Self> {
-        Self::migrate_legacy(paths)?;
         let mut merged = serde_json::to_value(Self::default())?;
         if paths.settings.exists() {
             let value = read_json(&paths.settings)?;
@@ -399,30 +388,6 @@ impl OmaConfig {
             merge_object(&mut merged, value, &paths.models)?;
         }
         Ok(serde_json::from_value(merged)?)
-    }
-
-    /// 一次性迁移：`config.toml` → `settings.json` + `models.json`。
-    ///
-    /// 迁移成功后把旧文件改名为 `config.toml.bak` 保留，避免用户配置丢失，
-    /// 也避免下次启动重复迁移。
-    fn migrate_legacy(paths: &ConfigPaths) -> Result<()> {
-        if paths.settings.exists() {
-            return Ok(());
-        }
-        let legacy = paths.legacy_config();
-        if !legacy.exists() {
-            return Ok(());
-        }
-        let raw = std::fs::read_to_string(&legacy)
-            .with_context(|| format!("failed to read legacy config {}", legacy.display()))?;
-        let config: OmaConfig =
-            toml::from_str(&raw).with_context(|| format!("failed to parse legacy config {}", legacy.display()))?;
-        config.save_to_paths(paths)?;
-        let backup = legacy.with_extension("toml.bak");
-        std::fs::rename(&legacy, &backup)
-            .with_context(|| format!("failed to back up legacy config {}", legacy.display()))?;
-        tracing::info!(from = %legacy.display(), to = %paths.settings.display(), "migrated config to JSON");
-        Ok(())
     }
 
     /// 配置文件标准路径 (`~/.config/oma/settings.json`)
@@ -661,35 +626,13 @@ impl ClientConfig {
     }
 
     /// 从文件加载；文件不存在时返回默认配置。
-    ///
-    /// 旧的 `client.toml` 存在而 `client.json` 不存在时自动迁移。
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        if !path.exists() {
-            Self::migrate_legacy(path)?;
-        }
         if !path.exists() {
             return Ok(Self::default());
         }
         let content = std::fs::read_to_string(path)?;
         Ok(serde_json::from_str(&content)?)
-    }
-
-    /// 一次性迁移：`client.toml` → `client.json`，旧文件改名为 `.bak`。
-    fn migrate_legacy(path: &Path) -> Result<()> {
-        let legacy = path.with_file_name("client.toml");
-        if !legacy.exists() {
-            return Ok(());
-        }
-        let raw = std::fs::read_to_string(&legacy)
-            .with_context(|| format!("failed to read legacy client config {}", legacy.display()))?;
-        let config: ClientConfig = toml::from_str(&raw)
-            .with_context(|| format!("failed to parse legacy client config {}", legacy.display()))?;
-        config.save_to_file_atomic(path)?;
-        let backup = legacy.with_extension("toml.bak");
-        std::fs::rename(&legacy, &backup)
-            .with_context(|| format!("failed to back up legacy client config {}", legacy.display()))?;
-        Ok(())
     }
 
     /// 从标准路径加载；定位不到配置目录时返回默认值。
@@ -1590,23 +1533,28 @@ mod tests {
 
     #[test]
     fn test_model_headers_and_body_reach_model_config() {
-        let toml_str = r#"
-[providers.p1]
-api_type = "completion"
-base_url = "http://localhost/v1"
-api_key = "k"
-headers = { "X-Provider" = "p" }
-body = { temperature = 0.2 }
-
-[[providers.p1.models]]
-id = "m1"
-headers = { "X-Model" = "m", "X-Provider" = "override" }
-body = { temperature = 0.9, top_p = 0.5 }
-
-[[providers.p1.models]]
-id = "m2"
-"#;
-        let config: OmaConfig = toml::from_str(toml_str).unwrap();
+        let config: OmaConfig = serde_json::from_str(
+            r#"{
+              "providers": {
+                "p1": {
+                  "api_type": "completion",
+                  "base_url": "http://localhost/v1",
+                  "api_key": "k",
+                  "headers": { "X-Provider": "p" },
+                  "body": { "temperature": 0.2 },
+                  "models": [
+                    {
+                      "id": "m1",
+                      "headers": { "X-Model": "m", "X-Provider": "override" },
+                      "body": { "temperature": 0.9, "top_p": 0.5 }
+                    },
+                    { "id": "m2" }
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
 
         // 模型级配置必须落到 ModelConfig，否则会静默丢失（请求仍按 Provider 级发出）
         let (_, m1) = config.find_model("p1/m1").unwrap();
@@ -1636,21 +1584,23 @@ id = "m2"
     }
 
     #[test]
-    fn test_parse_toml_config() {
-        let toml_str = r#"
-default_model = "deepseek/deepseek-chat"
-default_agent = "task"
-default_approval_mode = "strict"
-
-[server]
-listen_addr = "0.0.0.0:17431"
-
-[providers.deepseek]
-api_type = "completion"
-base_url = "https://api.deepseek.com/v1"
-api_key = "env:DEEPSEEK_KEY"
-"#;
-        let config: OmaConfig = toml::from_str(toml_str).unwrap();
+    fn test_parse_config_json() {
+        let config: OmaConfig = serde_json::from_str(
+            r#"{
+              "default_model": "deepseek/deepseek-chat",
+              "default_agent": "task",
+              "default_approval_mode": "strict",
+              "server": { "listen_addr": "0.0.0.0:17431" },
+              "providers": {
+                "deepseek": {
+                  "api_type": "completion",
+                  "base_url": "https://api.deepseek.com/v1",
+                  "api_key": "env:DEEPSEEK_KEY"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
         assert_eq!(config.default_model, "deepseek/deepseek-chat");
         assert_eq!(config.server.listen_addr, "0.0.0.0:17431");
         assert!(config.providers.contains_key("deepseek"));
@@ -1658,25 +1608,32 @@ api_key = "env:DEEPSEEK_KEY"
 
     #[test]
     fn test_configured_models_require_declaration() {
-        let toml_str = r#"
-[providers.p1]
-api_type = "completion"
-base_url = "http://localhost/v1"
-api_key = "k"
-[[providers.p1.models]]
-id = "m1"
-name = "Model One"
-context_len = 1_048_576
-capabilities = ["text_input", "image_input"]
-[[providers.p1.models]]
-id = "m2"
-
-[providers.p2]
-api_type = "anthropic"
-base_url = "http://localhost/v1"
-api_key = "k"
-"#;
-        let config: OmaConfig = toml::from_str(toml_str).unwrap();
+        let config: OmaConfig = serde_json::from_str(
+            r#"{
+              "providers": {
+                "p1": {
+                  "api_type": "completion",
+                  "base_url": "http://localhost/v1",
+                  "api_key": "k",
+                  "models": [
+                    {
+                      "id": "m1",
+                      "name": "Model One",
+                      "context_len": 1048576,
+                      "capabilities": ["text_input", "image_input"]
+                    },
+                    { "id": "m2" }
+                  ]
+                },
+                "p2": {
+                  "api_type": "anthropic",
+                  "base_url": "http://localhost/v1",
+                  "api_key": "k"
+                }
+              }
+            }"#,
+        )
+        .unwrap();
 
         // 配置清单内的模型: 精确元数据
         let (_, m1) = config.find_model("p1/m1").unwrap();
@@ -1737,41 +1694,6 @@ api_key = "k"
         let reloaded = OmaConfig::load_from_file(&path).unwrap();
         assert_eq!(reloaded.default_model, "deepseek/deepseek-chat");
         assert!(reloaded.providers.contains_key("deepseek"));
-    }
-
-    /// 旧版 `config.toml` 存在时自动迁移为 settings.json + models.json。
-    #[test]
-    fn test_legacy_toml_is_migrated_to_json() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("oma");
-        std::fs::create_dir_all(&dir).unwrap();
-        let legacy = dir.join("config.toml");
-        std::fs::write(
-            &legacy,
-            r#"
-default_model = "deepseek/deepseek-chat"
-
-[server]
-listen_addr = "0.0.0.0:17431"
-
-[providers.deepseek]
-api_type = "completion"
-base_url = "https://api.deepseek.com/v1"
-api_key = "env:DEEPSEEK_KEY"
-"#,
-        )
-        .unwrap();
-
-        let paths = ConfigPaths::in_dir(&dir);
-        let cfg = OmaConfig::load_from_paths(&paths).unwrap();
-        assert_eq!(cfg.default_model, "deepseek/deepseek-chat");
-        assert_eq!(cfg.server.listen_addr, "0.0.0.0:17431");
-        assert!(cfg.providers.contains_key("deepseek"));
-        // 已落盘为 JSON，旧文件被备份
-        assert!(paths.settings.exists());
-        assert!(paths.models.exists());
-        assert!(!legacy.exists());
-        assert!(dir.join("config.toml.bak").exists());
     }
 
     #[test]
@@ -2249,33 +2171,5 @@ api_key = "env:DEEPSEEK_KEY"
         let loaded = ClientConfig::load_from_file(&path).unwrap();
         assert_eq!(loaded.connections, minimal.connections);
         assert_eq!(loaded.active, "missing");
-    }
-
-    /// 旧版 client.toml 自动迁移为 client.json。
-    #[test]
-    fn test_legacy_client_toml_is_migrated() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("oma");
-        std::fs::create_dir_all(&dir).unwrap();
-        let legacy = dir.join("client.toml");
-        std::fs::write(
-            &legacy,
-            r#"
-active = "a"
-
-[[connections]]
-name = "a"
-url = "http://127.0.0.1:17431"
-token = "admin"
-"#,
-        )
-        .unwrap();
-
-        let path = dir.join("client.json");
-        let loaded = ClientConfig::load_from_file(&path).unwrap();
-        assert_eq!(loaded.active, "a");
-        assert_eq!(loaded.connections.len(), 1);
-        assert!(path.exists());
-        assert!(dir.join("client.toml.bak").exists());
     }
 }

@@ -276,8 +276,6 @@ The config directory is `~/.config/oma/` (respecting `XDG_CONFIG_HOME`); data li
     └── attachments/           # session attachments
 ```
 
-> Legacy `config.toml` / `client.toml` files are migrated on first start to `settings.json` +
-> `models.json` / `client.json`; the old files are backed up as `*.toml.bak`.
 
 Minimal example (`settings.json`):
 

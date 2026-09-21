@@ -258,8 +258,6 @@ pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
     └── attachments/           # 会话附件
 ```
 
-> 旧版 `config.toml` / `client.toml` 会在首次启动时自动迁移为 `settings.json` + `models.json` /
-> `client.json`，原文件备份为 `*.toml.bak`。
 
 最小示例（`settings.json`）：
 

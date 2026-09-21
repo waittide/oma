@@ -1898,8 +1898,8 @@ mod tests {
     }
 
     #[test]
-    fn test_null_body_normalizes_to_object_and_toml_roundtrip() {
-        // 前端 PUT 可能带回 body: null；TOML 不支持 null，必须规范为空对象后再序列化
+    fn test_null_body_normalizes_to_object() {
+        // 前端 PUT 可能带回 body: null，必须规范为空对象，否则构造请求体时会拿到 null
         let missing: ProviderConfig =
             serde_json::from_str(r#"{"api_type":"completion","base_url":"https://api.example.com/v1","api_key":"k"}"#)
                 .unwrap();
@@ -1910,10 +1910,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(null_cfg.body, serde_json::json!({}));
-
-        let toml_str = toml::to_string_pretty(&null_cfg).unwrap();
-        let back: ProviderConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(back.body, serde_json::json!({}));
 
         // 非空预设原样保留
         let rich: ProviderConfig = serde_json::from_str(

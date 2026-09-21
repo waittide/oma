@@ -621,7 +621,6 @@ pub struct ContextUsage {
 ```
 
 > `api_type` 取值 `anthropic | completion | response | google`。
-> 旧版 `config.toml` 首次加载时自动迁移为上述两个文件，原文件备份为 `config.toml.bak`。
 >
 > `OmaConfig` 启用 `deny_unknown_fields`：字段为 `default_model` / `default_agent` /
 > `default_approval_mode` / `default_reasoning_level` / `theme` / `server` / `providers` /
@@ -1046,7 +1045,6 @@ pub struct Palette {
   （`name`/`url`/`token`，用户可在客户端保存与切换）、`active`（当前活动连接名，空则取列表首个）；
 - 读写：`oma web` 提供同源接口 `GET/PUT /api/client/config`（写入前校验名称/地址非空且不重名，
   经写锁串行化后原子落盘）；TUI 只读取连接列表，切换后回写 `active`；
-- 迁移：旧版 `client.toml` 首次加载时自动转为 `client.json`，原文件备份为 `client.toml.bak`。
 
 ---
 

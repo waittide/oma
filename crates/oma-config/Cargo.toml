@@ -14,7 +14,6 @@ oma-provider = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-toml = { workspace = true }
 url = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }

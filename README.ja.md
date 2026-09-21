@@ -272,8 +272,6 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
     └── attachments/           # セッション添付
 ```
 
-> 旧版の `config.toml` / `client.toml` は初回起動時に `settings.json` + `models.json` /
-> `client.json` へ自動移行され、旧ファイルは `*.toml.bak` としてバックアップされます。
 
 最小構成の例（`settings.json`）：
 

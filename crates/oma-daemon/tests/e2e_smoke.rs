@@ -224,31 +224,35 @@ async fn start_harness_with(context_len: usize, supports_vision: bool) -> Result
         .map(|c| format!("\"{c}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    let config_toml = format!(
-        r#"
-default_model = "mock/model-x"
-default_agent = "task"
-default_approval_mode = "auto"
-
-[providers.mock]
-api_type = "completion"
-base_url = "http://{mock_addr}/v1"
-api_key = "test-key"
-
-[[providers.mock.models]]
-id = "model-x"
-name = "Mock Model"
-context_len = {context_len}
-capabilities = [{capabilities}]
-
-[providers.mock.models.reasoning_map]
-low = "think-low"
-ultra = "think-ultra"
-"#
+    // 配置分两文件落盘：settings.json 放常规偏好，models.json 放 providers
+    let settings_json = r#"{
+  "default_model": "mock/model-x",
+  "default_agent": "task",
+  "default_approval_mode": "auto"
+}"#;
+    let models_json = format!(
+        r#"{{
+  "providers": {{
+    "mock": {{
+      "api_type": "completion",
+      "base_url": "http://{mock_addr}/v1",
+      "api_key": "test-key",
+      "models": [
+        {{
+          "id": "model-x",
+          "name": "Mock Model",
+          "context_len": {context_len},
+          "capabilities": [{capabilities}],
+          "reasoning_map": {{ "low": "think-low", "ultra": "think-ultra" }}
+        }}
+      ]
+    }}
+  }}
+}}"#
     );
     let config_paths = oma_config::ConfigPaths::in_dir(&data_dir);
-    std::fs::write(data_dir.join("config.toml"), config_toml)?;
-    // 旧版 TOML 自动迁移为 settings.json + models.json
+    std::fs::write(&config_paths.settings, settings_json)?;
+    std::fs::write(&config_paths.models, models_json)?;
     let config = oma_config::OmaConfig::load_from_paths(&config_paths)?;
 
     let workspace = data_dir.join("ws");

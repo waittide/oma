@@ -324,7 +324,7 @@ impl Default for Theme {
 /// `name` 仅用于展示，可随用户改名而不破坏引用。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Palette {
-    /// 稳定 slug：主题引用键，也是 `<配置目录>/oma/themes/<id>.toml` 的文件名
+    /// 稳定 slug：主题引用键，也是 `<配置目录>/oma/themes/<id>.json` 的文件名
     pub id:   String,
     pub name: String,
     pub mode: PaletteMode,
