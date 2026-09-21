@@ -72,14 +72,10 @@ impl Default for ServerConfig {
 /// 内置调色板源码：与 `AgentLoader` 的内嵌模板同理，打包进二进制作为兜底，
 /// 用户目录只放自己的调色板，不需要任何初始化写入。
 ///
-/// 默认主题引用 `mocha` / `latte`：同一套 Catppuccin 语义色的深色与浅色版本，
-/// 令牌名与取值一一对应，切换明暗时不会有语义色断层。
-/// 其余几套只换强调色家族（`mist` / `rose` 为浅色，`pine` / `frappe` / `macchiato` 为深色），
-/// 中性灰阶与语义色沿用同一批。
+/// 内置四套均为 Catppuccin 族：默认主题引用 `mocha` / `latte`——同一套语义色的
+/// 深色与浅色版本，令牌名与取值一一对应，切换明暗时不会有语义色断层；
+/// 另外两套深色 `frappe` / `macchiato` 只换色阶深浅，令牌名沿用同一批。
 pub const BUILTIN_PALETTES: &[(&str, &str)] = &[
-    ("mist", include_str!("themes/mist.json")),
-    ("rose", include_str!("themes/rose.json")),
-    ("pine", include_str!("themes/pine.json")),
     ("latte", include_str!("themes/latte.json")),
     ("frappe", include_str!("themes/frappe.json")),
     ("macchiato", include_str!("themes/macchiato.json")),
@@ -1336,26 +1332,26 @@ mod tests {
     #[test]
     fn test_bundled_palettes_are_valid() {
         let palettes = PaletteLoader::builtin_all();
-        assert_eq!(palettes.len(), 7, "seven bundled palettes expected");
+        assert_eq!(palettes.len(), 4, "four bundled palettes expected");
         for p in &palettes {
             PaletteLoader::validate_palette(p).unwrap_or_else(|e| panic!("bundled palette {} invalid: {e}", p.id));
             assert_eq!(p.tokens().len(), PALETTE_TOKENS.len());
         }
-        // 默认主题走 `latte` / `mocha`（同一套 Catppuccin 语义色）；mist / rose
-        // 为另外两套浅色
+        // 内置只剩 Catppuccin 四套：浅色唯 `latte`，深色为 `frappe` / `macchiato` / `mocha`；
+        // 默认主题走 `mocha` / `latte`（同一套语义色的深色与浅色版本）
         let light: Vec<&str> = palettes
             .iter()
             .filter(|p| p.mode == PaletteMode::Light)
             .map(|p| p.id.as_str())
             .collect();
-        assert_eq!(light, vec!["mist", "rose", "latte"]);
+        assert_eq!(light, vec!["latte"]);
 
         let dark: Vec<&str> = palettes
             .iter()
             .filter(|p| p.mode == PaletteMode::Dark)
             .map(|p| p.id.as_str())
             .collect();
-        assert_eq!(dark, vec!["pine", "frappe", "macchiato", "mocha"]);
+        assert_eq!(dark, vec!["frappe", "macchiato", "mocha"]);
     }
 
     #[test]

@@ -74,7 +74,8 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
 ### クライアント
 
 - **Web（`web/`）**: Vue 3 + TypeScript、CSS は手書きで**外部 UI / CSS ライブラリはゼロ**。
-  組み込みパレット 7 種（ライト 3 / ダーク 4、既定はダーク `mocha` + ライト `latte`）、4 言語、
+  組み込み Catppuccin パレット 4 種（ライト `latte`、ダーク `frappe` / `macchiato` / `mocha`、
+  既定はダーク `mocha` + ライト `latte`）、4 言語、
   Markdown レンダリング、履歴ツリー、メッセージレール、添付と画像プレビュー。
 - **TUI（`crates/oma-tui`）**: Ratatui 製のターミナルクライアント。ストリーミング表示、CJK 対応の折り返し。
 - **CLI**: `oma daemon | web | tui | status`。ヘルプと解析エラーはすべて中国語化されています。

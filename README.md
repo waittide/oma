@@ -64,7 +64,8 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 ### 客户端
 
 - **Web（`web/`）**：Vue 3 + TypeScript，手写 CSS，**零外部 UI / CSS 库**；
-  内置 7 套调色板（浅色 3 套 / 深色 4 套，默认深色 `mocha` + 浅色 `latte`）、
+  内置 4 套 Catppuccin 调色板（浅色 `latte`，深色 `frappe` / `macchiato` / `mocha`，
+  默认深色 `mocha` + 浅色 `latte`）、
   四语言文案、Markdown 渲染、历史树、消息导航栏、附件与图片预览。
 - **TUI（`crates/oma-tui`）**：基于 Ratatui 的终端客户端，流式渲染、CJK 折行。
 - **CLI**：`oma daemon | web | tui | status`，帮助与解析错误全部中文化。

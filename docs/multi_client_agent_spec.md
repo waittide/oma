@@ -12,8 +12,8 @@
 >   `@@` 上下文 hunk 与 `*** End of File`，一次可改多个文件
 > - **默认预设**：删除内置 `Task`，默认预设改为 `Build`（拥有全部工具，模板不再声明
 >   工具清单）；无配置文件时写入 `default_agent: build`
-> - **调色板**：删除两套中性色调色板，默认改为深色 `mocha` + 浅色 `latte`
->   （内置 7 套：`mist` / `rose` / `pine` / `latte` / `frappé` / `macchiato` / `mocha`）
+> - **调色板**：中性色调色板全部删除，内置只剩 Catppuccin 四套（浅色 `latte`，
+>   深色 `frappe` / `macchiato` / `mocha`），默认深色 `mocha` + 浅色 `latte`
 > - **配置字段**：`settings.json` 的 `server` 段拆为 `host` + `port`（`oma daemon --addr` 仍可覆盖）
 > - **前端外壳**：删除底部状态栏与顶栏「导出为 markdown」「系统提示词」两个入口
 >   （`GET /api/system-prompt` 端点保留）；右侧面板的关闭按钮移到面板最右端，
@@ -918,8 +918,8 @@ pub struct Palette {
 }
 ```
 
-- **存储**：内置 7 套编译期以 `include_str!` 嵌入二进制（与系统提示词同理，无启动写入）：
-  浅色 `mist` / `rose` / `latte`，深色 `pine` / `frappé` / `macchiato` / `mocha`；
+- **存储**：内置 4 套编译期以 `include_str!` 嵌入二进制（与系统提示词同理，无启动写入）：
+  浅色 `latte`，深色 `frappe` / `macchiato` / `mocha`；
   默认主题为深色 `mocha` + 浅色 `latte`。用户调色板存于 `<配置目录>/oma/themes/<id>.json`，
   内置 id 保留给内置文件（同名用户文件被忽略，写入亦被拒绝）。
   `settings.json` 中的 `theme` 仅保存引用，其 id 必须在调色板集合内。
@@ -1023,7 +1023,7 @@ pub struct Palette {
 | skill frontmatter 容错 | 技能的 YAML 字段全部可选且忽略未知键：用户目录里存在只有 `description` 与自有键的文件时，名称即目录名，不应因严格解析而整条不可用。 |
 | 工具命名与 `edit` 形态 | 终端执行工具名为 `shell`（与 pi 对齐）。`edit` 放弃 `{path, edits[]}` 结构化替换，改为 apply_patch 形态——单个 `input` 字符串承载 `*** Begin Patch` 信封，可一次增 / 删 / 改 / 改名多个文件并整包原子落盘：多文件改动不再需要多次调用，也不会出现「改到一半失败、各文件状态不一致」。 |
 | 默认预设 | 内置 `Task` 删除，默认改为 `Build`：`Build` 不声明 `tools`（= 不限制，拥有全部工具），承担「装完即用」的默认角色；无配置文件时写入 `default_agent: build`，会话库列的 `active_agent` 默认值同步为 `build`。 |
-| 调色板默认 | 删除两套中性色调色板，内置 7 套全部为 Catppuccin 族（浅色 `mist` / `rose` / `latte`，深色 `pine` / `frappé` / `macchiato` / `mocha`），默认深色 `mocha` + 浅色 `latte`。 |
+| 调色板默认 | 中性色调色板全部删除，内置 4 套全部为 Catppuccin 族（浅色 `latte`，深色 `frappe` / `macchiato` / `mocha`），默认深色 `mocha` + 浅色 `latte`。 |
 | `server` 配置字段 | 监听地址由单个字符串字段拆成 `host` + `port`：设置面板本就分两个字段编辑，拆开后前后端不必再做「host:port」字符串的拼装与解析；`oma daemon --addr` 仍可覆盖。 |
 | 前端外壳 | 删除底部状态栏（模型 / 推理 / 上下文占用 / 队列 / 工作区路径）与顶栏「导出为 markdown」「系统提示词」两个入口：这几处信息与入口在侧栏、设置面板、组合器中已各有归属，重复展示只增加维护面；`GET /api/system-prompt` 端点保留，供外部客户端取用。右侧面板关闭按钮移到面板标题栏最右端并与顶栏展开 / 折叠同图标，空态主按钮固定为「新建会话」。 |
 | 设置面板结构 | 提供商页：提供商配置为单个带底色容器（标题在其内），模型配置为容器外分区标题，其下每个模型各自一个容器；预设页的工具授权用多选下拉（标签可逐个移除），选项来自 `GET /api/tools`。 |

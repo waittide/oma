@@ -75,7 +75,8 @@ ships Traditional Chinese, English and Japanese.
 ### Clients
 
 - **Web (`web/`)**: Vue 3 + TypeScript with hand-written CSS and **zero external UI or CSS libraries**;
-  seven built-in palettes (three light, four dark, defaulting to dark `mocha` / light `latte`),
+  four built-in Catppuccin palettes (light `latte`; dark `frappe` / `macchiato` / `mocha`,
+  defaulting to dark `mocha` / light `latte`),
   four locales, Markdown rendering, a history tree, a message rail, attachments and image previews.
 - **TUI (`crates/oma-tui`)**: a Ratatui terminal client with streaming output and CJK-aware line wrapping.
 - **CLI**: `oma daemon | web | tui | status`, with fully localized (Chinese) help and parse errors.
