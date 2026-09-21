@@ -76,14 +76,8 @@
     "stopHint": "中止当前轮次",
     "sendHint": "发送",
     "resizeHint": "拖动调整输入框高度",
-    "noModel": "未选择模型",
     "lastUsage": "上轮 {input}↑ / {output}↓ tokens",
-    "exportSession": "导出为 Markdown",
-    "exported": "已导出当前会话",
-    "systemPrompt": "系统提示词",
-    "systemPromptLoading": "正在读取…",
     "sessionUsage": "本会话累计 token（输入 · 输出 · 缓存读 · 缓存写）",
-    "close": "关闭",
     "cancelRequested": "已请求中止当前轮次",
     "loadMessagesFailed": "加载消息失败：{message}",
     "turnError": "本轮执行出错",
@@ -96,7 +90,7 @@
     "copyHint": "复制该消息内容",
     "copied": "已复制到剪贴板",
     "copyFailed": "复制失败，请手动选择复制",
-    "newSession": "新建工作区",
+    "newSession": "新建会话",
     "connected": "已连接",
     "disconnected": "未连接",
     "attach": "添加附件",
@@ -351,8 +345,5 @@
     "gitModified": "修改",
     "gitClean": "工作区没有未提交的变更",
     "gitNoDiff": "没有可显示的差异"
-  },
-  "status": {
-    "queued": "{count} 条排队"
   }
 }

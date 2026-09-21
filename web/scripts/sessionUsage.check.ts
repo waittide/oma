@@ -1,12 +1,12 @@
 /**
- * 会话用量合计与 Markdown 导出的运行验证。
+ * 会话用量合计的运行验证。
  *
  * 与 liveSegments.check.ts 同理：前端没有测试框架，用 Node 原生类型剥离直接跑，
  * 失败即非零退出码：
- *   node --experimental-strip-types scripts/sessionExport.check.ts
+ *   node --experimental-strip-types scripts/sessionUsage.check.ts
  */
 import type { ChatMessage } from '../src/types.ts';
-import { sessionToMarkdown, sessionUsage, usageLine } from '../src/lib/sessionExport.ts';
+import { sessionUsage, usageLine } from '../src/lib/sessionUsage.ts';
 
 let failed = 0;
 let passed = 0;
@@ -49,7 +49,7 @@ eq(
   'usage counted once per turn',
   sessionUsage([
     msg('u1', 'user', [text('hi')]),
-    msg('a1', 'assistant', [toolUse('c1', 'bash')], {
+    msg('a1', 'assistant', [toolUse('c1', 'shell')], {
       usage: { input_tokens: 100, output_tokens: 10 },
     }),
     msg('r1', 'user', [toolResult('c1')]),
@@ -68,7 +68,7 @@ eq(
   'tool result does not split the turn',
   sessionUsage([
     msg('u1', 'user', [text('hi')]),
-    msg('a1', 'assistant', [toolUse('c1', 'bash')], {
+    msg('a1', 'assistant', [toolUse('c1', 'shell')], {
       usage: { input_tokens: 10, output_tokens: 1 },
     }),
     msg('r1', 'user', [toolResult('c1')]),
@@ -85,26 +85,6 @@ eq(
 );
 eq('usage line with zeros', usageLine({ input_tokens: 0, output_tokens: 7 }), '7 out');
 eq('usage line with null', usageLine(null), '');
-
-// --- 5. 导出：工具回执不写成「用户说的话」，工具调用单独成段 ---
-const md = sessionToMarkdown(
-  [
-    msg('u1', 'user', [text('帮我看下仓库')]),
-    msg('a1', 'assistant', [toolUse('c1', 'grep')], {
-      model: 'demo/big-model',
-      usage: { input_tokens: 100, output_tokens: 20 },
-    }),
-    msg('r1', 'user', [toolResult('c1')]),
-  ],
-  { title: '验收会话', workspace: '/tmp/ws' },
-);
-eq('markdown has title', md.startsWith('# 验收会话'), true);
-eq('markdown mentions workspace', md.includes('> Workspace: `/tmp/ws`'), true);
-eq('markdown keeps user text once', md.split('帮我看下仓库').length - 1, 1);
-eq('markdown has tool section', md.includes('### Tool: grep'), true);
-eq('markdown has model line', md.includes('> Model: demo/big-model'), true);
-eq('markdown has usage line', md.includes('> 100 in · 20 out'), true);
-eq('markdown has no tool result as user text', md.includes('TOOLRESULT-MARKER'), false);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

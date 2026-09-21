@@ -20,7 +20,6 @@ import {
 } from 'vue-icons-plus/lu';
 import { api } from '../api';
 import { ACCENTS, NEUTRAL_TOKENS, PALETTE_TOKENS, config, darkPalettes, lightPalettes, loadConfig, palettes, refreshPalettes, saveConfig, saveTheme, theme, type Palette } from '../stores/theme';
-import { agents } from '../stores/chat';
 import { baseUrl, normalizeBaseUrl, setConnection, token } from '../stores/connection';
 import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
 import { clientConfig, clientConfigReady, saveClientConfig } from '../stores/clientConfig';
@@ -29,7 +28,6 @@ import { activeSession, refresh as refreshSessions } from '../stores/sessions';
 import { MODEL_CAPABILITIES } from '../types';
 import type {
   AgentFile,
-  AgentSummary,
   ToolInfo,
   McpServerConfig,
   ModelCapability,
@@ -276,7 +274,7 @@ const modeOptions = computed<{ value: Theme['mode']; label: string }[]>(() => [
 
 // 浅色/深色各自引用的调色板 id。
 // 两个下拉框只在同一明暗组内选择，从根上避免「浅色引用了深色调色板」。
-const themeSel = reactive({ light: 'pi-light', dark: 'pi-dark' });
+const themeSel = reactive({ light: 'latte', dark: 'mocha' });
 
 const lightPaletteOptions = computed(() =>
   lightPalettes.value.map((p) => ({ value: p.id, label: p.name })),
@@ -320,7 +318,7 @@ const paletteEdit = reactive<{
   id: '',
   name: '',
   mode: 'dark',
-  base: 'pi-dark',
+  base: 'mocha',
   values: {},
 });
 
@@ -352,7 +350,7 @@ function applyBase(id: string) {
 function newPaletteMode(next: PaletteMode) {
   paletteEdit.mode = next;
   const group = next === 'light' ? lightPalettes.value : darkPalettes.value;
-  applyBase(group[0]?.id ?? (next === 'light' ? 'pi-light' : 'pi-dark'));
+  applyBase(group[0]?.id ?? (next === 'light' ? 'latte' : 'mocha'));
 }
 
 function newPalette() {
@@ -362,7 +360,7 @@ function newPalette() {
   paletteEdit.name = '';
   paletteEdit.mode = mode.value === 'light' ? 'light' : 'dark';
   const group = paletteEdit.mode === 'light' ? lightPalettes.value : darkPalettes.value;
-  applyBase(group[0]?.id ?? (paletteEdit.mode === 'light' ? 'pi-light' : 'pi-dark'));
+  applyBase(group[0]?.id ?? (paletteEdit.mode === 'light' ? 'latte' : 'mocha'));
 }
 
 function editPalette(p: Palette) {
@@ -431,8 +429,8 @@ async function removePalette(id: string) {
   // 被删的调色板若正被主题引用，必须立即把新选择写回服务端：
   // 否则 settings.json 里会留有悬空 id，下次启动/刷新时主题直接失效。
   const referenced = theme.value.light_palette === id || theme.value.dark_palette === id;
-  if (themeSel.light === id) themeSel.light = lightPalettes.value[0]?.id ?? 'pi-light';
-  if (themeSel.dark === id) themeSel.dark = darkPalettes.value[0]?.id ?? 'pi-dark';
+  if (themeSel.light === id) themeSel.light = lightPalettes.value[0]?.id ?? 'latte';
+  if (themeSel.dark === id) themeSel.dark = darkPalettes.value[0]?.id ?? 'mocha';
 
   try {
     if (referenced) await applyTheme();
@@ -465,8 +463,8 @@ watch(
       defaults.reasoning = config.value.default_reasoning_level || DEFAULT_REASONING_LEVEL;
     }
     mode.value = theme.value.mode;
-    themeSel.light = theme.value.light_palette || 'pi-light';
-    themeSel.dark = theme.value.dark_palette || 'pi-dark';
+    themeSel.light = theme.value.light_palette || 'latte';
+    themeSel.dark = theme.value.dark_palette || 'mocha';
     accent.value = theme.value.accent;
     if (!version.value) {
       version.value = await api.status().then((s) => s.version).catch(() => '');
@@ -507,14 +505,6 @@ const providerGroups = computed<Record<string, ModelInfo[]>>(() => {
 /** 模型选择器的分组选项与当前展示名。 */
 const modelGroups = computed(() => toModelSelectGroups(providerGroups.value));
 const modelLabel = computed(() => modelSelectorLabel(providerGroups.value, defaults.model));
-
-const BUILTIN_AGENTS = ['task', 'plan', 'explore', 'review', 'build'];
-const agentOptions = computed<{ value: string; label: string }[]>(() => {
-  const list: AgentSummary[] = agents.value.length
-    ? agents.value
-    : BUILTIN_AGENTS.map((id) => ({ id, name: id, description: '' }));
-  return list.map((a) => ({ value: a.id, label: a.name }));
-});
 
 function scopeLabel(scope: string): string {
   switch (scope) {
@@ -607,18 +597,34 @@ async function loadTools() {
   }
 }
 
+/**
+ * 取预设清单（内置 + 全局 + 当前工作区的项目层）并写入列表；失败时提示。
+ *
+ * 无工作区时后端只回内置 + 全局两层——默认 Agent 在没开会话时也要能选到全局预设
+ * （`~/.config/oma/agents`），故不能退化成会话级的 agent 列表。
+ */
+async function refreshPresets() {
+  try {
+    presets.value = await api.presets(skillWorkspace.value || undefined);
+  } catch (e) {
+    toast.error(t('saveFailed', { message: (e as Error).message }));
+  }
+}
+
 async function loadPresets() {
   presetsLoading.value = true;
   try {
     if (availableTools.value.length === 0) await loadTools();
-    // 始终带上工作区：项目层才能一并取回，各层在列表中按标签区分
-    presets.value = await api.presets(skillWorkspace.value || undefined);
-  } catch (e) {
-    toast.error(t('saveFailed', { message: (e as Error).message }));
+    await refreshPresets();
   } finally {
     presetsLoading.value = false;
   }
 }
+
+/** 默认 Agent 的候选项：预设 id + 名称（内置的 `build` 与全局自定义预设同列一栏） */
+const agentOptions = computed<{ value: string; label: string }[]>(() =>
+  presets.value.map((a) => ({ value: a.id, label: a.name })),
+);
 
 const presetEdit = reactive({
   open: false,
@@ -795,6 +801,7 @@ watch(
     if (!o) return;
     // 进入连接页先探一次：用户开箱即见当前是否连得上，不用先点「测试」
     if (s === 'connection') void testConnection();
+    if (s === 'defaults') void refreshPresets();
     if (s === 'presets') void loadPresets();
     if (s === 'skills') void loadSkills();
   },

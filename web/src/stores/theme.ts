@@ -21,8 +21,8 @@ export type { Accent, Palette, PaletteToken };
 
 const DEFAULT_THEME: Theme = {
   mode: 'dark',
-  dark_palette: 'pi-dark',
-  light_palette: 'pi-light',
+  dark_palette: 'mocha',
+  light_palette: 'latte',
   accent: 'blue',
 };
 

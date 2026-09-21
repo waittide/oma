@@ -9,7 +9,6 @@ import type {
   ServerStatus,
   SessionRecord,
   SkillFile,
-  SystemPromptResp,
   ToolInfo,
   UploadAttachmentResp,
 } from './types';
@@ -116,14 +115,6 @@ export const api = {
     request<{ diff: string }>(
       `/api/git/diff?workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}`,
     ),
-
-  /** 当前工作区 + 模型（+ 预设）下真正发给厂商的系统提示词（System 面板） */
-  systemPrompt: (workspace: string, model: string, agent?: string) => {
-    const params = new URLSearchParams({ workspace });
-    if (model) params.set('model', model);
-    if (agent) params.set('agent', agent);
-    return request<SystemPromptResp>(`/api/system-prompt?${params.toString()}`);
-  },
 
   presets: (workspace?: string) =>
     request<AgentFile[]>(

@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
-    "test": "node --experimental-strip-types scripts/liveSegments.check.ts && node --experimental-strip-types scripts/sessionExport.check.ts",
+    "test": "node --experimental-strip-types scripts/liveSegments.check.ts && node --experimental-strip-types scripts/sessionUsage.check.ts",
     "preview": "vite preview"
   },
   "dependencies": {

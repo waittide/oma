@@ -76,14 +76,8 @@
     "stopHint": "Cancel current turn",
     "sendHint": "Send",
     "resizeHint": "Drag to resize the input box",
-    "noModel": "No model selected",
     "lastUsage": "last turn {input}↑ / {output}↓ tokens",
-    "exportSession": "Export as Markdown",
-    "exported": "Session exported",
-    "systemPrompt": "System prompt",
-    "systemPromptLoading": "Loading…",
     "sessionUsage": "Session token totals (in · out · cache read · cache write)",
-    "close": "Close",
     "cancelRequested": "Cancellation requested",
     "loadMessagesFailed": "Failed to load messages: {message}",
     "turnError": "This turn failed with an error",
@@ -96,7 +90,7 @@
     "copyHint": "Copy this message",
     "copied": "Copied to clipboard",
     "copyFailed": "Copy failed, please select and copy manually",
-    "newSession": "New workspace",
+    "newSession": "New session",
     "connected": "Connected",
     "disconnected": "Disconnected",
     "attach": "Add attachment",
@@ -351,8 +345,5 @@
     "gitModified": "modified",
     "gitClean": "No uncommitted changes",
     "gitNoDiff": "No diff to show"
-  },
-  "status": {
-    "queued": "{count} queued"
   }
 }

@@ -5,7 +5,6 @@ import {
   LuBrain,
   LuChevronRight,
   LuFileDiff,
-  LuFileText,
   LuGlobe,
   LuSearch,
   LuTerminalSquare,
@@ -165,9 +164,38 @@ function toolIcon(name?: string) {
   }
 }
 
+/**
+ * 补丁里的文件头（`*** Update File: <path>` / `*** Add File:` / `*** Delete File:`）。
+ *
+ * 带补丁文本的工具（oh-my-pi 的 apply_patch 形式，`edit` 即其一）入参就是一段补丁原文，
+ * 文件头里的路径正是被改文件，可直接当副标题用。
+ */
+const PATCH_FILES_RE = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm;
+
+/** 工具入参的展示文本：补丁原文原样展示，其余按 JSON 美化。 */
+function toolCode(input: unknown): string {
+  if (input && typeof input === 'object') {
+    const patch = (input as Record<string, unknown>).input;
+    // 补丁里全是换行，序列化成 JSON 只会得到一坨 `\n` 转义符
+    if (typeof patch === 'string') return patch;
+  }
+  return prettyJson(input);
+}
+
 function toolSubtitle(it: Item): string {
   const input = (it.toolInput ?? {}) as Record<string, unknown>;
-  const raw = input.command ?? input.file_path ?? input.path ?? input.pattern ?? input.query ?? input.prompt ?? '';
+  const patch = typeof input.input === 'string' ? input.input : '';
+  const files = [...patch.matchAll(PATCH_FILES_RE)].map((m) => m[1] ?? '');
+  const raw =
+    input.command ??
+    input.file_path ??
+    input.path ??
+    // 一个 envelope 可落在多个文件上：只报首个路径会误导，后面跟上其余文件数
+    (files.length > 1 ? `${files[0]} +${files.length - 1}` : files[0]) ??
+    input.pattern ??
+    input.query ??
+    input.prompt ??
+    '';
   const text = String(raw).replace(/\s+/g, ' ').trim();
   return text.length > 64 ? `${text.slice(0, 64)}…` : text;
 }
@@ -254,7 +282,7 @@ onMounted(() => void nextTick(syncCodeCopy));
           <LuChevronRight :size="13" class="caret" />
         </UiButton>
         <div v-show="isOpen(it)" class="fold-body-wrap">
-          <pre class="fold-body">{{ prettyJson(it.toolInput) }}</pre>
+          <pre class="fold-body">{{ toolCode(it.toolInput) }}</pre>
           <pre v-if="it.resultDone" class="fold-body result" :class="{ err: it.resultError }">{{ it.output }}</pre>
         </div>
       </div>

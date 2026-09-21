@@ -76,14 +76,8 @@
     "stopHint": "中止當前輪次",
     "sendHint": "傳送",
     "resizeHint": "拖動調整輸入框高度",
-    "noModel": "未選擇模型",
     "lastUsage": "上輪 {input}↑ / {output}↓ tokens",
-    "exportSession": "匯出為 Markdown",
-    "exported": "已匯出目前工作階段",
-    "systemPrompt": "系統提示詞",
-    "systemPromptLoading": "正在讀取…",
     "sessionUsage": "本工作階段累計 token（輸入 · 輸出 · 快取讀 · 快取寫）",
-    "close": "關閉",
     "cancelRequested": "已請求中止當前輪次",
     "loadMessagesFailed": "載入訊息失敗：{message}",
     "turnError": "本輪執行錯誤",
@@ -96,7 +90,7 @@
     "copyHint": "複製該訊息內容",
     "copied": "已複製到剪貼簿",
     "copyFailed": "複製失敗，請手動選取複製",
-    "newSession": "新建工作區",
+    "newSession": "新增會話",
     "connected": "已連接",
     "disconnected": "未連接",
     "attach": "新增附件",
@@ -351,8 +345,5 @@
     "gitModified": "修改",
     "gitClean": "工作區沒有未提交的變更",
     "gitNoDiff": "沒有可顯示的差異"
-  },
-  "status": {
-    "queued": "{count} 筆排隊"
   }
 }

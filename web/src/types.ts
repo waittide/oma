@@ -99,15 +99,6 @@ export interface GitStatusResp {
   files: GitFileChange[];
 }
 
-/** 系统提示词接口返回体（`GET /api/system-prompt`） */
-export interface SystemPromptResp {
-  workspace: string;
-  /** 环境块里生效的模型（未显式指定时为服务端默认模型） */
-  model: string;
-  /** 已拼好环境块与技能目录的完整提示词 */
-  prompt: string;
-}
-
 export interface TokenUsage {
   input_tokens: number;
   output_tokens: number;
@@ -412,7 +403,7 @@ export interface OmaConfig {
   default_reasoning_level?: string;
   theme: Theme;
   /** `token` 由 GET 原样下发、又随整份配置回传，缺字段会把配置里已设的 token 清空 */
-  server: { listen_addr: string; token: string };
+  server: { host: string; port: number; token: string };
   providers: Record<string, ProviderConfig>;
   mcp_servers: Record<string, McpServerConfig>;
 }

@@ -7,7 +7,6 @@ import ChatView from './components/ChatView.vue';
 import SettingsModal from './components/SettingsModal.vue';
 import TopToolbar from './components/TopToolbar.vue';
 import RightPanel from './components/RightPanel.vue';
-import StatusBar from './components/StatusBar.vue';
 import PanelResizer from './components/PanelResizer.vue';
 import { loadConfig } from './stores/theme';
 import { initClientConfig } from './stores/clientConfig';
@@ -75,7 +74,6 @@ async function onReconnect() {
     <main class="main">
       <TopToolbar />
       <ChatView :online="online" @need-settings="openSettings()" />
-      <StatusBar />
     </main>
 
     <template v-if="layout.rightOpen.value">

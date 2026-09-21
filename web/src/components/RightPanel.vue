@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { UiIconButton, UiTooltip } from '@waittide/ui';
-import { LuFileText, LuGitCompare, LuRefreshCw, LuTerminal, LuX } from 'vue-icons-plus/lu';
+import { LuFileText, LuGitCompare, LuPanelRight, LuRefreshCw, LuTerminal } from 'vue-icons-plus/lu';
 import { useTranslations } from '../composables/i18n';
 import { activeSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
@@ -81,7 +81,7 @@ watch(workspace, () => {
       </UiTooltip>
       <UiTooltip :content="t('close')" align="end" placement="bottom">
         <UiIconButton class="tab-close" size="sm" :label="t('close')" @click="layout.toggleRight()">
-          <LuX :size="13" />
+          <LuPanelRight :size="13" />
         </UiIconButton>
       </UiTooltip>
     </div>
@@ -154,18 +154,25 @@ watch(workspace, () => {
   background: var(--surface-active);
   color: var(--ink);
 }
-.tab-close {
+/*
+ * 动作按钮靠右：`.tabs` 的 flex 项是 Tooltip 的包裹元素而不是按钮本身，
+ * auto 外边距必须加在包裹元素上——加在 `.tab-action` 上不参与父级布局，
+ * 两个按钮会紧跟在标签后面、右侧留出一大片空白。
+ */
+.tabs :deep(.ui-tooltip-anchor) {
   margin-left: auto;
+}
+/* 第二个动作紧随第一个，不重复撑开 */
+.tabs :deep(.ui-tooltip-anchor + .ui-tooltip-anchor) {
+  margin-left: 0;
+}
+.tab-close {
   width: 26px !important;
   height: 26px !important;
 }
 .tab-action {
-  margin-left: auto;
   width: 26px !important;
   height: 26px !important;
-}
-.tab-action + .tab-close {
-  margin-left: 0;
 }
 .body {
   flex: 1;

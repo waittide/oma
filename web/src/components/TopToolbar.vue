@@ -1,18 +1,16 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { toast, UiIconButton, UiTooltip } from '@waittide/ui';
-import { LuDownload, LuListTree, LuPanelLeft, LuPanelRight, LuPlug, LuTerminal } from 'vue-icons-plus/lu';
+import { computed } from 'vue';
+import { UiIconButton, UiTooltip } from '@waittide/ui';
+import { LuListTree, LuPanelLeft, LuPanelRight, LuPlug } from 'vue-icons-plus/lu';
 import { useTranslations } from '../composables/i18n';
 import { activeSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
 import * as chat from '../stores/chat';
-import SystemPanel from './SystemPanel.vue';
-import { downloadText, sessionToMarkdown, sessionUsage, usageLine } from '../lib/sessionExport';
+import { sessionUsage, usageLine } from '../lib/sessionUsage';
 
 const { t } = useTranslations('chat');
 
 const wsPath = computed(() => activeSession.value?.workspace ?? '');
-const systemOpen = ref(false);
 
 /**
  * 整会话 token 合计（`in · out · cache R · cache W`）。
@@ -20,28 +18,12 @@ const systemOpen = ref(false);
  * 与 pi-web 顶栏的 token/成本统计对齐；oma 的模型配置没有价格字段，故不含成本。
  */
 const usage = computed(() => usageLine(sessionUsage(chat.messages.value)));
-const hasMessages = computed(() => chat.messages.value.length > 0);
 
 /** MCP 概览：已发现的服务端与它们提供的工具总数（悬停看逐个明细） */
 const mcpToolTotal = computed(() => chat.mcpServers.value.reduce((sum, s) => sum + s.tool_count, 0));
 const mcpTip = computed(() =>
   chat.mcpServers.value.map((s) => `${s.name} (${s.tool_count})`).join('\n'),
 );
-
-/** 导出当前会话为 Markdown（纯前端，不落新接口）。 */
-function exportSession() {
-  const session = activeSession.value;
-  if (!session) return;
-  const title = session.title || session.session_id;
-  const markdown = sessionToMarkdown(chat.messages.value, {
-    title,
-    workspace: session.workspace ?? '',
-  });
-  // 文件名去掉路径分隔符等不安全字符，避免下载被浏览器拒绝
-  const safe = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || 'session';
-  downloadText(`${safe}.md`, markdown);
-  toast.success(t('exported'));
-}
 </script>
 
 <template>
@@ -73,30 +55,6 @@ function exportSession() {
         </span>
       </UiTooltip>
 
-      <UiTooltip :content="t('exportSession')" align="end" placement="bottom">
-        <UiIconButton
-          class="icon-ghost"
-          size="sm"
-          :label="t('exportSession')"
-          :disabled="!hasMessages"
-          @click="exportSession"
-        >
-          <LuDownload :size="14" />
-        </UiIconButton>
-      </UiTooltip>
-
-      <UiTooltip :content="t('systemPrompt')" align="end" placement="bottom">
-        <UiIconButton
-          class="icon-ghost"
-          size="sm"
-          :label="t('systemPrompt')"
-          :disabled="!activeSession"
-          @click="systemOpen = true"
-        >
-          <LuTerminal :size="14" />
-        </UiIconButton>
-      </UiTooltip>
-
       <UiTooltip :content="chat.connected.value ? t('connected') : t('disconnected')" align="end" placement="bottom">
         <span class="dot" :class="chat.connected.value ? 'ok' : 'off'" />
       </UiTooltip>
@@ -123,8 +81,6 @@ function exportSession() {
         </UiIconButton>
       </UiTooltip>
     </div>
-
-    <SystemPanel v-model:open="systemOpen" />
   </header>
 </template>
 
