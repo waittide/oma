@@ -1795,18 +1795,26 @@ function pickLocale(v: Locale) {
                       :password-toggle="false"
                       :placeholder="d.keyMasked ? '*'.repeat(d.keyLen) : ''"
                       @update:model-value="(v) => setApiKey(d, v)"
-                    />
-                    <UiTooltip :content="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
-                      <UiIconButton
-                        class="m-del"
-                        size="sm"
-                        :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
-                        @click="toggleKeyVisibility(d)"
-                      >
-                        <LuEyeOff v-if="keyRevealed[d.uid]" :size="14" />
-                        <LuEye v-else :size="14" />
-                      </UiIconButton>
-                    </UiTooltip>
+                    >
+                      <!--
+                        显隐按钮走 `#suffix` 插槽：渲染在输入框内部的右侧 affix 上，
+                        与库内置的清空/密码按钮同一个位置口径（而不是像删除按钮那样
+                        贴在框外，把输入框右边缘往左挤）。
+                      -->
+                      <template #suffix>
+                        <UiTooltip :content="keyRevealed[d.uid] ? t('hideKey') : t('showKey')" align="end">
+                          <UiIconButton
+                            class="key-toggle"
+                            size="sm"
+                            :label="keyRevealed[d.uid] ? t('hideKey') : t('showKey')"
+                            @click="toggleKeyVisibility(d)"
+                          >
+                            <LuEyeOff v-if="keyRevealed[d.uid]" :size="13" />
+                            <LuEye v-else :size="13" />
+                          </UiIconButton>
+                        </UiTooltip>
+                      </template>
+                    </UiInput>
                   </div>
 
                   <!-- 请求头/请求体覆写：默认收起，展开后内容与标签顶格对齐 -->
@@ -1887,6 +1895,7 @@ function pickLocale(v: Locale) {
                     <UiMultiSelect
                       :model-value="m.capabilities"
                       :options="capabilityOptions"
+                      :max-tag-count="4"
                       @update:model-value="(v) => (m.capabilities = v.map(String) as typeof m.capabilities)"
                     />
                   </div>
@@ -2930,9 +2939,26 @@ function pickLocale(v: Locale) {
 /*
  * 组件库的输入/选择控件外层统一是 `.ui-field`（UiInput / UiSelect / UiMultiSelect
  * 都靠它包裹），让它撑满网格的右侧列，控件右边缘才会与卡片内容右边界对齐。
+ *
+ * 这里必须用 `:deep()` 而不能写子选择器 `.cfg-ctl > .ui-field`：UiInput 只有一个
+ * 根节点，父组件的 scope id 会顺延到它的 `.ui-field` 上；UiSelect / UiMultiSelect
+ * 的模板在 `.ui-field` 旁边还有 Teleport 浮层（多根节点），scope id 不顺延，
+ * 子选择器只匹配得到输入框，两个下拉框便退回内容宽度（右边缘比卡片短一截）。
  */
-.cfg-ctl > .ui-field {
+.cfg-ctl > :deep(.ui-field) {
   flex: 1;
+  min-width: 0;
+}
+/*
+ * 多选控件的 chips 默认会换行，选中项一多触发器就比同排输入框高一倍。
+ * 强制单行展示：标签允许收缩（`min-width: 0` 后 UiTag 的文本才走省略号），
+ * 高度恒为 `--control-h-md`，与相邻输入框、下拉框一致。
+ * 触发器在 `.ui-field` 里，所以这里用后代选择器而不是 `.cfg-ctl > …`。
+ */
+.cfg-ctl :deep(.ui-multi-trigger) {
+  flex-wrap: nowrap;
+}
+.cfg-ctl :deep(.ui-multi-trigger__tag) {
   min-width: 0;
 }
 /* 需纵向排布的配置项（如推理映射表） */
@@ -3044,6 +3070,28 @@ function pickLocale(v: Locale) {
 /* 标识符类输入（提供商名、模型 id）用等宽字体 */
 .mono :deep(input) {
   font-family: var(--font-mono);
+}
+/* 密钥输入框内的显隐按钮：与库内置后缀图标同尺寸口径（20px 透明方钮） */
+.key-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px !important;
+  height: 20px !important;
+  min-width: 0 !important;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+.key-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--ink);
 }
 .m-del {
   display: inline-flex;

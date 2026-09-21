@@ -197,7 +197,7 @@
     "hideKey": "隐藏密钥",
     "fApiType": "API 类型",
     "fBaseUrl": "服务地址",
-    "fApiKey": "API 密钥",
+    "fApiKey": "密钥",
     "navSectionPersonal": "个性化",
     "navConnection": "连接",
     "connBaseUrl": "访问地址",
