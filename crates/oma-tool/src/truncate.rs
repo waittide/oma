@@ -155,7 +155,7 @@ pub fn truncate_head_with(content: &str, max_lines: usize, max_bytes: usize) -> 
     }
 }
 
-/// 用默认上限从**尾部**截断（保留结尾），适合 bash 这类「错误在末尾」的输出。
+/// 用默认上限从**尾部**截断（保留结尾），适合 shell 这类「错误在末尾」的输出。
 pub fn truncate_tail(content: &str) -> Truncation {
     truncate_tail_with(content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES)
 }

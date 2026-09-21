@@ -10,6 +10,7 @@ use oma_contract::ToolImage;
 pub use oma_contract::ToolOutput;
 use serde::Deserialize;
 
+pub mod apply_patch;
 pub mod binaries;
 pub mod find;
 pub mod grep;
@@ -17,10 +18,12 @@ pub mod image;
 pub mod ls;
 pub mod truncate;
 
+use std::path::Component;
+
 /// 最大工具输出字符数限制。
 ///
 /// 现在只剩 `edit` 的 diff 在用（作为超大 diff 的兜底）；
-/// `read` / `bash` 与 `ls` / `find` / `grep` 已统一走 [`truncate`] 的行数 + 字节双上限，与 pi 一致。
+/// `read` / `shell` 与 `ls` / `find` / `grep` 已统一走 [`truncate`] 的行数 + 字节双上限，与 pi 一致。
 pub const RESULT_MAX_CHARS: usize = 24_000;
 
 /// 工具输出截断保护函数（字符数口径）。
@@ -41,6 +44,46 @@ pub fn resolve_path(workspace: &Path, raw_path: &str) -> PathBuf {
     } else {
         workspace.join(p)
     }
+}
+
+/// `edit`（apply_patch）专用的路径解析：只接受工作区内的相对路径。
+///
+/// 段落头里的路径是模型写的，绝对路径与 `..` 逃逸一律拒绝——写文件这件事
+/// 不该由模型指哪打哪；`.` / 重复分隔符按字典序归一，与
+/// [`resolve_path`] 对正常相对路径的结果一致。
+fn resolve_patch_path(workspace: &Path, raw_path: &str) -> Result<PathBuf, String> {
+    let path = Path::new(raw_path);
+    if raw_path.is_empty() {
+        return Err("patch path must not be empty".to_string());
+    }
+    if path.is_absolute() {
+        return Err(format!(
+            "patch paths must be relative to the workspace, got {raw_path:?}"
+        ));
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {},
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(format!(
+                        "patch path {raw_path:?} escapes the workspace; patches must stay inside it"
+                    ));
+                }
+            },
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "patch paths must be relative to the workspace, got {raw_path:?}"
+                ));
+            },
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        return Err(format!("patch path {raw_path:?} does not name a file"));
+    }
+    Ok(workspace.join(normalized))
 }
 
 /// 非图片二进制文件的 MIME 判定（仅靠扩展名与文件头特征）。
@@ -276,10 +319,10 @@ impl Tool for ReadTool {
         let start_display = start_idx + 1;
 
         let output = if truncation.first_line_exceeds_limit {
-            // 单行就超过字节上限：直接给出可操作的 bash 回退
+            // 单行就超过字节上限：直接给出可操作的 shell 回退
             let first_line_size = lines.get(start_idx).map(|l| l.len()).unwrap_or(0);
             format!(
-                "[Line {start_display} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
+                "[Line {start_display} is {}, exceeds {} limit. Use shell: sed -n '{}p' {} | head -c {}]",
                 truncate::format_size(first_line_size),
                 truncate::format_size(truncate::DEFAULT_MAX_BYTES),
                 start_display,
@@ -418,20 +461,178 @@ impl Tool for WriteTool {
 }
 
 // ==========================================
-// 3. Edit Tool (Multi-Hunk Atomic Replacement + Diff)
+// 3. Edit Tool (apply_patch Envelope)
 // ==========================================
+/// `edit`：一次 `*** Begin Patch` envelope，落在工作区内的若干文件上。
+///
+/// 语义与文案见 [`apply_patch`] 模块；这里只负责 IO 与安全：
+/// 先把 envelope 里每个文件的新内容全部算出来，再统一落盘，
+/// 任何一段失败都不会留下「改了一半」的工作区。
 pub struct EditTool;
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct EditHunk {
-    pub old_text: String,
-    pub new_text: String,
-}
 
 #[derive(Debug, Deserialize)]
 struct EditInput {
-    path:  String,
-    edits: Vec<EditHunk>,
+    /// `*** Begin Patch` … `*** End Patch` 全文。
+    input: String,
+}
+
+/// 规划好的一次落盘动作。
+struct PlannedFile {
+    /// 段落头里的路径（摘要、diff 头、报错都用它）
+    display: String,
+    /// 实际写入/删除的绝对路径
+    absolute: PathBuf,
+    /// 改名前的内容（新建或原本不存在时为空串）
+    before: String,
+    /// 改后的内容；`None` 表示删除该文件
+    after: Option<String>,
+    /// 改名时要移除的源文件
+    move_from: Option<PathBuf>,
+    /// 摘要里用的操作标记
+    op: apply_patch::FileOp,
+}
+
+/// 按路径分组：同一路径的多个段落按出现顺序依次作用，其余保持 envelope 顺序。
+fn group_entries(entries: Vec<apply_patch::PatchEntry>) -> Vec<Vec<apply_patch::PatchEntry>> {
+    let mut groups: Vec<Vec<apply_patch::PatchEntry>> = Vec::new();
+    for entry in entries {
+        match groups.iter_mut().find(|group| group[0].path == entry.path) {
+            Some(group) => group.push(entry),
+            None => groups.push(vec![entry]),
+        }
+    }
+    groups
+}
+
+/// 单文件版本的统一 diff（`a/` `b/` 头按内容存在与否落到 `/dev/null`）。
+fn unified_diff(plan: &PlannedFile) -> String {
+    let after = plan.after.as_deref().unwrap_or_default();
+    if plan.before == after {
+        return String::new();
+    }
+    let old_header = if plan.before.is_empty() {
+        "/dev/null".to_string()
+    } else {
+        format!("a/{}", plan.display)
+    };
+    let new_header = if plan.after.is_none() {
+        "/dev/null".to_string()
+    } else {
+        format!("b/{}", plan.display)
+    };
+    similar::TextDiff::from_lines(&plan.before, after)
+        .unified_diff()
+        .header(&old_header, &new_header)
+        .to_string()
+}
+
+/// 把一组同路径段落规划成一次落盘；只读不写。
+async fn plan_group(
+    workspace: &Path,
+    group: &[apply_patch::PatchEntry],
+) -> Result<PlannedFile, apply_patch::PatchError> {
+    let display = group[0].path.clone();
+    let absolute = resolve_patch_path(workspace, &display).map_err(apply_patch::PatchError::new)?;
+
+    if absolute.is_dir() {
+        return Err(apply_patch::PatchError::new(format!(
+            "{display} is a directory, not a file"
+        )));
+    }
+    let mut current = if absolute.is_file() {
+        match tokio::fs::read_to_string(&absolute).await {
+            Ok(text) => Some(text),
+            Err(error) => {
+                return Err(apply_patch::PatchError::new(format!(
+                    "Failed to read {display}: {error}"
+                )));
+            },
+        }
+    } else {
+        None
+    };
+    let original = current.clone();
+    let mut rename: Option<String> = None;
+
+    for entry in group {
+        match entry.op {
+            apply_patch::FileOp::Add => {
+                if current.is_some() {
+                    return Err(apply_patch::PatchError::new(format!(
+                        "Cannot create {display}: file already exists. Use *** Update File to modify \
+                         it in place."
+                    )));
+                }
+                current = Some(entry.body.clone().unwrap_or_default());
+            },
+            apply_patch::FileOp::Delete => {
+                if current.take().is_none() {
+                    return Err(apply_patch::PatchError::new(format!(
+                        "File not found: {display}"
+                    )));
+                }
+            },
+            apply_patch::FileOp::Update => {
+                let Some(text) = current.as_deref() else {
+                    return Err(apply_patch::PatchError::new(format!(
+                        "File not found: {display}"
+                    )));
+                };
+                let body = entry.body.as_deref().unwrap_or_default();
+                let hunks = apply_patch::parse_hunks(body)?;
+                current = Some(apply_patch::apply_hunks(text, &display, &hunks)?);
+                if let Some(destination) = &entry.rename {
+                    if *destination == display {
+                        return Err(apply_patch::PatchError::new(
+                            "rename path is the same as source path",
+                        ));
+                    }
+                    let destination_path = resolve_patch_path(workspace, destination)
+                        .map_err(apply_patch::PatchError::new)?;
+                    if destination_path.exists() {
+                        return Err(apply_patch::PatchError::new(format!(
+                            "Cannot rename {display} to {destination}: destination already exists."
+                        )));
+                    }
+                    rename = Some(destination.clone());
+                }
+            },
+        }
+    }
+
+    let op = group
+        .last()
+        .expect("patch groups are never empty")
+        .op;
+    let move_from = rename.as_ref().map(|_| absolute.clone());
+    let (absolute, display) = match &rename {
+        Some(destination) => (
+            resolve_patch_path(workspace, destination).map_err(apply_patch::PatchError::new)?,
+            destination.clone(),
+        ),
+        None => (absolute, display),
+    };
+    Ok(PlannedFile {
+        display,
+        absolute,
+        before: original.unwrap_or_default(),
+        after: current,
+        move_from,
+        op,
+    })
+}
+
+/// 落盘阶段已经写过哪些文件（写失败时用来告诉模型工作区处于什么状态）。
+fn partial_write_error(display: &str, error: &std::io::Error, written: &[String]) -> String {
+    if written.is_empty() {
+        format!("Failed to apply patch to {display}: {error}")
+    } else {
+        format!(
+            "Failed to apply patch to {display}: {error}\nAlready written before the failure (the \
+             workspace is partially updated): {}",
+            written.join(", ")
+        )
+    }
 }
 
 #[async_trait::async_trait]
@@ -441,31 +642,23 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &'static str {
-        "Perform atomic multi-hunk replacement on a file with overlap checking and unified diff."
+        "Apply a `*** Begin Patch` envelope: add, delete, update (with optional `*** Move to:`) one \
+         or more files atomically, then report a unified diff."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": {
+                "input": {
                     "type": "string",
-                    "description": "Path to the file to edit"
-                },
-                "edits": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "old_text": { "type": "string", "description": "Exact text to replace" },
-                            "new_text": { "type": "string", "description": "New replacement text" }
-                        },
-                        "required": ["old_text", "new_text"]
-                    },
-                    "description": "List of non-overlapping edits to apply"
+                    "description": "Full patch envelope: `*** Begin Patch`, then file sections \
+                                    (`*** Add File: <path>`, `*** Delete File: <path>`, \
+                                    `*** Update File: <path>` with `@@` hunks), then \
+                                    `*** End Patch`. Paths are relative to the workspace."
                 }
             },
-            "required": ["path"]
+            "required": ["input"]
         })
     }
 
@@ -475,93 +668,85 @@ impl Tool for EditTool {
             Err(e) => return ToolOutput::error(format!("Invalid arguments for edit: {}", e)),
         };
 
-        if input.edits.is_empty() {
-            return ToolOutput::error("No edits provided.");
-        }
-
-        let target_path = resolve_path(workspace, &input.path);
-        if !target_path.exists() {
-            return ToolOutput::error(format!("File not found: {:?}", target_path));
-        }
-
-        let original_content = match tokio::fs::read_to_string(&target_path).await {
-            Ok(c) => c,
-            Err(e) => return ToolOutput::error(format!("Failed to read file for editing: {}", e)),
+        let entries = match apply_patch::parse_envelope(&input.input) {
+            Ok(entries) => entries,
+            Err(error) => return ToolOutput::error(error.to_string()),
         };
-
-        // 1. 原始基准定位与唯一性约束
-        struct MatchSpan {
-            start:    usize,
-            end:      usize,
-            new_text: String,
+        if entries.is_empty() {
+            return ToolOutput::error("No files were modified.");
         }
 
-        let mut spans = Vec::with_capacity(input.edits.len());
-        for (i, hunk) in input.edits.iter().enumerate() {
-            let matches: Vec<(usize, &str)> = original_content.match_indices(&hunk.old_text).collect();
-            if matches.is_empty() {
-                return ToolOutput::error(format!(
-                    "Edit #{}: old_text not found in file: {:?}",
-                    i + 1,
-                    hunk.old_text
-                ));
-            }
-            if matches.len() > 1 {
-                return ToolOutput::error(format!(
-                    "Edit #{}: old_text matched {} times in file (must be unique). Please include more context around the change.",
-                    i + 1,
-                    matches.len()
-                ));
-            }
-            let start = matches[0].0;
-            let end = start + hunk.old_text.len();
-            spans.push(MatchSpan {
-                start,
-                end,
-                new_text: hunk.new_text.clone(),
-            });
-        }
+        let groups = group_entries(entries);
+        let multiple_files = groups.len() > 1;
 
-        // 2. 按起始位置升序排序并执行重叠区间检测 (Overlap Detection)
-        spans.sort_by_key(|s| s.start);
-        for i in 0..spans.len().saturating_sub(1) {
-            if spans[i].end > spans[i + 1].start {
-                return ToolOutput::error(format!(
-                    "Edit ranges overlap between hunk starting at byte {} and hunk starting at byte {}. Please merge into a single edit.",
-                    spans[i].start,
-                    spans[i + 1].start
-                ));
+        // 阶段一：全部算好，不碰磁盘（失败即整体放弃，工作区保持原样）
+        let mut planned = Vec::with_capacity(groups.len());
+        for group in &groups {
+            match plan_group(workspace, group).await {
+                Ok(plan) => planned.push(plan),
+                Err(error) => {
+                    return ToolOutput::error(if multiple_files {
+                        format!("[{}]: {error}\n{}", group[0].path, apply_patch::ATOMICITY_NOTICE)
+                    } else {
+                        error.to_string()
+                    });
+                },
             }
         }
 
-        // 3. 全量原子替换拼装新文件
-        let mut new_content = String::with_capacity(original_content.len());
-        let mut last_idx = 0;
-        for span in spans {
-            new_content.push_str(&original_content[last_idx..span.start]);
-            new_content.push_str(&span.new_text);
-            last_idx = span.end;
+        // 阶段二：落盘
+        let mut written: Vec<String> = Vec::new();
+        for plan in &planned {
+            if let Some(after) = &plan.after {
+                if let Some(parent) = plan.absolute.parent() {
+                    if let Err(error) = tokio::fs::create_dir_all(parent).await {
+                        return ToolOutput::error(partial_write_error(
+                            &plan.display,
+                            &error,
+                            &written,
+                        ));
+                    }
+                }
+                if let Err(error) = tokio::fs::write(&plan.absolute, after).await {
+                    return ToolOutput::error(partial_write_error(
+                        &plan.display,
+                        &error,
+                        &written,
+                    ));
+                }
+            } else if let Err(error) = tokio::fs::remove_file(&plan.absolute).await {
+                return ToolOutput::error(partial_write_error(&plan.display, &error, &written));
+            }
+            if let Some(source) = &plan.move_from {
+                if let Err(error) = tokio::fs::remove_file(source).await {
+                    return ToolOutput::error(partial_write_error(
+                        &plan.display,
+                        &error,
+                        &written,
+                    ));
+                }
+            }
+            written.push(plan.display.clone());
         }
-        new_content.push_str(&original_content[last_idx..]);
 
-        // 4. 写回目标文件
-        if let Err(e) = tokio::fs::write(&target_path, &new_content).await {
-            return ToolOutput::error(format!("Failed to write edited file: {}", e));
+        // 阶段三：摘要 + 统一 diff
+        let operations = planned
+            .iter()
+            .map(|plan| (plan.op, plan.display.as_str()))
+            .collect::<Vec<_>>();
+        let mut text = apply_patch::format_summary(&operations);
+        let mut diffs = String::new();
+        for plan in &planned {
+            let diff = unified_diff(plan);
+            if !diff.is_empty() {
+                diffs.push_str(&diff);
+            }
         }
-
-        // 5. 产出 Unified Diff
-        let diff = similar::TextDiff::from_lines(&original_content, &new_content);
-        let unified_diff = diff
-            .unified_diff()
-            .header("original", "modified")
-            .to_string();
-
-        ToolOutput::success(truncate_output(&format!(
-            "Successfully applied {} edit(s) to {:?}.\nUnified Diff:\n{}",
-            input.edits.len(),
-            target_path,
-            unified_diff
-        )))
+        if !diffs.is_empty() {
+            text.push_str("\n\nUnified Diff:\n");
+            text.push_str(&diffs);
+        }
+        ToolOutput::success(truncate_output(&text))
     }
 }
 
@@ -696,17 +881,17 @@ fn parse_env(buf: &[u8]) -> Vec<(OsString, OsString)> {
         .collect()
 }
 
-pub struct BashTool {
+pub struct ShellTool {
     timeout_secs: u64,
 }
 
-impl Default for BashTool {
+impl Default for ShellTool {
     fn default() -> Self {
         Self { timeout_secs: 60 }
     }
 }
 
-impl BashTool {
+impl ShellTool {
     pub fn new(timeout_secs: u64) -> Self {
         Self { timeout_secs }
     }
@@ -797,13 +982,13 @@ fn format_command_output(combined: &str) -> String {
 }
 
 #[async_trait::async_trait]
-impl Tool for BashTool {
+impl Tool for ShellTool {
     fn name(&self) -> &'static str {
-        "bash"
+        "shell"
     }
 
     fn description(&self) -> &'static str {
-        "Execute a bash command with process group management and timeout. Returns stdout and \
+        "Execute a shell command with process group management and timeout. Returns stdout and \
          stderr. Output is truncated to the last 2000 lines or 50KB (whichever is hit first)."
     }
 
@@ -813,7 +998,7 @@ impl Tool for BashTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The bash command to execute"
+                    "description": "The shell command to execute"
                 }
             },
             "required": ["command"]
@@ -823,7 +1008,7 @@ impl Tool for BashTool {
     async fn execute(&self, workspace: &Path, input: serde_json::Value) -> ToolOutput {
         let input: ShellInput = match serde_json::from_value(input) {
             Ok(v) => v,
-            Err(e) => return ToolOutput::error(format!("Invalid arguments for bash: {}", e)),
+            Err(e) => return ToolOutput::error(format!("Invalid arguments for shell: {}", e)),
         };
 
         // 解释器与环境取自登录 shell 快照（见 `init_shell_env`）：
@@ -859,7 +1044,7 @@ impl Tool for BashTool {
 
         let child = match cmd.spawn() {
             Ok(c) => c,
-            Err(e) => return ToolOutput::error(format!("Failed to spawn bash command: {}", e)),
+            Err(e) => return ToolOutput::error(format!("Failed to spawn shell command: {}", e)),
         };
 
         // 守卫覆盖超时与取消两条路径；正常回收后解除
@@ -919,7 +1104,7 @@ impl ToolRegistry {
         reg.register(Arc::new(ReadTool));
         reg.register(Arc::new(WriteTool));
         reg.register(Arc::new(EditTool));
-        reg.register(Arc::new(BashTool::default()));
+        reg.register(Arc::new(ShellTool::default()));
         reg.register(Arc::new(crate::ls::LsTool));
         reg.register(Arc::new(crate::find::FindTool));
         reg.register(Arc::new(crate::grep::GrepTool));
@@ -1178,11 +1363,11 @@ mod tests {
         Ok(())
     }
 
-    /// bash 保留输出末尾（错误与最终结果），超限时给出范围提示。
+    /// shell 保留输出末尾（错误与最终结果），超限时给出范围提示。
     #[tokio::test]
-    async fn test_bash_keeps_tail_of_long_output() -> Result<()> {
+    async fn test_shell_keeps_tail_of_long_output() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        let out = BashTool::default()
+        let out = ShellTool::default()
             .execute(tmp.path(), serde_json::json!({ "command": "seq 1 3000" }))
             .await;
         assert!(!out.is_error, "{}", out.output);
@@ -1196,66 +1381,584 @@ mod tests {
         Ok(())
     }
 
+    // ------------------------------------------------------------------
+    // edit（apply_patch envelope）
+    //
+    // 用例对照 oh-my-pi `crates/pi-edit/tests/fixtures/apply_patch/`：
+    // 目录名即场景名，行为与期望文件内容保持一致。
+    // ------------------------------------------------------------------
+
+    /// 在工作区里跑一次 `edit`，返回工具输出。
+    async fn run_patch(ws: &Path, patch: &str) -> crate::ToolOutput {
+        EditTool
+            .execute(ws, serde_json::json!({ "input": patch }))
+            .await
+    }
+
+    fn write_file(path: &Path, content: &str) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    fn read_file(path: &Path) -> Result<String> {
+        Ok(std::fs::read_to_string(path)?)
+    }
+
+    /// 001_add_file：新建文件，并回一份 unified diff。
     #[tokio::test]
-    async fn test_edit_multi_hunk_and_overlap() -> Result<()> {
+    async fn test_apply_patch_add_file() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let ws = tmp.path();
 
-        let file_path = ws.join("sample.rs");
-        tokio::fs::write(&file_path, "fn foo() {}\nfn bar() {}\nfn baz() {}\n").await?;
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Add File: bar.md\n+This is a new file\n*** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert_eq!(read_file(&ws.join("bar.md"))?, "This is a new file\n");
+        assert!(out.output.contains("A bar.md"), "{}", out.output);
+        assert!(out.output.contains("+This is a new file"), "{}", out.output);
+        Ok(())
+    }
 
-        let edit_tool = EditTool;
+    /// 003_multiple_chunks + 021_update_file_deletion_only：一个段落里多个 hunk。
+    #[tokio::test]
+    async fn test_apply_patch_multiple_chunks() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("multi.txt"), "line1\nline2\nline3\nline4\n")?;
 
-        // 1. 唯一性失败测试
-        let out_dup = edit_tool
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: multi.txt\n@@\n-line2\n+changed2\n@@\n-line4\n\
+             +changed4\n*** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert_eq!(
+            read_file(&ws.join("multi.txt"))?,
+            "line1\nchanged2\nline3\nchanged4\n"
+        );
+
+        write_file(&ws.join("lines.txt"), "line1\nline2\nline3\n")?;
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: lines.txt\n@@\n line1\n-line2\n line3\n*** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert_eq!(read_file(&ws.join("lines.txt"))?, "line1\nline3\n");
+        Ok(())
+    }
+
+    /// 004_move_to_new_directory：`*** Move to:` 会建目录、搬内容、删源文件，兄弟文件不动。
+    #[tokio::test]
+    async fn test_apply_patch_move_to_new_directory() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("old/name.txt"), "old content\n")?;
+        write_file(&ws.join("old/other.txt"), "unrelated file\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: old/name.txt\n*** Move to: renamed/dir/name.txt\n@@\n\
+             -old content\n+new content\n*** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert!(!ws.join("old/name.txt").exists(), "源文件必须已被移除");
+        assert_eq!(read_file(&ws.join("renamed/dir/name.txt"))?, "new content\n");
+        assert_eq!(read_file(&ws.join("old/other.txt"))?, "unrelated file\n");
+        Ok(())
+    }
+
+    /// 005_rejects_empty_patch：只有 envelope 没有段落时拒绝，不改任何文件。
+    #[tokio::test]
+    async fn test_apply_patch_rejects_empty_patch() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("foo.txt"), "stable\n")?;
+
+        let out = run_patch(ws, "*** Begin Patch\n*** End Patch").await;
+        assert!(out.is_error, "{}", out.output);
+        assert_eq!(out.output, "No files were modified.");
+        assert_eq!(read_file(&ws.join("foo.txt"))?, "stable\n");
+        Ok(())
+    }
+
+    /// 006_rejects_missing_context：上下文对不上时报出期望内容，文件保持原样。
+    #[tokio::test]
+    async fn test_apply_patch_rejects_missing_context() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("modify.txt"), "line1\nline2\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: modify.txt\n@@\n-missing\n+changed\n*** End Patch",
+        )
+        .await;
+        assert!(out.is_error, "{}", out.output);
+        assert!(
+            out.output
+                .contains("Failed to find expected lines in modify.txt:\nmissing"),
+            "{}",
+            out.output
+        );
+        assert_eq!(read_file(&ws.join("modify.txt"))?, "line1\nline2\n");
+        Ok(())
+    }
+
+    /// 007_rejects_missing_file_delete / 009_requires_existing_file_for_update：
+    /// 目标不存在时 delete 与 update 都拒绝。
+    #[tokio::test]
+    async fn test_apply_patch_requires_existing_file() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("foo.txt"), "stable\n")?;
+
+        let deleted = run_patch(
+            ws,
+            "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch",
+        )
+        .await;
+        assert!(deleted.is_error, "{}", deleted.output);
+        assert_eq!(deleted.output, "File not found: missing.txt");
+
+        let updated = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: missing.txt\n@@\n-old\n+new\n*** End Patch",
+        )
+        .await;
+        assert!(updated.is_error, "{}", updated.output);
+        assert_eq!(updated.output, "File not found: missing.txt");
+        assert_eq!(read_file(&ws.join("foo.txt"))?, "stable\n");
+        Ok(())
+    }
+
+    /// 008_rejects_empty_update_hunk：`*** Update File:` 后没有 hunk 直接拒绝。
+    #[tokio::test]
+    async fn test_apply_patch_rejects_empty_update_hunk() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("foo.txt"), "stable\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: foo.txt\n*** End Patch",
+        )
+        .await;
+        assert!(out.is_error, "{}", out.output);
+        assert!(
+            out.output
+                .contains("Update file hunk for path 'foo.txt' is empty"),
+            "{}",
+            out.output
+        );
+        assert_eq!(read_file(&ws.join("foo.txt"))?, "stable\n");
+        Ok(())
+    }
+
+    /// 010_move_rejects_existing_destination：改名目标已存在时拒绝，两边都不动。
+    #[tokio::test]
+    async fn test_apply_patch_move_rejects_existing_destination() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("old/name.txt"), "from\n")?;
+        write_file(&ws.join("renamed/dir/name.txt"), "existing\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: old/name.txt\n*** Move to: renamed/dir/name.txt\n@@\n\
+             -from\n+new\n*** End Patch",
+        )
+        .await;
+        assert!(out.is_error, "{}", out.output);
+        assert!(
+            out.output.contains(
+                "Cannot rename old/name.txt to renamed/dir/name.txt: destination already exists."
+            ),
+            "{}",
+            out.output
+        );
+        assert_eq!(read_file(&ws.join("old/name.txt"))?, "from\n");
+        assert_eq!(read_file(&ws.join("renamed/dir/name.txt"))?, "existing\n");
+        Ok(())
+    }
+
+    /// 011_add_rejects_existing_file：Add 不覆盖已存在的文件。
+    #[tokio::test]
+    async fn test_apply_patch_add_rejects_existing_file() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("duplicate.txt"), "old content\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Add File: duplicate.txt\n+new content\n*** End Patch",
+        )
+        .await;
+        assert!(out.is_error, "{}", out.output);
+        assert!(
+            out.output.contains(
+                "Cannot create duplicate.txt: file already exists. Use *** Update File to modify it \
+                 in place."
+            ),
+            "{}",
+            out.output
+        );
+        assert_eq!(read_file(&ws.join("duplicate.txt"))?, "old content\n");
+        Ok(())
+    }
+
+    /// 012_delete_directory_fails：Delete 只针对文件，目录拒绝。
+    #[tokio::test]
+    async fn test_apply_patch_delete_directory_fails() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("dir/foo.txt"), "stable\n")?;
+
+        let out = run_patch(ws, "*** Begin Patch\n*** Delete File: dir\n*** End Patch").await;
+        assert!(out.is_error, "{}", out.output);
+        assert!(
+            out.output.contains("dir is a directory, not a file"),
+            "{}",
+            out.output
+        );
+        assert_eq!(read_file(&ws.join("dir/foo.txt"))?, "stable\n");
+        Ok(())
+    }
+
+    /// 013_rejects_invalid_hunk_header：不认识的段落头直接拒绝。
+    #[tokio::test]
+    async fn test_apply_patch_rejects_invalid_hunk_header() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("foo.txt"), "stable\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Frobnicate File: foo\n*** End Patch",
+        )
+        .await;
+        assert!(out.is_error, "{}", out.output);
+        assert!(
+            out.output.contains("is not a valid hunk header"),
+            "{}",
+            out.output
+        );
+        assert_eq!(read_file(&ws.join("foo.txt"))?, "stable\n");
+        Ok(())
+    }
+
+    /// 014_update_file_appends_trailing_newline：替换后仍以换行结尾。
+    #[tokio::test]
+    async fn test_apply_patch_appends_trailing_newline() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("no_newline.txt"), "no newline at end\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: no_newline.txt\n@@\n-no newline at end\n+first line\n\
+             +second line\n*** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert_eq!(
+            read_file(&ws.join("no_newline.txt"))?,
+            "first line\nsecond line\n"
+        );
+        Ok(())
+    }
+
+    /// 016_pure_addition_update_chunk：只有 `+` 行的段落追加到文件末尾。
+    #[tokio::test]
+    async fn test_apply_patch_pure_addition_chunk() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("input.txt"), "line1\nline2\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: input.txt\n@@\n+added line 1\n+added line 2\n\
+             *** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert_eq!(
+            read_file(&ws.join("input.txt"))?,
+            "line1\nline2\nadded line 1\nadded line 2\n"
+        );
+        Ok(())
+    }
+
+    /// 017/018/020：envelope 标记与段落头两侧的空白不影响解析。
+    #[tokio::test]
+    async fn test_apply_patch_whitespace_padded_markers() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+
+        let cases = [
+            // 017_whitespace_padded_hunk_header
+            "*** Begin Patch\n  *** Update File: foo.txt\n@@\n-old\n+new\n*** End Patch",
+            // 018_whitespace_padded_patch_markers
+            " *** Begin Patch\n*** Update File: foo.txt\n@@\n-one\n+two\n*** End Patch ",
+            // 020_whitespace_padded_patch_marker_lines
+            "*** Begin Patch \n*** Update File: foo.txt\n@@\n-one\n+two\n *** End Patch",
+        ];
+        for (index, patch) in cases.iter().enumerate() {
+            let expected = if index == 0 { "new" } else { "two" };
+            write_file(&ws.join("foo.txt"), "old\n")?;
+            if index > 0 {
+                write_file(&ws.join("foo.txt"), "one\n")?;
+            }
+            let out = run_patch(ws, patch).await;
+            assert!(!out.is_error, "case {index}: {}", out.output);
+            assert_eq!(
+                read_file(&ws.join("foo.txt"))?,
+                format!("{expected}\n"),
+                "case {index}"
+            );
+        }
+        Ok(())
+    }
+
+    /// 019_unicode_simple：Unicode 内容按行精确匹配。
+    #[tokio::test]
+    async fn test_apply_patch_unicode() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("foo.txt"), "line1\nnaïve café\nline3\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: foo.txt\n@@\n line1\n-naïve café\n+naïve café ✅\n\
+             *** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert_eq!(
+            read_file(&ws.join("foo.txt"))?,
+            "line1\nnaïve café ✅\nline3\n"
+        );
+        Ok(())
+    }
+
+    /// 020_delete_file_success：删除段落只删目标文件。
+    #[tokio::test]
+    async fn test_apply_patch_delete_file_success() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("keep.txt"), "keep\n")?;
+        write_file(&ws.join("obsolete.txt"), "obsolete\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Delete File: obsolete.txt\n*** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert!(out.output.contains("D obsolete.txt"), "{}", out.output);
+        assert!(!ws.join("obsolete.txt").exists());
+        assert_eq!(read_file(&ws.join("keep.txt"))?, "keep\n");
+        Ok(())
+    }
+
+    /// 022_update_file_end_of_file_marker：`*** End of File` 要求匹配落在文件末尾。
+    #[tokio::test]
+    async fn test_apply_patch_end_of_file_marker() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("tail.txt"), "first\nsecond\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: tail.txt\n@@\n first\n-second\n+second updated\n\
+             *** End of File\n*** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert_eq!(read_file(&ws.join("tail.txt"))?, "first\nsecond updated\n");
+
+        // 同样两行，但文件里后面还有内容：`*** End of File` 必须拒绝
+        write_file(&ws.join("tail.txt"), "first\nsecond\nthird\n")?;
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: tail.txt\n@@\n first\n-second\n+second updated\n\
+             *** End of File\n*** End Patch",
+        )
+        .await;
+        assert!(out.is_error, "{}", out.output);
+        assert_eq!(read_file(&ws.join("tail.txt"))?, "first\nsecond\nthird\n");
+        Ok(())
+    }
+
+    /// core.json：一个 envelope 里的 update + delete + add 一起落地。
+    #[tokio::test]
+    async fn test_apply_patch_multiple_operations() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("a.txt"), "old\n")?;
+        write_file(&ws.join("remove.txt"), "bye\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** Delete File: remove.txt\n\
+             *** Add File: added.txt\n+created\n*** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert_eq!(read_file(&ws.join("a.txt"))?, "new\n");
+        assert_eq!(read_file(&ws.join("added.txt"))?, "created\n");
+        assert!(!ws.join("remove.txt").exists());
+        for marker in ["M a.txt", "D remove.txt", "A added.txt"] {
+            assert!(out.output.contains(marker), "missing {marker} in {}", out.output);
+        }
+        // 成功输出带统一 diff：新增文件从 /dev/null 起，修改文件两侧都带路径
+        assert!(out.output.contains("\n\nUnified Diff:\n"), "{}", out.output);
+        assert!(out.output.contains("--- a/a.txt"), "{}", out.output);
+        assert!(out.output.contains("+++ b/a.txt"), "{}", out.output);
+        assert!(out.output.contains("--- /dev/null"), "{}", out.output);
+        assert!(out.output.contains("-old"), "{}", out.output);
+        assert!(out.output.contains("+new"), "{}", out.output);
+        assert!(out.output.contains("+created"), "{}", out.output);
+        Ok(())
+    }
+
+    /// core.json：多文件 envelope 失败即整体放弃，已算好的文件也不落盘。
+    #[tokio::test]
+    async fn test_apply_patch_multi_file_failure_is_atomic() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("a.txt"), "old\n")?;
+        write_file(&ws.join("b.txt"), "value\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** Update File: b.txt\n@@\n\
+             -missing\n+changed\n*** End Patch",
+        )
+        .await;
+        assert!(out.is_error, "{}", out.output);
+        assert!(out.output.starts_with("[b.txt]: "), "{}", out.output);
+        assert!(
+            out.output.contains(apply_patch::ATOMICITY_NOTICE),
+            "{}",
+            out.output
+        );
+        assert_eq!(read_file(&ws.join("a.txt"))?, "old\n");
+        assert_eq!(read_file(&ws.join("b.txt"))?, "value\n");
+        Ok(())
+    }
+
+    /// delete 之后再 add 同一路径 = 原子替换（不需要两次调用）。
+    #[tokio::test]
+    async fn test_apply_patch_delete_then_add_replaces_file() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        write_file(&ws.join("a.txt"), "old\n")?;
+
+        let out = run_patch(
+            ws,
+            "*** Begin Patch\n*** Delete File: a.txt\n*** Add File: a.txt\n+new\n*** End Patch",
+        )
+        .await;
+        assert!(!out.is_error, "{}", out.output);
+        assert_eq!(read_file(&ws.join("a.txt"))?, "new\n");
+        Ok(())
+    }
+
+    /// 路径必须留在工作区内：绝对路径与 `..` 逃逸直接拒绝，不写盘。
+    #[tokio::test]
+    async fn test_apply_patch_rejects_path_escape() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
+        let outside = tmp.path().join("outside.txt");
+        write_file(&outside, "untouched\n")?;
+
+        let absolute = run_patch(
+            ws,
+            &format!(
+                "*** Begin Patch\n*** Update File: {}\n@@\n-untouched\n+touched\n*** End Patch",
+                outside.display()
+            ),
+        )
+        .await;
+        assert!(absolute.is_error, "{}", absolute.output);
+        assert!(
+            absolute.output.contains("patch paths must be relative"),
+            "{}",
+            absolute.output
+        );
+
+        let escaping = run_patch(
+            ws,
+            "*** Begin Patch\n*** Add File: ../escaped.txt\n+oops\n*** End Patch",
+        )
+        .await;
+        assert!(escaping.is_error, "{}", escaping.output);
+        assert!(
+            escaping.output.contains("escapes the workspace"),
+            "{}",
+            escaping.output
+        );
+        assert_eq!(read_file(&outside)?, "untouched\n");
+        assert!(!tmp.path().join("escaped.txt").exists());
+        Ok(())
+    }
+
+    /// 参数只认 `input`：旧的 `{path, edits}` 形式必须被拒绝（不留双入口）。
+    #[tokio::test]
+    async fn test_edit_requires_apply_patch_input() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        write_file(&tmp.path().join("a.txt"), "old\n")?;
+
+        let out = EditTool
             .execute(
-                ws,
+                tmp.path(),
                 serde_json::json!({
-                    "path": "sample.rs",
-                    "edits": [
-                        { "old_text": "fn", "new_text": "pub fn" }
-                    ]
+                    "path": "a.txt",
+                    "edits": [{ "old_text": "old", "new_text": "new" }]
                 }),
             )
             .await;
-        assert!(out_dup.is_error);
-        assert!(out_dup.output.contains("matched 3 times"));
+        assert!(out.is_error, "{}", out.output);
+        assert!(out.output.contains("Invalid arguments for edit"), "{}", out.output);
+        assert_eq!(read_file(&tmp.path().join("a.txt"))?, "old\n");
+        Ok(())
+    }
 
-        // 2. 重叠区间检测测试
-        let out_overlap = edit_tool
-            .execute(
-                ws,
-                serde_json::json!({
-                    "path": "sample.rs",
-                    "edits": [
-                        { "old_text": "fn foo() {}", "new_text": "fn f() {}" },
-                        { "old_text": "foo()", "new_text": "f()" }
-                    ]
-                }),
-            )
-            .await;
-        assert!(out_overlap.is_error);
-        assert!(out_overlap.output.contains("overlap"));
+    /// envelope 头缺失/结尾缺失都拒绝，并指出缺哪一行。
+    #[tokio::test]
+    async fn test_apply_patch_requires_envelope() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let ws = tmp.path();
 
-        // 3. 正常双 Hunk 原子替换与 Diff
-        let out_ok = edit_tool
-            .execute(
-                ws,
-                serde_json::json!({
-                    "path": "sample.rs",
-                    "edits": [
-                        { "old_text": "fn foo() {}", "new_text": "pub fn foo() { 1; }" },
-                        { "old_text": "fn baz() {}", "new_text": "pub fn baz() { 3; }" }
-                    ]
-                }),
-            )
-            .await;
-        assert!(!out_ok.is_error, "{}", out_ok.output);
-        assert!(out_ok.output.contains("Unified Diff:"));
+        let no_begin = run_patch(ws, "*** Add File: a.txt\n+x\n").await;
+        assert!(no_begin.is_error, "{}", no_begin.output);
+        assert!(
+            no_begin
+                .output
+                .contains("The first line of the patch must be '*** Begin Patch'"),
+            "{}",
+            no_begin.output
+        );
 
-        let final_content = tokio::fs::read_to_string(&file_path).await?;
-        assert_eq!(final_content, "pub fn foo() { 1; }\nfn bar() {}\npub fn baz() { 3; }\n");
-
+        let no_end = run_patch(ws, "*** Begin Patch\n*** Add File: a.txt\n+x\n").await;
+        assert!(no_end.is_error, "{}", no_end.output);
+        assert!(
+            no_end
+                .output
+                .contains("The last line of the patch must be '*** End Patch'"),
+            "{}",
+            no_end.output
+        );
+        assert!(!ws.join("a.txt").exists(), "解析失败不该留下文件");
         Ok(())
     }
 
@@ -1269,7 +1972,7 @@ mod tests {
         // 子进程在超时之后才写入标记文件：若进程组未被杀死，文件就会出现
         let command = format!("(sleep 2; echo leaked > {}) & sleep 30", marker.display());
 
-        let shell = BashTool::new(1);
+        let shell = ShellTool::new(1);
         let out = shell
             .execute(tmp.path(), serde_json::json!({ "command": command }))
             .await;
@@ -1293,7 +1996,7 @@ mod tests {
         let marker = tmp.path().join("cancelled.txt");
         let command = format!("(sleep 2; echo leaked > {}) & sleep 30", marker.display());
 
-        let shell = BashTool::new(60);
+        let shell = ShellTool::new(60);
         let workspace = tmp.path().to_path_buf();
         let task = tokio::spawn(async move {
             shell
@@ -1317,7 +2020,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let ws = tmp.path();
 
-        let shell = BashTool::new(5);
+        let shell = ShellTool::new(5);
         let out = shell
             .execute(
                 ws,
@@ -1338,7 +2041,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let ws = tmp.path();
 
-        let shell = BashTool::new(5);
+        let shell = ShellTool::new(5);
         let out = shell
             .execute(ws, serde_json::json!({ "command": "pwd" }))
             .await;
@@ -1369,13 +2072,24 @@ mod tests {
         );
     }
 
-    /// 工具集必须与 pi 对齐：bash / edit / find / grep / ls / read / write。
+    /// 工具集必须与 pi 对齐：edit / find / grep / ls / read / shell / write。
     #[test]
     fn test_builtin_tool_set_matches_pi() {
         let reg = ToolRegistry::with_builtins();
         let mut names: Vec<&str> = reg.list().iter().map(|t| t.name()).collect();
         names.sort_unstable();
-        assert_eq!(names, vec!["bash", "edit", "find", "grep", "ls", "read", "write"]);
+        assert_eq!(names, vec!["edit", "find", "grep", "ls", "read", "shell", "write"]);
+
+        // 下发给模型的参数契约：edit 只认 apply_patch 的 `input`，shell 仍只认 `command`
+        let defs = reg.to_definitions(&[]);
+        let required = |name: &str| {
+            defs.iter()
+                .find(|d| d["name"] == name)
+                .unwrap_or_else(|| panic!("missing definition for {name}"))["parameters"]["required"]
+                .clone()
+        };
+        assert_eq!(required("edit"), serde_json::json!(["input"]));
+        assert_eq!(required("shell"), serde_json::json!(["command"]));
     }
 
     /// ls 不依赖外部二进制，直接验证 pi 对齐后的输出形态（目录带 `/` 后缀、无体积列）。

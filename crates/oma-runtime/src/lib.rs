@@ -2049,11 +2049,11 @@ mod tests {
             id:                 "explore".into(),
             name:               "Explore".into(),
             description:        String::new(),
-            tools:              vec!["read".into(), "bash".into()],
+            tools:              vec!["read".into(), "shell".into()],
             system_prompt_body: String::new(),
         };
         let allowed = allowed_tools(&template).unwrap();
-        assert!(allowed.contains("read") && allowed.contains("bash"));
+        assert!(allowed.contains("read") && allowed.contains("shell"));
         assert!(!allowed.contains("write"));
 
         let unrestricted = AgentTemplate {
