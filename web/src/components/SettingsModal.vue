@@ -186,30 +186,26 @@ async function testConnection(): Promise<boolean> {
  * 把表单里的连接落盘。
  *
  * `activate` 为真时同时把它设为活动连接；为假时保持原活动项不变——这正是
- * 「保存」与「连接」的区别：前者只写 client.json，不动正在跑的那条连接。
- * 无同源接口（vite dev）时退回 localStorage，只有一条连接可记。
+ * 「保存」与「连接」的区别：前者只写配置，不动正在跑的那条连接。
+ * 接口不可用时 `saveClientConfig` 会把同一份配置写进 localStorage。
  */
 async function persistConnection(activate: boolean): Promise<boolean> {
   const cfg = clientConfig.value;
   const name = conn.name.trim();
   const url = normalizeBaseUrl(conn.baseUrl);
-  // 与 setConnection 一致：存盘前去掉凭证两端的空白，避免把看不见的空格写进 client.json
+  // 与 setConnection 一致：存盘前去掉凭证两端的空白，避免把看不见的空格写进配置
   const token = conn.token.trim();
-  // 仅当能落盘 client.json 时才要求名称与地址；localStorage 退回态沿用旧行为
-  if (clientConfigReady.value && !name) {
+  // 名字是列表项的标识与活动连接的引用键，两条后端都要求非空
+  if (!name) {
     toast.error(t('connNameRequired'));
     return false;
   }
-  if (clientConfigReady.value && !url) {
+  // 地址是连接的唯一去处（同源时也写成具体来源），空地址存下来没有任何意义
+  if (!url) {
     toast.error(t('connUrlRequired'));
     return false;
   }
-
-  if (!clientConfigReady.value || !cfg) {
-    setConnection(url, token);
-    conn.baseUrl = url;
-    return true;
-  }
+  if (!cfg) return false;
 
   // upsert：重命名时把旧名字的那条一并移除，列表里不会留下孤儿
   const list = cfg.connections.filter((c) => c.name !== name && c.name !== selectedConn.value);
@@ -228,7 +224,7 @@ async function persistConnection(activate: boolean): Promise<boolean> {
   return true;
 }
 
-/** 「保存」：只写 client.json，不切换活动连接，也不重连。 */
+/** 「保存」：只写配置（client.json 或本地快照），不切换活动连接，也不重连。 */
 async function saveConnection() {
   if (!(await persistConnection(false))) return;
   toast.success(t('connSaved'));
@@ -253,7 +249,7 @@ async function connectConnection() {
 async function connectSaved(c: ClientConnection) {
   if (isActive(c.name)) return;
   const cfg = clientConfig.value;
-  if (clientConfigReady.value && cfg) {
+  if (cfg) {
     try {
       await saveClientConfig({ ...cfg, active: c.name });
     } catch (e) {
@@ -1398,14 +1394,14 @@ function pickLocale(v: Locale) {
         <section v-if="section === 'connection'" class="pane">
           <header class="pane-head">
             <h2 class="pane-title">{{ t('navConnection') }}</h2>
-            <UiButton variant="soft" tone="neutral" v-if="clientConfigReady" size="sm" @click="newConnection">
+            <UiButton variant="soft" tone="neutral" size="sm" @click="newConnection">
               <template #prefix><LuPlus :size="13" /></template>
               {{ t('connAdd') }}
             </UiButton>
           </header>
           <div class="pane-scroll">
             <!-- 已保存的连接：点行载入表单编辑，右侧「连接」显式激活并重连 -->
-            <div v-if="clientConfigReady" class="list conn-list">
+            <div class="list conn-list">
               <p v-if="connections.length === 0" class="conn-empty">{{ t('connEmpty') }}</p>
               <div
                 v-for="c in connections"
@@ -1441,7 +1437,7 @@ function pickLocale(v: Locale) {
             </div>
 
             <div class="list">
-              <div v-if="clientConfigReady" class="srow">
+              <div class="srow">
                 <div class="srow-main">
                   <span class="srow-title">{{ t('connName') }}</span>
                   <span class="srow-desc">{{ t('connNameDesc') }}</span>
