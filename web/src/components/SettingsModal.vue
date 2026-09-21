@@ -23,7 +23,7 @@ import { api } from '../api';
 import { ACCENTS, NEUTRAL_TOKENS, PALETTE_TOKENS, config, darkPalettes, lightPalettes, loadConfig, palettes, refreshPalettes, saveConfig, saveTheme, theme, type Palette } from '../stores/theme';
 import { baseUrl, normalizeBaseUrl, setConnection, token } from '../stores/connection';
 import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
-import { clientConfig, clientConfigReady, saveClientConfig } from '../stores/clientConfig';
+import { clientConfig, saveClientConfig } from '../stores/clientConfig';
 import { LOCALES, settingStore, setLocale, type Locale } from '../stores/setting';
 import { activeSession, refresh as refreshSessions } from '../stores/sessions';
 import { MODEL_CAPABILITIES } from '../types';
@@ -237,26 +237,13 @@ async function saveConnection() {
   toast.success(t('connSaved'));
 }
 
-/**
- * 「连接」：先落盘并设为活动连接，再整体重载。
+/** 激活列表里已保存的某条连接并重连（直接用列表里的值，不读表单）。
  *
- * 探测不作为前置条件——目标暂时不可达时也应该允许切过去（用户可能正要启动那个
- * Daemon）；切完顺手探一次，状态行会立刻给出反馈。地址/凭证换了之后，旧数据
- * （会话、消息、主题、配置）都属于上一个 Daemon，必须整体重载，由 App 统一做。
+ * 对当前已生效的那条也允许点击：此时跳过落盘，只重新连接并刷新数据。
  */
-async function connectConnection() {
-  if (!(await persistConnection(true))) return;
-  setConnection(normalizeBaseUrl(conn.baseUrl), conn.token);
-  await reloadAll();
-  toast.success(t('connConnected', { name: conn.name.trim() }));
-  void testConnection();
-}
-
-/** 激活列表里已保存的某条连接并重连（直接用列表里的值，不读表单）。 */
 async function connectSaved(c: ClientConnection) {
-  if (isActive(c.name)) return;
   const cfg = clientConfig.value;
-  if (cfg) {
+  if (cfg && !isActive(c.name)) {
     try {
       await saveClientConfig({ ...cfg, active: c.name });
     } catch (e) {
@@ -1422,13 +1409,7 @@ function pickLocale(v: Locale) {
                     <template #prefix><LuPencil :size="13" /></template>
                     {{ t('edit') }}
                   </UiButton>
-                  <UiButton
-                    variant="soft"
-                    tone="accent"
-                    size="sm"
-                    :disabled="isActive(c.name)"
-                    @click="connectSaved(c)"
-                  >
+                  <UiButton variant="soft" tone="accent" size="sm" @click="connectSaved(c)">
                     {{ t('connConnect') }}
                   </UiButton>
                   <UiButton variant="ghost" tone="danger" size="sm" @click.stop="removeConnection(c.name)">
@@ -1502,33 +1483,12 @@ function pickLocale(v: Locale) {
                   </span>
                 </div>
               </div>
-              <p v-if="!clientConfigReady" class="conn-note">{{ t('connLocalOnly') }}</p>
             </div>
           </div>
-          <!-- 动作作用于编辑器里的表单：编辑器收起时无目标，整体禁用 -->
-          <footer class="pane-foot">
-            <UiButton
-              variant="ghost"
-              tone="neutral"
-              size="sm"
-              :disabled="!editorOpen"
-              :loading="connTesting"
-              @click="testConnection"
-            >
-              {{ t('connTest') }}
-            </UiButton>
+          <!-- 连接动作在列表行内（每条一个「连接」），这里只保留「保存」 -->
+          <footer class="pane-foot conn-foot">
             <UiButton variant="soft" tone="neutral" size="sm" :disabled="!editorOpen" @click="saveConnection">
               {{ t('connSave') }}
-            </UiButton>
-            <UiButton
-              variant="solid"
-              tone="accent"
-              size="sm"
-              :disabled="!editorOpen"
-              :loading="connTesting"
-              @click="connectConnection"
-            >
-              {{ t('connConnect') }}
             </UiButton>
           </footer>
         </section>
@@ -2549,6 +2509,10 @@ function pickLocale(v: Locale) {
   padding: 12px 0 16px;
   border-top: 1px solid var(--line);
 }
+/* 连接面板：动作只剩「保存」，不再需要与内容分界的横线 */
+.conn-foot {
+  border-top: none;
+}
 .list {
   background: var(--surface);
   border-radius: 10px;
@@ -2680,11 +2644,6 @@ function pickLocale(v: Locale) {
   flex-shrink: 0;
 }
 .conn-empty,
-.conn-note {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--text-tertiary);
-}
 .conn-empty {
   padding: 8px 2px;
 }

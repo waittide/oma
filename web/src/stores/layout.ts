@@ -7,8 +7,8 @@ import { computed, ref } from 'vue';
  * 侧栏默认 260（180–480），右侧面板默认 42% 视口并夹在 360–640（300–1200），
  * 视口 < 960 视为紧凑布局，< 640 视为移动端。宽度持久化在 localStorage。
  */
-export const SIDEBAR_DEFAULT_WIDTH = 260;
-export const SIDEBAR_MIN_WIDTH = 180;
+export const SIDEBAR_DEFAULT_WIDTH = 340;
+export const SIDEBAR_MIN_WIDTH = 280;
 export const SIDEBAR_MAX_WIDTH = 480;
 
 export const RIGHT_PANEL_FALLBACK_WIDTH = 560;
