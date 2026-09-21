@@ -9,6 +9,7 @@ import {
   LuLanguages,
   LuLoader,
   LuPalette,
+  LuPencil,
   LuPlug,
   LuPlugZap,
   LuPlus,
@@ -96,8 +97,15 @@ const connTesting = ref(false);
 // 首次进入时自动探测一次，让用户不用手动点就知道当前配得对不对
 const connState = ref<'unknown' | 'ok' | 'fail'>('unknown');
 const connDetail = ref('');
-/** 列表中选中的连接名；null = 新建 */
+/**
+ * 正在编辑的连接名；null 表示编辑器里是一条尚未保存的新连接。
+ *
+ * 输入表单默认收起：只有点列表里的「编辑」或右上角「新增」才展开，
+ * 避免列表与表单同时占据视线。
+ */
 const selectedConn = ref<string | null>(null);
+/** 编辑器是否展开 */
+const editorOpen = ref(false);
 
 const connections = computed(() => clientConfig.value?.connections ?? []);
 
@@ -107,9 +115,10 @@ function isActive(name: string): boolean {
   return !!cfg && (cfg.active === name || (!cfg.active && cfg.connections[0]?.name === name));
 }
 
-/** 选中列表中的连接并载入表单。 */
-function selectConnection(c: ClientConnection) {
+/** 载入列表中的连接并展开编辑器。 */
+function editConnection(c: ClientConnection) {
   selectedConn.value = c.name;
+  editorOpen.value = true;
   conn.name = c.name;
   conn.baseUrl = c.url;
   conn.token = c.token;
@@ -117,9 +126,10 @@ function selectConnection(c: ClientConnection) {
   connDetail.value = '';
 }
 
-/** 清空表单，新建一条连接。 */
+/** 清空表单并展开编辑器，新建一条连接。 */
 function newConnection() {
   selectedConn.value = null;
+  editorOpen.value = true;
   conn.name = '';
   conn.baseUrl = '';
   conn.token = '';
@@ -127,16 +137,13 @@ function newConnection() {
   connDetail.value = '';
 }
 
-// 配置就绪后定位到活动连接（列表加载完成时自动选中）
-watch(
-  clientConfig,
-  (cfg) => {
-    if (!cfg || selectedConn.value) return;
-    const active = cfg.connections.find((c) => c.name === cfg.active) ?? cfg.connections[0];
-    if (active) selectConnection(active);
-  },
-  { immediate: true },
-);
+/** 收起编辑器并清空编辑态。 */
+function closeEditor() {
+  editorOpen.value = false;
+  selectedConn.value = null;
+  connState.value = 'unknown';
+  connDetail.value = '';
+}
 
 /** 探测目标 Daemon：需要用表单里的值（而不是已保存的值）即时验证。 */
 async function testConnection(): Promise<boolean> {
@@ -257,7 +264,6 @@ async function connectSaved(c: ClientConnection) {
       return;
     }
   }
-  selectConnection(c);
   setConnection(normalizeBaseUrl(c.url), c.token);
   await reloadAll();
   toast.success(t('connConnected', { name: c.name }));
@@ -276,11 +282,8 @@ async function removeConnection(name: string) {
     toast.error(t('connSaveFailed', { message: (e as Error).message }));
     return;
   }
-  if (selectedConn.value === name) {
-    const next = list[0];
-    if (next) selectConnection(next);
-    else newConnection();
-  }
+  // 正在编辑的那条被删掉了：编辑器里的值已无对应条目，直接收起
+  if (editorOpen.value && selectedConn.value === name) closeEditor();
   toast.success(t('connRemoved'));
 }
 
@@ -1407,11 +1410,7 @@ function pickLocale(v: Locale) {
                 v-for="c in connections"
                 :key="c.name"
                 class="conn-item"
-                :class="{ on: selectedConn === c.name }"
-                role="button"
-                tabindex="0"
-                @click="selectConnection(c)"
-                @keydown.enter.prevent="selectConnection(c)"
+                :class="{ on: editorOpen && selectedConn === c.name }"
               >
                 <span class="conn-mark"><LuCheck v-if="isActive(c.name)" :size="11" /></span>
                 <span class="conn-main">
@@ -1419,12 +1418,16 @@ function pickLocale(v: Locale) {
                   <span class="conn-url">{{ c.url }}</span>
                 </span>
                 <span class="conn-actions">
+                  <UiButton variant="ghost" tone="neutral" size="sm" @click="editConnection(c)">
+                    <template #prefix><LuPencil :size="13" /></template>
+                    {{ t('edit') }}
+                  </UiButton>
                   <UiButton
                     variant="soft"
                     tone="accent"
                     size="sm"
                     :disabled="isActive(c.name)"
-                    @click.stop="connectSaved(c)"
+                    @click="connectSaved(c)"
                   >
                     {{ t('connConnect') }}
                   </UiButton>
@@ -1436,7 +1439,8 @@ function pickLocale(v: Locale) {
               </div>
             </div>
 
-            <div class="list">
+            <!-- 编辑器：点「编辑」或「新增」才展开，避免列表与表单同时占据视线 -->
+            <div v-if="editorOpen" class="list">
               <div class="srow">
                 <div class="srow-main">
                   <span class="srow-title">{{ t('connName') }}</span>
@@ -1501,17 +1505,26 @@ function pickLocale(v: Locale) {
               <p v-if="!clientConfigReady" class="conn-note">{{ t('connLocalOnly') }}</p>
             </div>
           </div>
+          <!-- 动作作用于编辑器里的表单：编辑器收起时无目标，整体禁用 -->
           <footer class="pane-foot">
-            <UiButton variant="ghost" tone="neutral" size="sm" :loading="connTesting" @click="testConnection">
+            <UiButton
+              variant="ghost"
+              tone="neutral"
+              size="sm"
+              :disabled="!editorOpen"
+              :loading="connTesting"
+              @click="testConnection"
+            >
               {{ t('connTest') }}
             </UiButton>
-            <UiButton variant="soft" tone="neutral" size="sm" @click="saveConnection">
+            <UiButton variant="soft" tone="neutral" size="sm" :disabled="!editorOpen" @click="saveConnection">
               {{ t('connSave') }}
             </UiButton>
             <UiButton
               variant="solid"
               tone="accent"
               size="sm"
+              :disabled="!editorOpen"
               :loading="connTesting"
               @click="connectConnection"
             >
@@ -2614,7 +2627,6 @@ function pickLocale(v: Locale) {
   border: 1px solid var(--control-border);
   border-radius: 8px;
   background: var(--paper);
-  cursor: pointer;
   transition:
     border-color 0.12s ease,
     background-color 0.12s ease;
