@@ -138,9 +138,9 @@
     "themeLoadFailed": "讀取服務端設定失敗，無法載入主題",
     "configNotLoaded": "服務端設定未載入",
     "providersEmpty": "尚無 Provider，點擊右上角「新增」開始設定。",
-    "defaultModel": "預設模型",
+    "defaultModel": "模型",
     "defaultModelPlaceholder": "provider/model-id",
-    "defaultAgent": "預設 Agent",
+    "defaultAgent": "預設",
     "saveDefaults": "儲存預設",
     "defaultsSaved": "預設設定已儲存",
     "add": "新增",
@@ -305,7 +305,7 @@
     "reasoningMap": "推理等級對應",
     "reasoningMapToggle": "展開對應表",
     "reasoningMapHint": "把推理等級對應為廠商自訂字串；留空則直接使用等級名稱。",
-    "defaultReasoning": "預設推理等級",
+    "defaultReasoning": "推理等級",
     "defaultReasoningDesc": "新建會話的初始推理等級，可在對話中調整。"
   },
   "app": {

@@ -561,19 +561,6 @@ const providerGroups = computed<Record<string, ModelInfo[]>>(() => {
 const modelGroups = computed(() => toModelSelectGroups(providerGroups.value));
 const modelLabel = computed(() => modelSelectorLabel(providerGroups.value, defaults.model));
 
-function scopeLabel(scope: string): string {
-  switch (scope) {
-    case 'bundled':
-      return t('scopeBundled');
-    case 'project':
-      return t('scopeProject');
-    case 'agent':
-      return t('scopeAgent');
-    default:
-      return t('scopeGlobal');
-  }
-}
-
 const mcpKindOptions = [
   { value: 'local' as const, label: t('mcpKindLocal') },
   { value: 'remote' as const, label: t('mcpKindRemote') },
@@ -856,6 +843,7 @@ watch(
     if (!o) return;
     // 进入连接页先探一次：用户开箱即见当前是否连得上，不用先点「测试」
     if (s === 'connection') void testConnection();
+    // 默认参数里的「预设」取自预设清单，不先加载会是一个空下拉框
     if (s === 'defaults') void refreshPresets();
     if (s === 'presets') void loadPresets();
     if (s === 'skills') void loadSkills();
@@ -1419,15 +1407,16 @@ function pickLocale(v: Locale) {
         <!-- 连接 -->
         <section v-if="section === 'connection'" class="pane">
           <header class="pane-head">
-            <h2 class="pane-title">{{ t('navConnection') }}</h2>
-            <UiButton variant="soft" tone="neutral" size="sm" @click="newConnection">
-              <template #prefix><LuPlus :size="13" /></template>
-              {{ t('connAdd') }}
-            </UiButton>
+            <div class="pane-head-actions">
+              <UiButton variant="soft" tone="neutral" size="sm" @click="newConnection">
+                <template #prefix><LuPlus :size="13" /></template>
+                {{ t('connAdd') }}
+              </UiButton>
+            </div>
           </header>
           <div class="pane-scroll">
-            <!-- 已保存的连接：点行载入表单编辑，右侧「连接」显式激活并重连 -->
-            <div class="list conn-list">
+            <!-- 已保存的连接：行内「编辑」展开表单，「连接」显式激活并重连 -->
+            <div class="conn-list">
               <p v-if="connections.length === 0" class="conn-empty">{{ t('connEmpty') }}</p>
               <div
                 v-for="c in connections"
@@ -1533,10 +1522,7 @@ function pickLocale(v: Locale) {
         </section>
 
         <!-- 外观 -->
-        <section v-if="section === 'theme'" class="pane">
-          <header class="pane-head">
-            <h2 class="pane-title">{{ t('navTheme') }}</h2>
-          </header>
+        <section v-else-if="section === 'theme'" class="pane">
           <div class="pane-scroll">
             <div class="list">
               <div class="srow">
@@ -1556,11 +1542,10 @@ function pickLocale(v: Locale) {
                   <span class="srow-title">{{ t('themeRowLight') }}</span>
                   <span class="srow-desc">{{ t('themeDesc') }}</span>
                 </div>
-                <div class="srow-ctl">
+                <div class="srow-ctl sel-wide">
                   <UiSelect
                     :model-value="themeSel.light"
                     :options="lightPaletteOptions"
-                    style="width: 200px"
                     @update:model-value="(v) => (themeSel.light = String(v ?? ''))"
                   />
                 </div>
@@ -1569,11 +1554,10 @@ function pickLocale(v: Locale) {
                 <div class="srow-main">
                   <span class="srow-title">{{ t('themeRowDark') }}</span>
                 </div>
-                <div class="srow-ctl">
+                <div class="srow-ctl sel-wide">
                   <UiSelect
                     :model-value="themeSel.dark"
                     :options="darkPaletteOptions"
-                    style="width: 200px"
                     @update:model-value="(v) => (themeSel.dark = String(v ?? ''))"
                   />
                 </div>
@@ -1652,20 +1636,16 @@ function pickLocale(v: Locale) {
 
         <!-- 语言 -->
         <section v-else-if="section === 'language'" class="pane">
-          <header class="pane-head">
-            <h2 class="pane-title">{{ t('navLanguage') }}</h2>
-          </header>
           <div class="pane-scroll">
             <div class="list">
               <div class="srow">
                 <div class="srow-main">
                   <span class="srow-title">{{ t('languageLabel') }}</span>
                 </div>
-                <div class="srow-ctl">
+                <div class="srow-ctl sel-wide">
                   <UiSelect
                     :model-value="settingStore.locale"
                     :options="localeOptions"
-                    style="width: 160px"
                     @update:model-value="(v) => pickLocale(v as typeof settingStore.locale)"
                   />
                 </div>
@@ -1676,20 +1656,16 @@ function pickLocale(v: Locale) {
 
         <!-- 默认参数 -->
         <section v-else-if="section === 'defaults' && config" class="pane">
-          <header class="pane-head">
-            <h2 class="pane-title">{{ t('navDefaults') }}</h2>
-          </header>
           <div class="pane-scroll">
             <div class="list">
               <div class="srow">
                 <div class="srow-main">
                   <span class="srow-title">{{ t('defaultModel') }}</span>
                 </div>
-                <div class="srow-ctl wide">
+                <div class="srow-ctl wide sel-wide">
                   <UiSelect
                     :model-value="defaults.model"
                     :groups="modelGroups"
-                    style="width: 300px"
                     @update:model-value="(v) => (defaults.model = String(v ?? ''))"
                   >
                     <template v-if="modelLabel" #value>{{ modelLabel }}</template>
@@ -1700,11 +1676,10 @@ function pickLocale(v: Locale) {
                 <div class="srow-main">
                   <span class="srow-title">{{ t('defaultAgent') }}</span>
                 </div>
-                <div class="srow-ctl">
+                <div class="srow-ctl sel-wide">
                   <UiSelect
                     :model-value="defaults.agent"
                     :options="agentOptions"
-                    style="width: 200px"
                     @update:model-value="(v) => (defaults.agent = String(v ?? ''))"
                   />
                 </div>
@@ -1714,11 +1689,10 @@ function pickLocale(v: Locale) {
                   <span class="srow-title">{{ t('defaultReasoning') }}</span>
                   <span class="srow-desc">{{ t('defaultReasoningDesc') }}</span>
                 </div>
-                <div class="srow-ctl">
+                <div class="srow-ctl sel-wide">
                   <UiSelect
                     :model-value="defaults.reasoning"
                     :options="effortOptions"
-                    style="width: 200px"
                     @update:model-value="(v) => (defaults.reasoning = String(v ?? ''))"
                   />
                 </div>
@@ -1734,9 +1708,6 @@ function pickLocale(v: Locale) {
 
         <!-- 模型提供商 -->
         <section v-else-if="section === 'providers' && config" class="pane">
-          <header class="pane-head">
-            <h2 class="pane-title">{{ t('navProviders') }}</h2>
-          </header>
           <div class="pane-scroll">
             <div class="tabs-row">
               <div class="tabs">
@@ -2016,10 +1987,7 @@ function pickLocale(v: Locale) {
                 @click="editPreset(a)"
               >
                 <div class="srow-main">
-                  <span class="srow-title">
-                    {{ a.name }}
-                    <span class="scope-tag" :class="'scope-' + a.scope">{{ scopeLabel(a.scope) }}</span>
-                  </span>
+                  <span class="srow-title">{{ a.name }}</span>
                   <span class="srow-desc">{{ a.description || a.id }}</span>
                 </div>
                 <div class="srow-ctl">
@@ -2065,10 +2033,7 @@ function pickLocale(v: Locale) {
                 @click="editSkill(sk)"
               >
                 <div class="srow-main">
-                  <span class="srow-title">
-                    {{ sk.name }}
-                    <span class="scope-tag" :class="'scope-' + sk.scope">{{ scopeLabel(sk.scope) }}</span>
-                  </span>
+                  <span class="srow-title">{{ sk.name }}</span>
                   <span class="srow-desc">{{ sk.description || sk.id }}</span>
                 </div>
               </div>
@@ -2082,7 +2047,6 @@ function pickLocale(v: Locale) {
         <!-- MCP 服务器 -->
         <section v-else-if="section === 'mcp' && config" class="pane">
           <header class="pane-head">
-            <h2 class="pane-title">{{ t('navMcp') }}</h2>
             <div class="pane-head-actions">
               <UiButton variant="soft" tone="neutral" size="sm" @click="addMcpServer">
                 <template #prefix><LuPlus :size="13" /></template>
@@ -2142,10 +2106,7 @@ function pickLocale(v: Locale) {
                 <!-- 未编辑：摘要行 -->
                 <div v-else class="srow">
                   <div class="srow-main">
-                    <span class="srow-title">
-                      {{ d.name }}
-                      <span class="scope-tag">{{ d.kind === 'local' ? t('mcpKindLocal') : t('mcpKindRemote') }}</span>
-                    </span>
+                    <span class="srow-title">{{ d.name }}</span>
                     <span class="srow-desc mono">{{ mcpSummary(d) }}</span>
                   </div>
                   <div class="srow-ctl">
@@ -2312,12 +2273,11 @@ function pickLocale(v: Locale) {
           />
         </div>
       </div>
-      <div class="field">
+      <div class="field sel-block">
         <label>{{ t('themeBaseLabel') }}</label>
         <UiSelect
           :model-value="paletteEdit.base"
           :options="paletteBaseOptions"
-          style="width: 100%"
           @update:model-value="(v) => applyBase(String(v ?? ''))"
         />
         <span class="field-hint">{{ t('paletteBaseHint') }}</span>
@@ -2420,9 +2380,10 @@ function pickLocale(v: Locale) {
   background: var(--surface-hover);
   color: var(--ink);
 }
+/* 选中态与库内分段控件（UiSegmented）、界面里的标签页保持一致：强调色实底 + base 文字 */
 .nav-item.active {
-  background: var(--surface-active);
-  color: var(--accent);
+  background: var(--accent);
+  color: var(--base);
   font-weight: 600;
 }
 .nav-foot {
@@ -2464,12 +2425,6 @@ function pickLocale(v: Locale) {
   gap: 12px;
   flex-shrink: 0;
   padding-bottom: 14px;
-}
-.pane-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--ink);
 }
 .tabs-row {
   display: flex;
@@ -2532,6 +2487,8 @@ function pickLocale(v: Locale) {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 标题已移除：无标题时这一组动作仍靠右，与有标签页的界面保持同一位置 */
+  margin-left: auto;
   flex-shrink: 0;
 }
 .pane-scroll {
@@ -2588,6 +2545,17 @@ function pickLocale(v: Locale) {
 .srow-ctl.wide {
   flex-shrink: 1;
 }
+/* 下拉框宽度：组件库会丢弃传给 UiSelect 的 style（宽度得由外层容器指定），
+   这里用外层类 + :deep 落到它的 .ui-field 上 */
+.sel-wide :deep(.ui-field) {
+  width: 360px;
+  min-width: 0;
+  flex-shrink: 1;
+}
+/* 表单里的整行下拉框（同列的输入框本来就占满整行） */
+.sel-block :deep(.ui-field) {
+  width: 100%;
+}
 /* 连接页输入框：地址与 token 都需要足够宽度展示，窄屏时允许收缩 */
 .conn-input {
   width: 300px;
@@ -2613,8 +2581,12 @@ function pickLocale(v: Locale) {
   background: var(--danger-soft);
   color: var(--danger);
 }
-/* 已保存连接列表：与下方表单单列排列，活动项带勾选标记 */
+/* 已保存连接列表：条目自带描边与底色，不再套一层卡片——卡片底色会在条目左右
+   各露出 14px，看上去像条目的背景溢出了边框 */
 .conn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 12px;
 }
 .conn-item {
@@ -2625,7 +2597,7 @@ function pickLocale(v: Locale) {
   padding: 8px 11px;
   border: 1px solid var(--control-border);
   border-radius: 8px;
-  background: var(--paper);
+  background: var(--surface);
   transition:
     border-color 0.12s ease,
     background-color 0.12s ease;
@@ -2755,10 +2727,6 @@ function pickLocale(v: Locale) {
   vertical-align: 1px;
   background: var(--surface-strong);
   color: var(--overlay1);
-}
-.scope-tag.scope-project {
-  background: var(--surface-active);
-  color: var(--accent);
 }
 .skill-form {
   display: flex;

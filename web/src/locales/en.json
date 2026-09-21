@@ -138,9 +138,9 @@
     "themeLoadFailed": "Failed to load server config; theme unavailable",
     "configNotLoaded": "Server config not loaded",
     "providersEmpty": "No providers yet. Click Add above to create one.",
-    "defaultModel": "Default Model",
+    "defaultModel": "Model",
     "defaultModelPlaceholder": "provider/model-id",
-    "defaultAgent": "Default Agent",
+    "defaultAgent": "Preset",
     "saveDefaults": "Save Defaults",
     "defaultsSaved": "Defaults saved",
     "add": "Add",
@@ -305,7 +305,7 @@
     "reasoningMap": "Reasoning level mapping",
     "reasoningMapToggle": "Expand mapping",
     "reasoningMapHint": "Map each level to a vendor-specific string; leave blank to send the level name as-is.",
-    "defaultReasoning": "Default reasoning level",
+    "defaultReasoning": "Reasoning level",
     "defaultReasoningDesc": "Initial reasoning level for new sessions; adjustable in the chat."
   },
   "app": {

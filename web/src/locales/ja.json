@@ -138,9 +138,9 @@
     "themeLoadFailed": "サーバー設定を取得できず、テーマを利用できません",
     "configNotLoaded": "サーバー設定が読み込まれていません",
     "providersEmpty": "プロバイダーがありません。上の「追加」から作成してください。",
-    "defaultModel": "既定のモデル",
+    "defaultModel": "モデル",
     "defaultModelPlaceholder": "provider/model-id",
-    "defaultAgent": "既定のエージェント",
+    "defaultAgent": "プリセット",
     "saveDefaults": "既定値を保存",
     "defaultsSaved": "既定値を保存しました",
     "add": "追加",
@@ -305,7 +305,7 @@
     "reasoningMap": "推論レベルのマッピング",
     "reasoningMapToggle": "マッピングを展開",
     "reasoningMapHint": "各レベルをベンダー固有の文字列に割り当てます。空欄ならレベル名をそのまま送信します。",
-    "defaultReasoning": "既定の推論レベル",
+    "defaultReasoning": "推論レベル",
     "defaultReasoningDesc": "新規セッションの初期推論レベル。チャット画面からも変更できます。"
   },
   "app": {

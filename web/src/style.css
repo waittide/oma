@@ -66,3 +66,11 @@ code {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* 下拉框的分组名保持原始字符串：库内默认 text-transform: uppercase，会把提供商名 /
+   模型 id 这类本就区分大小写的标识改成大写。菜单被 teleport 到 body 下，故这里用
+   全局选择器并提高一级特异性（组件库自带规则为 .ui-select-group__head[data-v-*]）。 */
+body > .ui-select-menu .ui-select-group__head {
+  text-transform: none;
+  letter-spacing: normal;
+}
