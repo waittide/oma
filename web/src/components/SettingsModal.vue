@@ -98,6 +98,14 @@ const connTesting = ref(false);
 const connState = ref<'unknown' | 'ok' | 'fail'>('unknown');
 const connDetail = ref('');
 /**
+ * 最近一次探测的结果，连同被测的地址与凭证。
+ *
+ * 状态行描述的是「这个目标连不连得上」，与编辑器开不开无关：不记住它，点「编辑」
+ * 就会把刚刚还显示「已连接」的那条打回「未知」。带上地址 + 凭证是为了在目标被
+ * 改过之后不冒认——改过的目标没探过，本就该回到「未知」。
+ */
+let lastProbe: { url: string; token: string; state: 'ok' | 'fail'; detail: string } | null = null;
+/**
  * 正在编辑的连接名；null 表示编辑器里是一条尚未保存的新连接。
  *
  * 输入表单默认收起：只有点列表里的「编辑」或右上角「新增」才展开，
@@ -115,15 +123,30 @@ function isActive(name: string): boolean {
   return !!cfg && (cfg.active === name || (!cfg.active && cfg.connections[0]?.name === name));
 }
 
-/** 载入列表中的连接并展开编辑器。 */
+/** 载入列表中的连接并展开编辑器；对正在编辑的那条再点一次则收起。 */
 function editConnection(c: ClientConnection) {
+  if (editorOpen.value && selectedConn.value === c.name) {
+    closeEditor();
+    return;
+  }
   selectedConn.value = c.name;
   editorOpen.value = true;
   conn.name = c.name;
   conn.baseUrl = c.url;
   conn.token = c.token;
-  connState.value = 'unknown';
-  connDetail.value = '';
+  applyKnownProbe(c);
+}
+
+/** 把最近一次探测结果回填到状态行；目标（地址或凭证）与探测时不同则回到「未知」。 */
+function applyKnownProbe(c: ClientConnection) {
+  const probe = lastProbe;
+  if (!probe || probe.url !== normalizeBaseUrl(c.url) || probe.token !== c.token.trim()) {
+    connState.value = 'unknown';
+    connDetail.value = '';
+    return;
+  }
+  connState.value = probe.state;
+  connDetail.value = probe.detail;
 }
 
 /** 清空表单并展开编辑器，新建一条连接。 */
@@ -145,14 +168,25 @@ function closeEditor() {
   connDetail.value = '';
 }
 
+/**
+ * 记下一次探测结果：状态行立即显示它，同时留作「编辑」时的回填依据。
+ *
+ * 目标是「地址 + 凭证」的组合，所以只按这两个值记录，不绑定连接名——重命名后
+ * 同一条连接照样能拿到自己的状态。
+ */
+function setProbe(state: 'ok' | 'fail', detail: string) {
+  connState.value = state;
+  connDetail.value = detail;
+  lastProbe = { url: normalizeBaseUrl(conn.baseUrl), token: conn.token.trim(), state, detail };
+}
+
 /** 探测目标 Daemon：需要用表单里的值（而不是已保存的值）即时验证。 */
 async function testConnection(): Promise<boolean> {
   const probeToken = conn.token.trim();
   if (!probeToken) {
     // 空 token 只会发出一个 `Authorization: Bearer ` 的请求，401 也看不出所以然，
     // 这里直接说明原因，省得用户去翻控制台
-    connState.value = 'fail';
-    connDetail.value = t('connTokenRequired');
+    setProbe('fail', t('connTokenRequired'));
     return false;
   }
 
@@ -165,24 +199,26 @@ async function testConnection(): Promise<boolean> {
     });
     if (resp.ok) {
       const info = (await resp.json()) as { version?: string; active_sessions?: number };
-      connState.value = 'ok';
-      connDetail.value = t('connReachable', {
-        version: info.version ?? '?',
-        sessions: info.active_sessions ?? 0,
-      });
+      setProbe(
+        'ok',
+        t('connReachable', {
+          version: info.version ?? '?',
+          sessions: info.active_sessions ?? 0,
+        }),
+      );
       return true;
     }
-    connState.value = 'fail';
-    connDetail.value =
+    setProbe(
+      'fail',
       resp.status === 401
         ? t('connUnauthorized')
-        : t('connHttpError', { status: resp.status });
+        : t('connHttpError', { status: resp.status }),
+    );
     return false;
   } catch {
     // fetch 失败只有浏览器自带的英文原因（`Failed to fetch` 之类），既不是中文也
     // 帮不上排查（原因本身对 JS 不透明），这里换成目标地址 + 可能的排查方向
-    connState.value = 'fail';
-    connDetail.value = t('connUnreachable', { base: base || location.origin });
+    setProbe('fail', t('connUnreachable', { base: base || location.origin }));
     return false;
   } finally {
     connTesting.value = false;
@@ -1483,14 +1519,17 @@ function pickLocale(v: Locale) {
                   </span>
                 </div>
               </div>
+              <!-- 表单自己的动作：取消收起编辑器，保存只写配置（不切换活动连接） -->
+              <div class="conn-form-actions">
+                <UiButton variant="ghost" tone="neutral" size="sm" @click="closeEditor">
+                  {{ tc('cancel') }}
+                </UiButton>
+                <UiButton variant="solid" tone="accent" size="sm" @click="saveConnection">
+                  {{ t('connSave') }}
+                </UiButton>
+              </div>
             </div>
           </div>
-          <!-- 连接动作在列表行内（每条一个「连接」），这里只保留「保存」 -->
-          <footer class="pane-foot conn-foot">
-            <UiButton variant="soft" tone="neutral" size="sm" :disabled="!editorOpen" @click="saveConnection">
-              {{ t('connSave') }}
-            </UiButton>
-          </footer>
         </section>
 
         <!-- 外观 -->
@@ -2509,10 +2548,6 @@ function pickLocale(v: Locale) {
   padding: 12px 0 16px;
   border-top: 1px solid var(--line);
 }
-/* 连接面板：动作只剩「保存」，不再需要与内容分界的横线 */
-.conn-foot {
-  border-top: none;
-}
 .list {
   background: var(--surface);
   border-radius: 10px;
@@ -2643,8 +2678,17 @@ function pickLocale(v: Locale) {
   gap: 6px;
   flex-shrink: 0;
 }
-.conn-empty,
+/* 表单底部的动作行：贴在卡片内，最后一行的分隔线由上面的状态行提供 */
+.conn-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 11px 0;
+}
 .conn-empty {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
   padding: 8px 2px;
 }
 .color-grid {
