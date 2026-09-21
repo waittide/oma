@@ -6,7 +6,7 @@ import { tr } from '../composables/i18n';
  * 需要人参与的事件通知。
  *
  * 仅在页面失焦（切走标签页 / 最小化 / 焦点在别处）时提示：用户正看着界面时，
- * 审批条与提问面板已经把事件摆在眼前，再弹提示只是噪声。
+ * 轮次结果已经摆在眼前，再弹提示只是噪声。
  *
  * 失焦时两路输出：应用内走 @waittide/ui 的 toast（回到页面即可看到），并追加浏览器
  * 系统通知，让用户在其他窗口也能第一时间得知。
@@ -56,18 +56,17 @@ function pushSystem(title: string, body: string) {
 }
 
 /** 需要人参与的事件类型。 */
-export type HumanEvent = 'turn' | 'approval';
+export type HumanEvent = 'turn';
 
 const EVENT_TITLE: Record<HumanEvent, string> = {
   turn: 'notify.turnDone',
-  approval: 'notify.approvalNeeded',
 };
 
 /**
  * 通知一次需要人参与的事件：仅在页面失焦时提示。
  *
  * 失焦时同时走应用内 toast 与浏览器系统通知；未被授权系统通知时至少回到
- * 页面还能看到 toast。`body` 由调用方按事件补充（会话标题 / 问题 / 工具名）。
+ * 页面还能看到 toast。`body` 由调用方按事件补充（此处为会话标题）。
  */
 export function notifyHumanEvent(kind: HumanEvent, body: string) {
   if (isForeground()) return;

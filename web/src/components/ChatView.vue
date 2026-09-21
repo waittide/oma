@@ -22,13 +22,11 @@ import {
 } from 'vue-icons-plus/lu';
 import MessageBlocks from './MessageBlocks.vue';
 import MessageRail from './MessageRail.vue';
-import { prettyJson } from '../lib/format';
 import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
 import { copyText } from '../lib/clipboard';
 import { ensureNotificationPermission } from '../lib/notify';
 import ContextGauge from './ContextGauge.vue';
 import HistoryTree from './HistoryTree.vue';
-import type { ApprovalMode } from '../types';
 import * as chat from '../stores/chat';
 import { activeSession, activeSessionId, requestNewSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
@@ -44,7 +42,6 @@ const { t } = useTranslations('chat');
 const modelGroups = computed(() => toModelSelectGroups(chat.modelCatalog.value));
 const modelLabel = computed(() => modelSelectorLabel(chat.modelCatalog.value, chat.activeModel.value));
 const { t: tc } = useTranslations('common');
-const { t: ta } = useTranslations('approval');
 
 // 草稿与分叉目标放在 store 里：历史树切换对话时需回填输入框
 const draft = chat.draft;
@@ -285,12 +282,6 @@ async function copyMessage(id: string) {
 
 const agentOptions = computed(() => chat.agents.value.map((a) => ({ value: a.id, label: a.name })));
 
-const approvalOptions = computed<{ value: ApprovalMode; label: string }[]>(() => [
-  { value: 'normal', label: ta('normal') },
-  { value: 'strict', label: ta('strict') },
-  { value: 'auto', label: ta('auto') },
-]);
-
 // MCP 概览徽标已迁到 TopToolbar（工作区外壳），此处不再保留旧顶栏
 
 /** 规范推理等级：与后端 REASONING_LEVELS 一致 */
@@ -475,31 +466,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
       <MessageRail :items="railItems" @jump="jumpToMessage" />
     </div>
 
-    <Transition name="slide">
-      <div v-if="chat.pendingApproval.value" class="approval-row">
-        <div class="approval">
-          <LuAlertTriangle :size="15" class="warn" />
-          <div class="ap-text">
-            <strong>{{ chat.pendingApproval.value.tool_name }}</strong>
-            {{ t('approvalRequest') }}<code>{{ prettyJson(chat.pendingApproval.value.input) }}</code>
-          </div>
-          <div class="ap-actions">
-            <UiButton variant="solid" tone="accent" size="sm" @click="chat.respond('allow_once')">
-              <template #prefix><LuCheck :size="13" /></template>
-              {{ t('allowOnce') }}
-            </UiButton>
-            <UiButton variant="soft" tone="neutral" size="sm" @click="chat.respond('allow_session')">
-              {{ t('allowSession') }}
-            </UiButton>
-            <UiButton variant="solid" tone="danger" size="sm" @click="chat.respond('deny')">
-              <template #prefix><LuX :size="13" /></template>
-              {{ t('deny') }}
-            </UiButton>
-          </div>
-        </div>
-      </div>
-    </Transition>
-
     <footer class="composer">
       <div v-if="pendingUploads.length > 0" class="attach-row">
         <span v-for="(a, i) in pendingUploads" :key="a.ref" class="attach-chip">
@@ -592,12 +558,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
               {{ t('queuedCount', { count: chat.queued.value }) }}
             </span>
             <UiSelect
-              :model-value="chat.approvalMode.value"
-              :options="approvalOptions"
-              style="width: 96px"
-              @update:model-value="(v) => chat.setApprovalMode(v as ApprovalMode)"
-            />
-            <UiSelect
               :model-value="chat.activeAgent.value"
               :options="agentOptions"
               style="width: 118px"
@@ -658,7 +618,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   flex: 1;
   min-width: 0;
   background: var(--paper);
-  /* 消息、审批条、输入框共用同一列宽，保证左右边缘对齐 */
+  /* 消息与输入框共用同一列宽，保证左右边缘对齐 */
   --chat-col: 1120px;
 }
 .stream-wrap {
@@ -799,47 +759,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
 .fork:hover {
   color: var(--accent);
   background: var(--surface-hover);
-}
-.approval-row {
-  max-width: var(--chat-col);
-  width: 100%;
-  margin: 0 auto;
-  padding: 0 14px 8px;
-}
-.approval {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 10px 14px;
-  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
-  background: var(--warning-soft);
-  border-radius: 10px;
-}
-.approval .warn {
-  color: var(--warning);
-  flex-shrink: 0;
-}
-.ap-text {
-  flex: 1;
-  min-width: 0;
-  font-size: 12.5px;
-  color: var(--ink);
-}
-.ap-text code {
-  display: block;
-  margin-top: 2px;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ap-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  flex-shrink: 0;
 }
 .composer {
   padding: 8px 24px 12px;
@@ -1091,14 +1010,5 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   to {
     transform: rotate(360deg);
   }
-}
-.slide-enter-active,
-.slide-leave-active {
-  transition: all 0.18s ease;
-}
-.slide-enter-from,
-.slide-leave-to {
-  opacity: 0;
-  transform: translateY(6px);
 }
 </style>

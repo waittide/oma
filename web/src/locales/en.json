@@ -84,10 +84,6 @@
     "systemPromptLoading": "Loading…",
     "sessionUsage": "Session token totals (in · out · cache read · cache write)",
     "close": "Close",
-    "approvalRequest": "requests to run:",
-    "allowOnce": "Allow Once",
-    "allowSession": "Allow Session",
-    "deny": "Deny",
     "cancelRequested": "Cancellation requested",
     "loadMessagesFailed": "Failed to load messages: {message}",
     "turnError": "This turn failed with an error",
@@ -130,11 +126,6 @@
     "placeholder": "Select…",
     "empty": "No options"
   },
-  "approval": {
-    "normal": "Normal",
-    "strict": "Strict",
-    "auto": "Auto"
-  },
   "settings": {
     "title": "Settings",
     "navDefaults": "Defaults",
@@ -156,12 +147,8 @@
     "defaultModel": "Default Model",
     "defaultModelPlaceholder": "provider/model-id",
     "defaultAgent": "Default Agent",
-    "defaultApproval": "Default Approval",
     "saveDefaults": "Save Defaults",
     "defaultsSaved": "Defaults saved",
-    "approvalNormal": "Normal (approve dangerous tools)",
-    "approvalStrict": "Strict (approve everything)",
-    "approvalAuto": "Auto (no approval)",
     "add": "Add",
     "saveAll": "Save All",
     "newProvider": "New Provider",
@@ -341,8 +328,7 @@
     "emptySnippet": "(empty)"
   },
   "notify": {
-    "turnDone": "Task completed",
-    "approvalNeeded": "Tool run needs approval"
+    "turnDone": "Task completed"
   },
   "panel": {
     "files": "Files",

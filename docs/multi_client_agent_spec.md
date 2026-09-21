@@ -14,18 +14,6 @@
 > 名单经 `Ready.mcp_summaries` 下发，Web 顶栏有概览徽标、设置面板有 MCP 页。
 >
 > **仍保持删除**：熔断器、`ask` 提问工具、子代理 `task` 工具。
->
-> **v2.6 变更（恢复工具审批系统）**：
-> 审批回到内核，作为「人在回路」的唯一闸口：
-> - 三种模式：`normal`（默认，只有能改环境的命令工具要授权）/ `strict`（除白名单外全要）/
->   `auto`（一律放行）；`settings.json` 有 `default_approval_mode`
-> - 工具调用广播 `PermissionRequested`，**先到先得**：首个到达的响应生效并广播
->   `PermissionResolved`；120s 超时或轮次取消按拒绝处理
-> - `AllowSession` 把该工具加入**本会话内**白名单（会话销毁即失效）
-> - 四个客户端都有入口：Web 审批条、TUI 弹窗、SDK `respond_approval`
->
-> **仍然保持删除**（pi 内核不内置）：熔断器、`ask` 提问工具、内置 MCP 客户端、
-> 子代理 `task` 工具。
 
 > **v2.5 变更（恢复 Agent 预设）**：
 > 用户要求恢复被裁剪的预设能力（前后端），现回到「**模板即提示词**」：
@@ -36,8 +24,8 @@
 > - `settings.json` 重新有 `default_agent`；会话头重新记录 `agent`
 > - 预设正文之上仍依次拼接：运行环境块 → 项目上下文（`AGENTS.md`）→ 技能目录
 >
-> **仍然保持删除**（pi 内核不内置）：熔断器、`ask` 提问工具、工具审批系统、
-> 内置 MCP 客户端、子代理 `task` 工具。
+> **仍然保持删除**（pi 内核不内置）：熔断器、`ask` 提问工具、内置 MCP 客户端、
+> 子代理 `task` 工具。
 
 > **v2.4 变更（向 pi 对齐的部分）**：
 > - **工具实现方式**：`find` / `grep` 不再自研文件遍历，改为调用外部 `fd` / `ripgrep`
@@ -223,7 +211,6 @@ CREATE TABLE sessions_index (
     title           TEXT NOT NULL,
     active_model    TEXT NOT NULL,
     active_agent    TEXT NOT NULL DEFAULT 'task',
-    approval_mode   TEXT NOT NULL DEFAULT 'normal',
     reasoning_level TEXT NOT NULL DEFAULT '',
     current_leaf_id TEXT,
     created_at      INTEGER NOT NULL,
@@ -312,9 +299,6 @@ pub enum ClientMessage {
     Command {
         command: AgentCommand,
     },
-    Approval {
-        response: ApprovalResponse,
-    },
     Cancel {},
 }
 
@@ -329,10 +313,6 @@ pub enum AgentCommand {
     SetModel {
         model: String, // 格式: "provider/model"
     },
-    /// 设置当前会话的审批模式（normal / strict / auto）
-    SetApprovalMode {
-        mode: ApprovalMode,
-    },
     /// 设置当前会话的推理等级（必须在 REASONING_LEVELS 内，空串 = 未设置）
     SetReasoningLevel {
         level: String,
@@ -346,30 +326,9 @@ pub enum AgentCommand {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApprovalResponse {
-    pub request_id: String,
-    pub decision:   ApprovalDecision,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalDecision {
-    AllowOnce,      // 只放行这一次
-    AllowSession,   // 本会话内该工具不再询问
-    Deny,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalMode {
-    Normal,   // 只有命令工具要授权
-    Strict,   // 除白名单外全部要授权
-    Auto,     // 一律放行
-}
 ```
 
-> 上行四类：连接、命令、**审批响应**、取消。提问（`ask`）仍为移除状态——
+> 上行三类：连接、命令、取消。提问（`ask`）仍为移除状态——
 > 需要这类交互时应以插件形式实现。
 
 ### 4.3 服务端推送消息 (`ServerMessage` & `AgentEvent`)
@@ -389,8 +348,6 @@ pub struct Ready {
     pub session_id:       String,
     pub workspace:        String,
     pub active_model:     String,
-    /// 当前会话的审批模式
-    pub approval_mode:    ApprovalMode,
     /// 当前会话的推理等级（空 = 未设置）
     pub reasoning_level:  String,
     pub current_leaf_id:  Option<String>,
@@ -435,9 +392,6 @@ pub struct ActiveTurnCatchUp {
     pub accumulated_text:     String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tool_call:     Option<ToolCallStartedData>,
-    /// 重连时若仍在等审批，客户端据此重新弹出审批条
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_approval:     Option<PermissionRequestedData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -446,14 +400,6 @@ pub struct ToolCallStartedData {
     /// 被调用的工具名
     pub tool_name: String,
     pub input:     serde_json::Value,
-}
-
-/// 待审批的工具调用（审批条据此渲染）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PermissionRequestedData {
-    pub request_id: String,
-    pub tool_name:  String,
-    pub input:      serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -510,18 +456,9 @@ pub enum AgentEvent {
         is_error: bool,
     },
 
-    // 5. 权限审批广播与先到先得
-    PermissionRequested(PermissionRequestedData),
-    PermissionResolved {
-        request_id:  String,
-        decision:    ApprovalDecision,
-        resolved_by: String,
-    },
-
-    // 5b. 分支、模型、审批模式与推理等级变更
+    // 5. 分支、模型与推理等级变更
     ActiveBranchChanged { current_leaf_id: String },
     ModelChanged        { active_model: String },
-    ApprovalModeChanged { mode: ApprovalMode },
     ReasoningLevelChanged { level: String },
 
     // 5b. 上下文占用：每次模型请求拿到用量后广播，供界面展示进度。
@@ -577,7 +514,6 @@ pub struct ContextUsage {
 {
   "default_model": "my_anthropic/claude-3-7-sonnet",
   "default_agent": "task",
-  "default_approval_mode": "normal",
   "default_reasoning_level": "medium",
   "mcp_servers": {
     "local_sqlite": { "type": "local", "command": "uvx", "args": ["mcp-server-sqlite", "--db-path", "oma.db"] },
@@ -623,8 +559,8 @@ pub struct ContextUsage {
 > `api_type` 取值 `anthropic | completion | response | google`。
 >
 > `OmaConfig` 启用 `deny_unknown_fields`：字段为 `default_model` / `default_agent` /
-> `default_approval_mode` / `default_reasoning_level` / `theme` / `server` / `providers` /
-> `mcp_servers`。拼错的键名会被 `PUT /api/config` 直接 400，而不是「保存成功但配置没变」。
+> `default_reasoning_level` / `theme` / `server` / `providers` / `mcp_servers`。
+> 拼错的键名会被 `PUT /api/config` 直接 400，而不是「保存成功但配置没变」。
 
 ### 5.2 请求头与请求体三级递归合并规范
 优先级：`Provider 级配置` $\prec$ `Model 级配置` $\prec$ `Reasoning Effort 覆盖`。
@@ -771,24 +707,7 @@ oma.on("tool_call", (e) => ({ block: true, reason?: string }) | undefined);
 - **单一轮次所有权**：轮次名额由 `is_running` 的 CAS 抢占，取消与排队交棒都
   经过同一状态机，确保同一会话任意时刻至多一个执行中的轮次。
 
-### 6.3 先到先得审批仲裁与会话白名单
-- **触发**：`needs_approval()` 判定需要授权时，挂起本轮并广播 `PermissionRequested`
-  （带 `request_id` / 工具名 / 入参）；
-- **抢占**：`ApprovalArbiter` 用 oneshot 登记等待，首个到达的 `ApprovalResponse`
-  完成它并广播 `PermissionResolved { decision, resolved_by }`，其余响应因
-  oneshot 已被消费而自然失效；
-- **超时与拒绝**：120 秒未响应（或轮次被取消）按拒绝处理，向模型注入标准错误
-  `Execution rejected: Permission denied by user (or approval timed out after 120s).`；
-- **`AllowSession` 作用域**：把该工具名写入 `SessionRoom` 内存白名单，本会话内
-  后续调用不再询问；白名单**只针对被放行的那一个工具**，且随会话销毁失效；
-- **三档模式**：`normal` 只拦命令工具（`DANGEROUS_TOOLS`），`strict` 拦截除白名单外
-  的全部工具，`auto` 不拦。模式可按请求切换（`SetApprovalMode`），默认值来自
-  `settings.json` 的 `default_approval_mode`。
-
-> 工具名是 `bash` 而不是 `shell`：`normal` 模式靠名字匹配危险工具，改名而这里没跟
-> 会导致默认模式下审批**静默失效**（永不触发），因此单列为常量并有用例覆盖。
-
-### 6.4 上下文预估与两阶段压缩 (Two-Stage Compaction)
+### 6.3 上下文预估与两阶段压缩 (Two-Stage Compaction)
 - **Token 预估机制（权威锚点 + 启发式增量）**：厂商每次响应上报的 `input_tokens`
   已包含 system prompt 与工具声明等固定开销，将其记录为**权威锚点**（覆盖发出该
   请求时的历史前缀）；此后只需对锚点之后新增的消息做字符折算增量
@@ -837,10 +756,9 @@ ToolOutput {
 2. **进程组管理 (`libc::killpg`)**：
    `bash` 创建独立进程组，发生超时（默认 60s）或用户取消时统一 `killpg` 杀掉整个进程树；
    `find` / `grep` 拉起的 `fd` / `rg` 用 `kill_on_drop` 随 future 一起回收。
-3. **宿主直跑与权限保护**：
+3. **宿主直跑与安全边界**：
    不做 OS 容器沙箱与路径限制，相对路径按工作区解析，绝对路径直通；
-   安全边界由「本地回环监听 + Bearer Token + 审批闸口」共同提供：`normal` 模式下
-   命令执行需人工放行，`strict` 模式进一步覆盖写文件与插件工具。
+   安全边界由「本地回环监听 + Bearer Token」共同提供。
 
 ### 7.2 7 大核心内置工具
 
@@ -1021,13 +939,12 @@ pub struct Palette {
 - 具备功能：
   1. 会话列表管理与工作区选择；
   2. 树状对话流展示、Markdown 渲染、Thinking 思维链折叠；
-  3. Tool 执行过程与参数/Diff 展示；命中审批时在消息区上方弹出审批条
-     （本次允许 / 本会话允许 / 拒绝）；
+  3. Tool 执行过程与参数/Diff 展示；
   4. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）与历史树弹层；
   5. 三栏工作区外壳（侧栏 / 消息区 / 右侧面板）、顶部工具栏与底部状态栏，
      宽度与折叠状态可拖拽并持久化；
   6. 设置面板（连接、外观/主题与调色板、语言、默认参数、提供商、预设、技能），
-     组合器内含 审批模式 / 预设 / 模型 三个选择器；
+     组合器内含 预设 / 模型 两个选择器；
      其中「连接」页读写 `oma web` 同源接口的 `client.json`：列表可切换、增删连接，
      保存时 upsert 当前连接并置为 `active`；接口不可用（如 vite dev）时退回 localStorage；
   7. 界面 i18n 支持简体中文 / 繁体中文 / English / 日本語，缺键回退为键名；
@@ -1066,7 +983,7 @@ pub struct Palette {
 | 会话存储并发 | 每会话两套连接池：写池 `max_connections = 1` 严格串行、读池只读并行，读写互不阻塞；库以 WAL 打开并设 `busy_timeout`，因此同数据目录上的多个实例能互相看到最新提交。 |
 | 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
 | 配置校验 | `OmaConfig` 启用 `deny_unknown_fields`：拼错的键名（或前端字段映射错误）在 `PUT /api/config` 直接 400，不再「保存成功但配置没变」；启动时配置文件解析失败即报错退出，而非静默回退默认值。 |
-| 能力裁剪 | 仅剩 MCP 之外的三项仍是删除状态：子代理 `task`、`ask` 提问、熔断器（均因 pi 内核不内置而移除，如需保留应以插件形式重建）。**已应用户要求恢复**：Agent 预设（v2.5）、工具审批系统（v2.6）、内置 MCP（v2.7）。 |
+| 能力裁剪 | 仅剩 MCP 之外的三项仍是删除状态：子代理 `task`、`ask` 提问、熔断器（均因 pi 内核不内置而移除，如需保留应以插件形式重建）。**已应用户要求恢复**：Agent 预设（v2.5）、内置 MCP（v2.7）。 |
 | 技能发现 | 按 `<root>/<name>/SKILL.md` 三层发现（global/agent/project），同名时更具体的一层覆盖更宽泛的一层；删除技能会连同其目录内的 `scripts/` 等资源一并移除（id 经严格校验，不可穿越）。技能与预设是两套独立机制：预设决定「以什么角色、能用哪些工具运行」，技能只是一段按需读取的知识，同名也不会互相覆盖。 |
 | skill frontmatter 容错 | 技能的 YAML 字段全部可选且忽略未知键：用户目录里存在只有 `description` 与自有键的文件时，名称即目录名，不应因严格解析而整条不可用。 |
 | 设置面板结构 | 提供商页：提供商配置为单个带底色容器（标题在其内），模型配置为容器外分区标题，其下每个模型各自一个容器；预设页的工具授权用多选下拉（标签可逐个移除），选项来自 `GET /api/tools`。 |

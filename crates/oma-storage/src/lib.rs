@@ -2,7 +2,7 @@
 //!
 //! 布局与语义：
 //! - 全局索引库 `<base_dir>/oma.db` 的 `sessions_index` 表保存会话元数据
-//!   （workspace / 标题 / 模型 / agent / 审批模式 / 推理等级 / 当前叶子 /
+//!   （workspace / 标题 / 模型 / agent / 推理等级 / 当前叶子 /
 //!   时间戳）。列表与详情只查这张表，不必打开任何会话库。
 //! - 每次会话一个目录 `<base_dir>/sessions/<session_id>/`，其中 `session.db`
 //!   是对话库：`messages` 保存消息树（`parent_id` 成树，故可在不新建文件的
@@ -22,7 +22,7 @@ use std::{
     sync::Arc,
 };
 
-use oma_contract::{ApprovalMode, ChatMessage, Role, TokenUsage};
+use oma_contract::{ChatMessage, Role, TokenUsage};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -122,7 +122,6 @@ pub struct SessionRecord {
     pub title:           String,
     pub active_model:    String,
     pub active_agent:    String,
-    pub approval_mode:   ApprovalMode,
     /// 会话推理等级（REASONING_LEVELS 之一；空 = 未设置，回退模型默认）
     #[serde(default)]
     pub reasoning_level: String,
@@ -168,13 +167,12 @@ fn session_connect_options(db_path: &Path, read_only: bool) -> SqliteConnectOpti
 /// 静默容忍会让缺失字段在运行时才报错（如 `no such column`）。
 /// 这里在启动阶段直接拒绝，给出可操作的修复提示。
 async fn ensure_index_schema(pool: &SqlitePool) -> Result<()> {
-    const REQUIRED: [&str; 10] = [
+    const REQUIRED: [&str; 9] = [
         "session_id",
         "workspace",
         "title",
         "active_model",
         "active_agent",
-        "approval_mode",
         "reasoning_level",
         "current_leaf_id",
         "created_at",
@@ -317,7 +315,6 @@ impl StorageManager {
                 title           TEXT NOT NULL,
                 active_model    TEXT NOT NULL,
                 active_agent    TEXT NOT NULL DEFAULT 'task',
-                approval_mode   TEXT NOT NULL DEFAULT 'normal',
                 reasoning_level TEXT NOT NULL DEFAULT '',
                 current_leaf_id TEXT,
                 created_at      INTEGER NOT NULL,
@@ -450,7 +447,6 @@ impl StorageManager {
     }
 
     /// 创建会话；已存在时返回既有记录（幂等，不覆盖对话与标题）。
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_session(
         &self,
         session_id: &str,
@@ -458,7 +454,6 @@ impl StorageManager {
         title: &str,
         active_model: &str,
         active_agent: &str,
-        approval_mode: ApprovalMode,
         reasoning_level: &str,
     ) -> Result<SessionRecord> {
         validate_session_id(session_id)?;
@@ -468,8 +463,8 @@ impl StorageManager {
         let inserted = sqlx::query(
             r#"
             INSERT INTO sessions_index
-            (session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            (session_id, workspace, title, active_model, active_agent, reasoning_level, current_leaf_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
             ON CONFLICT(session_id) DO NOTHING
             "#,
         )
@@ -478,7 +473,6 @@ impl StorageManager {
         .bind(title)
         .bind(active_model)
         .bind(active_agent)
-        .bind(approval_mode.as_str())
         .bind(reasoning_level)
         .bind(now)
         .bind(now)
@@ -492,7 +486,7 @@ impl StorageManager {
         if inserted == 0 {
             let row = sqlx::query(
                 r#"
-                SELECT session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at
+                SELECT session_id, workspace, title, active_model, active_agent, reasoning_level, current_leaf_id, created_at, updated_at
                 FROM sessions_index
                 WHERE session_id = ?
                 "#,
@@ -518,7 +512,6 @@ impl StorageManager {
             title: title.to_string(),
             active_model: active_model.to_string(),
             active_agent: active_agent.to_string(),
-            approval_mode,
             reasoning_level: reasoning_level.to_string(),
             current_leaf_id: None,
             created_at: now,
@@ -532,7 +525,7 @@ impl StorageManager {
         validate_session_id(session_id)?;
         let row = sqlx::query(
             r#"
-            SELECT session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at
+            SELECT session_id, workspace, title, active_model, active_agent, reasoning_level, current_leaf_id, created_at, updated_at
             FROM sessions_index
             WHERE session_id = ?
             "#,
@@ -545,15 +538,12 @@ impl StorageManager {
     }
 
     fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
-        let mode_str: String = row.get("approval_mode");
-        let approval_mode = ApprovalMode::parse(&mode_str).unwrap_or_default();
         SessionRecord {
             session_id: row.get("session_id"),
             workspace: row.get("workspace"),
             title: row.get("title"),
             active_model: row.get("active_model"),
             active_agent: row.get("active_agent"),
-            approval_mode,
             reasoning_level: row.get("reasoning_level"),
             current_leaf_id: row.get("current_leaf_id"),
             created_at: row.get("created_at"),
@@ -567,7 +557,7 @@ impl StorageManager {
         let rows = if let Some(ws) = workspace {
             sqlx::query(
                 r#"
-                SELECT session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at
+                SELECT session_id, workspace, title, active_model, active_agent, reasoning_level, current_leaf_id, created_at, updated_at
                 FROM sessions_index
                 WHERE workspace = ?
                 ORDER BY updated_at DESC
@@ -579,7 +569,7 @@ impl StorageManager {
         } else {
             sqlx::query(
                 r#"
-                SELECT session_id, workspace, title, active_model, active_agent, approval_mode, reasoning_level, current_leaf_id, created_at, updated_at
+                SELECT session_id, workspace, title, active_model, active_agent, reasoning_level, current_leaf_id, created_at, updated_at
                 FROM sessions_index
                 ORDER BY updated_at DESC
                 "#,
@@ -675,13 +665,12 @@ impl StorageManager {
         Ok(true)
     }
 
-    /// 更新会话配置 (model, agent, approval_mode, reasoning_level)
+    /// 更新会话配置 (model, agent, reasoning_level)
     pub async fn update_session_settings(
         &self,
         session_id: &str,
         active_model: Option<&str>,
         active_agent: Option<&str>,
-        approval_mode: Option<ApprovalMode>,
         reasoning_level: Option<&str>,
     ) -> Result<()> {
         validate_session_id(session_id)?;
@@ -697,14 +686,6 @@ impl StorageManager {
         if let Some(a) = active_agent {
             sqlx::query("UPDATE sessions_index SET active_agent = ?, updated_at = ? WHERE session_id = ?")
                 .bind(a)
-                .bind(now)
-                .bind(session_id)
-                .execute(&self.index_pool)
-                .await?;
-        }
-        if let Some(mode) = approval_mode {
-            sqlx::query("UPDATE sessions_index SET approval_mode = ?, updated_at = ? WHERE session_id = ?")
-                .bind(mode.as_str())
                 .bind(now)
                 .bind(session_id)
                 .execute(&self.index_pool)
@@ -1010,7 +991,6 @@ mod tests {
                 "Test Session",
                 "claude-3-7",
                 "task",
-                ApprovalMode::Normal,
                 "medium",
             )
             .await?;
@@ -1062,7 +1042,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_del", "/w", "Del", "m", "task", ApprovalMode::Normal, "medium")
+            .create_session("s_del", "/w", "Del", "m", "task", "medium")
             .await?;
 
         // 树：m1 → m2 → m3（活跃链），m1 → m4（兄弟分支）
@@ -1125,7 +1105,7 @@ mod tests {
         assert!(victim.join("keep.txt").exists(), "victim dir must be untouched");
 
         storage
-            .create_session("sess_OK-1", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
+            .create_session("sess_OK-1", "/w", "T", "m", "task", "medium")
             .await?;
         storage.delete_session("sess_OK-1").await?;
         Ok(())
@@ -1138,13 +1118,13 @@ mod tests {
         let storage = StorageManager::new(tmp.path()).await?;
 
         storage
-            .create_session("s_user", "/w", "我的标题", "m", "task", ApprovalMode::Normal, "medium")
+            .create_session("s_user", "/w", "我的标题", "m", "task", "medium")
             .await?;
         assert!(!storage.set_title_if_empty("s_user", "模型起的名字").await?);
         assert_eq!(storage.get_session("s_user").await?.unwrap().title, "我的标题");
 
         storage
-            .create_session("s_auto", "/w", "", "m", "task", ApprovalMode::Normal, "medium")
+            .create_session("s_auto", "/w", "", "m", "task", "medium")
             .await?;
         assert!(storage.set_title_if_empty("s_auto", "自动命名").await?);
         assert_eq!(storage.get_session("s_auto").await?.unwrap().title, "自动命名");
@@ -1153,7 +1133,7 @@ mod tests {
         assert_eq!(storage.get_session("s_auto").await?.unwrap().title, "自动命名");
 
         storage
-            .create_session("s_blank", "/w", "", "m", "task", ApprovalMode::Normal, "medium")
+            .create_session("s_blank", "/w", "", "m", "task", "medium")
             .await?;
         assert!(!storage.set_title_if_empty("s_blank", "   ").await?);
         assert_eq!(storage.get_session("s_blank").await?.unwrap().title, "");
@@ -1166,7 +1146,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_ctx", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
+            .create_session("s_ctx", "/w", "T", "m", "task", "medium")
             .await?;
 
         assert!(storage.context_usage("s_ctx").await?.is_none());
@@ -1191,7 +1171,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_bad", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
+            .create_session("s_bad", "/w", "T", "m", "task", "medium")
             .await?;
 
         // 直接向 session_meta 写入非法值：字段类型错误 / 根本不是 JSON
@@ -1218,7 +1198,7 @@ mod tests {
         let a = StorageManager::new(tmp.path()).await?;
         let b = StorageManager::new(tmp.path()).await?;
 
-        a.create_session("s_x", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
+        a.create_session("s_x", "/w", "T", "m", "task", "medium")
             .await?;
         b.append_message("s_x", &msg("m1", None, "from b", 1000))
             .await?;
@@ -1320,7 +1300,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session("s_att", "/w", "T", "m", "task", ApprovalMode::Normal, "medium")
+            .create_session("s_att", "/w", "T", "m", "task", "medium")
             .await?;
 
         assert!(storage.attachment_path("s_att", "shot-1.png").is_ok());

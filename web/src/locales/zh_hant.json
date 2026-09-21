@@ -84,10 +84,6 @@
     "systemPromptLoading": "正在讀取…",
     "sessionUsage": "本工作階段累計 token（輸入 · 輸出 · 快取讀 · 快取寫）",
     "close": "關閉",
-    "approvalRequest": "請求執行：",
-    "allowOnce": "本次允許",
-    "allowSession": "本會話允許",
-    "deny": "拒絕",
     "cancelRequested": "已請求中止當前輪次",
     "loadMessagesFailed": "載入訊息失敗：{message}",
     "turnError": "本輪執行錯誤",
@@ -130,11 +126,6 @@
     "placeholder": "請選擇",
     "empty": "暫無選項"
   },
-  "approval": {
-    "normal": "普通審批",
-    "strict": "嚴格審批",
-    "auto": "自動放行"
-  },
   "settings": {
     "title": "設定",
     "navDefaults": "預設參數",
@@ -156,12 +147,8 @@
     "defaultModel": "預設模型",
     "defaultModelPlaceholder": "provider/model-id",
     "defaultAgent": "預設 Agent",
-    "defaultApproval": "預設審批模式",
     "saveDefaults": "儲存預設",
     "defaultsSaved": "預設設定已儲存",
-    "approvalNormal": "Normal（危險操作審批）",
-    "approvalStrict": "Strict（全部審批）",
-    "approvalAuto": "Auto（自動放行）",
     "add": "新增",
     "saveAll": "儲存全部",
     "newProvider": "新增 Provider",
@@ -341,8 +328,7 @@
     "emptySnippet": "（空）"
   },
   "notify": {
-    "turnDone": "任務已完成",
-    "approvalNeeded": "工具執行待授權"
+    "turnDone": "任務已完成"
   },
   "panel": {
     "files": "檔案",

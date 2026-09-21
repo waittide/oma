@@ -1,14 +1,14 @@
 //! oma-tui: 基于 Ratatui 的终端客户端
 //!
 //! 由 `oma tui` 子命令驱动：连接 Daemon 后实时渲染流式文本、思考块、
-//! 工具调用与权限审批。入口为 [`run`]，复用调用方的 tokio 运行时。
+//! 工具调用。入口为 [`run`]，复用调用方的 tokio 运行时。
 
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use oma_client::{ConnectOptions, OmaClient, SessionApi};
 use oma_contract::{
-    AgentCommand, AgentEvent, ApprovalDecision, ClientType, Palette, ResolvedTheme, StopReason, ThemeMode,
+    AgentCommand, AgentEvent, ClientType, Palette, ResolvedTheme, StopReason, ThemeMode,
 };
 use ratatui::{
     Frame,
@@ -194,13 +194,6 @@ struct Entry {
     style:  Style,
 }
 
-/// 待响应的审批请求
-struct PendingApproval {
-    request_id: String,
-    tool_name:  String,
-    input:      serde_json::Value,
-}
-
 struct App {
     workspace:   String,
     model:       String,
@@ -213,7 +206,6 @@ struct App {
     input:       String,
     scroll:      u16,
     stick:       bool,
-    approval:    Option<PendingApproval>,
     /// 最近一次请求的上下文占用（tokens, context_len）
     context:     Option<(usize, usize)>,
     /// 可切换的已保存连接
@@ -242,7 +234,6 @@ impl App {
             input: String::new(),
             scroll: 0,
             stick: true,
-            approval: None,
             context: None,
             connections: Vec::new(),
             active_conn: None,
@@ -255,7 +246,7 @@ impl App {
 
     /// 仅在终端失焦时发系统通知。
     ///
-    /// 用户正看着终端时，审批弹窗与提问面板已经把事件摆在眼前，再发通知只是噪声。
+    /// 用户正看着终端时，提问面板已经把事件摆在眼前，再发通知只是噪声。
     /// 由此推导：不支持焦点上报的终端（未开 `focus-events` 的 tmux、老终端等）
     /// 永远不会发通知 —— 这是「只在失焦时才提示」的应有代价，宁可静默也不误扰。
     fn notify(&self, body: String) {
@@ -565,29 +556,7 @@ fn classify_input(app: &mut App, input: InputEvent) -> Option<KeyEvent> {
 
 /// 处理按键；返回 Some 表示离开当前会话（退出或切换连接）。
 async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Result<Option<Outcome>> {
-    // 审批弹窗优先消费按键
-    if let Some(pending) = &app.approval {
-        let decision = match key.code {
-            KeyCode::Char('y') | KeyCode::Enter => Some(ApprovalDecision::AllowOnce),
-            KeyCode::Char('a') => Some(ApprovalDecision::AllowSession),
-            KeyCode::Char('n') | KeyCode::Esc => Some(ApprovalDecision::Deny),
-            _ => None,
-        };
-        if let Some(decision) = decision {
-            let request_id = pending.request_id.clone();
-            let tool_name = pending.tool_name.clone();
-            app.approval = None;
-            client.respond_approval(&request_id, decision).await?;
-            app.push(
-                "·",
-                format!("审批 {} → {}", tool_name, decision_label(decision)),
-                Style::default().fg(app.theme.warning),
-            );
-        }
-        return Ok(None);
-    }
-
-    // 连接切换弹窗（无审批时）：先于普通输入消费按键
+    // 连接切换弹窗：先于普通输入消费按键
     if app.picker.is_some() {
         return Ok(handle_picker_key(app, key));
     }
@@ -681,14 +650,6 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> Option<Outcome> {
     None
 }
 
-fn decision_label(decision: ApprovalDecision) -> &'static str {
-    match decision {
-        ApprovalDecision::AllowOnce => "本次允许",
-        ApprovalDecision::AllowSession => "本会话允许",
-        ApprovalDecision::Deny => "拒绝",
-    }
-}
-
 fn apply_event(app: &mut App, event: AgentEvent) {
     match event {
         AgentEvent::TurnStarted { turn_id, .. } => {
@@ -763,33 +724,6 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             let suffix = if output.lines().count() > 6 { "\n…" } else { "" };
             app.push("  ", format!("{}: {}{}", tool_name, head, suffix), style);
         }
-        AgentEvent::PermissionRequested(data) => {
-            app.picker = None;
-            app.notify(format!("待授权：{}", data.tool_name));
-            app.approval = Some(PendingApproval {
-                request_id: data.request_id,
-                tool_name:  data.tool_name,
-                input:      data.input,
-            });
-        }
-        AgentEvent::PermissionResolved {
-            request_id,
-            resolved_by,
-            ..
-        } => {
-            if app
-                .approval
-                .as_ref()
-                .is_some_and(|p| p.request_id == request_id)
-            {
-                app.approval = None;
-            }
-            app.push(
-                "·",
-                format!("审批由 {} 处理", resolved_by),
-                Style::default().fg(app.theme.muted),
-            );
-        }
         AgentEvent::ModelChanged { active_model } => app.model = active_model,
         AgentEvent::AgentChanged { active_agent } => app.agent = active_agent,
         AgentEvent::ActiveTurnCatchUp(snapshot) => {
@@ -810,11 +744,6 @@ fn apply_event(app: &mut App, event: AgentEvent) {
                     Style::default().fg(app.theme.warning),
                 );
             }
-            app.approval = snapshot.pending_approval.map(|p| PendingApproval {
-                request_id: p.request_id,
-                tool_name:  p.tool_name,
-                input:      p.input,
-            });
             app.busy = true;
         }
         AgentEvent::SyncRequired {} => app.push(
@@ -836,11 +765,6 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::ActiveBranchChanged { current_leaf_id } => app.push(
             "·",
             format!("切换到分支 {}", short_id(&current_leaf_id)),
-            Style::default().fg(app.theme.muted),
-        ),
-        AgentEvent::ApprovalModeChanged { mode } => app.push(
-            "·",
-            format!("审批模式 → {}", approval_mode_label(mode)),
             Style::default().fg(app.theme.muted),
         ),
         AgentEvent::ContextUsage { tokens, context_len } => {
@@ -868,14 +792,6 @@ fn stop_reason_label(reason: StopReason) -> &'static str {
     }
 }
 
-fn approval_mode_label(mode: oma_contract::ApprovalMode) -> &'static str {
-    match mode {
-        oma_contract::ApprovalMode::Normal => "normal",
-        oma_contract::ApprovalMode::Strict => "strict",
-        oma_contract::ApprovalMode::Auto => "auto",
-    }
-}
-
 fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let [header, body, input] = Layout::vertical([
@@ -891,9 +807,7 @@ fn draw(frame: &mut Frame, app: &App) {
     draw_transcript(frame, app, body, theme);
     draw_input(frame, app, input, theme);
 
-    if let Some(pending) = &app.approval {
-        draw_approval(frame, pending, area, theme);
-    } else if let Some(index) = app.picker {
+    if let Some(index) = app.picker {
         draw_picker(frame, app, index, area, theme);
     }
 }
@@ -1048,45 +962,6 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     );
     let cursor_x = area.x + 1 + display_width(&app.input).min(area.width.saturating_sub(2) as usize) as u16;
     frame.set_cursor_position((cursor_x, area.y + 1));
-}
-
-fn draw_approval(frame: &mut Frame, pending: &PendingApproval, area: Rect, theme: TuiTheme) {
-    let width = area.width.saturating_sub(8).min(90);
-    let height = 7.min(area.height);
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
-    frame.render_widget(Clear, popup);
-
-    let body = Text::from(vec![
-        Line::from(vec![
-            Span::styled("工具 ", Style::default().fg(theme.muted)),
-            Span::styled(
-                pending.tool_name.clone(),
-                Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::raw(""),
-        Line::styled(
-            truncate(&summarize_tool_input(&pending.input), width.saturating_sub(4) as usize),
-            Style::default().fg(theme.subtext),
-        ),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled("[y/Enter] 本次允许  ", Style::default().fg(theme.success)),
-            Span::styled("[a] 本会话允许  ", Style::default().fg(theme.accent)),
-            Span::styled("[n/Esc] 拒绝", Style::default().fg(theme.error)),
-        ]),
-    ]);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Double)
-        .border_style(Style::default().fg(theme.warning))
-        .title("权限审批");
-    frame.render_widget(Paragraph::new(body).block(block).wrap(Wrap { trim: false }), popup);
 }
 
 #[cfg(test)]

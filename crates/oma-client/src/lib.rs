@@ -31,9 +31,7 @@
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use oma_contract::{
-    AgentCommand, AgentEvent, ApprovalDecision, ClientMessage, ClientType, ConnectParams, Ready, ServerMessage,
-};
+use oma_contract::{AgentCommand, AgentEvent, ClientMessage, ClientType, ConnectParams, Ready, ServerMessage};
 use serde::Deserialize;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_tungstenite::tungstenite::Message;
@@ -245,17 +243,6 @@ impl OmaClient {
     /// 发送 Agent 指令
     pub async fn send_command(&self, command: AgentCommand) -> Result<()> {
         self.send(ClientMessage::Command { command }).await
-    }
-
-    /// 回答权限审批请求
-    pub async fn respond_approval(&self, request_id: &str, decision: ApprovalDecision) -> Result<()> {
-        self.send(ClientMessage::Approval {
-            response: oma_contract::ApprovalResponse {
-                request_id: request_id.to_string(),
-                decision,
-            },
-        })
-        .await
     }
 
     /// 中止当前轮次并清空排队指令

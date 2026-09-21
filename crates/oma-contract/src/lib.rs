@@ -109,52 +109,6 @@ pub struct ConnectParams {
     pub version:     String,
 }
 
-/// 审批决策
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalDecision {
-    AllowOnce,
-    AllowSession,
-    Deny,
-}
-
-/// 审批模式
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApprovalMode {
-    #[default]
-    Normal,
-    Strict,
-    Auto,
-}
-
-impl ApprovalMode {
-    /// 数据库列存形态（与 serde rename_all 保持一致）
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ApprovalMode::Normal => "normal",
-            ApprovalMode::Strict => "strict",
-            ApprovalMode::Auto => "auto",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "normal" => Some(ApprovalMode::Normal),
-            "strict" => Some(ApprovalMode::Strict),
-            "auto" => Some(ApprovalMode::Auto),
-            _ => None,
-        }
-    }
-}
-
-/// 审批响应
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ApprovalResponse {
-    pub request_id: String,
-    pub decision:   ApprovalDecision,
-}
-
 /// 客户端发向 Agent 的指令
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
@@ -169,9 +123,6 @@ pub enum AgentCommand {
     },
     SetAgent {
         agent: String,
-    },
-    SetApprovalMode {
-        mode: ApprovalMode,
     },
     /// 设置当前会话的推理等级（必须在 REASONING_LEVELS 内，空串 = 未设置）
     SetReasoningLevel {
@@ -196,9 +147,6 @@ pub enum ClientMessage {
     },
     Command {
         command: AgentCommand,
-    },
-    Approval {
-        response: ApprovalResponse,
     },
     Cancel {},
 }
@@ -586,7 +534,6 @@ pub struct Ready {
     pub workspace:       String,
     pub active_model:    String,
     pub active_agent:    String,
-    pub approval_mode:   ApprovalMode,
     /// 当前会话的推理等级（空 = 未设置）
     #[serde(default)]
     pub reasoning_level: String,
@@ -647,16 +594,6 @@ pub struct ToolCallStartedData {
     pub input:     serde_json::Value,
 }
 
-/// 权限审批请求数据
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PermissionRequestedData {
-    pub request_id: String,
-    /// 待执行的工具名
-    pub tool_name:  String,
-    /// 工具入参原文；与 ToolCallStartedData.input 同为结构化 JSON
-    pub input:      serde_json::Value,
-}
-
 /// 活跃轮次重连追赶快照
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActiveTurnCatchUp {
@@ -665,8 +602,6 @@ pub struct ActiveTurnCatchUp {
     pub accumulated_text:     String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tool_call:     Option<ToolCallStartedData>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_approval:     Option<PermissionRequestedData>,
 }
 
 /// Agent 运行事件集
@@ -715,12 +650,6 @@ pub enum AgentEvent {
         output:    String,
         is_error:  bool,
     },
-    PermissionRequested(PermissionRequestedData),
-    PermissionResolved {
-        request_id:  String,
-        decision:    ApprovalDecision,
-        resolved_by: String,
-    },
     ActiveBranchChanged {
         current_leaf_id: String,
     },
@@ -729,9 +658,6 @@ pub enum AgentEvent {
     },
     AgentChanged {
         active_agent: String,
-    },
-    ApprovalModeChanged {
-        mode: ApprovalMode,
     },
     /// 上下文占用更新：每次模型请求拿到用量后广播，供界面展示进度。
     /// `tokens` 为提示侧总量（含缓存），`context_len` 为模型窗口。
@@ -897,11 +823,6 @@ mod tests {
             accumulated_thinking: "thinking...".into(),
             accumulated_text:     "hello".into(),
             active_tool_call:     None,
-            pending_approval:     Some(PermissionRequestedData {
-                request_id: "req_1".into(),
-                tool_name:  "shell".into(),
-                input:      serde_json::json!({ "command": "cargo test" }),
-            }),
         };
         let server_msg = ServerMessage::Event {
             event: Box::new(AgentEvent::ActiveTurnCatchUp(catch_up)),
