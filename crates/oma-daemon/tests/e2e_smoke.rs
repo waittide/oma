@@ -227,7 +227,7 @@ async fn start_harness_with(context_len: usize, supports_vision: bool) -> Result
     // 配置分两文件落盘：settings.json 放常规偏好，models.json 放 providers
     let settings_json = r#"{
   "default_model": "mock/model-x",
-  "default_agent": "task"
+  "default_agent": "build"
 }"#;
     let models_json = format!(
         r#"{{

@@ -20,7 +20,6 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod cli;
 
-const DEFAULT_ADDR: &str = "127.0.0.1:17431";
 const INDEX_HTML: &str = "index.html";
 
 /// 内嵌的前端构建产物。
@@ -130,7 +129,7 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&Path>) -> Result<()> {
+async fn start_daemon(addr: Option<&str>, token_opt: Option<&str>, config_opt: Option<&Path>) -> Result<()> {
     let data_dir = get_data_dir();
     std::fs::create_dir_all(&data_dir)?;
 
@@ -138,6 +137,21 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
     let mut config = load_config(&config_path)?;
     let token = resolve_and_persist_token(token_opt, &mut config, &config_path)?;
     let config_paths = oma_config::ConfigPaths::from_settings_file(&config_path);
+
+    // 绑定目标：`--addr` 是命令行一次性覆盖（`host:port`），未给出时用配置里的
+    // host / port 两个字段（不拼字符串，IPv6 字面量才不会被拼坏）。
+    // 先绑定再初始化存储：端口被占用时立刻失败，不留下半启动的进程。
+    let listener = match addr {
+        Some(addr) => tokio::net::TcpListener::bind(addr)
+            .await
+            .with_context(|| format!("无法监听 {addr}"))?,
+        None => {
+            let (host, port) = (config.server.host.as_str(), config.server.port);
+            tokio::net::TcpListener::bind((host, port))
+                .await
+                .with_context(|| format!("无法监听 {host}:{port}"))?
+        }
+    };
 
     // 采集用户登录 shell 环境（`$SHELL` + rc 里的 `export`）：之后所有会话的
     // `shell` 命令都以这份快照为准。耗时取决于用户 rc，丢到阻塞线程池，
@@ -156,13 +170,10 @@ async fn start_daemon(addr: &str, token_opt: Option<&str>, config_opt: Option<&P
     let state = DaemonState::new(token.clone(), storage, config, config_paths, mcp);
     let app = create_router(state);
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("无法监听 {addr}"))?;
-
     // 与 `oma web` 保持同一种输出形式：只报监听地址，不打印 token，
     // 避免凭证留在终端回滚、CI 日志或 screen/tmux 记录里。
-    tracing::info!("daemon 监听地址: http://{}", addr);
+    // 端口为 0 时由系统分配，故报实际监听地址而非配置值。
+    tracing::info!("daemon 监听地址: http://{}", listener.local_addr()?);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -381,7 +392,7 @@ async fn run() -> Result<()> {
 
     match args.command {
         Some(Commands::Daemon { addr, token, config }) => {
-            start_daemon(&addr, token.as_deref(), config.as_deref()).await?;
+            start_daemon(addr.as_deref(), token.as_deref(), config.as_deref()).await?;
         }
         Some(Commands::Web { host, port, open }) => {
             run_web(host.as_deref(), port, open).await?;
@@ -438,7 +449,7 @@ async fn run_tui(
     let addr = addr
         .or_else(|| named.map(|c| c.url.clone()))
         .or_else(|| client.active_connection().map(|c| c.url.clone()))
-        .unwrap_or_else(|| DEFAULT_ADDR.to_string());
+        .unwrap_or_else(oma_config::default_server_addr);
 
     let token = match token {
         Some(t) => t,

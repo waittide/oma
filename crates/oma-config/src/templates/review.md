@@ -3,7 +3,7 @@ name: Review
 description: Code quality, security, and architectural review specialist
 tools:
   - read
-  - bash
+  - shell
   - ls
   - find
   - grep

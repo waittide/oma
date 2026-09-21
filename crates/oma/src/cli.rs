@@ -14,8 +14,6 @@ use clap::{
     error::{ContextKind, ErrorKind},
 };
 
-use crate::DEFAULT_ADDR;
-
 /// 帮助版式：结构沿用 clap 默认，仅把英文的 `Usage:` 标题换成中文。
 ///
 /// `{usage-heading}` 渲染的是硬编码的 `Usage:`，所以这里只用 `{usage}`。
@@ -38,9 +36,9 @@ pub struct Cli {
 pub enum Commands {
     /// 独立启动后台 Daemon 服务
     Daemon {
-        /// Daemon 监听地址
-        #[arg(long, default_value = DEFAULT_ADDR)]
-        addr:   String,
+        /// Daemon 监听地址 `host:port`（覆盖 settings.json 中的 server.host / server.port）
+        #[arg(long)]
+        addr:   Option<String>,
         /// 覆盖配置文件中的访问 token
         #[arg(long)]
         token:  Option<String>,
@@ -78,7 +76,7 @@ pub enum Commands {
     /// 查看 Daemon 服务端运行状态
     Status {
         /// Daemon 地址
-        #[arg(long, default_value = DEFAULT_ADDR)]
+        #[arg(long, default_value_t = oma_config::default_server_addr())]
         addr:  String,
         /// 覆盖配置文件中的访问 token
         #[arg(long)]

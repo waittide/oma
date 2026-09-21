@@ -589,7 +589,7 @@ async fn handle_workspace_file(
 /// 系统提示词面板：展示当前工作区 + 模型下真正发给厂商的那段提示词。
 ///
 /// 提示词是由内置常量拼环境块与技能目录得到的，用户看不到配置里对应的文件，
-/// 因此只能由服务端拼好回给界面（与 pi-web 的 System 面板一致）。
+/// 因此只能由服务端拼好回给客户端。
 #[derive(Deserialize)]
 struct SystemPromptQuery {
     workspace: Option<String>,
@@ -1933,7 +1933,7 @@ mod tests {
         let room = state.get_or_create_room("sess_tools", "/tmp").await?;
 
         let names: Vec<&str> = room.tools.list().iter().map(|t| t.name()).collect();
-        for expected in ["read", "write", "edit", "bash", "ls", "find", "grep"] {
+        for expected in ["read", "write", "edit", "shell", "ls", "find", "grep"] {
             assert!(names.contains(&expected), "缺少内置工具 {expected}: {names:?}");
         }
         // 子代理已从内核移除，且未随本次 MCP 恢复一并回来
@@ -2163,7 +2163,7 @@ mod tests {
         let auth = format!("Bearer {}", token);
         let ws_param = format!("workspace={}", ws.to_string_lossy());
 
-        // 预设端点：内置 5 个模板始终可见
+        // 预设端点：内置 4 个模板始终可见
         let presets: Vec<serde_json::Value> = client
             .get(format!("{}/api/presets?{}", base, ws_param))
             .header("Authorization", &auth)
@@ -2172,7 +2172,7 @@ mod tests {
             .json()
             .await?;
         let ids: Vec<&str> = presets.iter().filter_map(|p| p["id"].as_str()).collect();
-        for expected in ["task", "plan", "explore", "review", "build"] {
+        for expected in ["plan", "explore", "review", "build"] {
             assert!(
                 ids.contains(&expected),
                 "bundled preset {} missing: {:?}",
@@ -2202,7 +2202,7 @@ mod tests {
 
         // 写入同名技能与预设
         let put_skill = client
-            .put(format!("{}/api/skills/task?{}", base, ws_param))
+            .put(format!("{}/api/skills/build?{}", base, ws_param))
             .header("Authorization", &auth)
             .json(&serde_json::json!({
                 "name": "同名技能", "description": "与预设同名", "content": "正文", "scope": "project"
@@ -2222,45 +2222,45 @@ mod tests {
         assert_eq!(put_preset.status(), StatusCode::OK);
 
         // 技能写入不影响预设
-        let preset_task: serde_json::Value = client
-            .get(format!("{}/api/presets/task?{}", base, ws_param))
+        let bundled_preset: serde_json::Value = client
+            .get(format!("{}/api/presets/build?{}", base, ws_param))
             .header("Authorization", &auth)
             .send()
             .await?
             .json()
             .await?;
-        assert_eq!(preset_task["scope"], "bundled");
-        assert_ne!(preset_task["name"], "同名技能");
+        assert_eq!(bundled_preset["scope"], "bundled");
+        assert_ne!(bundled_preset["name"], "同名技能");
 
         // 技能带磁盘路径（供 System Prompt 目录注入）
-        let skill_task: serde_json::Value = client
-            .get(format!("{}/api/skills/task?{}", base, ws_param))
+        let skill_build: serde_json::Value = client
+            .get(format!("{}/api/skills/build?{}", base, ws_param))
             .header("Authorization", &auth)
             .send()
             .await?
             .json()
             .await?;
-        assert_eq!(skill_task["scope"], "project");
-        assert_eq!(skill_task["name"], "同名技能");
+        assert_eq!(skill_build["scope"], "project");
+        assert_eq!(skill_build["name"], "同名技能");
         // 技能以 <name>/SKILL.md 落盘，并额外暴露技能目录（scripts/ 等资源的基准）
         assert!(
-            skill_task["path"]
+            skill_build["path"]
                 .as_str()
-                .is_some_and(|p| p.ends_with("task/SKILL.md")),
+                .is_some_and(|p| p.ends_with("build/SKILL.md")),
             "skill must expose its SKILL.md path: {}",
-            skill_task["path"]
+            skill_build["path"]
         );
         assert!(
-            skill_task["dir"]
+            skill_build["dir"]
                 .as_str()
-                .is_some_and(|p| p.ends_with("agents/skills/task")),
+                .is_some_and(|p| p.ends_with("agents/skills/build")),
             "skill must expose its directory: {}",
-            skill_task["dir"]
+            skill_build["dir"]
         );
 
         // 内置预设只读
         let bundled_write = client
-            .put(format!("{}/api/presets/task?{}", base, ws_param))
+            .put(format!("{}/api/presets/build?{}", base, ws_param))
             .header("Authorization", &auth)
             .json(&serde_json::json!({
                 "name": "X", "description": "", "tools": [], "content": "b", "scope": "project"
@@ -2272,7 +2272,7 @@ mod tests {
         // 两个端点各自删除互不影响
         let del = client
             .delete(format!(
-                "{}/api/skills/task?scope=project&workspace={}",
+                "{}/api/skills/build?scope=project&workspace={}",
                 base,
                 ws.to_string_lossy()
             ))
@@ -2290,7 +2290,7 @@ mod tests {
         assert!(
             remaining
                 .iter()
-                .all(|s| s["id"] != "task" || s["scope"] != "project")
+                .all(|s| s["id"] != "build" || s["scope"] != "project")
         );
         // 预设仍在
         assert!(

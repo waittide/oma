@@ -314,7 +314,7 @@ impl StorageManager {
                 workspace       TEXT NOT NULL,
                 title           TEXT NOT NULL,
                 active_model    TEXT NOT NULL,
-                active_agent    TEXT NOT NULL DEFAULT 'task',
+                active_agent    TEXT NOT NULL DEFAULT 'build',
                 reasoning_level TEXT NOT NULL DEFAULT '',
                 current_leaf_id TEXT,
                 created_at      INTEGER NOT NULL,

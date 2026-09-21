@@ -12,8 +12,20 @@ use oma_provider::ModelConfig;
 pub use oma_provider::{ModelEntry, ProviderConfig};
 use serde::{Deserialize, Serialize};
 
-/// 默认监听地址
-pub const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:17431";
+/// 默认监听主机：只绑回环地址，装完不会把 Agent 暴露到局域网。
+pub const DEFAULT_SERVER_HOST: &str = "127.0.0.1";
+
+/// 默认监听端口
+pub const DEFAULT_SERVER_PORT: u16 = 17431;
+
+/// 默认监听地址 `host:port`。
+///
+/// 仅供客户端（`oma status` 默认目标、TUI 无可用连接时的兜底）与
+/// `oma daemon --addr` 的取值使用；服务端绑定走 `ServerConfig` 的 `host` / `port`
+/// 两个字段，不做字符串拼接，以免 IPv6 字面量被拼坏。
+pub fn default_server_addr() -> String {
+    format!("{}:{}", DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT)
+}
 
 /// 未配置访问 token 时写入配置文件的默认值。
 ///
@@ -25,25 +37,34 @@ pub const DEFAULT_AUTH_TOKEN: &str = "admin";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    #[serde(default = "default_listen_addr")]
-    pub listen_addr: String,
+    /// 监听主机；默认只绑回环地址
+    #[serde(default = "default_server_host")]
+    pub host:  String,
+    /// 监听端口
+    #[serde(default = "default_server_port")]
+    pub port:  u16,
     /// 访问 token：REST 需 `Authorization: Bearer`，WS 握手可用 `?token=`。
     ///
     /// 缺省为空表示「尚未设置」：启动时会向配置文件补写
     /// [`DEFAULT_AUTH_TOKEN`]，这样用户能在 settings.json 里直接看到并修改。
     #[serde(default)]
-    pub token:       String,
+    pub token: String,
 }
 
-fn default_listen_addr() -> String {
-    DEFAULT_LISTEN_ADDR.to_string()
+fn default_server_host() -> String {
+    DEFAULT_SERVER_HOST.to_string()
+}
+
+fn default_server_port() -> u16 {
+    DEFAULT_SERVER_PORT
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            listen_addr: default_listen_addr(),
-            token:       String::new(),
+            host:  default_server_host(),
+            port:  default_server_port(),
+            token: String::new(),
         }
     }
 }
@@ -51,12 +72,11 @@ impl Default for ServerConfig {
 /// 内置调色板源码：与 `AgentLoader` 的内嵌模板同理，打包进二进制作为兜底，
 /// 用户目录只放自己的调色板，不需要任何初始化写入。
 ///
-/// `pi-light` / `pi-dark` 为默认：中性灰阶 + 单一强调色，视觉对齐 pi-web。
-/// `mist` / `rose` / `pine` 是 pi-web 的其余三套主题（两个浅色一个深色），
-/// 映射方式与 pi-light / pi-dark 相同（只换强调色家族，语义色沿用同一批）。
+/// 默认主题引用 `mocha` / `latte`：同一套 Catppuccin 语义色的深色与浅色版本，
+/// 令牌名与取值一一对应，切换明暗时不会有语义色断层。
+/// 其余几套只换强调色家族（`mist` / `rose` 为浅色，`pine` / `frappe` / `macchiato` 为深色），
+/// 中性灰阶与语义色沿用同一批。
 pub const BUILTIN_PALETTES: &[(&str, &str)] = &[
-    ("pi-light", include_str!("themes/pi-light.json")),
-    ("pi-dark", include_str!("themes/pi-dark.json")),
     ("mist", include_str!("themes/mist.json")),
     ("rose", include_str!("themes/rose.json")),
     ("pine", include_str!("themes/pine.json")),
@@ -78,7 +98,7 @@ pub fn is_valid_palette_id(id: &str) -> bool {
 ///
 /// 内置调色板编译期内嵌；用户调色板位于 `<配置目录>/oma/themes/<id>.json`。
 /// 内置 id 为保留位（同名文件既不会加载也无法写入，见 `is_builtin`），
-/// 因此列表顺序稳定：四个内置在前，用户自定义按目录枚举顺序追加在后。
+/// 因此列表顺序稳定：内置在前，用户自定义按目录枚举顺序追加在后。
 pub struct PaletteLoader;
 
 impl PaletteLoader {
@@ -332,7 +352,7 @@ fn default_model_str() -> String {
     "my_anthropic/claude-3-7-sonnet".to_string()
 }
 fn default_agent_str() -> String {
-    "task".to_string()
+    "build".to_string()
 }
 /// 默认推理等级：模型支持思考时必须落在某个等级上，故不提供「空」语义
 fn default_reasoning_level_str() -> String {
@@ -659,7 +679,6 @@ impl ClientConfig {
 // =========================================================================
 
 /// 内置 Agent 模板源码
-pub const TEMPLATE_TASK: &str = include_str!("templates/task.md");
 pub const TEMPLATE_PLAN: &str = include_str!("templates/plan.md");
 pub const TEMPLATE_EXPLORE: &str = include_str!("templates/explore.md");
 pub const TEMPLATE_REVIEW: &str = include_str!("templates/review.md");
@@ -915,7 +934,6 @@ impl AgentLoader {
 
         // 3. 编译期内嵌兜底
         let bundled = match agent_id {
-            "task" => TEMPLATE_TASK,
             "plan" => TEMPLATE_PLAN,
             "explore" => TEMPLATE_EXPLORE,
             "review" => TEMPLATE_REVIEW,
@@ -1268,8 +1286,7 @@ impl SkillLoader {
 }
 
 /// 内置 Agent 预设清单（id, 模板源码）
-pub const BUNDLED_AGENTS: [(&str, &str); 5] = [
-    ("task", TEMPLATE_TASK),
+pub const BUNDLED_AGENTS: [(&str, &str); 4] = [
     ("plan", TEMPLATE_PLAN),
     ("explore", TEMPLATE_EXPLORE),
     ("review", TEMPLATE_REVIEW),
@@ -1319,26 +1336,26 @@ mod tests {
     #[test]
     fn test_bundled_palettes_are_valid() {
         let palettes = PaletteLoader::builtin_all();
-        assert_eq!(palettes.len(), 9, "nine bundled palettes expected");
+        assert_eq!(palettes.len(), 7, "seven bundled palettes expected");
         for p in &palettes {
             PaletteLoader::validate_palette(p).unwrap_or_else(|e| panic!("bundled palette {} invalid: {e}", p.id));
             assert_eq!(p.tokens().len(), PALETTE_TOKENS.len());
         }
-        // 浅色/深色基底：pi-light 为默认浅色，latte 为其后的 Catppuccin 浅色；
-        // mist / rose 是 pi-web 的两套浅色主题
+        // 默认主题走 `latte` / `mocha`（同一套 Catppuccin 语义色）；mist / rose
+        // 为另外两套浅色
         let light: Vec<&str> = palettes
             .iter()
             .filter(|p| p.mode == PaletteMode::Light)
             .map(|p| p.id.as_str())
             .collect();
-        assert_eq!(light, vec!["pi-light", "mist", "rose", "latte"]);
+        assert_eq!(light, vec!["mist", "rose", "latte"]);
 
         let dark: Vec<&str> = palettes
             .iter()
             .filter(|p| p.mode == PaletteMode::Dark)
             .map(|p| p.id.as_str())
             .collect();
-        assert_eq!(dark, vec!["pi-dark", "pine", "frappe", "macchiato", "mocha"]);
+        assert_eq!(dark, vec!["pine", "frappe", "macchiato", "mocha"]);
     }
 
     #[test]
@@ -1346,7 +1363,11 @@ mod tests {
         let palettes = PaletteLoader::builtin_all();
 
         // 默认主题引用的均为内置调色板
-        assert!(PaletteLoader::validate_theme(&Theme::default(), &palettes).is_ok());
+        let default_theme = Theme::default();
+        assert!(PaletteLoader::validate_theme(&default_theme, &palettes).is_ok());
+        // 缺省即 `mocha` / `latte`：新装配置不写主题字段时客户端拿到的就是这两套
+        assert_eq!(default_theme.dark_palette, "mocha");
+        assert_eq!(default_theme.light_palette, "latte");
 
         // 浅色引用深色调色板非法
         let wrong_mode = Theme {
@@ -1424,17 +1445,25 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path();
 
-        let task_agent = AgentLoader::load_agent("task", ws).unwrap();
-        assert_eq!(task_agent.id, "task");
-        assert_eq!(task_agent.name, "Task");
-        assert!(task_agent.tools.contains(&"read".to_string()));
-        assert!(task_agent.tools.contains(&"write".to_string()));
-        assert!(task_agent.tools.contains(&"edit".to_string()));
-        // `shell` 已更名为 `bash`，白名单必须跟着走，否则任务代理会「看不到」命令工具
-        assert!(task_agent.tools.contains(&"bash".to_string()));
-        // 已从内核移除的工具不应再出现在任何内置预设里（白名单会空转，看起来像坏了）
+        // 缺省预设是 `build`：它不声明工具清单，空清单在工具注册表里等于「不限制」，
+        // 因此新装即拥有全部工具，不需要先写配置文件
+        let build = AgentLoader::load_agent("build", ws).unwrap();
+        assert_eq!(build.id, "build");
+        assert_eq!(build.name, "Build");
+        assert!(build.tools.is_empty(), "build 预设不应限制工具: {:?}", build.tools);
+
+        // 只读预设仍须声明白名单；命令工具在内核里叫 `shell`
+        let explore = AgentLoader::load_agent("explore", ws).unwrap();
+        assert!(explore.tools.contains(&"read".to_string()));
+        assert!(explore.tools.contains(&"shell".to_string()));
+
+        // `task` 已并入 `build`，内置清单不再包含它
+        let bundled_ids: Vec<&str> = BUNDLED_AGENTS.iter().map(|(id, _)| *id).collect();
+        assert_eq!(bundled_ids, vec!["plan", "explore", "review", "build"]);
+
+        // 已从内核移除的工具不应再出现在任何预设里（白名单会空转，看起来像坏了）
         for bundled in AgentLoader::list_agent_files(None) {
-            for gone in ["shell", "task", "ask"] {
+            for gone in ["bash", "task", "ask"] {
                 assert!(
                     !bundled.tools.contains(&gone.to_string()),
                     "预设 {} 仍声明了已移除的工具 {}",
@@ -1444,7 +1473,7 @@ mod tests {
             }
         }
 
-        let prompt = AgentLoader::build_system_prompt(&task_agent, ws, "my_anthropic/claude-3-7");
+        let prompt = AgentLoader::build_system_prompt(&build, ws, "my_anthropic/claude-3-7");
         assert!(prompt.contains("<runtime_context>"));
         assert!(prompt.contains("Active Model: my_anthropic/claude-3-7"));
     }
@@ -1510,7 +1539,7 @@ mod tests {
     /// 端到端：工作区里的 AGENTS.md 会进系统提示词，别的工作区不会。
     #[test]
     fn test_system_prompt_includes_project_context() {
-        let template = AgentLoader::load_agent("task", Path::new(".")).unwrap();
+        let template = AgentLoader::load_agent("build", Path::new(".")).unwrap();
 
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("AGENTS.md"), "MARKER-ONLY-IN-THIS-WORKSPACE").unwrap();
@@ -1585,8 +1614,8 @@ mod tests {
         let config: OmaConfig = serde_json::from_str(
             r#"{
               "default_model": "deepseek/deepseek-chat",
-              "default_agent": "task",
-              "server": { "listen_addr": "0.0.0.0:17431" },
+              "default_agent": "build",
+              "server": { "host": "0.0.0.0", "port": 8080 },
               "providers": {
                 "deepseek": {
                   "api_type": "completion",
@@ -1598,8 +1627,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.default_model, "deepseek/deepseek-chat");
-        assert_eq!(config.server.listen_addr, "0.0.0.0:17431");
+        assert_eq!(config.default_agent, "build");
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 8080);
         assert!(config.providers.contains_key("deepseek"));
+    }
+
+    /// 缺省值：服务端绑回环 17431，预设为 build——新装不写任何字段即可用。
+    #[test]
+    fn test_config_defaults() {
+        let config = OmaConfig::default();
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 17431);
+        assert_eq!(config.default_agent, "build");
+
+        // `server` 段落可只写一半：缺的字段各自回落默认值
+        let partial: OmaConfig = serde_json::from_str(r#"{"server": {"port": 8080}}"#).unwrap();
+        assert_eq!(partial.server.host, "127.0.0.1");
+        assert_eq!(partial.server.port, 8080);
+
+        // 客户端默认连接目标与默认绑定同源，端口只在一处定义
+        assert_eq!(default_server_addr(), "127.0.0.1:17431");
     }
 
     #[test]
@@ -1731,13 +1779,13 @@ mod tests {
         assert_eq!(overridden.name, "Proj Preset");
 
         // 内置预设只读
-        assert!(AgentLoader::write_agent_file(Some(&ws), "task", "global", "X", "", &[], "body").is_err());
+        assert!(AgentLoader::write_agent_file(Some(&ws), "build", "global", "X", "", &[], "body").is_err());
 
         // 删除后回落到内置兜底
         AgentLoader::delete_agent_file(Some(&ws), "my-preset", "project").unwrap();
         assert!(AgentLoader::read_agent_file(Some(&ws), "my-preset").is_err());
         // 内置兜底仍然可用
-        assert!(AgentLoader::read_agent_file(Some(&ws), "task").is_ok());
+        assert!(AgentLoader::read_agent_file(Some(&ws), "build").is_ok());
     }
 
     /// 技能与 Agent 预设必须是两套互不干扰的存储：同名也不会互相覆盖。
@@ -1759,24 +1807,25 @@ mod tests {
         assert!(project_skills(&ws).is_empty());
         assert!(!AgentLoader::list_agent_files(Some(&ws)).is_empty());
 
-        SkillLoader::write_skill(Some(&ws), "task", "project", "同名技能", "与预设同名", "技能正文").unwrap();
+        SkillLoader::write_skill(Some(&ws), "build", "project", "同名技能", "与预设同名", "技能正文").unwrap();
         let skills = project_skills(&ws);
         assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].id, "task");
+        assert_eq!(skills[0].id, "build");
         assert_eq!(skills[0].scope, "project");
 
-        // 同名互不覆盖：预设仍是内置只读模板，且工具白名单来自预设而非技能
-        let preset = AgentLoader::read_agent_file(Some(&ws), "task").unwrap();
+        // 同名互不覆盖：预设仍是内置只读模板，工具清单也只来自预设（build 不限制工具），
+        // 技能里的任何内容都不会改写它
+        let preset = AgentLoader::read_agent_file(Some(&ws), "build").unwrap();
         assert_eq!(preset.scope, "bundled");
         assert_ne!(preset.name, "同名技能");
-        assert!(preset.tools.contains(&"write".to_string()));
+        assert!(preset.tools.is_empty(), "build 预设不声明工具清单");
 
         // 技能存放在独立的 skills 目录下，且为 <name>/SKILL.md 布局
         let skill_dir = SkillLoader::project_dir(&ws);
         let preset_dir = AgentLoader::project_agents_dir(&ws);
         assert_ne!(skill_dir, preset_dir);
-        assert!(skill_dir.join("task").join("SKILL.md").exists());
-        assert!(!preset_dir.join("task.md").exists());
+        assert!(skill_dir.join("build").join("SKILL.md").exists());
+        assert!(!preset_dir.join("build.md").exists());
     }
 
     /// 描述含冒号等 YAML 元字符时必须能原样回读。
@@ -1818,7 +1867,7 @@ mod tests {
         let ws = tmp.path().join("proj");
         std::fs::create_dir_all(&ws).unwrap();
 
-        let preset = AgentLoader::load_agent("task", &ws).unwrap();
+        let preset = AgentLoader::load_agent("build", &ws).unwrap();
         // 写入前该技能不应出现在目录中
         let before = AgentLoader::build_system_prompt(&preset, &ws, "p/m");
         assert!(!before.contains("- cargo:"));
@@ -2110,7 +2159,9 @@ mod tests {
     fn test_unknown_config_field_is_rejected_at_every_level() {
         let cases = [
             ("theme", r#"{"theme": {"dark_flavor": "mocha"}}"#),
-            ("server", r#"{"server": {"listen": "0.0.0.0:1"}}"#),
+            // `listen_addr` 已拆成 host + port，不做兼容：旧键必须报错，
+            // 否则用户以为端口改了、实际还绑在旧地址上
+            ("server", r#"{"server": {"listen_addr": "0.0.0.0:17431"}}"#),
             (
                 "provider",
                 r#"{"providers": {"p": {"api_type": "completion", "base_url": "http://x/v1", "api_key": "k", "modles": []}}}"#,

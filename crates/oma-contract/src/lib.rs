@@ -242,12 +242,14 @@ pub struct Theme {
     pub accent:        String,
 }
 
+/// 默认深色调色板：`mocha`（完整的 Catppuccin 深色，语义色齐全）
 fn default_dark_palette() -> String {
-    "pi-dark".to_string()
+    "mocha".to_string()
 }
 
+/// 默认浅色调色板：`latte`（与 `mocha` 同一套语义色的浅色版本，明暗切换不跳色）
 fn default_light_palette() -> String {
-    "pi-light".to_string()
+    "latte".to_string()
 }
 
 fn default_accent() -> String {

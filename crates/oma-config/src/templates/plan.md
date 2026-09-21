@@ -3,7 +3,7 @@ name: Plan
 description: Architecture, design, and roadmap planning specialist
 tools:
   - read
-  - bash
+  - shell
   - ls
   - find
   - grep

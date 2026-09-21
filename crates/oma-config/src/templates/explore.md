@@ -3,7 +3,7 @@ name: Explore
 description: Read-only rapid codebase exploration and research agent
 tools:
   - read
-  - bash
+  - shell
   - ls
   - find
   - grep
