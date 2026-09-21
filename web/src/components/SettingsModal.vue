@@ -32,7 +32,6 @@ import type {
   McpServerConfig,
   ModelCapability,
   ModelInfo,
-  ClientConfig,
   ClientConnection,
   OmaConfig,
   PaletteMode,
@@ -183,56 +182,90 @@ async function testConnection(): Promise<boolean> {
   }
 }
 
-/** 组装下一份 client.json：upsert 当前连接并置为活动，重命名时移除旧名。 */
-function buildNextConfig(next: ClientConnection): ClientConfig | null {
+/**
+ * 把表单里的连接落盘。
+ *
+ * `activate` 为真时同时把它设为活动连接；为假时保持原活动项不变——这正是
+ * 「保存」与「连接」的区别：前者只写 client.json，不动正在跑的那条连接。
+ * 无同源接口（vite dev）时退回 localStorage，只有一条连接可记。
+ */
+async function persistConnection(activate: boolean): Promise<boolean> {
   const cfg = clientConfig.value;
-  if (!cfg) return null;
-  const list = cfg.connections.filter((c) => c.name !== next.name && c.name !== selectedConn.value);
-  list.push(next);
-  return { ...cfg, connections: list, active: next.name };
-}
-
-async function saveConnection() {
   const name = conn.name.trim();
-  // 仅当能落盘 client.json 时才要求名称；无接口时退回旧的 localStorage 行为
+  const url = normalizeBaseUrl(conn.baseUrl);
+  // 与 setConnection 一致：存盘前去掉凭证两端的空白，避免把看不见的空格写进 client.json
+  const token = conn.token.trim();
+  // 仅当能落盘 client.json 时才要求名称与地址；localStorage 退回态沿用旧行为
   if (clientConfigReady.value && !name) {
     toast.error(t('connNameRequired'));
-    return;
+    return false;
   }
-  const url = normalizeBaseUrl(conn.baseUrl);
-  // 保存的连接必须带地址（服务器端也会校验）；空地址只对当前会话的「同源」有意义
   if (clientConfigReady.value && !url) {
     toast.error(t('connUrlRequired'));
-    return;
+    return false;
   }
-  setConnection(url, conn.token);
-  conn.baseUrl = baseUrl.value;
-  conn.token = token.value;
 
-  // 先落盘 client.json（接口可用时），再验证可达性：即使目标暂时连不上，
-  // 保存的连接与 token 也不应丢失。
-  if (clientConfigReady.value) {
-    const next = buildNextConfig({ name, url, token: conn.token });
-    if (next) {
-      try {
-        await saveClientConfig(next);
-        selectedConn.value = name;
-      } catch (e) {
-        toast.error(t('connSaveFailed', { message: (e as Error).message }));
-        return;
-      }
+  if (!clientConfigReady.value || !cfg) {
+    setConnection(url, token);
+    conn.baseUrl = url;
+    return true;
+  }
+
+  // upsert：重命名时把旧名字的那条一并移除，列表里不会留下孤儿
+  const list = cfg.connections.filter((c) => c.name !== name && c.name !== selectedConn.value);
+  list.push({ name, url, token });
+  // 编辑的若正是当前活动连接，活动标记要跟着新名字走；否则保持原活动项
+  const wasActive = selectedConn.value !== null && isActive(selectedConn.value);
+  const next = { ...cfg, connections: list, active: activate || wasActive ? name : cfg.active };
+  try {
+    await saveClientConfig(next);
+  } catch (e) {
+    toast.error(t('connSaveFailed', { message: (e as Error).message }));
+    return false;
+  }
+  selectedConn.value = name;
+  conn.baseUrl = url;
+  return true;
+}
+
+/** 「保存」：只写 client.json，不切换活动连接，也不重连。 */
+async function saveConnection() {
+  if (!(await persistConnection(false))) return;
+  toast.success(t('connSaved'));
+}
+
+/**
+ * 「连接」：先落盘并设为活动连接，再整体重载。
+ *
+ * 探测不作为前置条件——目标暂时不可达时也应该允许切过去（用户可能正要启动那个
+ * Daemon）；切完顺手探一次，状态行会立刻给出反馈。地址/凭证换了之后，旧数据
+ * （会话、消息、主题、配置）都属于上一个 Daemon，必须整体重载，由 App 统一做。
+ */
+async function connectConnection() {
+  if (!(await persistConnection(true))) return;
+  setConnection(normalizeBaseUrl(conn.baseUrl), conn.token);
+  await reloadAll();
+  toast.success(t('connConnected', { name: conn.name.trim() }));
+  void testConnection();
+}
+
+/** 激活列表里已保存的某条连接并重连（直接用列表里的值，不读表单）。 */
+async function connectSaved(c: ClientConnection) {
+  if (isActive(c.name)) return;
+  const cfg = clientConfig.value;
+  if (clientConfigReady.value && cfg) {
+    try {
+      await saveClientConfig({ ...cfg, active: c.name });
+    } catch (e) {
+      toast.error(t('connSaveFailed', { message: (e as Error).message }));
+      return;
     }
   }
-
-  if (await testConnection()) {
-    toast.success(t('connSaved'));
-    // 地址/凭证换了之后，旧数据（会话、消息、主题、配置）都属于上一个 Daemon，
-    // 必须整体重载；由 App 统一做：会话列表 + 配置主题 + 重新建立 WS
-    await reloadAll();
-  } else {
-    // 失败也要给出可见反馈：否则点完按钮像是「什么都没发生」，只能去翻控制台
-    toast.error(connDetail.value || t('connFailed'));
-  }
+  selectConnection(c);
+  setConnection(normalizeBaseUrl(c.url), c.token);
+  await reloadAll();
+  toast.success(t('connConnected', { name: c.name }));
+  void testConnection();
 }
 
 /** 删除一条已保存连接并落盘；若删的是活动连接则顺延到列表首个。 */
@@ -1371,7 +1404,7 @@ function pickLocale(v: Locale) {
             </UiButton>
           </header>
           <div class="pane-scroll">
-            <!-- 已保存的连接：点击切换，活动项带勾选标记 -->
+            <!-- 已保存的连接：点行载入表单编辑，右侧「连接」显式激活并重连 -->
             <div v-if="clientConfigReady" class="list conn-list">
               <p v-if="connections.length === 0" class="conn-empty">{{ t('connEmpty') }}</p>
               <div
@@ -1389,14 +1422,21 @@ function pickLocale(v: Locale) {
                   <span class="conn-name">{{ c.name }}</span>
                   <span class="conn-url">{{ c.url }}</span>
                 </span>
-                <UiIconButton
-                  class="conn-del"
-                  size="sm"
-                  :label="tc('delete')"
-                  @click.stop="removeConnection(c.name)"
-                >
-                  <LuTrash2 :size="13" />
-                </UiIconButton>
+                <span class="conn-actions">
+                  <UiButton
+                    variant="soft"
+                    tone="accent"
+                    size="sm"
+                    :disabled="isActive(c.name)"
+                    @click.stop="connectSaved(c)"
+                  >
+                    {{ t('connConnect') }}
+                  </UiButton>
+                  <UiButton variant="ghost" tone="danger" size="sm" @click.stop="removeConnection(c.name)">
+                    <template #prefix><LuTrash2 :size="13" /></template>
+                    {{ tc('delete') }}
+                  </UiButton>
+                </span>
               </div>
             </div>
 
@@ -1469,8 +1509,17 @@ function pickLocale(v: Locale) {
             <UiButton variant="ghost" tone="neutral" size="sm" :loading="connTesting" @click="testConnection">
               {{ t('connTest') }}
             </UiButton>
-            <UiButton variant="solid" tone="accent" size="sm" :loading="connTesting" @click="saveConnection">
+            <UiButton variant="soft" tone="neutral" size="sm" @click="saveConnection">
               {{ t('connSave') }}
+            </UiButton>
+            <UiButton
+              variant="solid"
+              tone="accent"
+              size="sm"
+              :loading="connTesting"
+              @click="connectConnection"
+            >
+              {{ t('connConnect') }}
             </UiButton>
           </footer>
         </section>
@@ -2287,9 +2336,16 @@ function pickLocale(v: Locale) {
 </template>
 
 <style scoped>
+/*
+ * 左右分栏自己铺满弹窗（body 是 flush），左侧导航列底色不透明，不裁剪就会把
+ * 弹窗四个圆角糊成直角。这里用与 `.ui-modal__dialog` 相同的半径（14px）减去其
+ * 1px 边框，四个圆角才都露出圆弧。
+ */
 .split {
   display: flex;
   height: min(640px, calc(100vh - 92px));
+  border-radius: calc(var(--radius-xl) - 1px);
+  overflow: hidden;
 }
 .nav {
   display: flex;
@@ -2599,22 +2655,12 @@ function pickLocale(v: Locale) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.conn-del {
-  flex-shrink: 0;
-  display: inline-flex;
+/* 行内操作：连接（激活并重连）与删除，固定在行尾 */
+.conn-actions {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--overlay0);
-  cursor: pointer;
-}
-.conn-del:hover {
-  background: var(--danger-soft);
-  color: var(--danger);
+  gap: 6px;
+  flex-shrink: 0;
 }
 .conn-empty,
 .conn-note {
@@ -2881,9 +2927,11 @@ function pickLocale(v: Locale) {
   gap: 6px;
   min-width: 0;
 }
-.cfg-ctl > .o-input,
-.cfg-ctl > .o-select,
-.cfg-ctl > .o-multi {
+/*
+ * 组件库的输入/选择控件外层统一是 `.ui-field`（UiInput / UiSelect / UiMultiSelect
+ * 都靠它包裹），让它撑满网格的右侧列，控件右边缘才会与卡片内容右边界对齐。
+ */
+.cfg-ctl > .ui-field {
   flex: 1;
   min-width: 0;
 }
@@ -2894,41 +2942,55 @@ function pickLocale(v: Locale) {
   align-items: stretch;
   gap: 6px;
 }
-/* 折叠区开关：整行可点，箭头靠右表示展开状态 */
-.cfg-fold {
+/*
+ * 折叠区开关：整行可点，箭头靠右表示展开状态。
+ * 带 `.pane` 前缀是为了压过组件库的 `.ui-button--ghost`：ghost 变体把背景与边框
+ * 刷成 `transparent`，而本地规则与它特异性相同却更靠前，不加前缀时这一行就退化成
+ * 纯文字，跟同一列的下拉框/输入框看起来不是一套控件。这里的取值与
+ * `.ui-select-trigger` 逐项对齐：同边框色、同背景、同圆角、同高度、同箭头色。
+ */
+.pane .cfg-fold {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  padding: 6px 10px;
+  height: var(--control-h-md);
+  padding: 0 10px;
   border: 1px solid var(--control-border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  background: var(--paper);
+  color: var(--ink);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 14px;
   text-align: left;
-  height: auto;
   cursor: pointer;
   transition:
     border-color 0.15s ease,
     color 0.15s ease;
 }
-.cfg-fold :deep(.ui-button__label) {
+.pane .cfg-fold :deep(.ui-button__label) {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
   width: 100%;
 }
-.cfg-fold:hover {
-  border-color: var(--overlay0);
-  color: var(--ink);
+/*
+ * hover 态与 UiSelect 一致：只提亮描边，底色不变（否则整行泛灰，与右侧下拉框不同款）。
+ * `:not(:disabled)` 是为了凑够特异性——库里的 ghost hover 也带这一段，缺了就压不过它。
+ */
+.pane .cfg-fold:hover:not(:disabled) {
+  background: var(--paper);
+  border-color: color-mix(in srgb, var(--control-border) 70%, var(--ink));
+}
+/* 展开态：与 UiSelect 打开态同款强调色描边 */
+.pane .cfg-fold[aria-expanded='true'] {
+  border-color: var(--accent);
 }
 .cfg-fold .caret {
   flex-shrink: 0;
-  color: var(--text-tertiary);
+  color: var(--muted);
   transition: transform 0.15s ease;
 }
 .cfg-fold .caret.open {

@@ -738,15 +738,22 @@ const deleteTarget = computed(
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
-  padding: 8px 10px;
+  /* 与 .tree 同一内缩，底栏按钮才能铺满整行而不外扩到侧栏边缘 */
+  padding: 8px;
   border-top: 1px solid var(--line);
 }
-.foot-item {
+/*
+ * 带 `.foot` 前缀是为了压过组件库的 `.ui-button` 基础样式：它的 `display/padding/
+ * justify-content` 与本地规则特异性相同却更靠后，不加前缀时按钮就只包住文字。
+ * 唯一按钮铺满整行（flex: 1），图标与文案在整行内水平/垂直居中。
+ */
+.foot > .foot-item {
   display: inline-flex;
+  flex: 1;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   height: 26px;
-  justify-content: center;
   padding: 0 8px;
   border: none;
   border-radius: 8px;
