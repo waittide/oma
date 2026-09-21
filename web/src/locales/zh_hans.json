@@ -40,9 +40,7 @@
     "sortCreatedDesc": "创建时间倒序",
     "sortUpdatedAsc": "修改时间正序",
     "sortUpdatedDesc": "修改时间倒序",
-    "allWorkspaces": "全部工作区",
-    "models": "模型",
-    "skills": "技能"
+    "allWorkspaces": "全部工作区"
   },
   "sessions": {
     "created": "会话已创建",

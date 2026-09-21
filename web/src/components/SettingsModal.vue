@@ -2331,7 +2331,12 @@ function pickLocale(v: Locale) {
   text-transform: uppercase;
   color: var(--overlay0);
 }
-.nav-item {
+/*
+ * 选择器带 `.nav` 前缀是为了压过组件库的 `.ui-button`：两者特异性同为 (0,2,0)，
+ * 而库样式在文档里更靠后，不加前缀时这里的 padding/justify-content 会被它覆盖，
+ * 导航项的内容（图标+文字）就会居中而不是左对齐。
+ */
+.nav .nav-item {
   display: flex;
   align-items: center;
   gap: 8px;

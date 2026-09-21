@@ -4,7 +4,6 @@ import {
   LuChevronRight,
   LuEraser,
   LuFolder,
-  LuBoxes,
   LuLoader,
   LuMessageSquare,
   LuPencil,
@@ -352,12 +351,6 @@ const deleteTarget = computed(
     </nav>
 
     <footer class="foot">
-      <UiButton variant="ghost" tone="neutral" size="sm" class="foot-item" @click="emit('openSettings', 'providers')">
-        <LuBoxes :size="13" /> {{ t('models') }}
-      </UiButton>
-      <UiButton variant="ghost" tone="neutral" size="sm" class="foot-item" @click="emit('openSettings', 'skills')">
-        <LuSparkles :size="13" /> {{ t('skills') }}
-      </UiButton>
       <UiButton variant="ghost" tone="neutral" size="sm" class="foot-item" @click="emit('openSettings', 'connection')">
         <LuSettings :size="13" /> {{ t('settings') }}
       </UiButton>

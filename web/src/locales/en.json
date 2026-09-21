@@ -40,9 +40,7 @@
     "sortCreatedDesc": "Created (newest first)",
     "sortUpdatedAsc": "Modified (oldest first)",
     "sortUpdatedDesc": "Modified (newest first)",
-    "allWorkspaces": "All projects",
-    "models": "Models",
-    "skills": "Skills"
+    "allWorkspaces": "All projects"
   },
   "sessions": {
     "created": "Session created",

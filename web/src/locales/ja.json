@@ -40,9 +40,7 @@
     "sortCreatedDesc": "作成日時 降順",
     "sortUpdatedAsc": "更新日時 昇順",
     "sortUpdatedDesc": "更新日時 降順",
-    "allWorkspaces": "すべてのプロジェクト",
-    "models": "モデル",
-    "skills": "スキル"
+    "allWorkspaces": "すべてのプロジェクト"
   },
   "sessions": {
     "created": "セッションを作成しました",
