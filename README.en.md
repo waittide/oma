@@ -76,7 +76,7 @@ ships Traditional Chinese, English and Japanese.
 - **Web (`web/`)**: Vue 3 + TypeScript with hand-written CSS and **zero external UI or CSS libraries**;
   four Catppuccin palettes for dark and light, four locales, Markdown rendering, a history tree,
   a message rail, attachments and image previews.
-- **TUI (`crates/tui`)**: a Ratatui terminal client with streaming output and CJK-aware line wrapping.
+- **TUI (`crates/oma-tui`)**: a Ratatui terminal client with streaming output and CJK-aware line wrapping.
 - **CLI**: `oma daemon | web | tui | status`, with fully localized (Chinese) help and parse errors.
 - **No runtime dependencies**: the frontend build output is embedded into the binary at compile time via
   `rust-embed`, so released binaries need no Node installation on the target machine.
@@ -103,7 +103,7 @@ Main session view: collapsible thinking, tool cards, tool results and one-click 
 flowchart TB
     subgraph Clients["Client matrix"]
         direction LR
-        TUI["CLI / TUI<br/>crates/tui · Ratatui"]
+        TUI["CLI / TUI<br/>crates/oma-tui · Ratatui"]
         WEB["Web<br/>web/ · Vue 3 + TS"]
         DESK["Desktop<br/>Tauri (planned)"]
     end
@@ -138,17 +138,17 @@ flowchart TB
 
 | Crate / directory | Responsibility |
 |---|---|
-| `crates/contract` | Pure types and protocol contracts (`Role`, `Block`, `ClientMessage`, `ServerMessage`, `AgentEvent`, …) with no heavy dependencies |
-| `crates/storage` | JSONL session-tree persistence: one `session.jsonl` (pi-style id/parentId tree) plus an `attachments/` dir per session |
-| `crates/provider` | Hand-written SSE state machine normalizing four streaming protocols (tool calls and multimodal included) |
-| `crates/tool` | The seven built-in tools and output truncation |
-| `crates/plugin` | QuickJS plugins: register tools/commands/event hooks in JS, bridged through a Rust allow-listed host API |
-| `crates/config` | `settings.json` / `models.json` parsing, system prompt, palettes and project-level overrides |
-| `crates/runtime` | Agent loop, session rooms, command queue, cascade cancel, compaction |
-| `crates/daemon` | Axum HTTP / WebSocket gateway, bearer auth middleware, REST routes |
-| `crates/client` | Pure Rust client SDK: `OmaClient` (event stream and commands) and `SessionApi` (session management) |
-| `crates/tui` | Ratatui terminal client |
-| `crates/bin` | The `oma` executable: `daemon` / `web` / `tui` / `status` |
+| `crates/oma-contract` | Pure types and protocol contracts (`Role`, `Block`, `ClientMessage`, `ServerMessage`, `AgentEvent`, …) with no heavy dependencies |
+| `crates/oma-storage` | JSONL session-tree persistence: one `session.jsonl` (pi-style id/parentId tree) plus an `attachments/` dir per session |
+| `crates/oma-provider` | Hand-written SSE state machine normalizing four streaming protocols (tool calls and multimodal included) |
+| `crates/oma-tool` | The seven built-in tools and output truncation |
+| `crates/oma-plugin` | QuickJS plugins: register tools/commands/event hooks in JS, bridged through a Rust allow-listed host API |
+| `crates/oma-config` | `settings.json` / `models.json` parsing, system prompt, palettes and project-level overrides |
+| `crates/oma-runtime` | Agent loop, session rooms, command queue, cascade cancel, compaction |
+| `crates/oma-daemon` | Axum HTTP / WebSocket gateway, bearer auth middleware, REST routes |
+| `crates/oma-client` | Pure Rust client SDK: `OmaClient` (event stream and commands) and `SessionApi` (session management) |
+| `crates/oma-tui` | Ratatui terminal client |
+| `crates/oma` | The `oma` executable: `daemon` / `web` / `tui` / `status` |
 | `web/` | Vue 3 + TypeScript + hand-written CSS web client |
 
 ---
@@ -386,16 +386,16 @@ Plugin tools are registered into the session tool registry and listed by
 ```text
 oma/
 ├── crates/
-│   ├── bin/          # the `oma` command-line entry point
-│   ├── client/       # Rust client SDK
-│   ├── config/       # config parsing and system prompt
-│   ├── contract/     # protocol and data model
-│   ├── daemon/       # Axum gateway
-│   ├── provider/     # vendor streaming adapters
-│   ├── runtime/      # agent runtime engine
-│   ├── storage/      # JSONL session-tree persistence
-│   ├── tool/         # built-in tools
-│   └── tui/          # terminal client
+│   ├── oma/          # the `oma` command-line entry point
+│   ├── oma-client/   # Rust client SDK
+│   ├── oma-config/   # config parsing and system prompt
+│   ├── oma-contract/ # protocol and data model
+│   ├── oma-daemon/   # Axum gateway
+│   ├── oma-provider/ # vendor streaming adapters
+│   ├── oma-runtime/  # agent runtime engine
+│   ├── oma-storage/  # JSONL session-tree persistence
+│   ├── oma-tool/     # built-in tools
+│   └── oma-tui/      # terminal client
 ├── docs/
 │   ├── multi_client_agent_spec.md   # technical spec (protocol, DDL, config, API)
 │   └── images/                      # README screenshots

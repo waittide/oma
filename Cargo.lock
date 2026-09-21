@@ -1713,7 +1713,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "oma-bin"
+name = "oma"
 version = "0.1.0"
 dependencies = [
  "anyhow",

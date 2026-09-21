@@ -182,7 +182,7 @@ jobs:
 
       - name: 构建 oma
         env:
-          # 由 crates/contract/build.rs 透传给 rustc，成为二进制自报的版本号
+          # 由 crates/oma-contract/build.rs 透传给 rustc，成为二进制自报的版本号
           OMA_BUILD_VERSION: ${{ needs.meta.outputs.build_version }}
         run: cargo build --release --locked --target ${{ matrix.target }}
 

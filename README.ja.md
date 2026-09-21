@@ -76,7 +76,7 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
 - **Web（`web/`）**: Vue 3 + TypeScript、CSS は手書きで**外部 UI / CSS ライブラリはゼロ**。
   Catppuccin のダーク / ライト各 4 パレット、4 言語、Markdown レンダリング、履歴ツリー、
   メッセージレール、添付と画像プレビュー。
-- **TUI（`crates/tui`）**: Ratatui 製のターミナルクライアント。ストリーミング表示、CJK 対応の折り返し。
+- **TUI（`crates/oma-tui`）**: Ratatui 製のターミナルクライアント。ストリーミング表示、CJK 対応の折り返し。
 - **CLI**: `oma daemon | web | tui | status`。ヘルプと解析エラーはすべて中国語化されています。
 - **実行時依存なし**: フロントエンドのビルド成果物はコンパイル時に `rust-embed` でバイナリへ埋め込まれるため、
   配布先に Node は不要です。
@@ -103,7 +103,7 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
 flowchart TB
     subgraph Clients["クライアント群"]
         direction LR
-        TUI["CLI / TUI<br/>crates/tui · Ratatui"]
+        TUI["CLI / TUI<br/>crates/oma-tui · Ratatui"]
         WEB["Web<br/>web/ · Vue 3 + TS"]
         DESK["デスクトップ<br/>Tauri（計画中）"]
     end
@@ -138,17 +138,17 @@ flowchart TB
 
 | クレート / ディレクトリ | 責務 |
 |---|---|
-| `crates/contract` | 純粋な型とプロトコル契約（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` など）。重い依存なし |
-| `crates/storage` | JSONL セッション木の永続化：セッションごとに `session.jsonl`（pi 風の id/parentId 木）と `attachments/` ディレクトリ |
-| `crates/provider` | 自作 SSE ステートマシンによる 4 プロトコルの正規化（ツール呼び出し・マルチモーダル含む） |
-| `crates/tool` | 7 つの組み込みツール、出力切り詰め |
-| `crates/plugin` | QuickJS プラグイン：JS でツール/コマンド/イベントフックを登録、host API は Rust 側で許可制ブリッジ |
-| `crates/config` | `settings.json` / `models.json` の解析、システムプロンプト、パレット、プロジェクト単位の上書き |
-| `crates/runtime` | エージェントループ、セッションルーム、コマンドキュー、連鎖キャンセル、圧縮 |
-| `crates/daemon` | Axum による HTTP / WebSocket ゲートウェイ、Bearer 認証ミドルウェア、REST ルート |
-| `crates/client` | 純 Rust クライアント SDK：`OmaClient`（イベントストリームと命令）と `SessionApi`（セッション管理） |
-| `crates/tui` | Ratatui 製ターミナルクライアント |
-| `crates/bin` | `oma` 実行ファイル：`daemon` / `web` / `tui` / `status` |
+| `crates/oma-contract` | 純粋な型とプロトコル契約（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` など）。重い依存なし |
+| `crates/oma-storage` | JSONL セッション木の永続化：セッションごとに `session.jsonl`（pi 風の id/parentId 木）と `attachments/` ディレクトリ |
+| `crates/oma-provider` | 自作 SSE ステートマシンによる 4 プロトコルの正規化（ツール呼び出し・マルチモーダル含む） |
+| `crates/oma-tool` | 7 つの組み込みツール、出力切り詰め |
+| `crates/oma-plugin` | QuickJS プラグイン：JS でツール/コマンド/イベントフックを登録、host API は Rust 側で許可制ブリッジ |
+| `crates/oma-config` | `settings.json` / `models.json` の解析、システムプロンプト、パレット、プロジェクト単位の上書き |
+| `crates/oma-runtime` | エージェントループ、セッションルーム、コマンドキュー、連鎖キャンセル、圧縮 |
+| `crates/oma-daemon` | Axum による HTTP / WebSocket ゲートウェイ、Bearer 認証ミドルウェア、REST ルート |
+| `crates/oma-client` | 純 Rust クライアント SDK：`OmaClient`（イベントストリームと命令）と `SessionApi`（セッション管理） |
+| `crates/oma-tui` | Ratatui 製ターミナルクライアント |
+| `crates/oma` | `oma` 実行ファイル：`daemon` / `web` / `tui` / `status` |
 | `web/` | Vue 3 + TypeScript + 手書き CSS の Web クライアント |
 
 ---
@@ -383,15 +383,15 @@ host API：
 ```text
 oma/
 ├── crates/
-│   ├── bin/          # `oma` コマンドライン入口
-│   ├── client/       # Rust クライアント SDK
-│   ├── config/       # 設定解析とシステムプロンプト
-│   ├── contract/     # プロトコルとデータモデル
-│   ├── daemon/       # Axum ゲートウェイ
-│   ├── runtime/      # エージェント・ランタイム
-│   ├── storage/      # JSONL セッション木の永続化
-│   ├── tool/         # 組み込みツール
-│   └── tui/          # ターミナルクライアント
+│   ├── oma/          # `oma` コマンドライン入口
+│   ├── oma-client/   # Rust クライアント SDK
+│   ├── oma-config/   # 設定解析とシステムプロンプト
+│   ├── oma-contract/ # プロトコルとデータモデル
+│   ├── oma-daemon/   # Axum ゲートウェイ
+│   ├── oma-runtime/  # エージェント・ランタイム
+│   ├── oma-storage/  # JSONL セッション木の永続化
+│   ├── oma-tool/     # 組み込みツール
+│   └── oma-tui/      # ターミナルクライアント
 ├── docs/
 │   ├── multi_client_agent_spec.md   # 技術仕様書（プロトコル・DDL・設定・API）
 │   └── images/                      # README 用スクリーンショット

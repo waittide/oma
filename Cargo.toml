@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-default-members = ["crates/bin"]
+default-members = ["crates/oma"]
 
 [workspace.package]
 # 版本号唯一来源：各 crate 通过 version.workspace = true 继承，不再各自写死。
@@ -44,24 +44,24 @@ uuid = { version = "1.26.0", features = ["v4"] }
 
 # --- 内部 crate ---
 # 不写 version：随 [workspace.package] 一起递增，避免两处版本号漂移
-oma-client = { path = "crates/client" }
-oma-config = { path = "crates/config" }
-oma-contract = { path = "crates/contract" }
-oma-daemon = { path = "crates/daemon" }
-oma-mcp = { path = "crates/mcp" }
-oma-plugin = { path = "crates/plugin" }
-oma-provider = { path = "crates/provider" }
-oma-runtime = { path = "crates/runtime" }
-oma-storage = { path = "crates/storage" }
-oma-tool = { path = "crates/tool" }
-oma-tui = { path = "crates/tui" }
+oma-client = { path = "crates/oma-client" }
+oma-config = { path = "crates/oma-config" }
+oma-contract = { path = "crates/oma-contract" }
+oma-daemon = { path = "crates/oma-daemon" }
+oma-mcp = { path = "crates/oma-mcp" }
+oma-plugin = { path = "crates/oma-plugin" }
+oma-provider = { path = "crates/oma-provider" }
+oma-runtime = { path = "crates/oma-runtime" }
+oma-storage = { path = "crates/oma-storage" }
+oma-tool = { path = "crates/oma-tool" }
+oma-tui = { path = "crates/oma-tui" }
 
 [workspace.lints.clippy]
 collapsible_else_if = "allow"
 collapsible_if = "allow"
 
 [workspace.lints.rust]
-# 唯一 unsafe（shell 工具 killpg）在 crates/tool/src/lib.rs 有显式 allow。
+# 唯一 unsafe（shell 工具 killpg）在 crates/oma-tool/src/lib.rs 有显式 allow。
 unsafe_code = "deny"
 
 [profile.release]

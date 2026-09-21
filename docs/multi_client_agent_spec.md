@@ -5,7 +5,7 @@
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
 
 > **v2.7 变更（恢复内置 MCP 客户端）**：
-> 恢复清单的最后一项。`crates/mcp` 回来了，支持两种传输：
+> 恢复清单的最后一项。`crates/oma-mcp` 回来了，支持两种传输：
 > - **本地 stdio**：拉起子进程，按行 JSON-RPC 通信
 > - **远程 HTTP**：JSON-RPC over POST（非 SSE）
 > 工具按 `mcp__{server}__{tool}` 统一命名空间注册，与内置工具/插件工具同权；
@@ -58,7 +58,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────┐  │
 │  │   CLI / TUI     │    │  Web (Browser)  │    │  Tauri (Desktop)    │  │
 │  │ (Rust/Ratatui)  │    │ (Vue 3 / TS)    │    │ (Rust + Vue 3 UI)   │  │
-│  │ crates/tui      │    │ web/            │    │ (Future desktop)    │  │
+│  │ crates/oma-tui  │    │ web/            │    │ (Future desktop)    │  │
 │  └────────┬────────┘    └────────┬────────┘    └──────────┬──────────┘  │
 │           │                      │                        │             │
 │           │ Authorization: Bearer <token>                 │             │
@@ -68,7 +68,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     Oma Core Daemon (Single Port: 17431)                │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │           Axum Gateway & Auth Middleware (crates/daemon)          │  │
+│  │           Axum Gateway & Auth Middleware (crates/oma-daemon)      │  │
 │  │  - Headless API Gateway (REST APIs & WebSocket Endpoint)             │  │
 │  │  - REST APIs (/api/sessions, /api/workspace/*, /api/server/*)        │  │
 │  │  - WebSocket Upgrade & Room Routing (/ws)                            │  │
@@ -76,7 +76,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  └─────────────────────────────────┬─────────────────────────────────┘  │
 │                                    │                                    │
 │  ┌─────────────────────────────────▼─────────────────────────────────┐  │
-│  │        Session Registry & Multi-Client Rooms (crates/runtime)     │  │
+│  │        Session Registry & Multi-Client Rooms (crates/oma-runtime) │  │
 │  │  - Session Room Dispatcher & Connection Lifecycle Manager         │  │
 │  │  - Per-Session Command FIFO Queue & Cancel Cascader               │  │
 │  │  - Event Broadcaster (tokio::broadcast + In-memory Catch-Up)      │  │
@@ -99,18 +99,18 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 
 | Crate / 目录 | 职责与依赖 |
 |---|---|
-| `crates/contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
-| `crates/storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）与 `attachments/` 目录；同会话写锁串行化。 |
-| `crates/provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
-| `crates/tool` | 内置 7 大工具（`read`, `write`, `edit` 原子替换补丁, `bash` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含 pi 对齐的输出截断与工具集定义。 |
-| `crates/mcp` | MCP 客户端：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），工具按 `mcp__{server}__{tool}` 统一命名空间注册；只暴露已预热的工具缓存。 |
-| `crates/plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API（文件/命令/日志）由 Rust 侧白名单桥接并限制在 workspace 内。 |
-| `crates/config` | 配置文件 `settings.json` / `models.json` 解析、内置 Agent 预设（5 套模板）与三层覆盖、上下文文件（`AGENTS.md`）加载、提示词拼装、调色板加载、数据目录定位。 |
-| `crates/runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、70% 阈值两阶段上下文压缩。 |
-| `crates/daemon` | 基于 Axum 的 HTTP REST 与 WebSocket 网关、Bearer Token 鉴权中间件、静态路由与 CORS。 |
-| `crates/client` | 纯 Rust 客户端 SDK：`OmaClient` 封装 WebSocket 握手/事件流/指令，`SessionApi` 提供 REST 会话管理。 |
-| `crates/tui` | 基于 Ratatui 0.30 的终端交互客户端（流式渲染、CJK 折行），由 `oma tui` 驱动。 |
-| `crates/bin` | 统一命令行可执行文件 `oma`，集成 `oma daemon`、`oma web`、`oma tui` 等子命令。 |
+| `crates/oma-contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
+| `crates/oma-storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）与 `attachments/` 目录；同会话写锁串行化。 |
+| `crates/oma-provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
+| `crates/oma-tool` | 内置 7 大工具（`read`, `write`, `edit` 原子替换补丁, `bash` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含 pi 对齐的输出截断与工具集定义。 |
+| `crates/oma-mcp` | MCP 客户端：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），工具按 `mcp__{server}__{tool}` 统一命名空间注册；只暴露已预热的工具缓存。 |
+| `crates/oma-plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API（文件/命令/日志）由 Rust 侧白名单桥接并限制在 workspace 内。 |
+| `crates/oma-config` | 配置文件 `settings.json` / `models.json` 解析、内置 Agent 预设（5 套模板）与三层覆盖、上下文文件（`AGENTS.md`）加载、提示词拼装、调色板加载、数据目录定位。 |
+| `crates/oma-runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、70% 阈值两阶段上下文压缩。 |
+| `crates/oma-daemon` | 基于 Axum 的 HTTP REST 与 WebSocket 网关、Bearer Token 鉴权中间件、静态路由与 CORS。 |
+| `crates/oma-client` | 纯 Rust 客户端 SDK：`OmaClient` 封装 WebSocket 握手/事件流/指令，`SessionApi` 提供 REST 会话管理。 |
+| `crates/oma-tui` | 基于 Ratatui 0.30 的终端交互客户端（流式渲染、CJK 折行），由 `oma tui` 驱动。 |
+| `crates/oma` | 统一命令行可执行文件 `oma`，集成 `oma daemon`、`oma web`、`oma tui` 等子命令。 |
 | `web/` | Vue 3 + TypeScript 的 Web 协同客户端；控件全部来自内部组件库 `@waittide/ui`（不用任何第三方 UI 框架）。 |
 
 ---
@@ -618,7 +618,7 @@ pub struct ContextUsage {
 
 1. **Agent 预设 = 角色 + 工具白名单，且模板即提示词**：
    - 编译期内嵌 5 套模板：`task` / `plan` / `explore` / `review` / `build`
-     （`crates/config/src/templates/*.md`）；
+     （`crates/oma-config/src/templates/*.md`）；
    - 同名文件优先取更具体的一层：项目 `<workspace>/.oma/agents/<id>.md`
      > 全局 `~/.config/oma/agents/<id>.md` > 内置模板；
    - 文件为 Markdown + YAML frontmatter，字段全部可选且忽略未知键：
@@ -809,7 +809,7 @@ ToolOutput {
 ### 7.1 输出截断与执行安全
 
 1. **统一的输出截断（行数 + 字节双上限）**：
-   `crates/tool/src/truncate.rs` 与 pi 的 `core/tools/truncate.ts` 等价：
+   `crates/oma-tool/src/truncate.rs` 与 pi 的 `core/tools/truncate.ts` 等价：
    - 默认上限：**2000 行 / 50KB**，先到者生效；除「末行本身超限」边界外不返回半行；
    - 方向：`read` / `ls` / `find` / `grep` 用 `truncate_head`（保留开头）；
      `bash` 用 `truncate_tail`（保留末尾，错误与结果在那里）；
@@ -971,7 +971,7 @@ pub struct Palette {
 
 ## 9. 命令行入口与 Web 前端工程
 
-### 9.1 统一 `oma` 命令行入口 (`crates/bin`)
+### 9.1 统一 `oma` 命令行入口 (`crates/oma`)
 - `oma daemon`：独立启动后台 Daemon 服务（默认监听 `127.0.0.1:17431`）；
 - `oma web`：启动 web 客户端（仅内嵌前端静态服务，**不会**顺便拉起 Daemon，也不再依赖 Vite/pnpm）；
   构建产物经 `rust-embed` 内嵌进二进制（release 下不依赖任何外部目录），
@@ -985,7 +985,7 @@ pub struct Palette {
 - 不带子命令（`oma`）：等价于 `oma -h`，仅打印帮助，不自动启动任何界面；
 - **输出全中文**：clap 的固定文案（`Usage:`/`Options:`/`Commands:` 标题、`[default: …]`
   与 `[OPTIONS]` 占位符、内建 `-h/--help`、`-V/--version`、`help` 子命令、解析错误）
-  都是硬编码英文且没有 i18n 接口，故 `crates/bin/src/cli.rs` 在派生出的命令树上统一改写：
+  都是硬编码英文且没有 i18n 接口，故 `crates/oma/src/cli.rs` 在派生出的命令树上统一改写：
   自建帮助项与 `help` 子命令、用 `help_template` 接管版式、按 `ErrorKind` 与上下文
   重渲染解析错误（默认值现读自参数本身，不与帮助文案各写一份）。
 

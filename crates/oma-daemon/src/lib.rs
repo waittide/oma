@@ -1721,7 +1721,7 @@ pub fn create_router(state: DaemonState) -> Router {
         .route("/ws", get(handle_ws_upgrade));
 
     // Daemon 保持 Headless：不内置也不直出任何前端资产，
-    // 界面统一由 `oma web` 提供（见 crates/bin）。
+    // 界面统一由 `oma web` 提供（见 crates/oma）。
     router
         //
         // 跨源开放：前端与 Daemon 是分离的两个服务，浏览器会直接跨源发请求。

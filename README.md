@@ -66,7 +66,7 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 
 - **Web（`web/`）**：Vue 3 + TypeScript，手写 CSS，**零外部 UI / CSS 库**；
   深色浅色各四套 Catppuccin 调色板、四语言文案、Markdown 渲染、历史树、消息导航栏、附件与图片预览。
-- **TUI（`crates/tui`）**：基于 Ratatui 的终端客户端，流式渲染、CJK 折行。
+- **TUI（`crates/oma-tui`）**：基于 Ratatui 的终端客户端，流式渲染、CJK 折行。
 - **CLI**：`oma daemon | web | tui | status`，帮助与解析错误全部中文化。
 - **零运行时依赖**：前端构建产物在编译期经 `rust-embed` 内嵌进二进制，发布时不需要目标机器安装 Node。
 
@@ -92,7 +92,7 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 flowchart TB
     subgraph Clients["客户端矩阵"]
         direction LR
-        TUI["CLI / TUI<br/>crates/tui · Ratatui"]
+        TUI["CLI / TUI<br/>crates/oma-tui · Ratatui"]
         WEB["Web<br/>web/ · Vue 3 + TS"]
         DESK["桌面端<br/>Tauri（规划中）"]
     end
@@ -127,17 +127,17 @@ flowchart TB
 
 | Crate / 目录 | 职责 |
 |---|---|
-| `crates/contract` | 纯类型与协议契约（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` 等），零重依赖 |
-| `crates/storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）+ `attachments/` 目录 |
-| `crates/provider` | 手写 SSE 状态机，归一化四家流式协议（含工具调用与多模态） |
-| `crates/tool` | 七个内置工具与输出截断 |
-| `crates/plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API 白名单桥接 |
-| `crates/config` | `settings.json` / `models.json` 解析、系统提示词、调色板与项目级覆盖 |
-| `crates/runtime` | Agent Loop、会话房间、命令队列、级联取消、上下文压缩 |
-| `crates/daemon` | Axum HTTP / WebSocket 网关、Bearer 鉴权中间件、REST 路由 |
-| `crates/client` | 纯 Rust 客户端 SDK：`OmaClient`（事件流与指令）与 `SessionApi`（会话管理） |
-| `crates/tui` | Ratatui 终端客户端 |
-| `crates/bin` | 统一可执行文件 `oma`：`daemon` / `web` / `tui` / `status` |
+| `crates/oma-contract` | 纯类型与协议契约（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` 等），零重依赖 |
+| `crates/oma-storage` | JSONL 会话树持久化：每会话一个 `session.jsonl`（pi 风格 id/parentId 树）+ `attachments/` 目录 |
+| `crates/oma-provider` | 手写 SSE 状态机，归一化四家流式协议（含工具调用与多模态） |
+| `crates/oma-tool` | 七个内置工具与输出截断 |
+| `crates/oma-plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API 白名单桥接 |
+| `crates/oma-config` | `settings.json` / `models.json` 解析、系统提示词、调色板与项目级覆盖 |
+| `crates/oma-runtime` | Agent Loop、会话房间、命令队列、级联取消、上下文压缩 |
+| `crates/oma-daemon` | Axum HTTP / WebSocket 网关、Bearer 鉴权中间件、REST 路由 |
+| `crates/oma-client` | 纯 Rust 客户端 SDK：`OmaClient`（事件流与指令）与 `SessionApi`（会话管理） |
+| `crates/oma-tui` | Ratatui 终端客户端 |
+| `crates/oma` | 统一可执行文件 `oma`：`daemon` / `web` / `tui` / `status` |
 | `web/` | Vue 3 + TypeScript + 手写 CSS 的 Web 客户端 |
 
 ---
@@ -363,16 +363,16 @@ oma.registerCommand({ name: "explain", description: "Explain a topic", handler: 
 ```text
 oma/
 ├── crates/
-│   ├── bin/          # 统一命令行入口 oma
-│   ├── client/       # Rust 客户端 SDK
-│   ├── config/       # 配置解析与系统提示词
-│   ├── contract/     # 协议与数据模型
-│   ├── daemon/       # Axum 网关
-│   ├── provider/     # 模型厂商流式适配
-│   ├── runtime/      # Agent 运行引擎
-│   ├── storage/      # JSONL 会话树持久化
-│   ├── tool/         # 内置工具
-│   └── tui/          # 终端客户端
+│   ├── oma/          # 统一命令行入口 oma
+│   ├── oma-client/   # Rust 客户端 SDK
+│   ├── oma-config/   # 配置解析与系统提示词
+│   ├── oma-contract/ # 协议与数据模型
+│   ├── oma-daemon/   # Axum 网关
+│   ├── oma-provider/ # 模型厂商流式适配
+│   ├── oma-runtime/  # Agent 运行引擎
+│   ├── oma-storage/  # JSONL 会话树持久化
+│   ├── oma-tool/     # 内置工具
+│   └── oma-tui/      # 终端客户端
 ├── docs/
 │   ├── multi_client_agent_spec.md   # 技术规格书（协议、DDL、配置、接口全量定义）
 │   └── images/                      # README 截图

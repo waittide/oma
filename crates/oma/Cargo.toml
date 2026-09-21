@@ -1,5 +1,5 @@
 [package]
-name = "oma-bin"
+name = "oma"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

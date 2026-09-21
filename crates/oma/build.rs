@@ -10,12 +10,12 @@ use std::{env, fs, path::PathBuf};
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
-    // crates/bin -> 仓库根 -> web/dist
+    // crates/oma -> 仓库根 -> web/dist
     let web_dist = manifest_dir
         .parent()
         .and_then(|p| p.parent())
         .map(|root| root.join("web").join("dist"))
-        .expect("crates/bin always has a grandparent directory");
+        .expect("crates/oma always has a grandparent directory");
 
     if !web_dist.exists() {
         fs::create_dir_all(&web_dist).expect("failed to create web/dist");
