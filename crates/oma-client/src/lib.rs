@@ -31,7 +31,9 @@
 
 use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use oma_contract::{AgentCommand, AgentEvent, ClientMessage, ClientType, ConnectParams, Ready, ServerMessage};
+use oma_contract::{
+    AgentCommand, AgentEvent, ChatMessage, ClientMessage, ClientType, ConnectParams, Ready, ServerMessage,
+};
 use serde::Deserialize;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_tungstenite::tungstenite::Message;
@@ -147,6 +149,22 @@ impl SessionApi {
             .context("Failed to reach oma daemon")?;
         let value = Self::ensure_ok(resp).await?;
         serde_json::from_value(value).context("Unexpected session list payload")
+    }
+
+    /// 拉取整个消息树（含**所有分支**，不只是当前分支）。
+    ///
+    /// 实时交互走 `OmaClient`，这里给的是「有哪些分支可切」这类需要全貌的场景：
+    /// 握手下发的是当前分支的线性历史，兄弟分支不在其中。
+    pub async fn message_tree(&self, session_id: &str) -> Result<Vec<ChatMessage>> {
+        let resp = self
+            .http
+            .get(format!("{}/api/sessions/{}/messages/tree", self.base, session_id))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        let value = Self::ensure_ok(resp).await?;
+        serde_json::from_value(value).context("Unexpected message tree payload")
     }
 
     /// 创建工作区会话

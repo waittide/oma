@@ -4,15 +4,15 @@
 //! 工具调用。入口为 [`run`]，复用调用方的 tokio 运行时。
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, HashSet},
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use oma_client::{ConnectOptions, OmaClient, SessionApi, SessionRecord};
 use oma_contract::{
-    AgentCommand, AgentEvent, AgentSummary, ClientType, ModelInfo, Palette, REASONING_LEVELS, ResolvedTheme,
-    StopReason, ThemeMode,
+    AgentCommand, AgentEvent, AgentSummary, ChatMessage, ClientType, ModelInfo, Palette, REASONING_LEVELS,
+    ResolvedTheme, StopReason, ThemeMode,
 };
 use ratatui::{
     Frame,
@@ -108,6 +108,11 @@ enum Outcome {
     SwitchSession {
         session_id: String,
     },
+    /// 重连指定会话：分支切换后需要重新读一遍历史。
+    /// 必须带上 id —— 会话是「列表首个」自动挑的，不带 id 重连可能挑到别的会话。
+    Reload {
+        session_id: String,
+    },
 }
 
 /// 弹窗里的一条：显示文本 + 选中后要执行的动作。
@@ -140,9 +145,13 @@ enum PickerAction {
     SetAgent(String),
     /// 下发指令切换推理等级（取值必须在 `REASONING_LEVELS` 内）
     SetReasoningLevel(String),
+    /// 下发改换当前分支（`SwitchBranch`）
+    SwitchBranch {
+        leaf_message_id: String,
+    },
 }
 
-/// 弹窗选择器：连接、会话、模型、预设共用同一套渲染与按键。
+/// 弹窗选择器：连接、会话、模型、预设、推理等级、分支共用同一套渲染与按键。
 struct Picker {
     /// 标题栏文案（自带按键提示）
     title: String,
@@ -257,6 +266,8 @@ struct App {
     agents:          Vec<AgentSummary>,
     /// 当前推理等级；空串表示未设置
     reasoning_level: String,
+    /// 当前分支的叶子消息；分支弹窗据此标记「就是这条」
+    current_leaf:    Option<String>,
     connected:       bool,
     busy:            bool,
     queue:           usize,
@@ -290,6 +301,7 @@ impl App {
             model_catalog: BTreeMap::new(),
             agents: Vec::new(),
             reasoning_level: String::new(),
+            current_leaf: None,
             connected: true,
             busy: false,
             queue: 0,
@@ -498,7 +510,8 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
                 active = Some(name);
                 session = None;
             }
-            Ok(Outcome::SwitchSession { session_id, .. }) => session = Some(session_id),
+            // 换会话与重连（分支切换）都是「用这个 id 重跑一次会话循环」
+            Ok(Outcome::SwitchSession { session_id } | Outcome::Reload { session_id }) => session = Some(session_id),
             Err(e) => break Err(e),
         }
     };
@@ -577,7 +590,7 @@ async fn run_session(
         app
     };
 
-    event_loop(terminal, &mut app, &mut client, key_rx).await
+    event_loop(terminal, &mut app, &mut client, &api, key_rx).await
 }
 
 /// 在会话列表里选出要连的那个：显式指定的 id 优先，找不到就退回列表首个。
@@ -594,6 +607,7 @@ async fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     client: &mut OmaClient,
+    api: &SessionApi,
     key_rx: &mut mpsc::Receiver<InputEvent>,
 ) -> Result<Outcome> {
     let mut last_draw = Instant::now();
@@ -628,7 +642,7 @@ async fn event_loop(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if let Some(outcome) = handle_key(app, client, key).await? {
+                if let Some(outcome) = handle_key(app, client, api, key).await? {
                     return Ok(outcome);
                 }
                 terminal.draw(|frame| draw(frame, app))?;
@@ -651,7 +665,7 @@ fn classify_input(app: &mut App, input: InputEvent) -> Option<KeyEvent> {
 }
 
 /// 处理按键；返回 Some 表示离开当前会话（退出或切换连接）。
-async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Result<Option<Outcome>> {
+async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key: KeyEvent) -> Result<Option<Outcome>> {
     // 弹窗：先于普通输入消费按键
     if app.picker.is_some() {
         let action = handle_picker_key(app, key);
@@ -668,6 +682,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => open_model_picker(app),
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => open_agent_picker(app),
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => open_reasoning_picker(app),
+        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => open_branch_picker(app, api).await,
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
             app.stick = false;
@@ -885,6 +900,122 @@ fn open_reasoning_picker(app: &mut App) {
     });
 }
 
+/// 打开分支切换弹窗。
+///
+/// 消息树按需现拉：握手只下发**当前分支**的线性历史，兄弟分支不在其中；连接时拉
+/// 一次也会因为「聊过几轮就不准」而失去意义。拉不到就只提示，不打开空弹窗。
+async fn open_branch_picker(app: &mut App, api: &SessionApi) {
+    let tree = match api.message_tree(&app.session_id).await {
+        Ok(tree) => tree,
+        Err(e) => {
+            app.push("!", format!("读取分支失败: {e}"), Style::default().fg(app.theme.error));
+            return;
+        }
+    };
+    let tips = branch_tips(&tree);
+    if tips.len() < 2 {
+        app.push(
+            "·",
+            "当前会话只有一条分支（从历史消息分叉后才会出现第二条）",
+            Style::default().fg(app.theme.muted),
+        );
+        return;
+    }
+    let current = app.current_leaf.clone();
+    let items: Vec<PickerItem> = tips
+        .iter()
+        .map(|tip| PickerItem {
+            label:   leaf_snippet(tip),
+            detail:  format!("{} · {} 条", short_id(&tip.id), branch_len(&tree, tip)),
+            current: current.as_deref() == Some(tip.id.as_str()),
+            action:  PickerAction::SwitchBranch {
+                leaf_message_id: tip.id.clone(),
+            },
+        })
+        .collect();
+    let index = picker_current_index(&items);
+    app.picker = Some(Picker {
+        title: " 切换分支 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ".into(),
+        items,
+        index,
+    });
+}
+
+/// 可切换的分支代表：每个叶子向上退到最近的**用户可见**消息，按时间倒序。
+///
+/// 叶子若停在工具回执上（一轮被中断、或回执后没有新正文），用户想回到的仍是那条
+/// 可见消息；直接列出回执既看不懂、也不是个像样的位置。两个叶子退到同一条消息时
+/// 只留一个。
+fn branch_tips(tree: &[ChatMessage]) -> Vec<&ChatMessage> {
+    let by_id: HashMap<&str, &ChatMessage> = tree.iter().map(|m| (m.id.as_str(), m)).collect();
+    let parents: HashSet<&str> = tree.iter().filter_map(|m| m.parent_id.as_deref()).collect();
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut tips: Vec<&ChatMessage> = Vec::new();
+    for leaf in tree.iter().filter(|m| !parents.contains(m.id.as_str())) {
+        let mut cursor = Some(leaf);
+        while let Some(message) = cursor {
+            if is_user_visible(message) {
+                if seen.insert(message.id.as_str()) {
+                    tips.push(message);
+                }
+                break;
+            }
+            cursor = message
+                .parent_id
+                .as_deref()
+                .and_then(|id| by_id.get(id).copied());
+        }
+    }
+    tips.sort_by_key(|m| std::cmp::Reverse(m.created_at));
+    tips
+}
+
+/// 用户看得见的消息：有内容，且不是纯工具回执——回执会并进工具调用卡片，
+/// 在界面上不单独成条。
+fn is_user_visible(message: &ChatMessage) -> bool {
+    !message.content.is_empty()
+        && !message
+            .content
+            .iter()
+            .any(|block| matches!(block, oma_contract::Block::ToolResult { .. }))
+}
+
+/// 从某条消息回溯到根的消息条数：让用户看出这条分支有多长。
+fn branch_len(tree: &[ChatMessage], tip: &ChatMessage) -> usize {
+    let by_id: HashMap<&str, &ChatMessage> = tree.iter().map(|m| (m.id.as_str(), m)).collect();
+    let mut count = 0;
+    let mut cursor = Some(tip);
+    while let Some(message) = cursor {
+        count += 1;
+        cursor = message
+            .parent_id
+            .as_deref()
+            .and_then(|id| by_id.get(id).copied());
+    }
+    count
+}
+
+/// 分支代表的单行摘要：优先正文，其次工具调用，最后回落到角色名。
+fn leaf_snippet(message: &ChatMessage) -> String {
+    let text = message.content.iter().find_map(|block| match block {
+        oma_contract::Block::Text { text } if !text.trim().is_empty() => Some(text.as_str()),
+        _ => None,
+    });
+    let raw = match text {
+        // 多行与连续空白压成一行，弹窗里每项只占一行
+        Some(text) => text.split_whitespace().collect::<Vec<_>>().join(" "),
+        None => message
+            .content
+            .iter()
+            .find_map(|block| match block {
+                oma_contract::Block::ToolUse { name, .. } => Some(format!("⚙ {name}")),
+                _ => None,
+            })
+            .unwrap_or_else(|| message.role.as_str().to_string()),
+    };
+    truncate(&raw, 24)
+}
+
 /// 弹窗按键：上下选择（j/k 亦可）、Enter 取出动作并关闭、Esc 关闭。
 ///
 /// 返回 `Some(action)` 表示用户确认了某一项；`None` 表示按键已被消费。
@@ -917,9 +1048,11 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> Option<PickerAction> {
 
 /// 执行弹窗里确认的动作。
 ///
-/// 换连接、换会话要重建会话循环（返回 `Some(Outcome)`）；换模型、换预设只是一条
-/// 指令，本连接继续用，界面等 `ModelChanged` / `AgentChanged` 事件回填。
-/// 后者失败时把原因写进记录——此时 App 不会被重建，提示是留得住的。
+/// 分两类：换连接、换会话、换分支都要重建会话循环（返回 `Some(Outcome)`），
+/// 其中换分支是「先发指令、再重连」——服务端改了当前叶子，界面上的记录必须重读；
+/// 换模型、换预设、换推理等级只是一条指令，本连接继续用，界面等
+/// `ModelChanged` / `AgentChanged` / `ReasoningLevelChanged` 事件回填。
+/// 发指令失败时把原因写进记录——此时 App 不会被重建，提示是留得住的。
 async fn apply_picker_action(
     app: &mut App,
     client: &OmaClient,
@@ -942,6 +1075,13 @@ async fn apply_picker_action(
         PickerAction::SetReasoningLevel(level) => {
             send_setting(app, client, AgentCommand::SetReasoningLevel { level }, "切换推理等级").await;
             Ok(None)
+        }
+        PickerAction::SwitchBranch { leaf_message_id } => {
+            // 指令只改服务端的当前叶子，界面上的记录仍是旧分支的：必须重连一次，
+            // 让服务端把新分支的线性历史重新下发
+            let session_id = app.session_id.clone();
+            send_setting(app, client, AgentCommand::SwitchBranch { leaf_message_id }, "切换分支").await;
+            Ok(Some(Outcome::Reload { session_id }))
         }
     }
 }
@@ -1070,11 +1210,14 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             format!("已删除 {} 条消息", deleted_ids.len()),
             Style::default().fg(app.theme.muted),
         ),
-        AgentEvent::ActiveBranchChanged { current_leaf_id } => app.push(
-            "·",
-            format!("切换到分支 {}", short_id(&current_leaf_id)),
-            Style::default().fg(app.theme.muted),
-        ),
+        AgentEvent::ActiveBranchChanged { current_leaf_id } => {
+            app.current_leaf = Some(current_leaf_id.clone());
+            app.push(
+                "·",
+                format!("切换到分支 {}", short_id(&current_leaf_id)),
+                Style::default().fg(app.theme.muted),
+            );
+        }
         AgentEvent::ContextUsage { tokens, context_len } => {
             app.context = Some((tokens, context_len));
         }
@@ -1263,7 +1406,7 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     let hint = if app.connected {
-        " Enter 发送 · Ctrl+X 中止 · Ctrl+O 连接 N 会话 L 模型 A 预设 R 推理 · Ctrl+U 清空 · Esc 退出 "
+        " Enter 发送 · Ctrl+X 中止 · Ctrl+O 连接 N 会话 B 分支 L 模型 A 预设 R 推理 · Ctrl+U 清空 · Esc 退出 "
     } else {
         " 连接已断开 "
     };
@@ -1282,6 +1425,9 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
 
 #[cfg(test)]
 mod tests {
+    // 测试里 `Block` 一律指消息块：ratatui 的同名控件在这些用例里用不到
+    use oma_contract::{Block as MsgBlock, Role};
+
     use super::*;
 
     #[test]
@@ -1488,6 +1634,56 @@ mod tests {
         }
     }
 
+    /// 分支代表：叶子停在工具回执上时退到最近的可见祖先，按时间倒序，去重。
+    #[test]
+    fn test_branch_tips_falls_back_to_visible_ancestor() {
+        let tree = vec![
+            msg("u1", None, vec![body("第一个问题")], 1),
+            msg("a1", Some("u1"), vec![call("read")], 2),
+            msg("t1", Some("a1"), vec![receipt()], 3),
+            msg("a2", Some("u1"), vec![body("另一条分支的回答")], 4),
+        ];
+        let tips = branch_tips(&tree);
+        assert_eq!(
+            tips.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["a2", "a1"],
+            "工具回执不该作为切换目标，应退到它可见的祖先 a1；最近的排前面"
+        );
+        assert!(tips.iter().all(|m| is_user_visible(m)));
+        assert_eq!(branch_len(&tree, tips[1]), 2, "u1 → a1 两条");
+        assert_eq!(branch_len(&tree, &tree[2]), 3, "回执自身回溯到根是 3 条");
+    }
+
+    /// 分支代表不重复：两个叶子退到同一条可见消息时只留一个。
+    #[test]
+    fn test_branch_tips_dedups_same_ancestor() {
+        let tree = vec![
+            msg("u1", None, vec![body("问题")], 1),
+            msg("a1", Some("u1"), vec![body("回答")], 2),
+            msg("t1", Some("a1"), vec![receipt()], 3),
+            msg("t2", Some("a1"), vec![receipt()], 4),
+        ];
+        let tips = branch_tips(&tree);
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0].id, "a1");
+    }
+
+    /// 分支摘要：优先正文、多行压平、超长截断，没有正文时回落到工具名。
+    #[test]
+    fn test_leaf_snippet() {
+        let multiline = msg("m", None, vec![body("第一行\n\n  第二行")], 1);
+        assert_eq!(leaf_snippet(&multiline), "第一行 第二行");
+
+        let long = msg("m", None, vec![body(&"字".repeat(40))], 2);
+        let snippet = leaf_snippet(&long);
+        assert!(snippet.ends_with('…'), "超长应截断：{snippet}");
+        assert!(display_width(&snippet) <= 24);
+
+        // 只有工具调用时用工具名当摘要
+        let tool = msg("m", None, vec![call("shell")], 3);
+        assert_eq!(leaf_snippet(&tool), "⚙ shell");
+    }
+
     /// 推理等级选择器：只列规范等级（服务端拒绝空串），当前档带 ✓，
     /// 下发值与弹窗里显示的字符串完全一致。
     #[test]
@@ -1642,6 +1838,40 @@ mod tests {
             capabilities: Default::default(),
             max_output: None,
             reasoning_map: Default::default(),
+        }
+    }
+
+    /// 造一条消息：只填会话树用得到的字段，模型与用量跟这些用例无关。
+    fn msg(id: &str, parent: Option<&str>, content: Vec<MsgBlock>, created_at: i64) -> ChatMessage {
+        ChatMessage {
+            id: id.into(),
+            parent_id: parent.map(str::to_string),
+            role: Role::Assistant,
+            content,
+            created_at,
+            model: None,
+            usage: None,
+        }
+    }
+
+    fn body(text: &str) -> MsgBlock {
+        MsgBlock::Text { text: text.into() }
+    }
+
+    fn call(name: &str) -> MsgBlock {
+        MsgBlock::ToolUse {
+            id:    "c1".into(),
+            name:  name.into(),
+            input: serde_json::json!({}),
+        }
+    }
+
+    fn receipt() -> MsgBlock {
+        MsgBlock::ToolResult {
+            tool_use_id: "c1".into(),
+            content:     "ok".into(),
+            is_error:    false,
+            duration_ms: None,
         }
     }
 }
