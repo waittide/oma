@@ -727,6 +727,20 @@ pub struct ContextUsage {
   （保守：宁可多裁一点也不会低估后超窗）；
 - 压缩只作用于本次请求的副本，持久化历史保持完整。
 
+### 6.4 配对完整性兜底修复 (Tool Pairing Repair)
+- **问题**：助手消息**先落库**，工具回执**后落库**。若进程在这两步之间消失
+  （如 `shell` 工具把执行它的 daemon 自身一起杀了），磁盘上就留下一条
+  「有 `tool_use`、无 `tool_result`」的孤儿；厂商**每次请求**都校验该配对
+  （`An assistant message with 'tool_calls' must be followed by tool messages
+  responding to each 'tool_call_id'`），此后该会话每次请求都被 400 拒绝且不会自愈；
+- **兜底**：拼装请求前扫描线性历史，为没有紧邻回执的 `tool_use` 就地补一条占位
+  `tool_result`（`Tool call not executed: the session was interrupted...`）。
+  只作用于**本次请求的副本**：消息树靠 `parent_id` 串联，插入不落库的消息会让
+  后续新增消息挂到不存在的父节点上（回读时链会断开）；
+- **内存优先**：回执写库失败时仍照常入内存历史（并广播错误）——内存是本次轮次
+  后续请求的唯一来源，磁盘上的缺口交给上面的兜底修复，绝不反过来让内存里留下
+  无回执的 `tool_use`。
+
 ---
 
 ## 7. 工具集与执行环境 (Tools & Runtime)

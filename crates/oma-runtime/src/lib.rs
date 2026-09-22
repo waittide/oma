@@ -24,6 +24,8 @@ use tokio_util::sync::CancellationToken;
 const PRUNED_TOOL_RESULT: &str = "[工具执行结果已截断修剪以节省上下文窗口]";
 /// 超过该字符数的工具结果在压缩时会被替换为占位
 const PRUNE_MIN_CHARS: usize = 300;
+/// 无回执 `tool_use` 的兜底修复文案（会话被打断，该工具从未执行完）
+const ORPHAN_TOOL_RESULT: &str = "Tool call not executed: the session was interrupted before the result was recorded.";
 
 /// 把会话推理等级落到请求参数上：
 /// `resolve_reasoning_effort` 已处理「映射为空 = 不下发」，这里把结果回写到
@@ -250,6 +252,99 @@ pub fn compact_messages(messages: &mut Vec<ChatMessage>, context_len: usize, anc
             messages.drain(..start);
             return;
         }
+    }
+}
+
+/// 当前消息是否为「工具回执」（role=user、首块为 ToolResult，可能后附图片）。
+fn is_tool_result_message(msg: &ChatMessage) -> bool {
+    msg.role == Role::User
+        && msg
+            .content
+            .first()
+            .is_some_and(|b| matches!(b, Block::ToolResult { .. }))
+}
+
+/// 扫描 `index` 处助手消息之后**紧邻**的工具回执，返回仍无回执的 tool_use id
+/// 与回执段之后的下标。
+///
+/// 厂商（OpenAI / Anthropic）要求回执紧跟对应的 `tool_calls`：中间夹进任何非回执
+/// 消息都算缺失，所以这里只认紧随其后的连续回执消息。
+fn unanswered_tool_uses(messages: &[ChatMessage], index: usize) -> (Vec<String>, usize) {
+    let pending: Vec<&str> = messages
+        .get(index)
+        .map(|m| {
+            m.content
+                .iter()
+                .filter_map(|b| match b {
+                    Block::ToolUse { id, .. } => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if pending.is_empty() {
+        return (Vec::new(), index + 1);
+    }
+
+    let mut answered = HashSet::new();
+    let mut cursor = index + 1;
+    while cursor < messages.len() && is_tool_result_message(&messages[cursor]) {
+        for b in &messages[cursor].content {
+            if let Block::ToolResult { tool_use_id, .. } = b {
+                answered.insert(tool_use_id.as_str());
+            }
+        }
+        cursor += 1;
+    }
+
+    let missing = pending
+        .into_iter()
+        .filter(|id| !answered.contains(*id))
+        .map(str::to_string)
+        .collect();
+    (missing, cursor)
+}
+
+/// 修复 `tool_use` / `tool_result` 配对：给没有回执的 `tool_use` 就地补一条占位回执。
+///
+/// 回执本应由 `append_tool_results` 紧随助手消息写入，但有两条路径会留下「光有
+/// tool_use、没有回执」的孤儿：进程在「助手消息已落库、工具还没跑完」之间消失
+/// （例如 shell 工具把执行它的 daemon 一起杀了），或回执写库失败。厂商在**每次请求**
+/// 都校验这个配对（`An assistant message with 'tool_calls' must be followed by tool
+/// messages responding to each 'tool_call_id'`），孤儿一旦留在历史里，该会话此后
+/// 每次请求都会被 400 拒绝，且不会自愈。
+///
+/// 因此拼装请求前兜底修复一次。只作用于**本次请求的副本**：消息树靠 `parent_id`
+/// 串联，插入不落库的消息会让后续新增消息挂到不存在的父节点上（回读时链会断开）。
+fn repair_tool_pairing(messages: &mut Vec<ChatMessage>) {
+    let mut index = 0;
+    while index < messages.len() {
+        let (missing, cursor) = unanswered_tool_uses(messages, index);
+        if missing.is_empty() {
+            index = cursor.max(index + 1);
+            continue;
+        }
+
+        let placeholder = ChatMessage {
+            id:         uuid::Uuid::new_v4().to_string(),
+            parent_id:  Some(messages[index].id.clone()),
+            role:       Role::User,
+            content:    missing
+                .into_iter()
+                .map(|tool_use_id| Block::ToolResult {
+                    tool_use_id,
+                    content: ORPHAN_TOOL_RESULT.to_string(),
+                    is_error: true,
+                    duration_ms: None,
+                })
+                .collect(),
+            created_at: messages[index].created_at,
+            model:      None,
+            usage:      None,
+        };
+        // 补在已有回执之后：真实回执的顺序保持原样，缺的那几条排在最后
+        messages.insert(cursor, placeholder);
+        index = cursor + 1;
     }
 }
 
@@ -855,6 +950,9 @@ impl SessionRoom {
 
             // 上下文压缩（只作用于本次请求的副本，持久化历史保持不变）
             let mut messages = history.clone();
+            // 兜底修复配对：进程被杀或回执写库失败会在历史里留下无回执的 tool_use，
+            // 厂商每次请求都会校验它，残留会让整个会话此后永久 400（见 repair_tool_pairing）
+            repair_tool_pairing(&mut messages);
             compact_messages(&mut messages, model_cfg.context_len, anchor);
             // session_attachment:// 引用在此内联为 data URI，各厂商协议拿到的都是完整载荷
             self.inline_attachments(&mut messages).await;
@@ -1120,6 +1218,9 @@ impl SessionRoom {
     /// 消息：它属于工具输出而非用户发言，落库形态与展示形态都据此统一（见
     /// `isInternalMessage`）。只有 Anthropic 能原样消费这种结构，completion /
     /// response 在发请求时才把图片拆到紧随其后的用户消息里（协议翻译属 provider 职责）。
+    ///
+    /// **内存历史优先**：即使落库失败也照样入内存（并广播错误），保证本次轮次内部
+    /// 永远不存在无回执的 `tool_use`；磁盘上的缺口由下一次请求前的配对修复兜底。
     async fn append_tool_results(&self, parent_id: &str, results: Vec<ToolCallResult>, history: &mut Vec<ChatMessage>) {
         if results.is_empty() {
             return;
@@ -1150,11 +1251,14 @@ impl SessionRoom {
             model:      None,
             usage:      None,
         };
+        // 先入内存历史再落库：内存态是本次轮次后续请求的唯一来源，必须与已执行的工具
+        // 保持配对。落库失败只让磁盘上的历史缺这条回执（下次请求前的
+        // repair_tool_pairing 会兜底），绝不能反过来让内存里留下无回执的 tool_use——
+        // 那样下一次请求必被厂商以 `insufficient tool messages` 拒绝。
         if let Err(e) = self.storage.append_message(&self.session_id, &msg).await {
             self.broadcast(AgentEvent::Error {
                 message: format!("Failed to save tool results: {}", e),
             });
-            return;
         }
         history.push(msg);
     }
@@ -1561,6 +1665,17 @@ mod tests {
                 }
             }
         }
+
+        // 反方向同样必须成立：每条 tool_use 都要有紧邻的回执，否则厂商会以
+        // `insufficient tool messages following tool_calls message` 拒绝整轮请求
+        for (i, m) in messages.iter().enumerate() {
+            let (missing, _) = unanswered_tool_uses(messages, i);
+            assert!(
+                missing.is_empty(),
+                "tool_use(s) {missing:?} in {} have no following tool_result",
+                m.id
+            );
+        }
     }
 
     #[test]
@@ -1606,6 +1721,101 @@ mod tests {
         let original = messages.clone();
         compact_messages(&mut messages, 128_000, None);
         assert_eq!(messages, original);
+    }
+
+    // ---------- 配对兜底修复 ----------
+
+    /// 进程在「助手消息已落库、工具还没跑完」之间消失（shell 工具把执行它的
+    /// daemon 一起杀了就是这种）：历史尾部会留下无回执的 tool_use，修复后必须
+    /// 补出占位回执，否则该会话此后每次请求都被厂商 400 拒绝。
+    #[test]
+    fn test_repair_tool_pairing_after_interrupted_turn() {
+        let mut messages = vec![text(Role::User, "u1", None, "开始"), tool_use_msg("a1", "u1", "call_1")];
+
+        repair_tool_pairing(&mut messages);
+
+        assert_eq!(messages.len(), 3);
+        let repair = &messages[2];
+        assert_eq!(repair.role, Role::User);
+        assert_eq!(repair.parent_id.as_deref(), Some("a1"));
+        assert!(
+            matches!(
+                repair.content.first(),
+                Some(Block::ToolResult { tool_use_id, is_error: true, .. }) if tool_use_id == "call_1"
+            ),
+            "expected a placeholder tool_result for call_1, got {:?}",
+            repair.content
+        );
+        assert_well_formed(&messages);
+    }
+
+    /// 孤儿后面已经跟了新的用户消息（用户重开应用后接着聊）：
+    /// 占位回执插在中间，用户那条消息不能被丢掉。
+    #[test]
+    fn test_repair_tool_pairing_keeps_following_user_message() {
+        let mut messages = vec![
+            text(Role::User, "u1", None, "开始"),
+            tool_use_msg("a1", "u1", "call_1"),
+            text(Role::User, "u2", Some("a1"), "继续"),
+        ];
+
+        repair_tool_pairing(&mut messages);
+
+        assert_eq!(messages.len(), 4);
+        assert!(
+            matches!(
+                messages[2].content.first(),
+                Some(Block::ToolResult { tool_use_id, .. }) if tool_use_id == "call_1"
+            ),
+            "placeholder must sit right after the assistant message"
+        );
+        assert_eq!(messages[3].id, "u2", "the following user message must survive");
+        assert_well_formed(&messages);
+    }
+
+    /// 一次多工具调用只回执了一半：只补缺的那条，已有回执原样保留在前面。
+    #[test]
+    fn test_repair_tool_pairing_fills_only_missing_results() {
+        let mut assistant = tool_use_msg("a1", "u1", "call_1");
+        assistant.content.push(Block::ToolUse {
+            id:    "call_2".into(),
+            name:  "read".into(),
+            input: serde_json::json!({ "path": "b.rs" }),
+        });
+        let mut messages = vec![
+            text(Role::User, "u1", None, "开始"),
+            assistant,
+            tool_result_msg("r1", "a1", "call_1", "ok"),
+        ];
+
+        repair_tool_pairing(&mut messages);
+
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[2].id, "r1", "the recorded result must stay first");
+        assert!(
+            matches!(
+                messages[3].content.first(),
+                Some(Block::ToolResult { tool_use_id, .. }) if tool_use_id == "call_2"
+            ),
+            "only the unanswered call gets a placeholder"
+        );
+        assert_well_formed(&messages);
+    }
+
+    /// 配对完整的历史一个字都不许改（修复只在缺回执时触发）。
+    #[test]
+    fn test_repair_tool_pairing_is_noop_when_paired() {
+        let mut messages = vec![
+            text(Role::User, "u1", None, "开始"),
+            tool_use_msg("a1", "u1", "call_1"),
+            tool_result_msg("r1", "a1", "call_1", "ok"),
+            text(Role::Assistant, "a2", Some("r1"), "完成"),
+        ];
+        let before = messages.clone();
+
+        repair_tool_pairing(&mut messages);
+
+        assert_eq!(messages, before, "a valid history must be left untouched");
     }
 
     /// 旧实现用「消息条数一半」切窗，会切出孤儿 tool_result 或以 assistant 开头；
@@ -1848,6 +2058,49 @@ mod tests {
         assert_eq!(texts, vec!["c1", "c2", "c3"], "every queued input must run, in order");
         assert!(!room.is_busy());
         assert_eq!(room.command_queue.lock().await.len(), 0);
+        Ok(())
+    }
+
+    /// 回执写库失败时内存历史也必须收下这条回执：内存是本次轮次后续请求的唯一来源，
+    /// 留下无回执的 tool_use 会让下一跳请求直接被厂商 400 拒绝。
+    #[tokio::test]
+    async fn test_append_tool_results_keeps_memory_consistent_on_storage_failure() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let storage = StorageManager::new(tmp.path()).await?;
+        storage
+            .create_session("s_r", "/w", "T", "missing/model", "task", "medium")
+            .await?;
+        let room = SessionRoom::new(
+            "s_r",
+            PathBuf::from(tmp.path()),
+            storage.clone(),
+            Arc::new(RwLock::new(OmaConfig::default())),
+            ToolRegistry::new(),
+            "missing/model",
+            "task",
+        );
+
+        // 父消息不存在：外键约束让这次 append_message 必然失败
+        let mut history = Vec::new();
+        room.append_tool_results(
+            "no-such-parent",
+            vec![("call_1".to_string(), "out".to_string(), false, Vec::new(), None)],
+            &mut history,
+        )
+        .await;
+
+        assert_eq!(history.len(), 1, "in-memory history must keep the tool result");
+        assert!(
+            matches!(
+                history[0].content.first(),
+                Some(Block::ToolResult { tool_use_id, .. }) if tool_use_id == "call_1"
+            ),
+            "the in-memory result must stay paired with its tool_use"
+        );
+        assert!(
+            storage.get_all_messages("s_r").await?.is_empty(),
+            "the failing write must not have persisted anything"
+        );
         Ok(())
     }
 
