@@ -393,9 +393,9 @@ const liveModelLabel = computed(() => messageModelLabel(chat.live.value.model ||
 /**
  * 流式消息的用量行。
  *
- * 服务端在每次模型请求结束后下发本轮累计用量（`usage_updated`），因此这里显示的是
- * 「到目前为止」的输入/输出，随工具循环推进而增长；不含耗时——整轮还没走完，
- * 那一个数字只该在收尾时出现（见 `turnElapsedMs`）。
+ * 服务端在每次模型请求结束后下发**该次请求**的用量（`usage_updated`），因此这里显示
+ * 的是最近一次请求的输入/输出（含它的整个提示侧），与回读后落在那条助手消息上的数字
+ * 一致；不含耗时——整轮还没走完，那一个数字只该在收尾时出现（见 `turnElapsedMs`）。
  */
 const liveUsageText = computed(() => usageText(chat.live.value.usage));
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */

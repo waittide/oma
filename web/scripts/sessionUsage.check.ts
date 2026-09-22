@@ -44,9 +44,9 @@ const toolUse = (id: string, name: string): ChatMessage['content'][number] => ({
   input: { command: 'ls' },
 });
 
-// --- 1. 同一轮的多条助手消息各自带着「本轮累计值」，只能计一次 ---
+// --- 1. 每条助手消息各记自己那次请求的用量，逐条相加 ---
 eq(
-  'usage counted once per turn',
+  'per-request usage is summed',
   sessionUsage([
     msg('u1', 'user', [text('hi')]),
     msg('a1', 'assistant', [toolUse('c1', 'shell')], {
@@ -57,15 +57,15 @@ eq(
     msg('u2', 'user', [text('again')]),
     msg('a3', 'assistant', [text('ok')], { usage: { input_tokens: 20, output_tokens: 5 } }),
   ]),
-  { input_tokens: 170, output_tokens: 45, cache_read_tokens: 0, cache_write_tokens: 0 },
+  { input_tokens: 270, output_tokens: 55, cache_read_tokens: 0, cache_write_tokens: 0 },
 );
 
 // --- 2. 没有任何用量数据时返回 null（顶栏不展示该段） ---
 eq('no usage -> null', sessionUsage([msg('u1', 'user', [text('hi')])]), null);
 
-// --- 3. 工具回执（user 角色）不切轮次：它跟在同一条助手消息后面 ---
+// --- 3. 工具回执（user 角色）与用户消息都不参与合计 ---
 eq(
-  'tool result does not split the turn',
+  'non-assistant messages are ignored',
   sessionUsage([
     msg('u1', 'user', [text('hi')]),
     msg('a1', 'assistant', [toolUse('c1', 'shell')], {
@@ -74,7 +74,26 @@ eq(
     msg('r1', 'user', [toolResult('c1')]),
     msg('a2', 'assistant', [text('done')], { usage: { input_tokens: 30, output_tokens: 4 } }),
   ]),
-  { input_tokens: 30, output_tokens: 4, cache_read_tokens: 0, cache_write_tokens: 0 },
+  { input_tokens: 40, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0 },
+);
+
+// --- 3b. 缓存列也要累计（长上下文下它通常是大头） ---
+eq(
+  'cache tokens are summed',
+  sessionUsage([
+    msg('a1', 'assistant', [text('one')], {
+      usage: { input_tokens: 312615, output_tokens: 3558, cache_read_tokens: 312320 },
+    }),
+    msg('a2', 'assistant', [text('two')], {
+      usage: { input_tokens: 317043, output_tokens: 816, cache_read_tokens: 316160, cache_write_tokens: 100 },
+    }),
+  ]),
+  {
+    input_tokens: 629658,
+    output_tokens: 4374,
+    cache_read_tokens: 628480,
+    cache_write_tokens: 100,
+  },
 );
 
 // --- 4. 用量行的展示（0 值整段省略，带缩写，文案走 i18n） ---

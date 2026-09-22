@@ -80,7 +80,7 @@ export interface ActiveTurnCatchUp {
   accumulated_thinking: string;
   accumulated_text: string;
   active_tool_call?: ToolCallStartedData | null;
-  /** 本轮到目前为止的累计用量；全零/缺省表示服务端尚未拿到 */
+  /** 本轮最近一次完成的请求的用量；全零/缺省表示尚未有请求完成 */
   usage?: TokenUsage;
 }
 

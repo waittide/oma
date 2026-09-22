@@ -84,10 +84,10 @@ pub struct ChatMessage {
     /// 用户消息与早期数据没有该字段（`None`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model:      Option<String>,
-    /// 产生该消息时本轮累计的 token 消耗；用户消息与早期数据为 `None`。
+    /// 产生该消息的**这一次模型请求**的 token 消耗；用户消息为 `None`。
     ///
-    /// 一次用户输入可能产生多条助手消息（工具循环），每条都记下当时的累计值，
-    /// 界面按「本轮最后一条」展示整轮开销。
+    /// 一次用户输入可能产生多条助手消息（工具循环），每条各自记自己那次请求的
+    /// 用量（含该次请求的整个提示侧，因此缓存命中会占大头）；整轮开销由各条相加。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage:      Option<TokenUsage>,
 }
@@ -608,8 +608,8 @@ pub struct ActiveTurnCatchUp {
     pub accumulated_text:     String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tool_call:     Option<ToolCallStartedData>,
-    /// 本轮累计用量（到目前为止）。中途接入的客户端据此立即显示输入/输出，
-    /// 不必等下一条 `UsageUpdated`；全零表示尚未拿到（界面据此不显示用量行）。
+    /// 最近一次完成的请求的用量。中途接入的客户端据此立即显示输入/输出，
+    /// 不必等下一条 `UsageUpdated`；全零表示本轮尚未有请求完成（界面据此不显示用量行）。
     #[serde(default)]
     pub usage:                TokenUsage,
 }
@@ -677,9 +677,9 @@ pub enum AgentEvent {
         tokens:      usize,
         context_len: usize,
     },
-    /// 本轮累计用量更新：每次模型请求结束（该请求的助手消息落库）后广播。
-    /// `usage` 与落库到助手消息的 `usage` 同一口径（**本轮到目前为止**的累计值），
-    /// 供界面在流式期间就展示输入/输出，而不必等整轮结束后的回读。
+    /// 本次请求的用量：每次模型请求结束（该请求的助手消息落库）后广播。
+    /// `usage` 与同时落库到该条助手消息的 `usage` 同一口径（**只含这一次请求**），
+    /// 供界面在流式期间就展示输入/输出，而不必等整轮结束后的回读；整轮总量见 `TurnFinished`。
     UsageUpdated {
         usage: TokenUsage,
     },

@@ -493,6 +493,68 @@ async fn test_end_to_end_turn_with_read_tool() -> Result<()> {
     Ok(())
 }
 
+/// 用量口径：每条助手消息只记**产生它的那一次请求**的用量。
+///
+/// 一次带工具的回合会产生多次模型请求。老实现把「本轮累计值」写进每条消息，
+/// 于是长工具循环的最后一条显示成整轮之和（实测上千万输入），被读成「这个工具
+/// 消耗了这么多 token」。这里用两条不变式把口径钉住：逐条相加 == 整轮总量，
+/// 且单条必然小于整轮总量。
+#[tokio::test]
+async fn test_usage_is_recorded_per_request() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h.api.create_session(&h.workspace, Some("usage")).await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "usage".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "please explore".into(),
+            attachments: vec![],
+        })
+        .await?;
+    let events = drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    let turn_total = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::TurnFinished { usage, .. } => Some(*usage),
+            _ => None,
+        })
+        .expect("turn must finish with a usage total");
+
+    let messages = fetch_messages(&h, &session.session_id).await?;
+    let per_msg: Vec<u64> = messages
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .map(|m| {
+            m["usage"]["input_tokens"]
+                .as_u64()
+                .expect("每条助手消息都必须记下自己那次请求的用量")
+        })
+        .collect();
+
+    assert!(per_msg.len() >= 2, "工具回合应产生多次请求，实际只有 {per_msg:?}");
+    assert_eq!(
+        per_msg.iter().sum::<u64>(),
+        turn_total.input_tokens as u64,
+        "逐条相加必须等于 TurnFinished 的整轮总量（per-msg: {per_msg:?}）"
+    );
+    assert!(
+        per_msg.iter().all(|v| *v < turn_total.input_tokens as u64),
+        "单条消息只能是某一次请求的量，不能等于整轮之和：{per_msg:?} vs {}",
+        turn_total.input_tokens
+    );
+    Ok(())
+}
+
 /// 排队指令必须被完整排空：三条连发 → 三轮都真正执行。
 #[tokio::test]
 async fn test_queued_inputs_are_all_executed() -> Result<()> {

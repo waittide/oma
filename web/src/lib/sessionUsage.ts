@@ -12,35 +12,17 @@ function add(into: TokenUsage, add: TokenUsage | null | undefined) {
 /**
  * 整会话的 token 合计。
  *
- * 一条用户输入可能产生多条助手消息（工具循环），而每条助手消息记录的都是
- * **本轮到目前为止的累计值**——逐条相加会把同一轮的输入重复计入。因此按
- * 「用户消息切分出的轮次」分组，每轮只取该轮最后一条助手消息的用量。
+ * 每条助手消息记的是**它自己那次请求**的用量（含该次请求的整个提示侧），
+ * 所以逐条相加即可：一次工具循环产生的多条消息各算一次，正是这些请求的真实总和。
  */
 export function sessionUsage(messages: ChatMessage[]): TokenUsage | null {
   const total: TokenUsage = { input_tokens: 0, output_tokens: 0 };
-  let turn: TokenUsage | null = null;
   let seen = false;
-
-  const flush = () => {
-    if (turn) {
-      add(total, turn);
-      seen = true;
-    }
-    turn = null;
-  };
-
   for (const m of messages) {
-    // 工具回执也是 user 角色（见契约），它跟在同一条助手消息之后；
-    // 把它当作轮次边界会把同一轮拆成两段，用量于是被少计。
-    // 只有真正带内容的用户消息才是新一轮的开始。
-    if (m.role === 'user') {
-      if (m.content.some((b) => b.type !== 'tool_result')) flush();
-      continue;
-    }
-    if (m.role === 'assistant' && m.usage) turn = m.usage;
+    if (m.role !== 'assistant' || !m.usage) continue;
+    add(total, m.usage);
+    seen = true;
   }
-  flush();
-
   return seen ? total : null;
 }
 

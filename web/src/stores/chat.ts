@@ -12,7 +12,6 @@ import type {
   ClientMessage,
   ModelInfo,
   ServerMessage,
-  TokenUsage,
 } from '../types';
 import { tr } from '../composables/i18n';
 import { notifyHumanEvent } from '../lib/notify';
@@ -83,7 +82,6 @@ export const reasoningLevel = ref('');
 export const modelCatalog = ref<Record<string, ModelInfo[]>>({});
 export const agents = ref<AgentSummary[]>([]);
 export const mcpServers = ref<McpServerSummary[]>([]);
-export const lastUsage = ref<TokenUsage | null>(null);
 /**
  * call_id → 工具执行耗时（毫秒）。
  *
@@ -279,9 +277,8 @@ function handleEvent(ev: AgentEvent) {
       running.value = false;
       finalizing.value = true;
       if (ev.data) {
-        lastUsage.value = ev.data.usage;
-        // 最终值同步给流式缓冲：整轮收尾时用量行不因回读往返而闪断
-        live.value.usage = ev.data.usage;
+        // 整轮总量（各次请求之和）不落在流式行上：那一行显示的是最近一次请求
+        // 的用量，与即将回读到的最后一条助手消息一致，避免同一处数字前后打架
         if (ev.data.stop_reason === 'error') toast.error(tr('chat.turnError'));
         // 出错时已单独报错，不再以「完成」重复打扰
         else notifyHumanEvent('turn', sessionTitle());
@@ -317,7 +314,7 @@ function handleEvent(ev: AgentEvent) {
       }
       break;
     case 'usage_updated':
-      // 服务端每次模型请求结束后下发本轮累计用量：流式期间即可显示输入/输出
+      // 服务端每次模型请求结束后下发该次请求的用量：流式期间即可显示输入/输出
       if (ev.data) live.value.usage = ev.data.usage;
       break;
     case 'active_turn_catch_up':
@@ -461,7 +458,6 @@ export function reset() {
   viewLeafId.value = null;
   draft.value = '';
   forkFrom.value = null;
-  lastUsage.value = null;
   contextUsage.value = null;
   toolDurations.value = {};
   queued.value = 0;

@@ -884,6 +884,10 @@ impl SessionRoom {
             let mut assistant_thinking = String::new();
             let mut assistant_text = String::new();
             let mut assistant_tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
+            // 本次请求（= 落库的这一条助手消息）自身的用量，与 `turn_usage`
+            // （整轮累计，用于 TurnFinished）分开记：消息上的用量必须只描述
+            // 产生它的这一次请求，否则长工具循环里最后一条会累加成整轮之和。
+            let mut request_usage = TokenUsage::default();
             let mut stop_reason = StopReason::EndTurn;
             let mut cancelled = false;
             // 本次请求的权威输入占用（Anthropic 在 message_start 上报，OpenAI 等在收尾）
@@ -927,6 +931,10 @@ impl SessionRoom {
                         cache_read_tokens,
                         cache_write_tokens,
                     } => {
+                        request_usage.input_tokens += input_tokens;
+                        request_usage.output_tokens += output_tokens;
+                        request_usage.cache_read_tokens += cache_read_tokens;
+                        request_usage.cache_write_tokens += cache_write_tokens;
                         turn_usage.input_tokens += input_tokens;
                         turn_usage.output_tokens += output_tokens;
                         turn_usage.cache_read_tokens += cache_read_tokens;
@@ -995,7 +1003,9 @@ impl SessionRoom {
                     // 记下产出这一轮时生效的模型：会话中途切模型后，历史里
                     // 每一轮的归属仍然可读（界面据此显示每轮模型标签）
                     model:      Some(active_model_sel.clone()),
-                    usage:      Some(*turn_usage),
+                    // 只记**本次请求**的用量：一条助手消息对应一次模型请求，
+                    // 把整轮累计值写在这里会让长工具循环的最后一条看起来消耗巨大
+                    usage:      Some(request_usage),
                 };
                 if let Err(e) = self
                     .storage
@@ -1010,11 +1020,11 @@ impl SessionRoom {
                 history.push(assistant_msg);
                 assistant_msg_id = Some(msg_id);
                 // 该请求的助手消息已落库：把本轮累计用量同步给客户端。
-                // 口径与落库值一致，流式界面据此显示输入/输出，不必等整轮回读
+                // 口径与落库值一致（本次请求），流式界面据此显示输入/输出
                 if let Some(turn) = self.active_turn.write().as_mut() {
-                    turn.usage = *turn_usage;
+                    turn.usage = request_usage;
                 }
-                self.broadcast(AgentEvent::UsageUpdated { usage: *turn_usage });
+                self.broadcast(AgentEvent::UsageUpdated { usage: request_usage });
 
                 // 首次回复已完成：立刻后台命名，不再等整轮（含工具调用）结束
                 if !naming_attempted {
