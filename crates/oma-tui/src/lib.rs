@@ -149,6 +149,8 @@ enum PickerAction {
     SwitchBranch {
         leaf_message_id: String,
     },
+    /// 为当前工作区新建一个会话，并切过去
+    NewSession,
 }
 
 /// 弹窗选择器：连接、会话、模型、预设、推理等级、分支共用同一套渲染与按键。
@@ -669,7 +671,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
     // 弹窗：先于普通输入消费按键
     if app.picker.is_some() {
         let action = handle_picker_key(app, key);
-        return apply_picker_action(app, client, action).await;
+        return apply_picker_action(app, client, api, action).await;
     }
 
     match key.code {
@@ -678,7 +680,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
             return Ok(Some(Outcome::Quit));
         }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => open_picker(app),
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => open_session_picker(app),
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => open_session_picker(app, api).await,
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => open_model_picker(app),
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => open_agent_picker(app),
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => open_reasoning_picker(app),
@@ -760,29 +762,19 @@ fn open_picker(app: &mut App) {
 
 /// 打开会话切换弹窗。
 ///
-/// 列表是连接时取的快照：别处新建的会话要等下次连接才会出现。只有一个会话时
-/// 不弹窗——切过去只会重连同一个会话、清掉当前记录，没有意义。
-fn open_session_picker(app: &mut App) {
-    if app.sessions.len() < 2 {
-        app.push(
-            "·",
-            "当前工作区只有一个会话（在 Web 侧新建后重进本界面即可切换）",
-            Style::default().fg(app.theme.muted),
-        );
-        return;
+/// 列表现拉：别处（Web、另一个终端）新建的会话要能马上看到，连接时的快照只作为
+/// 拉取失败时的退路。首项固定是「新建会话」——否则工作区里只有一个会话时，
+/// 弹窗里除了「重连现在这个」无事可做。
+async fn open_session_picker(app: &mut App, api: &SessionApi) {
+    match api.list_sessions(Some(&app.workspace)).await {
+        Ok(list) => app.sessions = list,
+        Err(e) => app.push(
+            "!",
+            format!("刷新会话列表失败，沿用连接时的快照: {e}"),
+            Style::default().fg(app.theme.warning),
+        ),
     }
-    let items: Vec<PickerItem> = app
-        .sessions
-        .iter()
-        .map(|s| PickerItem {
-            label:   s.title.clone(),
-            detail:  format!("{} · {}", short_id(&s.session_id), s.active_model),
-            current: s.session_id == app.session_id,
-            action:  PickerAction::SwitchSession {
-                session_id: s.session_id.clone(),
-            },
-        })
-        .collect();
+    let items = session_items(&app.sessions, &app.workspace, &app.session_id);
     // 高亮落在当前会话上：打开弹窗第一眼就知道「现在在哪」
     let index = picker_current_index(&items);
     app.picker = Some(Picker {
@@ -790,6 +782,36 @@ fn open_session_picker(app: &mut App) {
         items,
         index,
     });
+}
+
+/// 会话弹窗的条目：首项固定是「新建会话」，其余按列表顺序。
+fn session_items(sessions: &[SessionRecord], workspace: &str, current: &str) -> Vec<PickerItem> {
+    let mut items: Vec<PickerItem> = sessions
+        .iter()
+        .map(|s| PickerItem {
+            // 刚建的会话还没有标题，留空会让弹窗里出现一条莫名其妙的空行
+            label:   if s.title.trim().is_empty() {
+                "未命名".to_string()
+            } else {
+                s.title.clone()
+            },
+            detail:  format!("{} · {}", short_id(&s.session_id), s.active_model),
+            current: s.session_id == current,
+            action:  PickerAction::SwitchSession {
+                session_id: s.session_id.clone(),
+            },
+        })
+        .collect();
+    items.insert(
+        0,
+        PickerItem {
+            label:   "＋ 新建会话".into(),
+            detail:  format!("为 {workspace} 开一个空会话"),
+            current: false,
+            action:  PickerAction::NewSession,
+        },
+    );
+    items
 }
 
 /// 当前生效那一项的下标；没有则从第一项开始。
@@ -1056,6 +1078,7 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> Option<PickerAction> {
 async fn apply_picker_action(
     app: &mut App,
     client: &OmaClient,
+    api: &SessionApi,
     action: Option<PickerAction>,
 ) -> Result<Option<Outcome>> {
     let Some(action) = action else {
@@ -1082,6 +1105,19 @@ async fn apply_picker_action(
             let session_id = app.session_id.clone();
             send_setting(app, client, AgentCommand::SwitchBranch { leaf_message_id }, "切换分支").await;
             Ok(Some(Outcome::Reload { session_id }))
+        }
+        PickerAction::NewSession => {
+            let workspace = app.workspace.clone();
+            match api.create_session(&workspace, None).await {
+                // 新会话没有任何消息，切过去即是空白界面
+                Ok(record) => Ok(Some(Outcome::SwitchSession {
+                    session_id: record.session_id,
+                })),
+                Err(e) => {
+                    app.push("!", format!("新建会话失败: {e}"), Style::default().fg(app.theme.error));
+                    Ok(None)
+                }
+            }
         }
     }
 }
@@ -1538,35 +1574,59 @@ mod tests {
         assert!(app.picker.is_none());
     }
 
-    /// 会话弹窗：高亮当前会话并标 ✓，确认后返回该会话。
+    /// 会话弹窗条目：首项固定是「新建会话」，当前会话标 ✓ 且说明里带模型名。
     #[test]
-    fn test_session_picker_marks_current_and_returns_target() {
+    fn test_session_items_marks_current_and_offers_new() {
+        let sessions = vec![record("s1", "第一个会话"), record("s2", "当前会话")];
+        let items = session_items(&sessions, "/w", "s2");
+
+        assert_eq!(items.len(), 3);
+        match &items[0].action {
+            PickerAction::NewSession => {}
+            _ => panic!("首项应是「新建会话」"),
+        }
+        assert!(!items[0].current, "新建会话不是当前项");
+        assert!(items[2].current && !items[1].current, "只有当前会话带 ✓");
+        assert!(items[2].detail.contains('m'), "说明里带模型名，便于区分同名会话");
+        assert_eq!(picker_current_index(&items), 2, "高亮应落在当前会话上");
+
+        // 没有任何会话时也留着「新建会话」，弹窗不会空着
+        let only_new = session_items(&[], "/w", "");
+        assert_eq!(only_new.len(), 1);
+        assert_eq!(picker_current_index(&only_new), 0);
+
+        // 刚建的会话没有标题：用占位文案，避免弹窗里出现空行
+        let mut untitled = record("s3", "");
+        untitled.active_model = String::new();
+        let items = session_items(&[untitled], "/w", "");
+        assert_eq!(items[1].label, "未命名");
+    }
+
+    /// 会话弹窗的按键：Enter 取出切换目标并关窗，Esc 只关窗。
+    #[test]
+    fn test_session_picker_keys() {
         let mut app = App::new("/w".into(), "m".into(), "a".into(), TuiTheme::test());
         app.session_id = "s2".into();
         app.sessions = vec![record("s1", "第一个会话"), record("s2", "当前会话")];
-
-        open_session_picker(&mut app);
-        assert_eq!(picker_index(&app), Some(1), "应停在当前会话上");
-        let items = &app.picker.as_ref().unwrap().items;
-        assert!(items[1].current && !items[0].current, "只有当前会话带 ✓");
-        // 说明里带模型名，便于区分同名会话
-        assert!(items[1].detail.contains('m'));
+        app.picker = Some(Picker {
+            title: " 切换会话 ".into(),
+            items: session_items(&app.sessions, "/w", &app.session_id),
+            index: 2,
+        });
 
         match handle_picker_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
-            Some(PickerAction::SwitchSession { session_id }) => {
-                assert_eq!(session_id, "s2");
-            }
+            Some(PickerAction::SwitchSession { session_id }) => assert_eq!(session_id, "s2"),
             _ => panic!("Enter 应返回会话切换目标"),
         }
+        assert!(app.picker.is_none(), "确认后弹窗应关闭");
 
-        // Esc 关掉弹窗且不返回动作
-        open_session_picker(&mut app);
+        // Esc 关窗且不返回动作
+        app.picker = Some(Picker {
+            title: " 切换会话 ".into(),
+            items: session_items(&app.sessions, "/w", &app.session_id),
+            index: 0,
+        });
         assert!(handle_picker_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
-        assert!(app.picker.is_none());
-
-        // 只有一个会话时只提示，不弹窗
-        app.sessions.truncate(1);
-        open_session_picker(&mut app);
         assert!(app.picker.is_none());
     }
 
