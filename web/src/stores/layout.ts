@@ -25,6 +25,7 @@ interface Persisted {
   rightOpen: boolean;
   rightWidth: number;
   rightTab: RightTab;
+  changesView: ChangesView;
 }
 
 export type RightTab = 'files' | 'changes' | 'tree';
@@ -34,6 +35,16 @@ const RIGHT_TABS: RightTab[] = ['files', 'changes', 'tree'];
 
 function readRightTab(value: unknown, fallback: RightTab): RightTab {
   return RIGHT_TABS.includes(value as RightTab) ? (value as RightTab) : fallback;
+}
+
+/** 「变更」页的展示形式：扁平清单，或按目录归组的树。 */
+export type ChangesView = 'list' | 'tree';
+
+/** 合法的变更视图：与标签页同理，未知值退回列表（保持旧版本的默认观感）。 */
+const CHANGES_VIEWS: ChangesView[] = ['list', 'tree'];
+
+function readChangesView(value: unknown, fallback: ChangesView): ChangesView {
+  return CHANGES_VIEWS.includes(value as ChangesView) ? (value as ChangesView) : fallback;
 }
 
 function clamp(width: number, min: number, max: number): number {
@@ -53,6 +64,7 @@ function read(): Persisted {
     rightOpen: false,
     rightWidth: defaultRightPanelWidth(typeof window === 'undefined' ? 1440 : window.innerWidth),
     rightTab: 'files',
+    changesView: 'list',
   };
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -64,6 +76,7 @@ function read(): Persisted {
       rightOpen: parsed.rightOpen ?? fallback.rightOpen,
       rightWidth: clamp(parsed.rightWidth ?? fallback.rightWidth, RIGHT_PANEL_MIN_WIDTH, RIGHT_PANEL_MAX_WIDTH),
       rightTab: readRightTab(parsed.rightTab, fallback.rightTab),
+      changesView: readChangesView(parsed.changesView, fallback.changesView),
     };
   } catch {
     return fallback;
@@ -77,6 +90,7 @@ export const sidebarWidth = ref(state.sidebarWidth);
 export const rightOpen = ref(state.rightOpen);
 export const rightWidth = ref(state.rightWidth);
 export const rightTab = ref<RightTab>(state.rightTab);
+export const changesView = ref<ChangesView>(state.changesView);
 
 function persist() {
   try {
@@ -88,6 +102,7 @@ function persist() {
         rightOpen: rightOpen.value,
         rightWidth: rightWidth.value,
         rightTab: rightTab.value,
+        changesView: changesView.value,
       } satisfies Persisted),
     );
   } catch {
@@ -114,6 +129,12 @@ export function openRight(tab: RightTab) {
 
 export function setRightTab(tab: RightTab) {
   rightTab.value = tab;
+  persist();
+}
+
+/** 切换「变更」页的列表 / 树展示；与工作区无关，全局记住。 */
+export function setChangesView(view: ChangesView) {
+  changesView.value = view;
   persist();
 }
 

@@ -1,16 +1,32 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { UiButton, UiIconButton, UiTooltip } from '@waittide/ui';
-import { LuArrowLeft, LuRefreshCw } from 'vue-icons-plus/lu';
+import { UiButton, UiIconButton, UiSegmented, UiTooltip } from '@waittide/ui';
+import {
+  LuArrowLeft,
+  LuChevronDown,
+  LuChevronRight,
+  LuList,
+  LuListTree,
+  LuRefreshCw,
+} from 'vue-icons-plus/lu';
 import { api } from '../api';
 import type { GitFileChange } from '../types';
 import { useTranslations } from '../composables/i18n';
+import * as layout from '../stores/layout';
+import { buildChangeRows, changeRowIndent } from '../lib/changesTree';
+import { changeStatus, type ChangeStatus } from '../lib/gitStatus';
 
 /**
  * Git 变更标签页：当前分支 + 变更文件清单，点开看相对 HEAD 的 diff。
  *
  * 只读展示：暂存/提交这类写操作留给用户在终端里做——这里的职责是「看一眼」，
  * 多一条写路径就多一份把用户仓库改坏的风险。
+ *
+ * 展示形式可切换：**列表**（扁平清单、显示完整路径）或**树**（按目录归组、目录可折叠）。
+ * 偏好落在 `layout` store 里全局持久化；树只由前端对已有路径分组，后端接口不变。
+ *
+ * 状态不用徽标，直接染文件名：绿=创建、黄=修改（含改名）、红=删除。
+ * 具体状态仍以 tooltip 文字给出，颜色不承担全部信息。
  */
 const props = defineProps<{ workspace: string }>();
 const { t } = useTranslations('panel');
@@ -25,6 +41,14 @@ const diffLoading = ref(false);
 const diffError = ref('');
 const diff = ref('');
 
+/** 树视图里已折叠的目录（按相对路径记）；取不到就整体展开 */
+const collapsedDirs = ref<Set<string>>(new Set());
+
+const viewOptions = computed(() => [
+  { value: 'list', label: t('viewList'), icon: LuList },
+  { value: 'tree', label: t('viewTree'), icon: LuListTree },
+]);
+
 async function load() {
   const ws = props.workspace;
   if (!ws) {
@@ -35,6 +59,8 @@ async function load() {
   error.value = '';
   selected.value = '';
   diff.value = '';
+  // 重新读取后目录结构与上次可能完全不同，折叠状态一并重置为全展开
+  collapsedDirs.value = new Set();
   try {
     const status = await api.gitStatus(ws);
     branch.value = status.branch;
@@ -62,15 +88,39 @@ async function openDiff(path: string) {
   }
 }
 
-/** porcelain 的两列状态合成一个可读标签：优先显示「未跟踪/新增/删除/改名」，否则「已修改」。 */
-function statusLabel(file: GitFileChange): string {
-  if (file.untracked) return t('gitUntracked');
-  const codes = `${file.index}${file.worktree}`;
-  if (codes.includes('A')) return t('gitAdded');
-  if (codes.includes('D')) return t('gitDeleted');
-  if (codes.includes('R')) return t('gitRenamed');
-  if (codes.includes('M')) return t('gitModified');
-  return codes.trim() || '·';
+/**
+ * 语义状态 → 文件名颜色类。
+ *
+ * 五态收成三色：未跟踪与新增同为「创建」（绿），改名归入「修改」（黄）。
+ */
+const STATUS_TONE: Record<ChangeStatus, string> = {
+  untracked: 'created',
+  added:     'created',
+  modified:  'modified',
+  renamed:   'modified',
+  deleted:   'deleted',
+};
+
+/** 语义状态 → 文案键：颜色之外仍把具体状态写进 tooltip，供悬停与无障碍读取 */
+const STATUS_KEY: Record<ChangeStatus, string> = {
+  untracked: 'gitUntracked',
+  added:     'gitAdded',
+  modified:  'gitModified',
+  renamed:   'gitRenamed',
+  deleted:   'gitDeleted',
+};
+
+function statusTone(file: GitFileChange): string {
+  return STATUS_TONE[changeStatus(file)];
+}
+
+function statusText(file: GitFileChange): string {
+  return t(STATUS_KEY[changeStatus(file)]);
+}
+
+/** 行的 tooltip：完整路径 + 状态。树里只显示末段名，路径得靠它补全。 */
+function rowTitle(file: GitFileChange): string {
+  return `${file.path} · ${statusText(file)}`;
 }
 
 /** diff 行着色：新增/删除/文件头，其余按上下文。 */
@@ -84,6 +134,21 @@ function diffLineClass(line: string): string {
 }
 
 const diffLines = computed(() => (diff.value ? diff.value.replace(/\n$/, '').split('\n') : []));
+
+/** 变更视图的切换：`UiSegmented` 抛出 string | number，这里收敛回字面量类型 */
+function onViewChange(value: string | number) {
+  layout.setChangesView(value === 'tree' ? 'tree' : 'list');
+}
+
+function toggleDir(path: string) {
+  const next = new Set(collapsedDirs.value);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  collapsedDirs.value = next;
+}
+
+/** 树视图的待渲染行（构建逻辑在 lib 中，见 changesTree.check.ts） */
+const rows = computed(() => buildChangeRows(files.value, collapsedDirs.value));
 
 watch(() => props.workspace, load, { immediate: true });
 </script>
@@ -100,6 +165,15 @@ watch(() => props.workspace, load, { immediate: true });
       <span v-else-if="branch" class="branch">{{ branch }}</span>
       <span v-else class="branch">{{ t('changes') }}</span>
       <span class="spacer" />
+      <UiSegmented
+        v-if="!selected && files.length > 0"
+        class="view-toggle"
+        size="sm"
+        :model-value="layout.changesView.value"
+        :options="viewOptions"
+        :label="t('viewLabel')"
+        @update:model-value="onViewChange"
+      />
       <UiTooltip :content="t('reload')" align="end">
         <UiIconButton size="sm" :label="t('reload')" @click="selected ? openDiff(selected) : load()">
           <LuRefreshCw :size="13" />
@@ -127,14 +201,48 @@ watch(() => props.workspace, load, { immediate: true });
         <UiButton variant="soft" tone="neutral" size="sm" @click="load">{{ t('reload') }}</UiButton>
       </div>
       <div v-else-if="files.length === 0" class="hint">{{ t('gitClean') }}</div>
-      <ul v-else class="list">
+
+      <!-- 列表：扁平清单，路径完整显示 -->
+      <ul v-else-if="layout.changesView.value === 'list'" class="list">
         <li v-for="file in files" :key="file.path">
-          <button type="button" class="row" :title="file.path" @click="openDiff(file.path)">
-            <span class="badge" :class="{ untracked: file.untracked }">{{ statusLabel(file) }}</span>
-            <span class="path">{{ file.path }}</span>
+          <button type="button" class="row" :title="rowTitle(file)" @click="openDiff(file.path)">
+            <span class="path" :class="statusTone(file)">{{ file.path }}</span>
           </button>
         </li>
       </ul>
+
+      <!-- 树：按目录归组、目录可折叠；树靠层级表达位置，只显示末段名称 -->
+      <div v-else class="tree">
+        <template v-for="row in rows" :key="row.path">
+          <button
+            v-if="row.kind === 'dir'"
+            type="button"
+            class="row dir"
+            :style="{ paddingLeft: `${changeRowIndent(row)}px` }"
+            :title="row.path"
+            :aria-expanded="!row.collapsed"
+            @click="toggleDir(row.path)"
+          >
+            <span class="chev">
+              <component :is="row.collapsed ? LuChevronRight : LuChevronDown" :size="12" />
+            </span>
+            <span class="name">{{ row.name }}</span>
+            <span class="count">{{ row.count }}</span>
+          </button>
+          <button
+            v-else
+            type="button"
+            class="row"
+            :style="{ paddingLeft: `${changeRowIndent(row)}px` }"
+            :title="rowTitle(row.file)"
+            @click="openDiff(row.file.path)"
+          >
+            <!-- 与目录行的展开箭头同宽，保证同级名称左对齐 -->
+            <span class="chev" />
+            <span class="name" :class="statusTone(row.file)">{{ row.name }}</span>
+          </button>
+        </template>
+      </div>
     </template>
   </div>
 </template>
@@ -201,26 +309,63 @@ watch(() => props.workspace, load, { immediate: true });
 .row:hover {
   background: var(--surface-hover);
 }
-.badge {
-  flex-shrink: 0;
-  min-width: 38px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--warning) 18%, transparent);
-  color: var(--warning);
-  font-size: 10.5px;
-  text-align: center;
-}
-.badge.untracked {
-  background: color-mix(in srgb, var(--success) 18%, transparent);
-  color: var(--success);
-}
 .path {
+  /* 列表行里唯一的子元素：撑满后超长路径才会出省略号，而不是溢出到行外 */
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: 11.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 状态直接染文件名：绿=创建、黄=修改（含改名）、红=删除。
+   颜色只落在名字上，目录与计数保持中性，避免整屏花掉 */
+.path.created,
+.name.created {
+  color: var(--success);
+}
+.path.modified,
+.name.modified {
+  color: var(--warning);
+}
+.path.deleted,
+.name.deleted {
+  color: var(--danger);
+}
+/* 树：目录行与文件行同构，层级只靠内联 padding-left 拉开 */
+.tree {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+.tree .row {
+  gap: 6px;
+}
+/* 箭头槽：文件行放一个等宽占位，同级名称才能左对齐 */
+.chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.tree .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+/* 目录的变更文件数：等宽数字，折叠与否一目了然 */
+.count {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .diff {
   flex: 1;

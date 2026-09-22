@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
-    "test": "node --experimental-strip-types scripts/liveSegments.check.ts && node --experimental-strip-types scripts/sessionUsage.check.ts && node --experimental-strip-types scripts/format.check.ts && node --experimental-strip-types scripts/patchDiff.check.ts",
+    "test": "node --experimental-strip-types scripts/liveSegments.check.ts && node --experimental-strip-types scripts/sessionUsage.check.ts && node --experimental-strip-types scripts/format.check.ts && node --experimental-strip-types scripts/patchDiff.check.ts && node --experimental-strip-types scripts/changesTree.check.ts && node --experimental-strip-types scripts/gitStatus.check.ts",
     "preview": "vite preview"
   },
   "dependencies": {
