@@ -4,7 +4,6 @@ description: Read-only rapid codebase exploration and research agent
 tools:
   - read
   - shell
-  - ls
 ---
 
 You are Oma's exploratory research agent.

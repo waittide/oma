@@ -12,7 +12,6 @@ use serde::Deserialize;
 
 pub mod apply_patch;
 pub mod image;
-pub mod ls;
 pub mod truncate;
 
 use std::path::Component;
@@ -20,7 +19,7 @@ use std::path::Component;
 /// 最大工具输出字符数限制。
 ///
 /// 现在只剩 `edit` 的 diff 在用（作为超大 diff 的兜底）；
-/// `read` / `shell` 与 `ls` 已统一走 [`truncate`] 的行数 + 字节双上限。
+/// `read` / `shell` 已统一走 [`truncate`] 的行数 + 字节双上限。
 pub const RESULT_MAX_CHARS: usize = 24_000;
 
 /// 工具输出截断保护函数（字符数口径）。
@@ -1083,7 +1082,6 @@ impl ToolRegistry {
         reg.register(Arc::new(WriteTool));
         reg.register(Arc::new(EditTool));
         reg.register(Arc::new(ShellTool::default()));
-        reg.register(Arc::new(crate::ls::LsTool));
         reg
     }
 
@@ -2000,13 +1998,13 @@ mod tests {
         );
     }
 
-    /// 内置工具集：edit / ls / read / shell / write。
+    /// 内置工具集：edit / read / shell / write。
     #[test]
     fn test_builtin_tool_set() {
         let reg = ToolRegistry::with_builtins();
         let mut names: Vec<&str> = reg.list().iter().map(|t| t.name()).collect();
         names.sort_unstable();
-        assert_eq!(names, vec!["edit", "ls", "read", "shell", "write"]);
+        assert_eq!(names, vec!["edit", "read", "shell", "write"]);
 
         // 下发给模型的参数契约：edit 只认 apply_patch 的 `input`，shell 仍只认 `command`
         let defs = reg.to_definitions(&[]);
@@ -2018,28 +2016,5 @@ mod tests {
         };
         assert_eq!(required("edit"), serde_json::json!(["input"]));
         assert_eq!(required("shell"), serde_json::json!(["command"]));
-    }
-
-    /// ls 不依赖外部二进制，直接验证输出形态（目录带 `/` 后缀、无体积列）。
-    #[tokio::test]
-    async fn test_ls_lists_entries_sorted() -> Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let ws = tmp.path();
-        std::fs::create_dir_all(ws.join("src"))?;
-        std::fs::write(ws.join("README.md"), "# title\n")?;
-
-        let ls = crate::ls::LsTool.execute(ws, serde_json::json!({})).await;
-        assert!(!ls.is_error, "{}", ls.output);
-        assert!(ls.output.contains("src/"), "{}", ls.output);
-        assert!(ls.output.contains("README.md"), "{}", ls.output);
-        // 条目行不附体积（只给名字与 `/` 后缀）
-        assert!(!ls.output.contains(" B"), "{}", ls.output);
-
-        let empty = tempfile::tempdir()?;
-        let ls = crate::ls::LsTool
-            .execute(empty.path(), serde_json::json!({}))
-            .await;
-        assert!(ls.output.contains("(empty directory)"));
-        Ok(())
     }
 }

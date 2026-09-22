@@ -1991,7 +1991,7 @@ mod tests {
         let room = state.get_or_create_room("sess_tools", "/tmp").await?;
 
         let names: Vec<&str> = room.tools.list().iter().map(|t| t.name()).collect();
-        for expected in ["read", "write", "edit", "shell", "ls"] {
+        for expected in ["read", "write", "edit", "shell"] {
             assert!(names.contains(&expected), "缺少内置工具 {expected}: {names:?}");
         }
         // 子代理已从内核移除，且未随本次 MCP 恢复一并回来
