@@ -33,6 +33,10 @@ const INPUT_HEIGHT: u16 = 3;
 const MAX_LINES: usize = 4000;
 /// 无事件时的重绘间隔（保持状态栏与光标响应）
 const TICK: Duration = Duration::from_millis(80);
+/// 断线后两次重连之间的间隔
+const RECONNECT_DELAY: Duration = Duration::from_millis(1500);
+/// 断线后持续重试的上限：超过它就把最后一次错误交出去，不让界面无声地卡住
+const RECONNECT_WINDOW: Duration = Duration::from_secs(60);
 
 /// 抹掉控制字符：换行/Tab 之外的不可见字符会提前终结 OSC 序列，
 /// 让终端把后续内容当成普通输出，通知也随之中断。
@@ -111,6 +115,10 @@ enum Outcome {
     /// 重连指定会话：分支切换后需要重新读一遍历史。
     /// 必须带上 id —— 会话是「列表首个」自动挑的，不带 id 重连可能挑到别的会话。
     Reload {
+        session_id: String,
+    },
+    /// 连接断了：退避后重连同一个会话，而不是把用户踢出界面
+    Reconnect {
         session_id: String,
     },
 }
@@ -484,6 +492,8 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
     let mut active = options.active.clone();
     // 用户显式挑过的会话：换连接后作废，重新按工作区挑
     let mut session: Option<String> = None;
+    // 断线后进入重试窗口；只有「连上过又断开」才会设置它
+    let mut retry_deadline: Option<Instant> = None;
 
     let mut terminal = ratatui::init();
     // 开启焦点变化上报（CSI ?1004h）：仅用于判断终端是否失焦，退出时恢复。
@@ -514,7 +524,24 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
             }
             // 换会话与重连（分支切换）都是「用这个 id 重跑一次会话循环」
             Ok(Outcome::SwitchSession { session_id } | Outcome::Reload { session_id }) => session = Some(session_id),
-            Err(e) => break Err(e),
+            Ok(Outcome::Reconnect { session_id }) => {
+                session = Some(session_id);
+                retry_deadline = Some(Instant::now() + RECONNECT_WINDOW);
+                if !wait_before_retry(&mut key_rx).await {
+                    break Ok(active);
+                }
+            }
+            Err(e) => {
+                // 连上过之后才重试：地址写错时不该让用户白等一分钟才看到原因
+                match retry_deadline {
+                    Some(deadline) if Instant::now() < deadline => {
+                        if !wait_before_retry(&mut key_rx).await {
+                            break Ok(active);
+                        }
+                    }
+                    _ => break Err(e),
+                }
+            }
         }
     };
     // 先关上报再恢复终端：否则退出后终端仍会把焦点变化写成转义序列涌向 shell
@@ -595,6 +622,33 @@ async fn run_session(
     event_loop(terminal, &mut app, &mut client, &api, key_rx).await
 }
 
+/// 等待下一次重连尝试；期间照常响应退出键。
+///
+/// 返回 `false` 表示用户在等待期间要求退出。这里必须自己收按键：会话循环此刻已经
+/// 退出了，没有别人读输入，若只是 sleep，用户按 Ctrl-C 也没人理会。
+async fn wait_before_retry(key_rx: &mut mpsc::Receiver<InputEvent>) -> bool {
+    let deadline = Instant::now() + RECONNECT_DELAY;
+    while Instant::now() < deadline {
+        tokio::select! {
+            input = key_rx.recv() => match input {
+                Some(InputEvent::Key(key)) if key.kind == KeyEventKind::Press && is_quit_key(key) => {
+                    return false;
+                }
+                Some(_) => {}
+                None => return false,
+            },
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+    }
+    true
+}
+
+/// 退出键：Esc 或 Ctrl-C。
+fn is_quit_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Esc)
+        || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+}
+
 /// 在会话列表里选出要连的那个：显式指定的 id 优先，找不到就退回列表首个。
 ///
 /// 显式 id 可能因为「在别处被删掉」而落空，此时退回首个而不是新建会话——
@@ -628,9 +682,11 @@ async fn event_loop(
                 }
                 None => {
                     app.connected = false;
-                    app.status = "连接已断开".into();
+                    app.status = "连接已断开，正在重连…".into();
                     terminal.draw(|frame| draw(frame, app))?;
-                    return Ok(Outcome::Quit);
+                    return Ok(Outcome::Reconnect {
+                        session_id: app.session_id.clone(),
+                    });
                 }
             },
             input = key_rx.recv() => {
@@ -673,12 +729,11 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         let action = handle_picker_key(app, key);
         return apply_picker_action(app, client, api, action).await;
     }
+    if is_quit_key(key) {
+        return Ok(Some(Outcome::Quit));
+    }
 
     match key.code {
-        KeyCode::Esc => return Ok(Some(Outcome::Quit)),
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            return Ok(Some(Outcome::Quit));
-        }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => open_picker(app),
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => open_session_picker(app, api).await,
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => open_model_picker(app),
@@ -1500,6 +1555,16 @@ mod tests {
         assert_eq!(summarize_tool_input(&input), "cargo test --all");
         let long = serde_json::json!({ "path": "x".repeat(200) });
         assert!(summarize_tool_input(&long).chars().count() <= 81);
+    }
+
+    /// 退出键的判定：Esc 与 Ctrl-C；普通字符 c 不算。
+    #[test]
+    fn test_is_quit_key() {
+        assert!(is_quit_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(is_quit_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+        assert!(!is_quit_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)));
+        assert!(!is_quit_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)));
+        assert!(!is_quit_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
     }
 
     #[test]
