@@ -132,7 +132,6 @@ flowchart TB
 | `crates/oma-storage` | SQLite 双层持久化：全局索引库 `oma.db`（会话元数据）+ 每会话库 `session.db`（messages 消息树与运行时状态），附件落 `attachments/` 目录 |
 | `crates/oma-provider` | 手写 SSE 状态机，归一化四家流式协议（含工具调用与多模态） |
 | `crates/oma-tool` | 七个内置工具与输出截断 |
-| `crates/oma-plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API 白名单桥接 |
 | `crates/oma-config` | `settings.json` / `models.json` 解析、系统提示词、调色板与项目级覆盖 |
 | `crates/oma-runtime` | Agent Loop、会话房间、命令队列、级联取消、上下文压缩 |
 | `crates/oma-daemon` | Axum HTTP / WebSocket 网关、Bearer 鉴权中间件、REST 路由 |
@@ -251,7 +250,6 @@ pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
 ├── models.json         # 提供商与模型清单（providers）
 ├── agents/             # Agent 预设（<id>.md，覆盖内置模板）
 ├── skills/             # oma 自身技能（<id>/SKILL.md）
-├── plugins/            # 全局 QuickJS 插件（<id>/plugin.js）
 └── themes/             # 自定义调色板（*.json）
 ~/.local/share/oma/
 ├── oma.db                     # 全局索引库：会话元数据（列表与详情只查它）
@@ -303,7 +301,7 @@ Agent 预设决定会话用哪套系统提示词、能用哪些工具，共 4 �
 `review` / `build`（模板即提示词）。默认预设为 `build`，它不声明 `tools`，因此拥有全部工具。
 `<workspace>/.oma/agents/<id>.md`（项目级）与 `~/.config/oma/agents/<id>.md`（全局级）
 可覆盖内置模板，也能新增自定义预设；设置面板「预设」页可增删改，工具授权来自 `GET /api/tools`。
-需要更轻量的额外行为请使用技能或插件。
+需要更轻量的额外行为请使用技能。
 
 ---
 
@@ -323,74 +321,10 @@ Agent 预设决定会话用哪套系统提示词、能用哪些工具，共 4 �
 
 ---
 
-## 插件（QuickJS）
-
-插件是纯 JavaScript 文件，由进程内嵌的 QuickJS 引擎执行（无需 Node），通过全局 `oma`
-对象注册工具、命令与事件钩子。放于 `<workspace>/.oma/plugins/<id>/plugin.js`（项目级）
-或 `~/.config/oma/plugins/<id>/plugin.js`（全局），同名时项目级覆盖全局。
-
-```js
-oma.registerTool({
-  name: "word_count",
-  description: "Count words in a file",
-  parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-  execute: (p) => String(oma.readFile(p.path).split(/\s+/).filter(Boolean).length),
-});
-
-oma.on("tool_call", (e) =>
-  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
-    ? { block: true, reason: "destructive shell command" }
-    : undefined);
-
-oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });
-```
-
-宿主 API：
-
-| API | 说明 |
-|---|---|
-| `oma.log(...)` | 写日志 |
-| `oma.readFile(path)` / `oma.writeFile(path, content)` | 读写文本文件（拒绝绝对路径与 `..`，限 workspace 内） |
-| `oma.listDir(path)` / `oma.exists(path)` | 列目录 / 判断存在 |
-| `oma.exec(cmd)` | 在 workspace 下执行命令，返回 `{stdout, stderr, code}` |
-| `oma.registerTool(def)` | 注册工具（`execute` 必须同步返回） |
-| `oma.registerCommand(def)` | 注册命令（限定名 `plugin:command`） |
-| `oma.on(event, fn)` | 事件钩子，当前支持 `tool_call`（返回 `{block:true, reason}` 可拦截） |
-
-插件工具会随会话装配进工具注册表，并由 `GET /api/tools?workspace=...` 以 `kind: "plugin"` 列出。
-
-> **安全**：插件与 pi 的扩展一样拥有宿主进程权限（文件访问被限在 workspace 内），安装前请审查源码。
-
----
-
-## 目录结构
-
-```text
-oma/
-├── crates/
-│   ├── oma/          # 统一命令行入口 oma
-│   ├── oma-client/   # Rust 客户端 SDK
-│   ├── oma-config/   # 配置解析与系统提示词
-│   ├── oma-contract/ # 协议与数据模型
-│   ├── oma-daemon/   # Axum 网关
-│   ├── oma-provider/ # 模型厂商流式适配
-│   ├── oma-runtime/  # Agent 运行引擎
-│   ├── oma-storage/  # SQLite 会话持久化
-│   ├── oma-tool/     # 内置工具
-│   └── oma-tui/      # 终端客户端
-├── docs/
-│   ├── multi_client_agent_spec.md   # 技术规格书（协议、DDL、配置、接口全量定义）
-│   └── images/                      # README 截图
-├── web/              # Vue 3 + TypeScript Web 客户端
-└── Cargo.toml        # workspace 定义
-```
-
----
-
 ## 文档
 
 - [技术规格书](docs/multi_client_agent_spec.md)：架构拓扑、WebSocket 契约、SQLite 会话存储、
-  配置规范、REST 接口、插件扩展机制、实现一致性说明。
+  配置规范、REST 接口、实现一致性说明。
 
 ---
 

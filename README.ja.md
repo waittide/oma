@@ -143,7 +143,6 @@ flowchart TB
 | `crates/oma-storage` | SQLite 二層永続化：グローバル索引 `oma.db`（セッションメタデータ）とセッションごとの `session.db`（メッセージ木と実行時状態）。添付は `attachments/` に保存 |
 | `crates/oma-provider` | 自作 SSE ステートマシンによる 4 プロトコルの正規化（ツール呼び出し・マルチモーダル含む） |
 | `crates/oma-tool` | 7 つの組み込みツール、出力切り詰め |
-| `crates/oma-plugin` | QuickJS プラグイン：JS でツール/コマンド/イベントフックを登録、host API は Rust 側で許可制ブリッジ |
 | `crates/oma-config` | `settings.json` / `models.json` の解析、システムプロンプト、パレット、プロジェクト単位の上書き |
 | `crates/oma-runtime` | エージェントループ、セッションルーム、コマンドキュー、連鎖キャンセル、圧縮 |
 | `crates/oma-daemon` | Axum による HTTP / WebSocket ゲートウェイ、Bearer 認証ミドルウェア、REST ルート |
@@ -267,7 +266,6 @@ debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディス
 ├── models.json         # プロバイダとモデル一覧（providers）
 ├── agents/             # Agent プリセット（<id>.md、内蔵テンプレートを上書き）
 ├── skills/             # oma 自身のスキル（<id>/SKILL.md）
-├── plugins/            # グローバル QuickJS プラグイン（<id>/plugin.js）
 └── themes/             # カスタムパレット（*.json）
 ~/.local/share/oma/
 ├── oma.db                     # グローバル索引：セッションメタデータ（一覧と詳細はここだけ参照）
@@ -323,7 +321,7 @@ Agent プリセットは「どのシステムプロンプトで、どのツー�
 `<workspace>/.oma/agents/<id>.md`（プロジェクト）と `~/.config/oma/agents/<id>.md`（グローバル）で
 内蔵テンプレートを上書きしたり、独自プリセットを追加できます。設定パネルの「プリセット」ページで
 追加・編集・削除ができ、ツールの許可リストは `GET /api/tools` から取得します。
-より軽量な追加動作はスキルまたはプラグインで実装してください。
+より軽量な追加動作はスキルで実装してください。
 
 ---
 
@@ -343,77 +341,10 @@ Agent プリセットは「どのシステムプロンプトで、どのツー�
 
 ---
 
-## プラグイン（QuickJS）
-
-プラグインは純粋な JavaScript ファイルで、プロセスに組み込まれた QuickJS エンジンが
-実行します（Node 不要）。グローバル `oma` オブジェクトを通じてツール・コマンド・
-イベントフックを登録します。設置場所は `<workspace>/.oma/plugins/<id>/plugin.js`
-（プロジェクト）または `~/.config/oma/plugins/<id>/plugin.js`（グローバル）で、
-同名の場合プロジェクト側が優先されます。
-
-```js
-oma.registerTool({
-  name: "word_count",
-  description: "Count words in a file",
-  parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-  execute: (p) => String(oma.readFile(p.path).split(/\s+/).filter(Boolean).length),
-});
-
-oma.on("tool_call", (e) =>
-  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
-    ? { block: true, reason: "destructive shell command" }
-    : undefined);
-
-oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });
-```
-
-host API：
-
-| API | 説明 |
-|---|---|
-| `oma.log(...)` | ログ出力 |
-| `oma.readFile(path)` / `oma.writeFile(path, content)` | テキストファイル入出力（絶対パスと `..` を拒否、workspace 内に限定） |
-| `oma.listDir(path)` / `oma.exists(path)` | ディレクトリ一覧 / 存在確認 |
-| `oma.exec(cmd)` | workspace でシェルを実行し `{stdout, stderr, code}` を返す |
-| `oma.registerTool(def)` | ツール登録（`execute` は同期戻り値のみ） |
-| `oma.registerCommand(def)` | コマンド登録（限定名 `plugin:command`） |
-| `oma.on(event, fn)` | イベントフック。現在 `tool_call` 対応（`{block:true, reason}` で阻止） |
-
-プラグインツールはセッションのツールレジストリに登録され、
-`GET /api/tools?workspace=...` に `kind: "plugin"` で現れます。
-
-> **セキュリティ**：プラグインは pi の拡張と同様にホストプロセスの権限で動作します
-> （ファイルアクセスは workspace 内に限定）。導入前にソースを確認してください。
-
----
-
-## リポジトリ構成
-
-```text
-oma/
-├── crates/
-│   ├── oma/          # `oma` コマンドライン入口
-│   ├── oma-client/   # Rust クライアント SDK
-│   ├── oma-config/   # 設定解析とシステムプロンプト
-│   ├── oma-contract/ # プロトコルとデータモデル
-│   ├── oma-daemon/   # Axum ゲートウェイ
-│   ├── oma-runtime/  # エージェント・ランタイム
-│   ├── oma-storage/  # SQLite セッション永続化
-│   ├── oma-tool/     # 組み込みツール
-│   └── oma-tui/      # ターミナルクライアント
-├── docs/
-│   ├── multi_client_agent_spec.md   # 技術仕様書（プロトコル・DDL・設定・API）
-│   └── images/                      # README 用スクリーンショット
-├── web/              # Vue 3 + TypeScript の Web クライアント
-└── Cargo.toml        # ワークスペース定義
-```
-
----
-
 ## ドキュメント
 
 - [技術仕様書](docs/multi_client_agent_spec.md)：アーキテクチャ、WebSocket 契約、SQLite セッションストア、
-  設定仕様、REST API、プラグイン拡張、実装との一致に関する注記。
+  設定仕様、REST API、実装との一致に関する注記。
 
 ---
 

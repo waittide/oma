@@ -144,7 +144,6 @@ flowchart TB
 | `crates/oma-storage` | SQLite two-layer persistence: global index `oma.db` (session metadata) plus a per-session `session.db` (message tree and runtime state); attachments stay in `attachments/` |
 | `crates/oma-provider` | Hand-written SSE state machine normalizing four streaming protocols (tool calls and multimodal included) |
 | `crates/oma-tool` | The seven built-in tools and output truncation |
-| `crates/oma-plugin` | QuickJS plugins: register tools/commands/event hooks in JS, bridged through a Rust allow-listed host API |
 | `crates/oma-config` | `settings.json` / `models.json` parsing, system prompt, palettes and project-level overrides |
 | `crates/oma-runtime` | Agent loop, session rooms, command queue, cascade cancel, compaction |
 | `crates/oma-daemon` | Axum HTTP / WebSocket gateway, bearer auth middleware, REST routes |
@@ -270,7 +269,6 @@ The config directory is `~/.config/oma/` (respecting `XDG_CONFIG_HOME`); data li
 ├── models.json         # providers and model catalogue
 ├── agents/             # agent presets (<id>.md, overriding the bundled templates)
 ├── skills/             # oma's own skills (<id>/SKILL.md)
-├── plugins/            # global QuickJS plugins (<id>/plugin.js)
 └── themes/             # custom palettes (*.json)
 ~/.local/share/oma/
 ├── oma.db                     # global index: session metadata (lists and details read only this)
@@ -325,7 +323,7 @@ bundled: `plan` / `explore` / `review` / `build` (the template *is* the prompt).
 `build`, which declares no `tools` list and therefore has every tool available. Files in
 `<workspace>/.oma/agents/<id>.md` (project) and `~/.config/oma/agents/<id>.md` (global) override the
 bundled templates or add new presets; the settings panel's presets page can create, edit and delete
-them, and tool grants come from `GET /api/tools`. For lighter-weight extras, use skills or plugins.
+them, and tool grants come from `GET /api/tools`. For lighter-weight extras, use skills.
 
 ---
 
@@ -345,78 +343,10 @@ The tool set mirrors the pi core: only minimal read/write/search capability.
 
 ---
 
-## Plugins (QuickJS)
-
-Plugins are plain JavaScript files executed by a QuickJS engine embedded in the process
-(no Node required). They register tools, commands, and event hooks through the global
-`oma` object, and live in `<workspace>/.oma/plugins/<id>/plugin.js` (project) or
-`~/.config/oma/plugins/<id>/plugin.js` (global); project plugins override global ones by id.
-
-```js
-oma.registerTool({
-  name: "word_count",
-  description: "Count words in a file",
-  parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
-  execute: (p) => String(oma.readFile(p.path).split(/\s+/).filter(Boolean).length),
-});
-
-oma.on("tool_call", (e) =>
-  e.name === "shell" && /rm\s+-rf/.test(e.input.command || "")
-    ? { block: true, reason: "destructive shell command" }
-    : undefined);
-
-oma.registerCommand({ name: "explain", description: "Explain a topic", handler: (a) => `Please explain: ${a.topic}` });
-```
-
-Host API:
-
-| API | Notes |
-|---|---|
-| `oma.log(...)` | Write a log line |
-| `oma.readFile(path)` / `oma.writeFile(path, content)` | Text file I/O (absolute paths and `..` rejected; sandboxed to the workspace) |
-| `oma.listDir(path)` / `oma.exists(path)` | List a directory / test existence |
-| `oma.exec(cmd)` | Run a command in the workspace, returns `{stdout, stderr, code}` |
-| `oma.registerTool(def)` | Register a tool (`execute` must return synchronously) |
-| `oma.registerCommand(def)` | Register a command (qualified as `plugin:command`) |
-| `oma.on(event, fn)` | Event hook; `tool_call` is supported (return `{block:true, reason}` to block) |
-
-Plugin tools are registered into the session tool registry and listed by
-`GET /api/tools?workspace=...` with `kind: "plugin"`.
-
-> **Security**: plugins run with the host process's privileges (file access is confined to the
-> workspace), like pi's extensions. Review the source before installing.
-
----
-
-## Repository layout
-
-```text
-oma/
-├── crates/
-│   ├── oma/          # the `oma` command-line entry point
-│   ├── oma-client/   # Rust client SDK
-│   ├── oma-config/   # config parsing and system prompt
-│   ├── oma-contract/ # protocol and data model
-│   ├── oma-daemon/   # Axum gateway
-│   ├── oma-provider/ # vendor streaming adapters
-│   ├── oma-runtime/  # agent runtime engine
-│   ├── oma-storage/  # SQLite session persistence
-│   ├── oma-tool/     # built-in tools
-│   └── oma-tui/      # terminal client
-├── docs/
-│   ├── multi_client_agent_spec.md   # technical spec (protocol, DDL, config, API)
-│   └── images/                      # README screenshots
-├── web/              # Vue 3 + TypeScript web client
-└── Cargo.toml        # workspace definition
-```
-
----
-
 ## Documentation
 
 - [Technical specification](docs/multi_client_agent_spec.md): architecture topology, WebSocket contract,
-  JSONL session format, configuration rules, REST API, plugin extensibility, implementation notes.
-  JSONL session format, configuration rules, REST API, plugin extensibility, implementation notes.
+  JSONL session format, configuration rules, REST API, implementation notes.
 ---
 
 ## License

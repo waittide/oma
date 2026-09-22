@@ -22,7 +22,6 @@ tower-http = { workspace = true }
 tracing = { workspace = true }
 oma-tool = { workspace = true }
 oma-mcp = { workspace = true }
-oma-plugin = { workspace = true }
 uuid = { workspace = true }
 futures-util = { workspace = true }
 parking_lot = { workspace = true }

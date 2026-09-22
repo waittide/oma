@@ -166,12 +166,6 @@ impl DaemonState {
         for mcp_tool in self.mcp.cached_tools() {
             reg.register(mcp_tool);
         }
-        // 插件工具：按 workspace 发现并注册（JS 由内嵌 QuickJS 执行）
-        let plugins = Arc::new(oma_plugin::PluginHost::load(std::path::Path::new(workspace)));
-        for tool in plugins.tools() {
-            reg.register(tool);
-        }
-
         let room = SessionRoom::new(
             session_id,
             workspace,
@@ -183,19 +177,6 @@ impl DaemonState {
         );
         // 推理等级来自会话自身（创建时即写入，不会为空），无需再回退
         *room.reasoning_level.write() = record.reasoning_level.clone();
-        // 插件宿主同时提供各类事件钩子（工具已在上面注册）
-        room.set_plugins(plugins);
-        // 生命周期事件：房间刚装配好（等价 pi 的 session_start）。
-        // 放在这里而不是建会话处：只有真被用到的会话才需要通知插件。
-        room.emit_plugin_event(
-            "session_start",
-            serde_json::json!({
-                "session_id": session_id,
-                "workspace":  workspace,
-                "model":      record.active_model,
-            }),
-        )
-        .await;
 
         self.rooms
             .write()
@@ -402,9 +383,6 @@ async fn handle_delete_session(
                 "Cannot delete a session while a turn is running".into(),
             ));
         }
-        // 只对已装配过的房间发 shutdown：没加载过的会话本来就没发过 session_start
-        room.emit_plugin_event("session_shutdown", serde_json::json!({ "session_id": session_id }))
-            .await;
     }
     state.drop_room(&session_id);
     state
@@ -1040,16 +1018,9 @@ fn mime_for(name: &str) -> &'static str {
 // =========================================================================
 
 /// 预设编辑器可勾选的工具：内置工具 + 已发现的 MCP 工具（命名空间化）
-#[derive(Deserialize)]
-struct ToolsQuery {
-    /// 指定 workspace 时一并列出该项目/全局发现到的插件工具
-    workspace: Option<String>,
-}
-
 async fn handle_list_tools(
     State(state): State<DaemonState>,
     headers: HeaderMap,
-    Query(query): Query<ToolsQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, String)> {
     if check_auth(&headers, None, &state.token, false).is_none() {
         return Err(unauthorized());
@@ -1074,17 +1045,6 @@ async fn handle_list_tools(
             "description": description,
             "kind": "mcp",
         }));
-    }
-
-    if let Some(ws) = query.workspace.as_deref().filter(|w| !w.is_empty()) {
-        let plugins = oma_plugin::PluginHost::load(std::path::Path::new(ws));
-        for tool in plugins.tools() {
-            out.push(serde_json::json!({
-                "name": tool.name(),
-                "description": tool.description(),
-                "kind": "plugin",
-            }));
-        }
     }
 
     Ok(Json(out))
@@ -2490,36 +2450,5 @@ mod tests {
         assert_eq!(sanitize_file_name("a b.png"), "a_b.png");
         assert!(!sanitize_file_name("x/../../y.png").contains(".."));
         assert!(sanitize_file_name(&"x".repeat(200)).len() <= 48);
-    }
-
-    /// 插件工具应出现在 `/api/tools?workspace=...` 清单中（kind = plugin）。
-    #[tokio::test]
-    async fn test_plugin_tools_listed() -> Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let base = spawn_app(test_state(tmp.path()).await?).await?;
-        let token = "test_secret_token";
-
-        let ws = tmp.path().join("ws");
-        let plugin_dir = ws.join(".oma").join("plugins").join("demo");
-        std::fs::create_dir_all(&plugin_dir)?;
-        std::fs::write(
-            plugin_dir.join("plugin.js"),
-            r#"oma.registerTool({ name: "hello", description: "Greet", parameters: {}, execute: () => "hi" });"#,
-        )?;
-
-        let tools: Vec<serde_json::Value> = reqwest::Client::new()
-            .get(format!("{}/api/tools?workspace={}", base, ws.to_string_lossy()))
-            .header("Authorization", format!("Bearer {}", token))
-            .send()
-            .await?
-            .json()
-            .await?;
-
-        let hello = tools
-            .iter()
-            .find(|t| t["name"] == "hello")
-            .expect("plugin tool must be listed");
-        assert_eq!(hello["kind"], "plugin");
-        Ok(())
     }
 }

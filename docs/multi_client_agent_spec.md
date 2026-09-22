@@ -23,7 +23,7 @@
 > 恢复清单的最后一项。`crates/oma-mcp` 回来了，支持两种传输：
 > - **本地 stdio**：拉起子进程，按行 JSON-RPC 通信
 > - **远程 HTTP**：JSON-RPC over POST（非 SSE）
-> 工具按 `mcp__{server}__{tool}` 统一命名空间注册，与内置工具/插件工具同权；
+> 工具按 `mcp__{server}__{tool}` 统一命名空间注册，与内置工具同权；
 > 配置在 `settings.json` 的 `mcp_servers`（`type: local | remote`），
 > 保存后自动重连，启动与配置变更时后台预热（建会话路径只取已预热缓存）。
 > 名单经 `Ready.mcp_summaries` 下发，Web 顶栏有概览徽标、设置面板有 MCP 页。
@@ -47,7 +47,7 @@
 >   （缺失时自动下载到 `<数据目录>/bin`，`OMA_OFFLINE=1` 可禁用）；工具输出截断统一为
 >   行数（2000）+ 字节（50KB）双上限，各工具条数限额与提示文案对齐 pi
 > - **工具集**：内置工具共 7 个（`edit` / `find` / `grep` / `ls` / `read` / `write` + 终端执行）
-> - 新增 `AGENTS.md` / `CLAUDE.md` 上下文文件加载与插件生命周期钩子
+> - 新增 `AGENTS.md` / `CLAUDE.md` 上下文文件加载
 
 ---
 
@@ -90,7 +90,6 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  │  - oma-provider: LLM Streaming Normalization & Deep Merge         │  │
 │  │  - oma-storage:  SQLite Session Store (index + per-session DB)   │  │
 │  │  - oma-tool:     7 Tools (read/write/edit/shell/ls/find/grep)     │  │
-│  │  - oma-plugin:   QuickJS Plugins (tools/commands/hooks)          │  │
 │  │  - oma-config:   JSON Config & Built-in System Prompt             │  │
 │  │  - oma-contract: Shared Wire Protocol, Events, Data Models        │  │
 │  │  - external:     fd / ripgrep（find / grep 的后端，缺失时自动安装）   │  │
@@ -107,7 +106,6 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | `crates/oma-provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
 | `crates/oma-tool` | 内置 7 大工具（`read`, `write`, `edit` apply_patch 补丁, `shell` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含 pi 对齐的输出截断与工具集定义。 |
 | `crates/oma-mcp` | MCP 客户端：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），工具按 `mcp__{server}__{tool}` 统一命名空间注册；只暴露已预热的工具缓存。 |
-| `crates/oma-plugin` | QuickJS 插件：以 JS 注册工具/命令/事件钩子，host API（文件/命令/日志）由 Rust 侧白名单桥接并限制在 workspace 内。 |
 | `crates/oma-config` | 配置文件 `settings.json` / `models.json` 解析、内置 Agent 预设（4 套模板：`plan` / `explore` / `review` / `build`）与三层覆盖、上下文文件（`AGENTS.md`）加载、提示词拼装、调色板加载、数据目录定位。 |
 | `crates/oma-runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、70% 阈值两阶段上下文压缩。 |
 | `crates/oma-daemon` | 基于 Axum 的 HTTP REST 与 WebSocket 网关、Bearer Token 鉴权中间件、静态路由与 CORS。 |
@@ -344,8 +342,7 @@ pub enum AgentCommand {
 
 ```
 
-> 上行三类：连接、命令、取消。提问（`ask`）仍为移除状态——
-> 需要这类交互时应以插件形式实现。
+> 上行三类：连接、命令、取消。提问（`ask`）仍为移除状态。
 
 ### 4.3 服务端推送消息 (`ServerMessage` & `AgentEvent`)
 
@@ -614,7 +611,7 @@ pub struct ContextUsage {
 
    <runtime_context>            ← 工作区 / 系统 / 日期 / 当前模型
 
-   <project_context>            ← AGENTS.md / CLAUDE.md（见 5.5）
+   <project_context>            ← AGENTS.md / CLAUDE.md（见 5.4）
 
    <available_skills>           ← 仅目录（id + 描述 + 路径）
    ```
@@ -645,51 +642,7 @@ pub struct ContextUsage {
      ```
      模型在任务相关时用 `read` 工具读取；无关轮次不占用上下文。
 
-### 5.4 QuickJS 插件规范
-
-插件是纯 JavaScript 文件，由进程内嵌的 QuickJS 引擎执行（无 Node 依赖）。发现位置：
-
-| 层 | 路径 |
-|---|---|
-| global | `~/.config/oma/plugins/<id>/plugin.js` |
-| project | `<workspace>/.oma/plugins/<id>/plugin.js`（同名覆盖 global） |
-
-插件通过全局 `oma` 对象注册：
-
-```js
-oma.registerTool({ name, label?, description, parameters, execute(params) -> any });
-oma.registerCommand({ name, description?, handler(args) -> string });
-oma.on("tool_call", (e) => ({ block: true, reason?: string }) | undefined);
-```
-
-宿主 API（均限 workspace 内，绝对路径与 `..` 被拒绝）：
-
-| API | 说明 |
-|---|---|
-| `oma.log(...)` | 写日志 |
-| `oma.readFile` / `oma.writeFile` | 文本文件读写 |
-| `oma.listDir` / `oma.exists` | 列目录 / 存在性 |
-| `oma.exec(cmd)` | workspace 下执行 shell，返回 `{stdout, stderr, code}` |
-
-- 插件工具在会话装配时注册进 `ToolRegistry`（与内置工具同权），并由
-  `GET /api/tools?workspace=...` 以 `kind: "plugin"` 下发；
-- `execute`/`handler` 必须**同步**返回，返回 Promise 会被显式拒绝；每次调用新建
-  JS 上下文，插件顶层状态不跨调用保留；
-- 事件钩子（`oma.on(event, fn)`）目前支持：
-  | 事件 | 触发时机 | 返回值语义 |
-  |---|---|---|
-  | `tool_call` | 工具执行前 | `{ block, reason }` 拦截 |
-  | `tool_result` | 工具结果产出后 | — |
-  | `user_input` | 收到用户输入时 | `{ content }` 改写，或 `{ block, reason }` 拦截整轮 |
-  | `turn_start` / `turn_end` | 轮次起止 | —（载荷含 `turn_id`，`turn_end` 另有 `stop_reason` / `usage`） |
-  | `session_start` / `session_shutdown` | 房间装配完成 / 删除会话 | — |
-- 钩子抛错只告警（插件故障不该阻断用户说话或让轮次失败）；`user_input` 拦截时
-  本轮不会开始（不发 `UserMessage`、不入队、不落库）；
-- 单个插件加载失败（语法错误等）只告警跳过，不影响其余插件与会话。
-
-> **安全**：插件与 pi 扩展一样拥有宿主进程权限（文件访问限在 workspace），安装前需审查源码。
-
-### 5.5 上下文文件（AGENTS.md / CLAUDE.md）
+### 5.4 上下文文件（AGENTS.md / CLAUDE.md）
 
 项目里写好的约定不该等模型想起去 `read` 才生效，因此常驻系统提示词：
 
@@ -881,7 +834,7 @@ ToolOutput {
 | `GET` | `/api/sessions/{id}/attachments/{name}` | 下载/预览附件 |
 | `GET` | `/api/workspace/tree?workspace=...` | 获取工作区目录文件树（深度 4、最多 2000 项） |
 | `GET` | `/api/workspace/file?workspace=...&path=...` | 读取工作区文件内容（供代码查看与编辑器） |
-| `GET` | `/api/tools` | 列出可用工具（内置 7 个 + 插件注册的，插件项带 `kind: "plugin"`），供预设编辑器勾选 |
+| `GET` | `/api/tools` | 列出可用工具（内置 7 个 + 已发现的 MCP 工具），供预设编辑器勾选 |
 | `GET` | `/api/presets?workspace=...` | 列出 Agent 预设（bundled / global / project） |
 | `GET`/`PUT`/`DELETE` | `/api/presets/{preset_id}` | 读取 / 写入 / 删除预设；内置预设只读 |
 | `GET` | `/api/system-prompt?workspace=&model=&agent=` | 返回真正下发的系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录）；缺 `agent` 用 `default_agent` |
@@ -1018,7 +971,7 @@ pub struct Palette {
 | 会话存储并发 | 每会话两套连接池：写池 `max_connections = 1` 严格串行、读池只读并行，读写互不阻塞；库以 WAL 打开并设 `busy_timeout`，因此同数据目录上的多个实例能互相看到最新提交。 |
 | 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
 | 配置校验 | `OmaConfig` 启用 `deny_unknown_fields`：拼错的键名（或前端字段映射错误）在 `PUT /api/config` 直接 400，不再「保存成功但配置没变」；启动时配置文件解析失败即报错退出，而非静默回退默认值。 |
-| 能力裁剪 | 仅剩 MCP 之外的三项仍是删除状态：子代理 `task`、`ask` 提问、熔断器（均因 pi 内核不内置而移除，如需保留应以插件形式重建）。**已应用户要求恢复**：Agent 预设（v2.5）、内置 MCP（v2.7）。 |
+| 能力裁剪 | 仅剩 MCP 之外的三项仍是删除状态：子代理 `task`、`ask` 提问、熔断器（均因 pi 内核不内置而移除）。**已应用户要求恢复**：Agent 预设（v2.5）、内置 MCP（v2.7）。 |
 | 技能发现 | 按 `<root>/<name>/SKILL.md` 三层发现（global/agent/project），同名时更具体的一层覆盖更宽泛的一层；删除技能会连同其目录内的 `scripts/` 等资源一并移除（id 经严格校验，不可穿越）。技能与预设是两套独立机制：预设决定「以什么角色、能用哪些工具运行」，技能只是一段按需读取的知识，同名也不会互相覆盖。 |
 | skill frontmatter 容错 | 技能的 YAML 字段全部可选且忽略未知键：用户目录里存在只有 `description` 与自有键的文件时，名称即目录名，不应因严格解析而整条不可用。 |
 | 工具命名与 `edit` 形态 | 终端执行工具名为 `shell`（与 pi 对齐）。`edit` 放弃 `{path, edits[]}` 结构化替换，改为 apply_patch 形态——单个 `input` 字符串承载 `*** Begin Patch` 信封，可一次增 / 删 / 改 / 改名多个文件并整包原子落盘：多文件改动不再需要多次调用，也不会出现「改到一半失败、各文件状态不一致」。 |
