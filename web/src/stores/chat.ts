@@ -15,7 +15,7 @@ import type {
 } from '../types';
 import { tr } from '../composables/i18n';
 import { notifyHumanEvent } from '../lib/notify';
-import { accumulateUsage, hasUsage } from '../lib/sessionUsage';
+import { hasUsage } from '../lib/sessionUsage';
 import { activeSession, activeSessionId, applyRemoteRename, applyRemoteRunning } from './sessions';
 import { applyResolvedTheme } from './theme';
 import { releaseAll } from '../lib/attachments';
@@ -314,9 +314,8 @@ function handleEvent(ev: AgentEvent) {
       }
       break;
     case 'usage_updated':
-      // 服务端每次模型请求结束后下发**该次请求**的用量：流式行显示本轮到此为止的
-      // 累计，与整轮收尾后那一组底部的合计口径一致（耗时留空，整轮走完才确定）
-      if (ev.data) live.value.usage = accumulateUsage(live.value.usage, ev.data.usage);
+      // 服务端每次模型请求结束后下发该次请求的用量：流式期间即可显示输入/输出
+      if (ev.data) live.value.usage = ev.data.usage;
       break;
     case 'active_turn_catch_up':
       applyCatchUp(ev.data ?? null);

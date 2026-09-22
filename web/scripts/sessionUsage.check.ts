@@ -6,7 +6,7 @@
  *   node --experimental-strip-types scripts/sessionUsage.check.ts
  */
 import type { ChatMessage } from '../src/types.ts';
-import { accumulateUsage, hasUsage, sessionUsage, usageLine } from '../src/lib/sessionUsage.ts';
+import { hasUsage, sessionUsage, usageLine } from '../src/lib/sessionUsage.ts';
 
 let failed = 0;
 let passed = 0;
@@ -131,25 +131,6 @@ eq('hasUsage: undefined', hasUsage(undefined), false);
 eq('hasUsage: all zero', hasUsage({ input_tokens: 0, output_tokens: 0 }), false);
 eq('hasUsage: cache only', hasUsage({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 12 }), true);
 eq('hasUsage: in/out', hasUsage({ input_tokens: 120, output_tokens: 34 }), true);
-
-// 流式行按整轮累加：起手为 null，逐次请求相加；耗时属于单次请求，不进合计
-eq(
-  'accumulate from null',
-  accumulateUsage(null, { input_tokens: 100, output_tokens: 5, duration_ms: 1200 }),
-  { input_tokens: 100, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, duration_ms: null },
-);
-eq(
-  'accumulate keeps summing',
-  accumulateUsage(
-    { input_tokens: 100, output_tokens: 5, cache_read_tokens: 90, cache_write_tokens: 1 },
-    { input_tokens: 250, output_tokens: 7, cache_read_tokens: 240, duration_ms: 800 },
-  ),
-  { input_tokens: 350, output_tokens: 12, cache_read_tokens: 330, cache_write_tokens: 1, duration_ms: null },
-);
-eq('accumulate with nothing', accumulateUsage({ input_tokens: 1, output_tokens: 2 }, null), {
-  input_tokens: 1,
-  output_tokens: 2,
-});
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

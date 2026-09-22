@@ -1049,14 +1049,9 @@ impl SessionRoom {
                 history.push(assistant_msg);
                 assistant_msg_id = Some(msg_id);
                 // 该请求的助手消息已落库：把本轮累计用量同步给客户端。
-                // 事件里给的是**该次请求**的用量（客户端自行累加成整轮），
-                // 追赶快照里存的则是**本轮累计**，两者语义不同但可相互校验
+                // 口径与落库值一致（本次请求），流式界面据此显示输入/输出
                 if let Some(turn) = self.active_turn.write().as_mut() {
-                    // 追赶快照不含耗时：单次请求的耗时累加没有意义，整轮耗时由界面按墙钟给
-                    turn.usage = TokenUsage {
-                        duration_ms: None,
-                        ..*turn_usage
-                    };
+                    turn.usage = request_stats;
                 }
                 self.broadcast(AgentEvent::UsageUpdated { usage: request_stats });
 
