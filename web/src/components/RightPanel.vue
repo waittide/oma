@@ -7,7 +7,6 @@ import {
   LuListTree,
   LuPanelRight,
   LuRefreshCw,
-  LuTerminal,
 } from 'vue-icons-plus/lu';
 import { useTranslations } from '../composables/i18n';
 import { activeSession } from '../stores/sessions';
@@ -23,7 +22,9 @@ import HistoryTree from './HistoryTree.vue';
  * 右侧工作面板。
  *
  * 「文件」「变更」「历史树」已接入真实内容（工作区文件树 / 预览、Git status + 逐文件
- * diff、会话分支树）；内置终端待 P9（需要后端 pty + WS）。
+ * diff、会话分支树）。
+ *
+ * 不提供内置终端：面板不做 pty 通道，命令执行一律由 Agent 的 `shell` 工具承担。
  */
 const { t } = useTranslations('panel');
 
@@ -31,7 +32,6 @@ const tabs = computed(() => [
   { id: 'files' as const, label: t('files'), icon: LuFileText },
   { id: 'changes' as const, label: t('changes'), icon: LuGitCompare },
   { id: 'tree' as const, label: t('tree'), icon: LuListTree },
-  { id: 'terminal' as const, label: t('terminal'), icon: LuTerminal },
 ]);
 
 const workspace = computed(() => activeSession.value?.workspace ?? '');
@@ -158,10 +158,6 @@ watch(
       <GitChanges v-else-if="layout.rightTab.value === 'changes'" :workspace="workspace" />
 
       <HistoryTree v-else-if="layout.rightTab.value === 'tree'" />
-
-      <div v-else class="empty">
-        <p class="hint">{{ t('terminalHint') }}</p>
-      </div>
     </div>
   </aside>
 </template>
@@ -183,7 +179,7 @@ watch(
   flex-shrink: 0;
   padding: 0 6px;
   border-bottom: 1px solid var(--line);
-  /* 窄面板下四个标签会超出宽度：让标签条自己横向滚动，动作按钮仍钉在右侧 */
+  /* 窄面板下标签会超出宽度：让标签条自己横向滚动，动作按钮仍钉在右侧 */
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -246,9 +242,6 @@ watch(
 }
 .empty.err {
   color: var(--danger);
-}
-.hint {
-  margin: 0 0 8px;
 }
 .path {
   display: block;

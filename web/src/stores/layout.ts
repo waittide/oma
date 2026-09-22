@@ -27,7 +27,14 @@ interface Persisted {
   rightTab: RightTab;
 }
 
-export type RightTab = 'files' | 'terminal' | 'changes' | 'tree';
+export type RightTab = 'files' | 'changes' | 'tree';
+
+/** 合法的右侧面板标签页：持久化数据只读回其中之一，未知值一律退回文件页。 */
+const RIGHT_TABS: RightTab[] = ['files', 'changes', 'tree'];
+
+function readRightTab(value: unknown, fallback: RightTab): RightTab {
+  return RIGHT_TABS.includes(value as RightTab) ? (value as RightTab) : fallback;
+}
 
 function clamp(width: number, min: number, max: number): number {
   const finite = Number.isFinite(width) ? width : min;
@@ -56,7 +63,7 @@ function read(): Persisted {
       sidebarWidth: clamp(parsed.sidebarWidth ?? fallback.sidebarWidth, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH),
       rightOpen: parsed.rightOpen ?? fallback.rightOpen,
       rightWidth: clamp(parsed.rightWidth ?? fallback.rightWidth, RIGHT_PANEL_MIN_WIDTH, RIGHT_PANEL_MAX_WIDTH),
-      rightTab: parsed.rightTab ?? fallback.rightTab,
+      rightTab: readRightTab(parsed.rightTab, fallback.rightTab),
     };
   } catch {
     return fallback;
