@@ -3,11 +3,16 @@
 //! 由 `oma tui` 子命令驱动：连接 Daemon 后实时渲染流式文本、思考块、
 //! 工具调用。入口为 [`run`]，复用调用方的 tokio 运行时。
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use oma_client::{ConnectOptions, OmaClient, SessionApi, SessionRecord};
-use oma_contract::{AgentCommand, AgentEvent, ClientType, Palette, ResolvedTheme, StopReason, ThemeMode};
+use oma_contract::{
+    AgentCommand, AgentEvent, AgentSummary, ClientType, ModelInfo, Palette, ResolvedTheme, StopReason, ThemeMode,
+};
 use ratatui::{
     Frame,
     crossterm::{
@@ -128,9 +133,13 @@ enum PickerAction {
     SwitchSession {
         session_id: String,
     },
+    /// 下发指令切换模型（选择器形如 `provider/model_id`）
+    SetModel(String),
+    /// 下发指令切换 Agent 预设
+    SetAgent(String),
 }
 
-/// 弹窗选择器：连接与会话共用同一套渲染与按键。
+/// 弹窗选择器：连接、会话、模型、预设共用同一套渲染与按键。
 struct Picker {
     /// 标题栏文案（自带按键提示）
     title: String,
@@ -232,33 +241,37 @@ struct Entry {
 }
 
 struct App {
-    workspace:   String,
-    model:       String,
-    agent:       String,
+    workspace:     String,
+    model:         String,
+    agent:         String,
     /// 当前会话 id；弹窗里据此标记「就是它」
-    session_id:  String,
+    session_id:    String,
     /// 当前工作区的会话列表：连接时取一次快照，供切换弹窗使用
-    sessions:    Vec<SessionRecord>,
-    connected:   bool,
-    busy:        bool,
-    queue:       usize,
-    status:      String,
-    entries:     Vec<Entry>,
-    input:       String,
-    scroll:      u16,
-    stick:       bool,
+    sessions:      Vec<SessionRecord>,
+    /// 可选模型清单（provider → 模型），握手下发
+    model_catalog: BTreeMap<String, Vec<ModelInfo>>,
+    /// 可选 Agent 预设，握手下发
+    agents:        Vec<AgentSummary>,
+    connected:     bool,
+    busy:          bool,
+    queue:         usize,
+    status:        String,
+    entries:       Vec<Entry>,
+    input:         String,
+    scroll:        u16,
+    stick:         bool,
     /// 最近一次请求的上下文占用（tokens, context_len）
-    context:     Option<(usize, usize)>,
+    context:       Option<(usize, usize)>,
     /// 可切换的已保存连接
-    connections: Vec<TuiConnection>,
+    connections:   Vec<TuiConnection>,
     /// 当前活动连接名
-    active_conn: Option<String>,
+    active_conn:   Option<String>,
     /// 弹窗选择器；None = 未打开
-    picker:      Option<Picker>,
+    picker:        Option<Picker>,
     /// 终端是否处于聚焦状态；仅失焦时才发系统通知
-    focused:     bool,
+    focused:       bool,
     /// 由握手下发主题导出的语义配色
-    theme:       TuiTheme,
+    theme:         TuiTheme,
 }
 
 impl App {
@@ -269,6 +282,8 @@ impl App {
             agent,
             session_id: String::new(),
             sessions: Vec::new(),
+            model_catalog: BTreeMap::new(),
+            agents: Vec::new(),
             connected: true,
             busy: false,
             queue: 0,
@@ -538,6 +553,8 @@ async fn run_session(
         });
         app.session_id = record.session_id.clone();
         app.sessions = sessions;
+        app.model_catalog = ready.model_catalog.clone();
+        app.agents = ready.agents.clone();
         app.push(
             "·",
             format!("会话 {} 已连接", short_id(&ready.session_id)),
@@ -630,7 +647,8 @@ fn classify_input(app: &mut App, input: InputEvent) -> Option<KeyEvent> {
 async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Result<Option<Outcome>> {
     // 弹窗：先于普通输入消费按键
     if app.picker.is_some() {
-        return Ok(handle_picker_key(app, key).and_then(apply_picker_action));
+        let action = handle_picker_key(app, key);
+        return apply_picker_action(app, client, action).await;
     }
 
     match key.code {
@@ -640,6 +658,8 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
         }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => open_picker(app),
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => open_session_picker(app),
+        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => open_model_picker(app),
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => open_agent_picker(app),
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
             app.stick = false;
@@ -754,6 +774,86 @@ fn picker_current_index(items: &[PickerItem]) -> usize {
     items.iter().position(|item| item.current).unwrap_or(0)
 }
 
+/// 弹窗里要渲染的条目区间：以高亮项为中心，保证它始终落在窗口内。
+///
+/// 模型清单动辄十几个，超过可见行数时必须跟着滚动——否则高亮项移出可视区，
+/// 用户看着没变化、却已经选中了别的东西。
+fn picker_window(len: usize, index: usize, visible: usize) -> std::ops::Range<usize> {
+    if visible >= len {
+        return 0..len;
+    }
+    let start = index.saturating_sub(visible / 2).min(len - visible);
+    start..start + visible
+}
+
+/// 打开模型选择器。
+///
+/// 条目值是 `provider/model_id`（与后端 `find_model` 的键一致）：同名模型挂在
+/// 不同 provider 下时，只有带上 provider 才选得准。清单是扁平的，provider 因此
+/// 写进右侧说明而不是分组标题——弹窗宽度有限，分组会多占一层缩进。
+fn open_model_picker(app: &mut App) {
+    let mut items: Vec<PickerItem> = Vec::new();
+    for (provider, models) in &app.model_catalog {
+        for model in models {
+            let selector = format!("{provider}/{}", model.id);
+            items.push(PickerItem {
+                label:   if model.name.is_empty() {
+                    model.id.clone()
+                } else {
+                    model.name.clone()
+                },
+                detail:  format!("{selector} · {}K", model.context_len / 1024),
+                current: selector == app.model,
+                action:  PickerAction::SetModel(selector),
+            });
+        }
+    }
+    if items.is_empty() {
+        app.push(
+            "·",
+            "没有可用模型（可在 Web 设置页添加提供商与模型）",
+            Style::default().fg(app.theme.muted),
+        );
+        return;
+    }
+    let index = picker_current_index(&items);
+    app.picker = Some(Picker {
+        title: " 切换模型 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ".into(),
+        items,
+        index,
+    });
+}
+
+/// 打开 Agent 预设选择器。
+///
+/// 条目值是预设 id（`SetAgent` 收的就是它），说明用预设自己的描述。
+fn open_agent_picker(app: &mut App) {
+    if app.agents.is_empty() {
+        app.push(
+            "·",
+            "没有可用预设（可在 Web 设置页添加）",
+            Style::default().fg(app.theme.muted),
+        );
+        return;
+    }
+    let items: Vec<PickerItem> = app
+        .agents
+        .iter()
+        .map(|agent| PickerItem {
+            label:   agent.name.clone(),
+            detail:  agent.description.clone(),
+            current: agent.id == app.agent,
+            action:  PickerAction::SetAgent(agent.id.clone()),
+        })
+        .collect();
+    let index = picker_current_index(&items);
+    app.picker = Some(Picker {
+        title: " 切换预设 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ".into(),
+        items,
+        index,
+    });
+}
+
 /// 弹窗按键：上下选择（j/k 亦可）、Enter 取出动作并关闭、Esc 关闭。
 ///
 /// 返回 `Some(action)` 表示用户确认了某一项；`None` 表示按键已被消费。
@@ -784,14 +884,34 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> Option<PickerAction> {
     None
 }
 
-/// 把弹窗里确认的动作翻成会话循环的出口。
+/// 执行弹窗里确认的动作。
 ///
-/// 动作只带「切换所需的最小信息」：切换会重建 App，任何写给当前界面的提示
-/// 都活不过这一步，所以不在这里 push 提示；新会话的连接行本身就是回执。
-fn apply_picker_action(action: PickerAction) -> Option<Outcome> {
+/// 换连接、换会话要重建会话循环（返回 `Some(Outcome)`）；换模型、换预设只是一条
+/// 指令，本连接继续用，界面等 `ModelChanged` / `AgentChanged` 事件回填。
+/// 后者失败时把原因写进记录——此时 App 不会被重建，提示是留得住的。
+async fn apply_picker_action(
+    app: &mut App,
+    client: &OmaClient,
+    action: Option<PickerAction>,
+) -> Result<Option<Outcome>> {
+    let Some(action) = action else {
+        return Ok(None);
+    };
     match action {
-        PickerAction::SwitchConnection { addr, token, name } => Some(Outcome::Switch { addr, token, name }),
-        PickerAction::SwitchSession { session_id } => Some(Outcome::SwitchSession { session_id }),
+        PickerAction::SwitchConnection { addr, token, name } => Ok(Some(Outcome::Switch { addr, token, name })),
+        PickerAction::SwitchSession { session_id } => Ok(Some(Outcome::SwitchSession { session_id })),
+        PickerAction::SetModel(model) => {
+            if let Err(e) = client.send_command(AgentCommand::SetModel { model }).await {
+                app.push("!", format!("切换模型失败: {e}"), Style::default().fg(app.theme.error));
+            }
+            Ok(None)
+        }
+        PickerAction::SetAgent(agent) => {
+            if let Err(e) = client.send_command(AgentCommand::SetAgent { agent }).await {
+                app.push("!", format!("切换预设失败: {e}"), Style::default().fg(app.theme.error));
+            }
+            Ok(None)
+        }
     }
 }
 
@@ -966,7 +1086,12 @@ fn draw_picker(frame: &mut Frame, picker: &Picker, area: Rect, theme: TuiTheme) 
     if picker.items.is_empty() {
         return;
     }
-    let height = (picker.items.len() as u16 + 3).min(area.height);
+    // 可见行数：最多占屏幕一半，长清单不该顶掉整个界面
+    let visible = picker
+        .items
+        .len()
+        .min((area.height / 2).saturating_sub(2).max(1) as usize);
+    let height = visible as u16 + 2;
     let width = area.width.saturating_sub(8).min(64);
     let popup = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
@@ -989,12 +1114,13 @@ fn draw_picker(frame: &mut Frame, picker: &Picker, area: Rect, theme: TuiTheme) 
         width:  popup.width.saturating_sub(2),
         height: popup.height.saturating_sub(2),
     };
-    let lines: Vec<Line<'static>> = picker
-        .items
+    let window = picker_window(picker.items.len(), picker.index, visible);
+    let start = window.start;
+    let lines: Vec<Line<'static>> = picker.items[window]
         .iter()
         .enumerate()
-        .map(|(i, item)| {
-            let selected = i == picker.index;
+        .map(|(offset, item)| {
+            let selected = start + offset == picker.index;
             let marker = if selected { "> " } else { "  " };
             let label = if item.current {
                 format!("{} ✓", item.label)
@@ -1093,7 +1219,7 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     let hint = if app.connected {
-        " Enter 发送 · Ctrl+X 中止 · Ctrl+N 会话 · Ctrl+O 连接 · Ctrl+U 清空 · Esc 退出 "
+        " Enter 发送 · Ctrl+X 中止 · Ctrl+O 连接/N 会话/L 模型/A 预设 · Ctrl+U 清空 · Esc 退出 "
     } else {
         " 连接已断开 "
     };
@@ -1264,6 +1390,85 @@ mod tests {
         assert!(pick_session(&[], None).is_none());
     }
 
+    /// 模型选择器：下发值必须是 `provider/model_id`，否则后端 find_model 找不到；
+    /// 没有展示名时回落到 id，说明里带上窗口大小。
+    #[test]
+    fn test_model_picker_uses_provider_qualified_selector() {
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), TuiTheme::test());
+        app.model = "p2/m2".into();
+        app.model_catalog = BTreeMap::from([
+            ("p1".to_string(), vec![model("m1", "一号模型", 200_000)]),
+            ("p2".to_string(), vec![model("m2", "", 128_000)]),
+        ]);
+
+        open_model_picker(&mut app);
+        let picker = app.picker.as_ref().unwrap();
+        assert_eq!(picker.items.len(), 2);
+        assert_eq!(picker.index, 1, "应停在当前模型上");
+        assert!(picker.items[1].current && !picker.items[0].current);
+
+        assert_eq!(picker.items[0].label, "一号模型");
+        assert_eq!(picker.items[0].detail, "p1/m1 · 195K");
+        assert_eq!(picker.items[1].label, "m2", "没有展示名时回落到 id");
+        match &picker.items[0].action {
+            PickerAction::SetModel(selector) => assert_eq!(selector, "p1/m1"),
+            _ => panic!("模型条目应下发 SetModel"),
+        }
+    }
+
+    /// 预设选择器：下发值是预设 id（不是展示名），说明用预设自己的描述。
+    #[test]
+    fn test_agent_picker_uses_preset_id() {
+        let mut app = App::new("/w".into(), "m".into(), "极简".into(), TuiTheme::test());
+        app.agents = vec![
+            AgentSummary {
+                id:          "build".into(),
+                name:        "构建".into(),
+                description: "拥有全部工具".into(),
+            },
+            AgentSummary {
+                id:          "极简".into(),
+                name:        "极简".into(),
+                description: "少啰嗦".into(),
+            },
+        ];
+
+        open_agent_picker(&mut app);
+        let picker = app.picker.as_ref().unwrap();
+        assert_eq!(picker.index, 1, "应停在当前预设上");
+        assert!(picker.items[1].current && !picker.items[0].current);
+        assert_eq!(picker.items[1].detail, "少啰嗦");
+        match &picker.items[1].action {
+            PickerAction::SetAgent(id) => assert_eq!(id, "极简"),
+            _ => panic!("预设条目应下发 SetAgent"),
+        }
+    }
+
+    /// 弹窗滚动窗口：高亮项必须始终落在可见区间内，长清单不能被截断。
+    #[test]
+    fn test_picker_window_keeps_selection_visible() {
+        // 清单比可见行数短：全部渲染
+        assert_eq!(picker_window(2, 1, 5), 0..2);
+        assert_eq!(picker_window(0, 0, 5), 0..0);
+        // 顶部与底部：窗口贴边，不越界
+        assert_eq!(picker_window(10, 0, 4), 0..4);
+        assert_eq!(picker_window(10, 9, 4), 6..10);
+        // 中间：高亮项居中
+        assert_eq!(picker_window(10, 5, 4), 3..7);
+        // 任意下标下窗口都包含它，且长度不超过可见行数
+        for len in 1..12usize {
+            for index in 0..len {
+                let w = picker_window(len, index, 4);
+                assert!(
+                    w.start <= index && index < w.end,
+                    "len={len} index={index} 窗口 {w:?} 漏掉高亮项"
+                );
+                assert!(w.end - w.start <= 4, "len={len} index={index} 窗口 {w:?} 超出可见行数");
+                assert!(w.end <= len);
+            }
+        }
+    }
+
     /// 焦点上报驱动通知开关：未上报焦点时按聚焦处理（不打扰），
     /// 失焦后才允许通知；按键不受焦点影响，照常交回处理。
     #[test]
@@ -1361,6 +1566,17 @@ mod tests {
             title:        title.into(),
             active_model: "m".into(),
             active_agent: "a".into(),
+        }
+    }
+
+    fn model(id: &str, name: &str, context_len: usize) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            name: name.into(),
+            context_len,
+            capabilities: Default::default(),
+            max_output: None,
+            reasoning_map: Default::default(),
         }
     }
 }
