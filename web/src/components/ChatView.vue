@@ -381,6 +381,23 @@ function usageText(usage?: TokenUsage | null, elapsedMs?: number): string {
   }
   return parts.join(' · ');
 }
+
+/**
+ * 流式消息的模型标签。
+ *
+ * 用轮次开始时记录的模型（`live.model`），回退到当前模型：会话中途切换模型时，
+ * 正在流式的那一轮仍显示它自己用的模型，与回读后持久化消息的标签一致。
+ */
+const liveModelLabel = computed(() => messageModelLabel(chat.live.value.model || null));
+
+/**
+ * 流式消息的用量行。
+ *
+ * 服务端在每次模型请求结束后下发本轮累计用量（`usage_updated`），因此这里显示的是
+ * 「到目前为止」的输入/输出，随工具循环推进而增长；不含耗时——整轮还没走完，
+ * 那一个数字只该在收尾时出现（见 `turnElapsedMs`）。
+ */
+const liveUsageText = computed(() => usageText(chat.live.value.usage));
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */
 const ready = computed(() => !!activeSessionId.value && props.online && chat.connected.value);
 
@@ -596,8 +613,9 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
           </article>
 
           <article v-if="chat.running.value || chat.finalizing.value" class="msg assistant">
-            <div v-if="chat.activeModel.value" class="model-label">{{ messageModelLabel(null) }}</div>
+            <div v-if="liveModelLabel" class="model-label">{{ liveModelLabel }}</div>
             <MessageBlocks :blocks="chat.renderBlocks.value" :streaming="true" />
+            <div v-if="liveUsageText" class="turn-usage">{{ liveUsageText }}</div>
             <div v-if="chat.running.value" class="live-row">
               <LuLoader :size="13" class="spin" />
             </div>

@@ -269,6 +269,8 @@ pub struct ActiveTurnState {
     pub accumulated_thinking: String,
     pub accumulated_text:     String,
     pub active_tool_call:     Option<ToolCallStartedData>,
+    /// 本轮累计用量（到目前为止），供中途接入的客户端立即显示输入/输出
+    pub usage:                TokenUsage,
 }
 
 // =========================================================================
@@ -386,6 +388,7 @@ impl SessionRoom {
             accumulated_thinking: turn.accumulated_thinking,
             accumulated_text:     turn.accumulated_text,
             active_tool_call:     turn.active_tool_call,
+            usage:                turn.usage,
         })
     }
 
@@ -1006,6 +1009,12 @@ impl SessionRoom {
                 }
                 history.push(assistant_msg);
                 assistant_msg_id = Some(msg_id);
+                // 该请求的助手消息已落库：把本轮累计用量同步给客户端。
+                // 口径与落库值一致，流式界面据此显示输入/输出，不必等整轮回读
+                if let Some(turn) = self.active_turn.write().as_mut() {
+                    turn.usage = *turn_usage;
+                }
+                self.broadcast(AgentEvent::UsageUpdated { usage: *turn_usage });
 
                 // 首次回复已完成：立刻后台命名，不再等整轮（含工具调用）结束
                 if !naming_attempted {

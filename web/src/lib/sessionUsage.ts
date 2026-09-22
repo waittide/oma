@@ -72,3 +72,19 @@ export function usageLine(
   }
   return parts.join(' · ');
 }
+
+/**
+ * 用量是否真的拿到了数字。
+ *
+ * 服务端在尚未收到厂商用量时下发全零（追赶快照、尚无请求完成），此时若照常渲染
+ * 会得到一行空文案或无意义的 `0`；调用方据此决定显不显示用量行。
+ */
+export function hasUsage(usage?: TokenUsage | null): boolean {
+  if (!usage) return false;
+  return (
+    usage.input_tokens > 0 ||
+    usage.output_tokens > 0 ||
+    (usage.cache_read_tokens ?? 0) > 0 ||
+    (usage.cache_write_tokens ?? 0) > 0
+  );
+}

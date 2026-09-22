@@ -608,6 +608,10 @@ pub struct ActiveTurnCatchUp {
     pub accumulated_text:     String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tool_call:     Option<ToolCallStartedData>,
+    /// 本轮累计用量（到目前为止）。中途接入的客户端据此立即显示输入/输出，
+    /// 不必等下一条 `UsageUpdated`；全零表示尚未拿到（界面据此不显示用量行）。
+    #[serde(default)]
+    pub usage:                TokenUsage,
 }
 
 /// Agent 运行事件集
@@ -672,6 +676,12 @@ pub enum AgentEvent {
     ContextUsage {
         tokens:      usize,
         context_len: usize,
+    },
+    /// 本轮累计用量更新：每次模型请求结束（该请求的助手消息落库）后广播。
+    /// `usage` 与落库到助手消息的 `usage` 同一口径（**本轮到目前为止**的累计值），
+    /// 供界面在流式期间就展示输入/输出，而不必等整轮结束后的回读。
+    UsageUpdated {
+        usage: TokenUsage,
     },
     ReasoningLevelChanged {
         level: String,
@@ -822,6 +832,22 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let de: AgentEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(event, de);
+
+        // 流式期间的用量更新：字段名与前端 types.ts 的 `usage_updated` 对应
+        let event = AgentEvent::UsageUpdated {
+            usage: TokenUsage {
+                input_tokens: 120,
+                output_tokens: 34,
+                ..Default::default()
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"usage_updated","data":{"usage":{"input_tokens":120,"output_tokens":34,"cache_read_tokens":0,"cache_write_tokens":0}}}"#
+        );
+        let de: AgentEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, de);
     }
 
     #[test]
@@ -831,6 +857,11 @@ mod tests {
             accumulated_thinking: "thinking...".into(),
             accumulated_text:     "hello".into(),
             active_tool_call:     None,
+            usage:                TokenUsage {
+                input_tokens: 120,
+                output_tokens: 34,
+                ..Default::default()
+            },
         };
         let server_msg = ServerMessage::Event {
             event: Box::new(AgentEvent::ActiveTurnCatchUp(catch_up)),

@@ -768,6 +768,8 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::ContextUsage { tokens, context_len } => {
             app.context = Some((tokens, context_len));
         }
+        // 本轮累计用量的增量更新：TUI 只在整轮结束时展示一次，不重复刷屏
+        AgentEvent::UsageUpdated { .. } => {}
         AgentEvent::ReasoningLevelChanged { level } => app.push(
             "·",
             if level.is_empty() {

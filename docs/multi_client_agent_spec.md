@@ -414,6 +414,9 @@ pub struct ActiveTurnCatchUp {
     pub accumulated_text:     String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tool_call:     Option<ToolCallStartedData>,
+    /// 本轮累计用量（到目前为止）；全零表示服务端尚未拿到，界面据此不显示用量行
+    #[serde(default)]
+    pub usage:                TokenUsage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -490,6 +493,13 @@ pub enum AgentEvent {
         context_len: usize,
     },
 
+    // 5c. 本轮累计用量：每次模型请求结束（该请求的助手消息落库）后广播。
+    // usage 与落库到助手消息的口径一致（本轮到目前为止的累计值），
+    // 界面据此在**流式期间**就显示输入/输出，不必等整轮结束后的回读
+    UsageUpdated {
+        usage: TokenUsage,
+    },
+
     // 6. 重连快照与错误提示
     ActiveTurnCatchUp(ActiveTurnCatchUp),
     SessionRenamed { session_id: String, title: String },
@@ -509,8 +519,13 @@ pub enum StopReason {
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TokenUsage {
-    pub input_tokens:  usize,
-    pub output_tokens: usize,
+    /// 提示侧（输入）总量：统一含缓存读写，与各厂商口径对齐
+    pub input_tokens:       usize,
+    pub output_tokens:      usize,
+    #[serde(default)]
+    pub cache_read_tokens:  usize,
+    #[serde(default)]
+    pub cache_write_tokens: usize,
 }
 
 /// 上下文占用快照
@@ -897,7 +912,10 @@ pub struct Palette {
      运行时注入 CSS 变量（见 8.1）。
 - 具备功能：
   1. 会话列表管理与工作区选择；
-  2. 树状对话流展示、Markdown 渲染、Thinking 思维链折叠；
+  2. 树状对话流展示、Markdown 渲染、Thinking 思维链折叠；**流式中的那条回复与持久化
+     消息一样带模型标签与用量行**——模型标签取轮次开始时记录的模型（回退当前模型），
+     用量行取服务端每次模型请求后下发的本轮累计值（`usage_updated` / 追赶快照），
+     随工具循环推进增长；轮次耗时只在整轮收尾后出现（那一刻才是个确定的数）；
   3. Tool 执行过程与参数/Diff 展示；
   4. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）与历史树弹层；
   5. 三栏工作区外壳（侧栏 / 消息区 / 右侧面板）与顶部工具栏，

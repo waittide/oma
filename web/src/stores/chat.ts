@@ -16,6 +16,7 @@ import type {
 } from '../types';
 import { tr } from '../composables/i18n';
 import { notifyHumanEvent } from '../lib/notify';
+import { hasUsage } from '../lib/sessionUsage';
 import { activeSession, activeSessionId, applyRemoteRename, applyRemoteRunning } from './sessions';
 import { applyResolvedTheme } from './theme';
 import { releaseAll } from '../lib/attachments';
@@ -191,7 +192,8 @@ function handleEvent(ev: AgentEvent) {
     case 'turn_started':
       turnSeq += 1;
       running.value = true;
-      setLive(emptyLive());
+      // 记下本轮生效的模型：流式消息的模型标签用它，不依赖回读
+      setLive({ segments: [], model: activeModel.value, usage: null });
       break;
     case 'thinking_delta': {
       // 同类段连续则续写，否则新开一段，保持与真实到达顺序一致
@@ -278,6 +280,8 @@ function handleEvent(ev: AgentEvent) {
       finalizing.value = true;
       if (ev.data) {
         lastUsage.value = ev.data.usage;
+        // 最终值同步给流式缓冲：整轮收尾时用量行不因回读往返而闪断
+        live.value.usage = ev.data.usage;
         if (ev.data.stop_reason === 'error') toast.error(tr('chat.turnError'));
         // 出错时已单独报错，不再以「完成」重复打扰
         else notifyHumanEvent('turn', sessionTitle());
@@ -311,6 +315,10 @@ function handleEvent(ev: AgentEvent) {
       if (ev.data) {
         contextUsage.value = { tokens: ev.data.tokens, contextLen: ev.data.context_len };
       }
+      break;
+    case 'usage_updated':
+      // 服务端每次模型请求结束后下发本轮累计用量：流式期间即可显示输入/输出
+      if (ev.data) live.value.usage = ev.data.usage;
       break;
     case 'active_turn_catch_up':
       applyCatchUp(ev.data ?? null);
@@ -351,7 +359,9 @@ function applyCatchUp(c: ActiveTurnCatchUp | null) {
       key: c.active_tool_call.call_id,
       tool: { ...c.active_tool_call, done: false },
     });
-  setLive({ segments });
+  // 中途接入：用当前模型补上标签；用量取快照里的本轮累计值（全零 = 尚未拿到，
+  // 界面据此不显示用量行），后续由 `usage_updated` 继续推进
+  setLive({ segments, model: activeModel.value, usage: hasUsage(c.usage) ? c.usage! : null });
 }
 
 function connect() {

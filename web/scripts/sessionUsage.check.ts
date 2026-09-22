@@ -6,7 +6,7 @@
  *   node --experimental-strip-types scripts/sessionUsage.check.ts
  */
 import type { ChatMessage } from '../src/types.ts';
-import { sessionUsage, usageLine } from '../src/lib/sessionUsage.ts';
+import { hasUsage, sessionUsage, usageLine } from '../src/lib/sessionUsage.ts';
 
 let failed = 0;
 let passed = 0;
@@ -105,6 +105,13 @@ eq(
   ),
   '12.0k 输入 · 800 输出',
 );
+
+// 流式消息只在真的拿到用量时才显示那一行：服务端尚未收到厂商用量时下发全零
+eq('hasUsage: null', hasUsage(null), false);
+eq('hasUsage: undefined', hasUsage(undefined), false);
+eq('hasUsage: all zero', hasUsage({ input_tokens: 0, output_tokens: 0 }), false);
+eq('hasUsage: cache only', hasUsage({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 12 }), true);
+eq('hasUsage: in/out', hasUsage({ input_tokens: 120, output_tokens: 34 }), true);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

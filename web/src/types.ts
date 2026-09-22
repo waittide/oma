@@ -80,6 +80,8 @@ export interface ActiveTurnCatchUp {
   accumulated_thinking: string;
   accumulated_text: string;
   active_tool_call?: ToolCallStartedData | null;
+  /** 本轮到目前为止的累计用量；全零/缺省表示服务端尚未拿到 */
+  usage?: TokenUsage;
 }
 
 /** Git 变更文件（`GET /api/git/status`） */
@@ -125,6 +127,7 @@ export type AgentEvent =
   | { type: 'agent_changed'; data?: { active_agent: string } }
   | { type: 'reasoning_level_changed'; data?: { level: string } }
   | { type: 'context_usage'; data?: { tokens: number; context_len: number } }
+  | { type: 'usage_updated'; data?: { usage: TokenUsage } }
   | { type: 'active_turn_catch_up'; data?: ActiveTurnCatchUp }
   | { type: 'session_renamed'; data?: { session_id: string; title: string } }
   | { type: 'messages_deleted'; data?: { deleted_ids: string[]; current_leaf_id: string | null } }
