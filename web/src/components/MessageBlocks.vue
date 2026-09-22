@@ -12,10 +12,12 @@ import {
 import type { Block } from '../types';
 import { UiButton } from '@waittide/ui';
 import { prettyJson, renderMarkdown } from '../lib/format';
+import { splitUnifiedDiff } from '../lib/patchDiff';
 import { enhanceCodeBlocks } from '../lib/codeCopy';
 import { imageSrc } from '../lib/attachments';
 import { currentSessionId, toolDurations } from '../stores/chat';
 import { useTranslations } from '../composables/i18n';
+import DiffView from './DiffView.vue';
 
 const props = defineProps<{
   blocks: Block[];
@@ -38,6 +40,8 @@ interface Item {
   toolInput?: unknown;
   /** 工具结果文本；命名与后端 ToolOutput.output / ToolCallFinished.output 对齐 */
   output?: string;
+  /** 结果里的 unified diff 段（仅成功结果且含标记时存在） */
+  diff?: string;
   resultError?: boolean;
   resultDone?: boolean;
   /** 工具执行耗时（毫秒）：优先取回执里服务端记下的值 */
@@ -83,6 +87,13 @@ const items = computed<Item[]>(() => {
       }
     }
   });
+  // 结果里的 unified diff 单独抽出来做差异展示；失败输出是报错文本，不去着色
+  for (const it of out) {
+    if (it.kind === 'tool' && it.resultDone && !it.resultError && it.output) {
+      const { diff } = splitUnifiedDiff(it.output);
+      if (diff) it.diff = diff;
+    }
+  }
   return out;
 });
 
@@ -201,6 +212,11 @@ function toolSubtitle(it: Item): string {
   return text.length > 64 ? `${text.slice(0, 64)}…` : text;
 }
 
+/** 入参就是补丁原文的工具（当前仅 edit）：入参也按 diff 展示而非 JSON 文本 */
+function isPatchTool(it: Item): boolean {
+  return it.toolName === 'edit';
+}
+
 /**
  * 工具执行耗时：服务端随回执落库的毫秒数优先（历史消息也有），
  * 其次用本次连接内 `tool_call_finished` 带来的即时值。
@@ -288,8 +304,10 @@ onMounted(() => void nextTick(syncCodeCopy));
           <LuChevronRight :size="13" class="caret" />
         </UiButton>
         <div v-show="isOpen(it)" class="fold-body-wrap">
-          <pre class="fold-body">{{ toolCode(it.toolInput) }}</pre>
-          <pre v-if="it.resultDone" class="fold-body result" :class="{ err: it.resultError }">{{ it.output }}</pre>
+          <DiffView v-if="isPatchTool(it)" class="fold-body" :text="toolCode(it.toolInput)" />
+          <pre v-else class="fold-body">{{ toolCode(it.toolInput) }}</pre>
+          <DiffView v-if="it.diff" class="fold-body" :text="it.diff" />
+          <pre v-else-if="it.resultDone" class="fold-body result" :class="{ err: it.resultError }">{{ it.output }}</pre>
         </div>
       </div>
     </template>
