@@ -650,11 +650,11 @@ pub enum AgentEvent {
     },
     ToolCallStarted(ToolCallStartedData),
     ToolCallFinished {
-        call_id:   String,
+        call_id:     String,
         /// 被调用的工具名
-        tool_name: String,
-        output:    String,
-        is_error:  bool,
+        tool_name:   String,
+        output:      String,
+        is_error:    bool,
         /// 本次工具执行的耗时（毫秒），由运行时测量
         duration_ms: u64,
     },

@@ -256,13 +256,16 @@ fn context_usage_json(tokens: usize, context_len: usize, covered: usize) -> Stri
 /// 再兼容 SQLite 时代的冒号串 `tokens:context_len:covered`（三段均为十进制数字，
 /// 例：`152012:1048576:249`）。两者都不成立则 None——非法值只退化为 None，不 panic。
 fn parse_context_usage(raw: &str) -> Option<(usize, usize, usize)> {
-    if let Some(parsed) = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|v| {
-        Some((
-            v.get("tokens")?.as_u64()? as usize,
-            v.get("contextLen")?.as_u64()? as usize,
-            v.get("covered")?.as_u64()? as usize,
-        ))
-    }) {
+    if let Some(parsed) = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| {
+            Some((
+                v.get("tokens")?.as_u64()? as usize,
+                v.get("contextLen")?.as_u64()? as usize,
+                v.get("covered")?.as_u64()? as usize,
+            ))
+        })
+    {
         return Some(parsed);
     }
     match raw.split(':').collect::<Vec<_>>().as_slice() {
@@ -507,16 +510,16 @@ impl StorageManager {
             .await?;
 
         Ok(SessionRecord {
-            session_id: session_id.to_string(),
-            workspace: workspace.to_string(),
-            title: title.to_string(),
-            active_model: active_model.to_string(),
-            active_agent: active_agent.to_string(),
+            session_id:      session_id.to_string(),
+            workspace:       workspace.to_string(),
+            title:           title.to_string(),
+            active_model:    active_model.to_string(),
+            active_agent:    active_agent.to_string(),
             reasoning_level: reasoning_level.to_string(),
             current_leaf_id: None,
-            created_at: now,
-            updated_at: now,
-            is_running: false,
+            created_at:      now,
+            updated_at:      now,
+            is_running:      false,
         })
     }
 
@@ -539,16 +542,16 @@ impl StorageManager {
 
     fn record_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
         SessionRecord {
-            session_id: row.get("session_id"),
-            workspace: row.get("workspace"),
-            title: row.get("title"),
-            active_model: row.get("active_model"),
-            active_agent: row.get("active_agent"),
+            session_id:      row.get("session_id"),
+            workspace:       row.get("workspace"),
+            title:           row.get("title"),
+            active_model:    row.get("active_model"),
+            active_agent:    row.get("active_agent"),
             reasoning_level: row.get("reasoning_level"),
             current_leaf_id: row.get("current_leaf_id"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
-            is_running: false,
+            created_at:      row.get("created_at"),
+            updated_at:      row.get("updated_at"),
+            is_running:      false,
         }
     }
 
@@ -838,11 +841,9 @@ impl StorageManager {
         };
 
         // 一次性取出该会话的所有消息并在内存中沿 parent_id 倒序回溯（高效且避免递归 CTE 深度瓶颈）
-        let rows = sqlx::query(
-            "SELECT id, parent_id, role, blocks_json, model, usage_json, created_at FROM messages",
-        )
-        .fetch_all(&pools.read)
-        .await?;
+        let rows = sqlx::query("SELECT id, parent_id, role, blocks_json, model, usage_json, created_at FROM messages")
+            .fetch_all(&pools.read)
+            .await?;
 
         let mut msg_map: HashMap<String, ChatMessage> = HashMap::with_capacity(rows.len());
         for r in rows {
@@ -963,8 +964,9 @@ impl StorageManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use oma_contract::Block;
+
+    use super::*;
 
     fn msg(id: &str, parent: Option<&str>, text: &str, at: i64) -> ChatMessage {
         ChatMessage {
@@ -985,14 +987,7 @@ mod tests {
 
         // 1. 创建会话
         let s1 = storage
-            .create_session(
-                "s_1",
-                "/workspace/test",
-                "Test Session",
-                "claude-3-7",
-                "task",
-                "medium",
-            )
+            .create_session("s_1", "/workspace/test", "Test Session", "claude-3-7", "task", "medium")
             .await?;
         assert_eq!(s1.session_id, "s_1");
 
@@ -1176,10 +1171,7 @@ mod tests {
 
         // 直接向 session_meta 写入非法值：字段类型错误 / 根本不是 JSON
         let pools = storage.session_pools("s_bad").await?;
-        for corrupt in [
-            r#"{"tokens":"oops","contextLen":100,"covered":3}"#,
-            "not-a-number",
-        ] {
+        for corrupt in [r#"{"tokens":"oops","contextLen":100,"covered":3}"#, "not-a-number"] {
             sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('context_usage', ?)")
                 .bind(corrupt)
                 .execute(&pools.write)
@@ -1272,7 +1264,10 @@ mod tests {
 
         // 树仍可回溯
         let linear = storage.get_linear_messages("s_legacy", Some("m2")).await?;
-        assert_eq!(linear.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["m1", "m2"]);
+        assert_eq!(
+            linear.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["m1", "m2"]
+        );
 
         // 旧冒号串仍能解析出三元组
         assert_eq!(storage.context_usage("s_legacy").await?, Some((152012, 1_048_576, 249)));
@@ -1280,7 +1275,10 @@ mod tests {
         // 补列只做一次：再次打开（列已存在）仍可读，且旧 token 列未被删除
         let reopened = StorageManager::new(tmp.path()).await?;
         assert_eq!(reopened.get_all_messages("s_legacy").await?.len(), 2);
-        assert_eq!(reopened.context_usage("s_legacy").await?, Some((152012, 1_048_576, 249)));
+        assert_eq!(
+            reopened.context_usage("s_legacy").await?,
+            Some((152012, 1_048_576, 249))
+        );
         let pools = reopened.session_pools("s_legacy").await?;
         let columns: Vec<String> = sqlx::query("PRAGMA table_info(messages)")
             .fetch_all(&pools.read)
@@ -1289,7 +1287,12 @@ mod tests {
             .map(|r| r.get::<String, _>("name"))
             .collect();
         for expected in ["model", "usage_json", "input_tokens", "output_tokens"] {
-            assert!(columns.iter().any(|c| c == expected), "messages must keep {}: {:?}", expected, columns);
+            assert!(
+                columns.iter().any(|c| c == expected),
+                "messages must keep {}: {:?}",
+                expected,
+                columns
+            );
         }
         Ok(())
     }

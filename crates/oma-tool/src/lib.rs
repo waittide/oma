@@ -65,19 +65,19 @@ fn resolve_patch_path(workspace: &Path, raw_path: &str) -> Result<PathBuf, Strin
     for component in path.components() {
         match component {
             Component::Normal(part) => normalized.push(part),
-            Component::CurDir => {},
+            Component::CurDir => {}
             Component::ParentDir => {
                 if !normalized.pop() {
                     return Err(format!(
                         "patch path {raw_path:?} escapes the workspace; patches must stay inside it"
                     ));
                 }
-            },
+            }
             Component::RootDir | Component::Prefix(_) => {
                 return Err(format!(
                     "patch paths must be relative to the workspace, got {raw_path:?}"
                 ));
-            },
+            }
         }
     }
     if normalized.as_os_str().is_empty() {
@@ -479,17 +479,17 @@ struct EditInput {
 /// 规划好的一次落盘动作。
 struct PlannedFile {
     /// 段落头里的路径（摘要、diff 头、报错都用它）
-    display: String,
+    display:   String,
     /// 实际写入/删除的绝对路径
-    absolute: PathBuf,
+    absolute:  PathBuf,
     /// 改名前的内容（新建或原本不存在时为空串）
-    before: String,
+    before:    String,
     /// 改后的内容；`None` 表示删除该文件
-    after: Option<String>,
+    after:     Option<String>,
     /// 改名时要移除的源文件
     move_from: Option<PathBuf>,
     /// 摘要里用的操作标记
-    op: apply_patch::FileOp,
+    op:        apply_patch::FileOp,
 }
 
 /// 按路径分组：同一路径的多个段落按出现顺序依次作用，其余保持 envelope 顺序。
@@ -546,7 +546,7 @@ async fn plan_group(
                 return Err(apply_patch::PatchError::new(format!(
                     "Failed to read {display}: {error}"
                 )));
-            },
+            }
         }
     } else {
         None
@@ -564,31 +564,25 @@ async fn plan_group(
                     )));
                 }
                 current = Some(entry.body.clone().unwrap_or_default());
-            },
+            }
             apply_patch::FileOp::Delete => {
                 if current.take().is_none() {
-                    return Err(apply_patch::PatchError::new(format!(
-                        "File not found: {display}"
-                    )));
+                    return Err(apply_patch::PatchError::new(format!("File not found: {display}")));
                 }
-            },
+            }
             apply_patch::FileOp::Update => {
                 let Some(text) = current.as_deref() else {
-                    return Err(apply_patch::PatchError::new(format!(
-                        "File not found: {display}"
-                    )));
+                    return Err(apply_patch::PatchError::new(format!("File not found: {display}")));
                 };
                 let body = entry.body.as_deref().unwrap_or_default();
                 let hunks = apply_patch::parse_hunks(body)?;
                 current = Some(apply_patch::apply_hunks(text, &display, &hunks)?);
                 if let Some(destination) = &entry.rename {
                     if *destination == display {
-                        return Err(apply_patch::PatchError::new(
-                            "rename path is the same as source path",
-                        ));
+                        return Err(apply_patch::PatchError::new("rename path is the same as source path"));
                     }
-                    let destination_path = resolve_patch_path(workspace, destination)
-                        .map_err(apply_patch::PatchError::new)?;
+                    let destination_path =
+                        resolve_patch_path(workspace, destination).map_err(apply_patch::PatchError::new)?;
                     if destination_path.exists() {
                         return Err(apply_patch::PatchError::new(format!(
                             "Cannot rename {display} to {destination}: destination already exists."
@@ -596,14 +590,11 @@ async fn plan_group(
                     }
                     rename = Some(destination.clone());
                 }
-            },
+            }
         }
     }
 
-    let op = group
-        .last()
-        .expect("patch groups are never empty")
-        .op;
+    let op = group.last().expect("patch groups are never empty").op;
     let move_from = rename.as_ref().map(|_| absolute.clone());
     let (absolute, display) = match &rename {
         Some(destination) => (
@@ -690,7 +681,7 @@ impl Tool for EditTool {
                     } else {
                         error.to_string()
                     });
-                },
+                }
             }
         }
 
@@ -700,30 +691,18 @@ impl Tool for EditTool {
             if let Some(after) = &plan.after {
                 if let Some(parent) = plan.absolute.parent() {
                     if let Err(error) = tokio::fs::create_dir_all(parent).await {
-                        return ToolOutput::error(partial_write_error(
-                            &plan.display,
-                            &error,
-                            &written,
-                        ));
+                        return ToolOutput::error(partial_write_error(&plan.display, &error, &written));
                     }
                 }
                 if let Err(error) = tokio::fs::write(&plan.absolute, after).await {
-                    return ToolOutput::error(partial_write_error(
-                        &plan.display,
-                        &error,
-                        &written,
-                    ));
+                    return ToolOutput::error(partial_write_error(&plan.display, &error, &written));
                 }
             } else if let Err(error) = tokio::fs::remove_file(&plan.absolute).await {
                 return ToolOutput::error(partial_write_error(&plan.display, &error, &written));
             }
             if let Some(source) = &plan.move_from {
                 if let Err(error) = tokio::fs::remove_file(source).await {
-                    return ToolOutput::error(partial_write_error(
-                        &plan.display,
-                        &error,
-                        &written,
-                    ));
+                    return ToolOutput::error(partial_write_error(&plan.display, &error, &written));
                 }
             }
             written.push(plan.display.clone());
@@ -1439,10 +1418,7 @@ mod tests {
         )
         .await;
         assert!(!out.is_error, "{}", out.output);
-        assert_eq!(
-            read_file(&ws.join("multi.txt"))?,
-            "line1\nchanged2\nline3\nchanged4\n"
-        );
+        assert_eq!(read_file(&ws.join("multi.txt"))?, "line1\nchanged2\nline3\nchanged4\n");
 
         write_file(&ws.join("lines.txt"), "line1\nline2\nline3\n")?;
         let out = run_patch(
@@ -1521,11 +1497,7 @@ mod tests {
         let ws = tmp.path();
         write_file(&ws.join("foo.txt"), "stable\n")?;
 
-        let deleted = run_patch(
-            ws,
-            "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch",
-        )
-        .await;
+        let deleted = run_patch(ws, "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch").await;
         assert!(deleted.is_error, "{}", deleted.output);
         assert_eq!(deleted.output, "File not found: missing.txt");
 
@@ -1547,11 +1519,7 @@ mod tests {
         let ws = tmp.path();
         write_file(&ws.join("foo.txt"), "stable\n")?;
 
-        let out = run_patch(
-            ws,
-            "*** Begin Patch\n*** Update File: foo.txt\n*** End Patch",
-        )
-        .await;
+        let out = run_patch(ws, "*** Begin Patch\n*** Update File: foo.txt\n*** End Patch").await;
         assert!(out.is_error, "{}", out.output);
         assert!(
             out.output
@@ -1579,9 +1547,8 @@ mod tests {
         .await;
         assert!(out.is_error, "{}", out.output);
         assert!(
-            out.output.contains(
-                "Cannot rename old/name.txt to renamed/dir/name.txt: destination already exists."
-            ),
+            out.output
+                .contains("Cannot rename old/name.txt to renamed/dir/name.txt: destination already exists."),
             "{}",
             out.output
         );
@@ -1624,11 +1591,7 @@ mod tests {
 
         let out = run_patch(ws, "*** Begin Patch\n*** Delete File: dir\n*** End Patch").await;
         assert!(out.is_error, "{}", out.output);
-        assert!(
-            out.output.contains("dir is a directory, not a file"),
-            "{}",
-            out.output
-        );
+        assert!(out.output.contains("dir is a directory, not a file"), "{}", out.output);
         assert_eq!(read_file(&ws.join("dir/foo.txt"))?, "stable\n");
         Ok(())
     }
@@ -1640,17 +1603,9 @@ mod tests {
         let ws = tmp.path();
         write_file(&ws.join("foo.txt"), "stable\n")?;
 
-        let out = run_patch(
-            ws,
-            "*** Begin Patch\n*** Frobnicate File: foo\n*** End Patch",
-        )
-        .await;
+        let out = run_patch(ws, "*** Begin Patch\n*** Frobnicate File: foo\n*** End Patch").await;
         assert!(out.is_error, "{}", out.output);
-        assert!(
-            out.output.contains("is not a valid hunk header"),
-            "{}",
-            out.output
-        );
+        assert!(out.output.contains("is not a valid hunk header"), "{}", out.output);
         assert_eq!(read_file(&ws.join("foo.txt"))?, "stable\n");
         Ok(())
     }
@@ -1669,10 +1624,7 @@ mod tests {
         )
         .await;
         assert!(!out.is_error, "{}", out.output);
-        assert_eq!(
-            read_file(&ws.join("no_newline.txt"))?,
-            "first line\nsecond line\n"
-        );
+        assert_eq!(read_file(&ws.join("no_newline.txt"))?, "first line\nsecond line\n");
         Ok(())
     }
 
@@ -1719,11 +1671,7 @@ mod tests {
             }
             let out = run_patch(ws, patch).await;
             assert!(!out.is_error, "case {index}: {}", out.output);
-            assert_eq!(
-                read_file(&ws.join("foo.txt"))?,
-                format!("{expected}\n"),
-                "case {index}"
-            );
+            assert_eq!(read_file(&ws.join("foo.txt"))?, format!("{expected}\n"), "case {index}");
         }
         Ok(())
     }
@@ -1742,10 +1690,7 @@ mod tests {
         )
         .await;
         assert!(!out.is_error, "{}", out.output);
-        assert_eq!(
-            read_file(&ws.join("foo.txt"))?,
-            "line1\nnaïve café ✅\nline3\n"
-        );
+        assert_eq!(read_file(&ws.join("foo.txt"))?, "line1\nnaïve café ✅\nline3\n");
         Ok(())
     }
 
@@ -1757,11 +1702,7 @@ mod tests {
         write_file(&ws.join("keep.txt"), "keep\n")?;
         write_file(&ws.join("obsolete.txt"), "obsolete\n")?;
 
-        let out = run_patch(
-            ws,
-            "*** Begin Patch\n*** Delete File: obsolete.txt\n*** End Patch",
-        )
-        .await;
+        let out = run_patch(ws, "*** Begin Patch\n*** Delete File: obsolete.txt\n*** End Patch").await;
         assert!(!out.is_error, "{}", out.output);
         assert!(out.output.contains("D obsolete.txt"), "{}", out.output);
         assert!(!ws.join("obsolete.txt").exists());
@@ -1846,11 +1787,7 @@ mod tests {
         .await;
         assert!(out.is_error, "{}", out.output);
         assert!(out.output.starts_with("[b.txt]: "), "{}", out.output);
-        assert!(
-            out.output.contains(apply_patch::ATOMICITY_NOTICE),
-            "{}",
-            out.output
-        );
+        assert!(out.output.contains(apply_patch::ATOMICITY_NOTICE), "{}", out.output);
         assert_eq!(read_file(&ws.join("a.txt"))?, "old\n");
         assert_eq!(read_file(&ws.join("b.txt"))?, "value\n");
         Ok(())
@@ -1902,11 +1839,7 @@ mod tests {
         )
         .await;
         assert!(escaping.is_error, "{}", escaping.output);
-        assert!(
-            escaping.output.contains("escapes the workspace"),
-            "{}",
-            escaping.output
-        );
+        assert!(escaping.output.contains("escapes the workspace"), "{}", escaping.output);
         assert_eq!(read_file(&outside)?, "untouched\n");
         assert!(!tmp.path().join("escaped.txt").exists());
         Ok(())

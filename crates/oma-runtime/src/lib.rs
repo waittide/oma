@@ -590,7 +590,8 @@ impl SessionRoom {
             if !allowed.contains(tool_name) {
                 let output = ToolOutput::error(format!("Tool '{}' is not permitted for the active agent.", tool_name));
                 return (
-                    self.finish_tool_call(call_id, tool_name, output, elapsed_ms()).await,
+                    self.finish_tool_call(call_id, tool_name, output, elapsed_ms())
+                        .await,
                     false,
                     elapsed_ms(),
                 );
@@ -621,7 +622,8 @@ impl SessionRoom {
         let cancelled = cancel.is_cancelled();
         let duration = elapsed_ms();
         (
-            self.finish_tool_call(call_id, tool_name, output, duration).await,
+            self.finish_tool_call(call_id, tool_name, output, duration)
+                .await,
             cancelled,
             duration,
         )
@@ -651,10 +653,10 @@ impl SessionRoom {
             turn.active_tool_call = None;
         }
         self.broadcast(AgentEvent::ToolCallFinished {
-            call_id:   call_id.to_string(),
+            call_id: call_id.to_string(),
             tool_name: tool_name.to_string(),
-            output:    output.output.clone(),
-            is_error:  output.is_error,
+            output: output.output.clone(),
+            is_error: output.is_error,
             duration_ms,
         });
         output
@@ -1029,9 +1031,7 @@ impl SessionRoom {
                             assistant_tool_calls
                                 .iter()
                                 // 这些工具根本没执行，耗时留空
-                                .map(|(id, _, _)| {
-                                    (id.clone(), reason.to_string(), true, Vec::new(), None)
-                                })
+                                .map(|(id, _, _)| (id.clone(), reason.to_string(), true, Vec::new(), None))
                                 .collect(),
                             history,
                         )
@@ -1079,12 +1079,7 @@ impl SessionRoom {
     /// 消息：它属于工具输出而非用户发言，落库形态与展示形态都据此统一（见
     /// `isInternalMessage`）。只有 Anthropic 能原样消费这种结构，completion /
     /// response 在发请求时才把图片拆到紧随其后的用户消息里（协议翻译属 provider 职责）。
-    async fn append_tool_results(
-        &self,
-        parent_id: &str,
-        results: Vec<ToolCallResult>,
-        history: &mut Vec<ChatMessage>,
-    ) {
+    async fn append_tool_results(&self, parent_id: &str, results: Vec<ToolCallResult>, history: &mut Vec<ChatMessage>) {
         if results.is_empty() {
             return;
         }
@@ -1756,14 +1751,7 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
-            .create_session(
-                "s_q",
-                "/w",
-                "T",
-                "missing/model",
-                "task",
-                "medium",
-            )
+            .create_session("s_q", "/w", "T", "missing/model", "task", "medium")
             .await?;
 
         let room = SessionRoom::new(

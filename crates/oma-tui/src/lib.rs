@@ -7,9 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use oma_client::{ConnectOptions, OmaClient, SessionApi};
-use oma_contract::{
-    AgentCommand, AgentEvent, ClientType, Palette, ResolvedTheme, StopReason, ThemeMode,
-};
+use oma_contract::{AgentCommand, AgentEvent, ClientType, Palette, ResolvedTheme, StopReason, ThemeMode};
 use ratatui::{
     Frame,
     crossterm::{

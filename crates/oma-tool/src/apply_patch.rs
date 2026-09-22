@@ -116,13 +116,13 @@ impl FileOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchEntry {
     /// 段落头里的路径（相对工作区）。
-    pub path: String,
+    pub path:   String,
     /// 操作类型。
-    pub op: FileOp,
+    pub op:     FileOp,
     /// `*** Move to:` 给出的目标路径。
     pub rename: Option<String>,
     /// `Add` 是文件初始内容（已去掉 `+` 前缀）；`Update` 是 hunk 体；`Delete` 为 `None`。
-    pub body: Option<String>,
+    pub body:   Option<String>,
 }
 
 /// 去掉行尾 `\r`：CRLF 写就的 patch 也能照常解析。
@@ -132,11 +132,7 @@ fn strip_cr(line: &str) -> &str {
 
 /// 解析一个完整的 `*** Begin Patch` envelope。
 pub fn parse_envelope(input: &str) -> Result<Vec<PatchEntry>, PatchError> {
-    let mut lines: Vec<&str> = input
-        .trim()
-        .split('\n')
-        .map(strip_cr)
-        .collect::<Vec<_>>();
+    let mut lines: Vec<&str> = input.trim().split('\n').map(strip_cr).collect::<Vec<_>>();
     // 容忍 `<<'EOF' ... EOF` 这类 heredoc 包裹
     if lines.len() >= 2
         && matches!(lines[0], "<<EOF" | "<<'EOF'" | "<<\"EOF\"")
@@ -144,10 +140,16 @@ pub fn parse_envelope(input: &str) -> Result<Vec<PatchEntry>, PatchError> {
     {
         lines = lines[1..lines.len() - 1].to_vec();
     }
-    if lines.first().is_none_or(|line| line.trim() != BEGIN_PATCH_MARKER) {
+    if lines
+        .first()
+        .is_none_or(|line| line.trim() != BEGIN_PATCH_MARKER)
+    {
         return Err(PatchError::new(FIRST_LINE_ERROR));
     }
-    if lines.last().is_none_or(|line| line.trim() != END_PATCH_MARKER) {
+    if lines
+        .last()
+        .is_none_or(|line| line.trim() != END_PATCH_MARKER)
+    {
         return Err(PatchError::new(LAST_LINE_ERROR));
     }
     let end = lines.len() - 1;
@@ -171,19 +173,19 @@ pub fn parse_envelope(input: &str) -> Result<Vec<PatchEntry>, PatchError> {
                 index += 1;
             }
             entries.push(PatchEntry {
-                path: path.to_owned(),
-                op: FileOp::Add,
+                path:   path.to_owned(),
+                op:     FileOp::Add,
                 rename: None,
-                body: Some(content),
+                body:   Some(content),
             });
             continue;
         }
         if let Some(path) = header.strip_prefix(DELETE_FILE_MARKER) {
             entries.push(PatchEntry {
-                path: path.to_owned(),
-                op: FileOp::Delete,
+                path:   path.to_owned(),
+                op:     FileOp::Delete,
                 rename: None,
-                body: None,
+                body:   None,
             });
             index += 1;
             continue;
@@ -242,17 +244,17 @@ pub fn parse_envelope(input: &str) -> Result<Vec<PatchEntry>, PatchError> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Hunk {
     /// `@@` 里给出的定位上下文（多行用 `\n` 连接）。
-    pub context: Option<String>,
+    pub context:           Option<String>,
     /// `@@ -n` / `@@ line n` 给出的旧文件行号提示（1 起）。
-    pub old_start_line: Option<usize>,
+    pub old_start_line:    Option<usize>,
     /// 该段落是否包含未改动的上下文行。
     pub has_context_lines: bool,
     /// 期望在文件里出现的旧行。
-    pub old_lines: Vec<String>,
+    pub old_lines:         Vec<String>,
     /// 替换后的新行。
-    pub new_lines: Vec<String>,
+    pub new_lines:         Vec<String>,
     /// 是否带 `*** End of File`。
-    pub is_end_of_file: bool,
+    pub is_end_of_file:    bool,
 }
 
 /// 一行是否是 diff 内容行（以 ` ` / `+` / `-` 开头且不是 unified 元数据）。
@@ -310,13 +312,15 @@ fn parse_unified_header(header: &str) -> Option<(usize, usize, Option<String>)> 
     if parts.next().is_some() {
         return None;
     }
-    let parse = |spec: &str| spec.split(',').next().unwrap_or_default().parse::<usize>().ok();
+    let parse = |spec: &str| {
+        spec.split(',')
+            .next()
+            .unwrap_or_default()
+            .parse::<usize>()
+            .ok()
+    };
     let tail = tail.trim();
-    Some((
-        parse(old)?,
-        parse(new)?,
-        (!tail.is_empty()).then(|| tail.to_owned()),
-    ))
+    Some((parse(old)?, parse(new)?, (!tail.is_empty()).then(|| tail.to_owned())))
 }
 
 /// 解析 `@@ lines 12` / `@@ line 12-14` 形式（末尾允许 `@@`）的行号提示。
@@ -343,7 +347,7 @@ fn is_top_of_file(value: &str) -> bool {
 }
 
 struct ParsedHunk {
-    hunk: Hunk,
+    hunk:     Hunk,
     consumed: usize,
 }
 
@@ -431,10 +435,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<ParsedHunk, Patc
         }
     }
     if start_index >= lines.len() {
-        return Err(PatchError::at_line(
-            line_number + 1,
-            "Hunk does not contain any lines",
-        ));
+        return Err(PatchError::at_line(line_number + 1, "Hunk does not contain any lines"));
     }
 
     let mut hunk = Hunk {
@@ -445,19 +446,12 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<ParsedHunk, Patc
     let mut parsed_lines = 0_usize;
     for (offset, line) in lines.iter().enumerate().skip(start_index) {
         let next_line = lines.get(offset + 1).copied();
-        if line.is_empty()
-            && parsed_lines > 0
-            && next_line.is_some_and(|next| next.trim_start().starts_with("@@"))
-        {
+        if line.is_empty() && parsed_lines > 0 && next_line.is_some_and(|next| next.trim_start().starts_with("@@")) {
             break;
         }
-        if !is_diff_content_line(line) && line.trim_end() == EOF_MARKER && line.starts_with(EOF_MARKER)
-        {
+        if !is_diff_content_line(line) && line.trim_end() == EOF_MARKER && line.starts_with(EOF_MARKER) {
             if parsed_lines == 0 {
-                return Err(PatchError::at_line(
-                    line_number + 1,
-                    "Hunk does not contain any lines",
-                ));
+                return Err(PatchError::at_line(line_number + 1, "Hunk does not contain any lines"));
             }
             hunk.is_end_of_file = true;
             parsed_lines += 1;
@@ -554,9 +548,7 @@ pub fn parse_hunks(body: &str) -> Result<Vec<Hunk>, PatchError> {
             index += 1;
             continue;
         }
-        if trimmed.starts_with("@@")
-            && lines[index + 1..].iter().all(|next| next.trim().is_empty())
-        {
+        if trimmed.starts_with("@@") && lines[index + 1..].iter().all(|next| next.trim().is_empty()) {
             break;
         }
         let parsed = parse_one_hunk(&lines[index..], index + 1)?;
@@ -572,8 +564,8 @@ pub fn parse_hunks(body: &str) -> Result<Vec<Hunk>, PatchError> {
 
 /// 段落按旧的 `[start, start+len)` 换成新行。
 struct Replacement {
-    start: usize,
-    old_len: usize,
+    start:     usize,
+    old_len:   usize,
     new_lines: Vec<String>,
 }
 
@@ -629,9 +621,7 @@ fn not_found_error(lines: &[&str], path: &str, hunk: &Hunk) -> PatchError {
             score * 100.0,
             index + 1
         )),
-        None => PatchError::new(format!(
-            "Failed to find expected lines in {path}:\n{expected}"
-        )),
+        None => PatchError::new(format!("Failed to find expected lines in {path}:\n{expected}")),
     }
 }
 
@@ -687,11 +677,7 @@ fn find_context(lines: &[&str], hunk: &Hunk, from: usize, path: &str) -> Result<
     Ok(cursor)
 }
 
-fn compute_replacements(
-    lines: &[&str],
-    path: &str,
-    hunks: &[Hunk],
-) -> Result<Vec<Replacement>, PatchError> {
+fn compute_replacements(lines: &[&str], path: &str, hunks: &[Hunk]) -> Result<Vec<Replacement>, PatchError> {
     let mut replacements = Vec::new();
     let mut cursor = 0_usize;
     for hunk in hunks {
@@ -753,8 +739,8 @@ fn compute_replacements(
                 lines.len()
             };
             replacements.push(Replacement {
-                start: insertion,
-                old_len: 0,
+                start:     insertion,
+                old_len:   0,
                 new_lines: hunk.new_lines.clone(),
             });
             continue;
@@ -825,11 +811,7 @@ fn compute_replacements(
                 if replacement.old_len == 0 {
                     format!("{} (insertion)", replacement.start + 1)
                 } else {
-                    format!(
-                        "{}-{}",
-                        replacement.start + 1,
-                        replacement.start + replacement.old_len
-                    )
+                    format!("{}-{}", replacement.start + 1, replacement.start + replacement.old_len)
                 }
             };
             return Err(PatchError::new(format!(
@@ -855,7 +837,10 @@ pub fn apply_hunks(content: &str, path: &str, hunks: &[Hunk]) -> Result<String, 
         lines.pop();
     }
     let replacements = compute_replacements(&lines, path, hunks)?;
-    let mut result = lines.iter().map(|line| (*line).to_owned()).collect::<Vec<_>>();
+    let mut result = lines
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect::<Vec<_>>();
     for replacement in replacements.iter().rev() {
         result.splice(
             replacement.start..replacement.start + replacement.old_len,
@@ -876,10 +861,7 @@ pub fn apply_hunks(content: &str, path: &str, hunks: &[Hunk]) -> Result<String, 
 
 /// 成功摘要（与参考实现的 A/M/D 顺序一致）。
 pub fn format_summary(operations: &[(FileOp, &str)]) -> String {
-    let mut lines = vec![format!(
-        "Successfully applied {} file operation(s).",
-        operations.len()
-    )];
+    let mut lines = vec![format!("Successfully applied {} file operation(s).", operations.len())];
     lines.extend(
         operations
             .iter()
@@ -898,8 +880,7 @@ mod tests {
 
     #[test]
     fn parses_heredoc_wrapper() {
-        let parsed = parse("<<'EOF'\n*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch\nEOF")
-            .unwrap();
+        let parsed = parse("<<'EOF'\n*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch\nEOF").unwrap();
         assert_eq!(
             parsed,
             vec![PatchEntry {
@@ -913,10 +894,7 @@ mod tests {
 
     #[test]
     fn requires_envelope_markers() {
-        assert_eq!(
-            parse("*** Add File: a").unwrap_err().to_string(),
-            FIRST_LINE_ERROR
-        );
+        assert_eq!(parse("*** Add File: a").unwrap_err().to_string(), FIRST_LINE_ERROR);
         assert_eq!(
             parse("*** Begin Patch\n*** Add File: a\n+x")
                 .unwrap_err()
@@ -984,10 +962,7 @@ mod tests {
         let hunks = parse_hunks("@@\n first\n-second\n+second updated\n*** End of File").unwrap();
         assert_eq!(hunks.len(), 1);
         assert!(hunks[0].is_end_of_file);
-        assert_eq!(
-            hunks[0].old_lines,
-            vec!["first".to_string(), "second".to_string()]
-        );
+        assert_eq!(hunks[0].old_lines, vec!["first".to_string(), "second".to_string()]);
     }
 
     #[test]
@@ -1002,7 +977,9 @@ mod tests {
         let hunks = parse_hunks("@@\n-foo\n+bar").unwrap();
         let error = apply_hunks("foo\nfoo\n", "f.txt", &hunks).unwrap_err();
         assert!(
-            error.to_string().contains("Found 2 matches for the text in f.txt"),
+            error
+                .to_string()
+                .contains("Found 2 matches for the text in f.txt"),
             "{}",
             error.to_string()
         );
@@ -1013,7 +990,9 @@ mod tests {
         let hunks = parse_hunks("@@\n-missing\n+changed").unwrap();
         let error = apply_hunks("line1\nline2\n", "modify.txt", &hunks).unwrap_err();
         assert!(
-            error.to_string().contains("Failed to find expected lines in modify.txt:\nmissing"),
+            error
+                .to_string()
+                .contains("Failed to find expected lines in modify.txt:\nmissing"),
             "{}",
             error.to_string()
         );
@@ -1024,7 +1003,9 @@ mod tests {
         let hunks = parse_hunks("@@ def absent():\n context\n-x\n+y").unwrap();
         let error = apply_hunks("context\nx\n", "f.rs", &hunks).unwrap_err();
         assert!(
-            error.to_string().contains("Failed to find context 'def absent():' in f.rs"),
+            error
+                .to_string()
+                .contains("Failed to find context 'def absent():' in f.rs"),
             "{}",
             error.to_string()
         );
@@ -1069,7 +1050,9 @@ mod tests {
         let hunks = parse_hunks("@@\n-a\n-b\n+x\n@@\n-b\n-c\n+y").unwrap();
         let error = apply_hunks("a\nb\nc\n", "f.txt", &hunks).unwrap_err();
         assert!(
-            error.to_string().contains("Overlapping hunks detected in f.txt"),
+            error
+                .to_string()
+                .contains("Overlapping hunks detected in f.txt"),
             "{}",
             error.to_string()
         );

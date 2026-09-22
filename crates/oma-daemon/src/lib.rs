@@ -309,10 +309,10 @@ async fn handle_list_sessions(
 
 #[derive(Deserialize)]
 struct CreateSessionReq {
-    workspace:     String,
-    title:         Option<String>,
-    model:         Option<String>,
-    agent:         Option<String>,
+    workspace: String,
+    title:     Option<String>,
+    model:     Option<String>,
+    agent:     Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -347,14 +347,7 @@ async fn handle_create_session(
 
     let rec = state
         .storage
-        .create_session(
-            &session_id,
-            &payload.workspace,
-            &title,
-            &model,
-            &agent,
-            &default_level,
-        )
+        .create_session(&session_id, &payload.workspace, &title, &model, &agent, &default_level)
         .await
         .map_err(storage_error)?;
 
@@ -403,10 +396,7 @@ struct GetMessagesQuery {
 /// 存储层取会话连接池时会按需建目录与库（`StorageManager::session_pools`），
 /// 所以读接口如果不先查索引，任何带未知 id 的 GET 都会在服务端**凭空造出**一条
 /// 空会话；GET 不该有副作用，未知 id 一律 404。
-async fn ensure_session_exists(
-    state: &DaemonState,
-    session_id: &str,
-) -> Result<(), (StatusCode, String)> {
+async fn ensure_session_exists(state: &DaemonState, session_id: &str) -> Result<(), (StatusCode, String)> {
     match state.storage.get_session(session_id).await {
         Ok(Some(_)) => Ok(()),
         Ok(None) => Err((StatusCode::NOT_FOUND, "Session not found".into())),
@@ -542,7 +532,12 @@ async fn handle_workspace_tree(
 
     // 下钻目录仍以工作区为相对根：客户端拿到的 path 始终是工作区相对路径，
     // 拼下一层请求时不需要自己维护前缀
-    let target = match query.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+    let target = match query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
         Some(relative) => resolve_path(&ws_path, relative),
         None => ws_path.clone(),
     };
@@ -647,20 +642,13 @@ async fn handle_workspace_file(
         Ok(t) => t.to_string(),
         // 错误只出在末尾（`error_len() == None`）说明截断正好切在多字节字符中间：
         // 丢掉尾部不完整的字节，其余照常显示
-        Err(e) if e.error_len().is_none() => {
-            String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned()
-        }
+        Err(e) if e.error_len().is_none() => String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned(),
         Err(_) => {
-            return Err((
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "Not a UTF-8 text file".into(),
-            ));
+            return Err((StatusCode::UNSUPPORTED_MEDIA_TYPE, "Not a UTF-8 text file".into()));
         }
     };
 
-    Ok(Json(
-        serde_json::json!({ "content": text, "truncated": truncated }),
-    ))
+    Ok(Json(serde_json::json!({ "content": text, "truncated": truncated })))
 }
 
 /// 读取文件开头最多 `limit` 字节（不整读，避免大文件把内存打满）。

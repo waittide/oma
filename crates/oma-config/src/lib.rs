@@ -4,9 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use oma_contract::{
-    ACCENTS, AgentSummary, McpServerConfig, ModelInfo, Palette, PaletteMode, ResolvedTheme, Theme,
-};
+use oma_contract::{ACCENTS, AgentSummary, McpServerConfig, ModelInfo, Palette, PaletteMode, ResolvedTheme, Theme};
 pub use oma_contract::{PALETTE_TOKENS, is_valid_hex_color};
 use oma_provider::ModelConfig;
 pub use oma_provider::{ModelEntry, ProviderConfig};
