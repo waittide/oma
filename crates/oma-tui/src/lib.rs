@@ -11,7 +11,8 @@ use std::{
 use anyhow::{Context, Result};
 use oma_client::{ConnectOptions, OmaClient, SessionApi, SessionRecord};
 use oma_contract::{
-    AgentCommand, AgentEvent, AgentSummary, ClientType, ModelInfo, Palette, ResolvedTheme, StopReason, ThemeMode,
+    AgentCommand, AgentEvent, AgentSummary, ClientType, ModelInfo, Palette, REASONING_LEVELS, ResolvedTheme,
+    StopReason, ThemeMode,
 };
 use ratatui::{
     Frame,
@@ -137,6 +138,8 @@ enum PickerAction {
     SetModel(String),
     /// 下发指令切换 Agent 预设
     SetAgent(String),
+    /// 下发指令切换推理等级（取值必须在 `REASONING_LEVELS` 内）
+    SetReasoningLevel(String),
 }
 
 /// 弹窗选择器：连接、会话、模型、预设共用同一套渲染与按键。
@@ -241,37 +244,39 @@ struct Entry {
 }
 
 struct App {
-    workspace:     String,
-    model:         String,
-    agent:         String,
+    workspace:       String,
+    model:           String,
+    agent:           String,
     /// 当前会话 id；弹窗里据此标记「就是它」
-    session_id:    String,
+    session_id:      String,
     /// 当前工作区的会话列表：连接时取一次快照，供切换弹窗使用
-    sessions:      Vec<SessionRecord>,
+    sessions:        Vec<SessionRecord>,
     /// 可选模型清单（provider → 模型），握手下发
-    model_catalog: BTreeMap<String, Vec<ModelInfo>>,
+    model_catalog:   BTreeMap<String, Vec<ModelInfo>>,
     /// 可选 Agent 预设，握手下发
-    agents:        Vec<AgentSummary>,
-    connected:     bool,
-    busy:          bool,
-    queue:         usize,
-    status:        String,
-    entries:       Vec<Entry>,
-    input:         String,
-    scroll:        u16,
-    stick:         bool,
+    agents:          Vec<AgentSummary>,
+    /// 当前推理等级；空串表示未设置
+    reasoning_level: String,
+    connected:       bool,
+    busy:            bool,
+    queue:           usize,
+    status:          String,
+    entries:         Vec<Entry>,
+    input:           String,
+    scroll:          u16,
+    stick:           bool,
     /// 最近一次请求的上下文占用（tokens, context_len）
-    context:       Option<(usize, usize)>,
+    context:         Option<(usize, usize)>,
     /// 可切换的已保存连接
-    connections:   Vec<TuiConnection>,
+    connections:     Vec<TuiConnection>,
     /// 当前活动连接名
-    active_conn:   Option<String>,
+    active_conn:     Option<String>,
     /// 弹窗选择器；None = 未打开
-    picker:        Option<Picker>,
+    picker:          Option<Picker>,
     /// 终端是否处于聚焦状态；仅失焦时才发系统通知
-    focused:       bool,
+    focused:         bool,
     /// 由握手下发主题导出的语义配色
-    theme:         TuiTheme,
+    theme:           TuiTheme,
 }
 
 impl App {
@@ -284,6 +289,7 @@ impl App {
             sessions: Vec::new(),
             model_catalog: BTreeMap::new(),
             agents: Vec::new(),
+            reasoning_level: String::new(),
             connected: true,
             busy: false,
             queue: 0,
@@ -555,6 +561,7 @@ async fn run_session(
         app.sessions = sessions;
         app.model_catalog = ready.model_catalog.clone();
         app.agents = ready.agents.clone();
+        app.reasoning_level = ready.reasoning_level.clone();
         app.push(
             "·",
             format!("会话 {} 已连接", short_id(&ready.session_id)),
@@ -660,6 +667,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
         KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => open_session_picker(app),
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => open_model_picker(app),
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => open_agent_picker(app),
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => open_reasoning_picker(app),
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
             app.stick = false;
@@ -854,6 +862,29 @@ fn open_agent_picker(app: &mut App) {
     });
 }
 
+/// 打开推理等级选择器。
+///
+/// 只列规范等级：服务端把空串判为非法（`is_valid_reasoning_level` 不接受空串），
+/// 「未设置」不是能下发的状态，因此不给这个选项。等级名照搬规范值——Web 端也是
+/// 直接显示 `minimal` / `xhigh` 这类原值，两个客户端保持一致。
+fn open_reasoning_picker(app: &mut App) {
+    let items: Vec<PickerItem> = REASONING_LEVELS
+        .iter()
+        .map(|level| PickerItem {
+            label:   (*level).to_string(),
+            detail:  String::new(),
+            current: *level == app.reasoning_level,
+            action:  PickerAction::SetReasoningLevel((*level).to_string()),
+        })
+        .collect();
+    let index = picker_current_index(&items);
+    app.picker = Some(Picker {
+        title: " 切换推理等级 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ".into(),
+        items,
+        index,
+    });
+}
+
 /// 弹窗按键：上下选择（j/k 亦可）、Enter 取出动作并关闭、Esc 关闭。
 ///
 /// 返回 `Some(action)` 表示用户确认了某一项；`None` 表示按键已被消费。
@@ -901,17 +932,27 @@ async fn apply_picker_action(
         PickerAction::SwitchConnection { addr, token, name } => Ok(Some(Outcome::Switch { addr, token, name })),
         PickerAction::SwitchSession { session_id } => Ok(Some(Outcome::SwitchSession { session_id })),
         PickerAction::SetModel(model) => {
-            if let Err(e) = client.send_command(AgentCommand::SetModel { model }).await {
-                app.push("!", format!("切换模型失败: {e}"), Style::default().fg(app.theme.error));
-            }
+            send_setting(app, client, AgentCommand::SetModel { model }, "切换模型").await;
             Ok(None)
         }
         PickerAction::SetAgent(agent) => {
-            if let Err(e) = client.send_command(AgentCommand::SetAgent { agent }).await {
-                app.push("!", format!("切换预设失败: {e}"), Style::default().fg(app.theme.error));
-            }
+            send_setting(app, client, AgentCommand::SetAgent { agent }, "切换预设").await;
             Ok(None)
         }
+        PickerAction::SetReasoningLevel(level) => {
+            send_setting(app, client, AgentCommand::SetReasoningLevel { level }, "切换推理等级").await;
+            Ok(None)
+        }
+    }
+}
+
+/// 下发一条设置类指令；失败时把原因写进记录。
+///
+/// 这类动作不重建会话循环，所以写下的提示留得住（换连接/换会话那两条则留不住，
+/// 见 [`PickerAction`]）。成功时什么都不写：界面等 `ModelChanged` 之类的回执。
+async fn send_setting(app: &mut App, client: &OmaClient, command: AgentCommand, what: &str) {
+    if let Err(e) = client.send_command(command).await {
+        app.push("!", format!("{what}失败: {e}"), Style::default().fg(app.theme.error));
     }
 }
 
@@ -1039,15 +1080,18 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         }
         // 本轮累计用量的增量更新：TUI 只在整轮结束时展示一次，不重复刷屏
         AgentEvent::UsageUpdated { .. } => {}
-        AgentEvent::ReasoningLevelChanged { level } => app.push(
-            "·",
-            if level.is_empty() {
-                "推理等级 → 模型默认".to_string()
-            } else {
-                format!("推理等级 → {}", level)
-            },
-            Style::default().fg(app.theme.muted),
-        ),
+        AgentEvent::ReasoningLevelChanged { level } => {
+            app.reasoning_level = level.clone();
+            app.push(
+                "·",
+                if level.is_empty() {
+                    "推理等级 → 模型默认".to_string()
+                } else {
+                    format!("推理等级 → {level}")
+                },
+                Style::default().fg(app.theme.muted),
+            );
+        }
     }
 }
 
@@ -1219,7 +1263,7 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     let hint = if app.connected {
-        " Enter 发送 · Ctrl+X 中止 · Ctrl+O 连接/N 会话/L 模型/A 预设 · Ctrl+U 清空 · Esc 退出 "
+        " Enter 发送 · Ctrl+X 中止 · Ctrl+O 连接 N 会话 L 模型 A 预设 R 推理 · Ctrl+U 清空 · Esc 退出 "
     } else {
         " 连接已断开 "
     };
@@ -1441,6 +1485,27 @@ mod tests {
         match &picker.items[1].action {
             PickerAction::SetAgent(id) => assert_eq!(id, "极简"),
             _ => panic!("预设条目应下发 SetAgent"),
+        }
+    }
+
+    /// 推理等级选择器：只列规范等级（服务端拒绝空串），当前档带 ✓，
+    /// 下发值与弹窗里显示的字符串完全一致。
+    #[test]
+    fn test_reasoning_picker_lists_spec_levels_only() {
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), TuiTheme::test());
+        app.reasoning_level = "high".into();
+
+        open_reasoning_picker(&mut app);
+        let picker = app.picker.as_ref().unwrap();
+        assert_eq!(picker.items.len(), REASONING_LEVELS.len());
+        assert_eq!(picker.items[0].label, "minimal");
+        assert_eq!(picker.items[picker.index].label, "high", "应停在当前档上");
+        assert_eq!(picker.items.iter().filter(|i| i.current).count(), 1);
+        // 「未设置」不是合法等级，不能出现在清单里
+        assert!(picker.items.iter().all(|i| !i.label.is_empty()));
+        match &picker.items[picker.index].action {
+            PickerAction::SetReasoningLevel(level) => assert_eq!(level, "high"),
+            _ => panic!("推理等级条目应下发 SetReasoningLevel"),
         }
     }
 
