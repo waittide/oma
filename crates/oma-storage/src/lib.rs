@@ -22,7 +22,7 @@ use std::{
     sync::Arc,
 };
 
-use oma_contract::{ChatMessage, Role, TokenUsage};
+use oma_contract::{Block, ChatMessage, Role, TokenUsage};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -198,51 +198,74 @@ async fn ensure_index_schema(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-/// 列级兼容：SQLite 时代的会话库 `messages` 表没有 `model` / `usage_json` 两列，
-/// 而 `CREATE TABLE IF NOT EXISTS` 不会给已存在的表补列——缺列会让读取直接报
-/// `no such column: model`，即恢复 SQLite 存储后旧会话一打开就失败。
-/// 这里按需 `ALTER TABLE ... ADD COLUMN` 补上可空列（无损），旧库因此仍可读；
-/// 旧的 `input_tokens` / `output_tokens` 列保持不动（不丢历史数据）。
-async fn ensure_messages_columns(pool: &SqlitePool) -> Result<()> {
-    const REPAIRS: [(&str, &str); 2] = [
-        ("model", "ALTER TABLE messages ADD COLUMN model TEXT"),
-        ("usage_json", "ALTER TABLE messages ADD COLUMN usage_json TEXT"),
+/// 校验会话库的 `messages` 表结构符合当前版本。
+///
+/// 不做迁移：旧版本的表（如缺 `model` / `usage_json`，或只带
+/// `input_tokens` / `output_tokens`）一律拒绝，而不是 `ALTER TABLE` 补列后继续用。
+/// 失败信息给出缺哪些列、当前有哪些列，便于备份重建或手工改表。
+async fn ensure_messages_schema(pool: &SqlitePool) -> Result<()> {
+    const REQUIRED: [&str; 7] = [
+        "id",
+        "parent_id",
+        "role",
+        "blocks_json",
+        "model",
+        "usage_json",
+        "created_at",
     ];
     let rows = sqlx::query("PRAGMA table_info(messages)")
         .fetch_all(pool)
         .await
         .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to inspect messages: {}", e)))?;
     let present: Vec<String> = rows.iter().map(|r| r.get::<String, _>("name")).collect();
-    for (column, ddl) in REPAIRS {
-        if present.iter().any(|p| p == column) {
-            continue;
-        }
-        sqlx::query(ddl)
-            .execute(pool)
-            .await
-            .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to add messages.{}: {}", column, e)))?;
+    let missing: Vec<&str> = REQUIRED
+        .into_iter()
+        .filter(|c| !present.iter().any(|p| p == c))
+        .collect();
+    if !missing.is_empty() {
+        return Err(StorageError::Internal(anyhow::anyhow!(
+            "messages 缺少必要列 {:?}（当前列: {:?}）。\
+             本版本不做数据迁移：请用旧版导出内容后重建该会话库。",
+            missing,
+            present
+        )));
     }
     Ok(())
 }
 
-/// 行 → 消息；内容块反序列化失败时退化为空内容（不让单条坏行毁掉整段历史）。
-fn message_from_row(row: &sqlx::sqlite::SqliteRow) -> ChatMessage {
+/// 行 → 消息。
+///
+/// 任何一列读不出来都直接报错（带上消息 id），不做兜底：把坏行降级成「空内容」
+/// 或「当成用户消息」只会让损坏在界面上看起来像正常历史，反而更难查。
+fn message_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ChatMessage> {
+    let id: String = row.get("id");
     let role_str: String = row.get("role");
+    let role = Role::parse(&role_str)
+        .ok_or_else(|| StorageError::Internal(anyhow::anyhow!("消息 {id} 的 role 无法识别: {role_str:?}")))?;
     let blocks_json: String = row.get("blocks_json");
+    let content = serde_json::from_str::<Vec<Block>>(&blocks_json)
+        .map_err(|e| StorageError::Internal(anyhow::anyhow!("消息 {id} 的 content 无法解析: {e}")))?;
     let usage_json: Option<String> = row.get("usage_json");
-    ChatMessage {
-        id:         row.get("id"),
-        parent_id:  row.get("parent_id"),
-        role:       Role::parse(&role_str).unwrap_or(Role::User),
-        content:    serde_json::from_str(&blocks_json).unwrap_or_default(),
+    // 只有非 NULL 才要求可解析：用户消息本就记 NULL
+    let usage = match usage_json {
+        Some(raw) => Some(
+            serde_json::from_str::<TokenUsage>(&raw)
+                .map_err(|e| StorageError::Internal(anyhow::anyhow!("消息 {id} 的 usage 无法解析: {e}")))?,
+        ),
+        None => None,
+    };
+    Ok(ChatMessage {
+        id,
+        parent_id: row.get("parent_id"),
+        role,
+        content,
         created_at: row.get("created_at"),
-        model:      row.get("model"),
-        usage:      usage_json.and_then(|s| serde_json::from_str::<TokenUsage>(&s).ok()),
-    }
+        model: row.get("model"),
+        usage,
+    })
 }
 
 /// 上下文占用在 `session_meta` 中的落盘形态：`{"tokens":..,"contextLen":..,"covered":..}`。
-/// 结构化存放使字段缺失/类型错误都能被显式识别并退化为 None。
 fn context_usage_json(tokens: usize, context_len: usize, covered: usize) -> String {
     serde_json::json!({
         "tokens":     tokens,
@@ -252,30 +275,28 @@ fn context_usage_json(tokens: usize, context_len: usize, covered: usize) -> Stri
     .to_string()
 }
 
-/// 解析上下文占用：优先 JSON 形态 `{"tokens":..,"contextLen":..,"covered":..}`；
-/// 再兼容 SQLite 时代的冒号串 `tokens:context_len:covered`（三段均为十进制数字，
-/// 例：`152012:1048576:249`）。两者都不成立则 None——非法值只退化为 None，不 panic。
-fn parse_context_usage(raw: &str) -> Option<(usize, usize, usize)> {
-    if let Some(parsed) = serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|v| {
-            Some((
-                v.get("tokens")?.as_u64()? as usize,
-                v.get("contextLen")?.as_u64()? as usize,
-                v.get("covered")?.as_u64()? as usize,
-            ))
-        })
-    {
-        return Some(parsed);
-    }
-    match raw.split(':').collect::<Vec<_>>().as_slice() {
-        [t, l, c] => Some((
-            t.parse::<usize>().ok()?,
-            l.parse::<usize>().ok()?,
-            c.parse::<usize>().ok()?,
-        )),
-        _ => None,
-    }
+/// 解析上下文占用，只认当前 JSON 形态。
+///
+/// 不再兼容 SQLite 时代的冒号串（`152012:1048576:249`）：格式不对就报错，
+/// 而不是退化成「未知占用」——后者会让进度条悄悄空掉，看不出是数据坏了。
+fn parse_context_usage(raw: &str) -> Result<(usize, usize, usize)> {
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| {
+        StorageError::Internal(anyhow::anyhow!(
+            "session_meta.context_usage 不是合法 JSON: {e}（值: {raw:?}）"
+        ))
+    })?;
+    let field = |name: &str| -> Result<usize> {
+        value
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .map(|n| n as usize)
+            .ok_or_else(|| {
+                StorageError::Internal(anyhow::anyhow!(
+                    "session_meta.context_usage 缺少字段 {name}（值: {raw:?}）"
+                ))
+            })
+    };
+    Ok((field("tokens")?, field("contextLen")?, field("covered")?))
 }
 
 impl StorageManager {
@@ -417,8 +438,8 @@ impl StorageManager {
         .await
         .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to initialize session tables: {}", e)))?;
 
-        // 旧会话库（SQLite 时代）缺 model / usage_json 列，按需补列后再开读池
-        ensure_messages_columns(&write).await?;
+        // 表结构必须是当前版本，否则拒绝打开（不做补列迁移）
+        ensure_messages_schema(&write).await?;
 
         // 写池建库完成后再开只读池（文件必已存在）；读快照不阻塞写路径
         let read = SqlitePoolOptions::new()
@@ -816,7 +837,7 @@ impl StorageManager {
     }
 
     /// 读取上次记录的上下文占用（tokens, context_len, covered）。
-    /// 无记录、格式不合法（含字段类型错误、旧冒号串亦不成立）时返回 None。
+    /// 无记录时返回 None；有记录但格式不合法则报错（不做兼容降级）。
     pub async fn context_usage(&self, session_id: &str) -> Result<Option<(usize, usize, usize)>> {
         let pools = self.session_pools(session_id).await?;
         let row = sqlx::query("SELECT value FROM session_meta WHERE key = 'context_usage'")
@@ -825,7 +846,7 @@ impl StorageManager {
         let Some(raw) = row.map(|r| r.get::<String, _>("value")) else {
             return Ok(None);
         };
-        Ok(parse_context_usage(&raw))
+        parse_context_usage(&raw).map(Some)
     }
 
     /// 获取激活分支的线性消息链（从 root 到指定/当前 leaf_id）
@@ -847,7 +868,7 @@ impl StorageManager {
 
         let mut msg_map: HashMap<String, ChatMessage> = HashMap::with_capacity(rows.len());
         for r in rows {
-            let msg = message_from_row(&r);
+            let msg = message_from_row(&r)?;
             msg_map.insert(msg.id.clone(), msg);
         }
 
@@ -877,7 +898,7 @@ impl StorageManager {
         .fetch_all(&pools.read)
         .await?;
 
-        Ok(rows.iter().map(message_from_row).collect())
+        rows.iter().map(message_from_row).collect()
     }
 
     /// 删除指定消息及其整棵子树。
@@ -1160,25 +1181,29 @@ mod tests {
         Ok(())
     }
 
-    /// 非法存储值不得让读取 panic，应退化为 None。
+    /// 非法存储值报错（带原始值），不退化成 None、也不 panic。
     #[tokio::test]
-    async fn test_context_usage_tolerates_corrupt_value() -> anyhow::Result<()> {
+    async fn test_context_usage_rejects_corrupt_value() -> anyhow::Result<()> {
         let tmp = tempfile::tempdir()?;
         let storage = StorageManager::new(tmp.path()).await?;
         storage
             .create_session("s_bad", "/w", "T", "m", "task", "medium")
             .await?;
 
-        // 直接向 session_meta 写入非法值：字段类型错误 / 根本不是 JSON
+        // 字段类型错误 / 缺少字段 / 根本不是 JSON
         let pools = storage.session_pools("s_bad").await?;
-        for corrupt in [r#"{"tokens":"oops","contextLen":100,"covered":3}"#, "not-a-number"] {
+        for corrupt in [
+            r#"{"tokens":"oops","contextLen":100,"covered":3}"#,
+            r#"{"tokens":1,"contextLen":100}"#,
+            "not-a-number",
+        ] {
             sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('context_usage', ?)")
                 .bind(corrupt)
                 .execute(&pools.write)
                 .await?;
 
-            let reloaded = StorageManager::new(tmp.path()).await?;
-            assert!(reloaded.context_usage("s_bad").await?.is_none());
+            let err = storage.context_usage("s_bad").await.unwrap_err();
+            assert!(format!("{err}").contains("context_usage"), "{err}");
         }
         Ok(())
     }
@@ -1202,16 +1227,15 @@ mod tests {
         Ok(())
     }
 
-    /// 旧 SQLite 时代的会话库升级路径：`messages` 无 model / usage_json 列，
-    /// `context_usage` 是冒号串。恢复 SQLite 存储后这些会话必须仍可读
-    /// （缺列自动补、旧格式仍能解析），否则打开就是 `no such column: model`。
+    /// 旧格式会话库不做迁移：`messages` 缺 model / usage_json 列时直接拒绝打开，
+    /// 而不是 `ALTER TABLE` 补列后继续读——要保住内容就先用旧版导出。
     #[tokio::test]
-    async fn test_legacy_sqlite_session_db_is_readable() -> anyhow::Result<()> {
+    async fn test_legacy_sqlite_session_db_is_rejected() -> anyhow::Result<()> {
         let tmp = tempfile::tempdir()?;
         let s_dir = tmp.path().join("sessions").join("s_legacy");
         std::fs::create_dir_all(s_dir.join("attachments"))?;
 
-        // 手工造出旧库：旧 messages 列（无 model / usage_json）+ 旧冒号串 context_usage
+        // 手工造出旧库：旧 messages 列（无 model / usage_json）
         let db_path = s_dir.join("session.db");
         let pool = sqlx::SqlitePool::connect_with(session_connect_options(&db_path, false)).await?;
         sqlx::query(
@@ -1235,65 +1259,94 @@ mod tests {
         )
         .execute(&pool)
         .await?;
-        let legacy_blocks = serde_json::to_string(&vec![Block::Text { text: "legacy".into() }])?;
-        for (id, parent, at) in [("m1", None, 1000i64), ("m2", Some("m1"), 2000)] {
-            sqlx::query(
-                "INSERT INTO messages (id, parent_id, role, blocks_json, input_tokens, output_tokens, created_at) \
-                 VALUES (?, ?, 'assistant', ?, 10, 20, ?)",
-            )
-            .bind(id)
-            .bind(parent)
-            .bind(&legacy_blocks)
-            .bind(at)
-            .execute(&pool)
-            .await?;
-        }
-        sqlx::query("INSERT INTO session_meta (key, value) VALUES ('context_usage', '152012:1048576:249')")
-            .execute(&pool)
-            .await?;
         pool.close().await;
 
         let storage = StorageManager::new(tmp.path()).await?;
 
-        // 消息可读：补出的新列为空，旧列不影响读取
-        let all = storage.get_all_messages("s_legacy").await?;
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].id, "m1");
-        assert_eq!(all[0].content, vec![Block::Text { text: "legacy".into() }]);
-        assert!(all.iter().all(|m| m.model.is_none() && m.usage.is_none()));
+        // 一打开就报错，并指出缺哪些列
+        let err = storage.get_all_messages("s_legacy").await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("messages 缺少必要列"), "{msg}");
+        assert!(msg.contains("model") && msg.contains("usage_json"), "{msg}");
 
-        // 树仍可回溯
-        let linear = storage.get_linear_messages("s_legacy", Some("m2")).await?;
-        assert_eq!(
-            linear.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-            vec!["m1", "m2"]
-        );
+        // 报错后表结构保持原样：不会被偷偷补列
+        let pools = storage.session_pools("s_legacy").await;
+        assert!(pools.is_err(), "旧库不应被打开");
+        Ok(())
+    }
 
-        // 旧冒号串仍能解析出三元组
-        assert_eq!(storage.context_usage("s_legacy").await?, Some((152012, 1_048_576, 249)));
+    /// 旧的冒号串 `context_usage` 不再兼容：解析失败即报错，而不是退化成「未知占用」。
+    #[tokio::test]
+    async fn test_old_colon_context_usage_is_rejected() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let storage = StorageManager::new(tmp.path()).await?;
+        storage
+            .create_session("s_cu", "/w", "T", "m", "task", "medium")
+            .await?;
+        let pools = storage.session_pools("s_cu").await?;
+        sqlx::query("INSERT OR REPLACE INTO session_meta (key, value) VALUES ('context_usage', '152012:1048576:249')")
+            .execute(&pools.write)
+            .await?;
 
-        // 补列只做一次：再次打开（列已存在）仍可读，且旧 token 列未被删除
-        let reopened = StorageManager::new(tmp.path()).await?;
-        assert_eq!(reopened.get_all_messages("s_legacy").await?.len(), 2);
-        assert_eq!(
-            reopened.context_usage("s_legacy").await?,
-            Some((152012, 1_048_576, 249))
-        );
-        let pools = reopened.session_pools("s_legacy").await?;
-        let columns: Vec<String> = sqlx::query("PRAGMA table_info(messages)")
-            .fetch_all(&pools.read)
-            .await?
-            .iter()
-            .map(|r| r.get::<String, _>("name"))
-            .collect();
-        for expected in ["model", "usage_json", "input_tokens", "output_tokens"] {
-            assert!(
-                columns.iter().any(|c| c == expected),
-                "messages must keep {}: {:?}",
-                expected,
-                columns
-            );
-        }
+        let err = storage.context_usage("s_cu").await.unwrap_err();
+        assert!(format!("{err}").contains("不是合法 JSON"), "{err}");
+
+        // 当前 JSON 形态照常可读
+        storage
+            .set_context_usage("s_cu", 152012, 1_048_576, 249)
+            .await?;
+        assert_eq!(storage.context_usage("s_cu").await?, Some((152012, 1_048_576, 249)));
+        Ok(())
+    }
+
+    /// 坏行不再被兜底成「空内容 / 当成用户消息」：报错并指出是哪条消息。
+    #[tokio::test]
+    async fn test_corrupt_message_row_is_rejected() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let storage = StorageManager::new(tmp.path()).await?;
+        storage
+            .create_session("s_bad", "/w", "T", "m", "task", "medium")
+            .await?;
+        let pools = storage.session_pools("s_bad").await?;
+
+        // 1) role 不认识
+        sqlx::query(
+            "INSERT INTO messages (id, parent_id, role, blocks_json, created_at) \
+             VALUES ('bad_role', NULL, 'robot', '[]', 1)",
+        )
+        .execute(&pools.write)
+        .await?;
+        let err = storage.get_all_messages("s_bad").await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("bad_role") && msg.contains("role"), "{msg}");
+
+        // 2) content 不是合法的块数组
+        sqlx::query("DELETE FROM messages")
+            .execute(&pools.write)
+            .await?;
+        sqlx::query(
+            "INSERT INTO messages (id, parent_id, role, blocks_json, created_at) \
+             VALUES ('bad_blocks', NULL, 'assistant', '{oops', 1)",
+        )
+        .execute(&pools.write)
+        .await?;
+        let err = storage.get_all_messages("s_bad").await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("bad_blocks") && msg.contains("content"), "{msg}");
+
+        // 3) usage 不是合法 JSON（NULL 是正常的，只有非空值才要求可解析）
+        sqlx::query("DELETE FROM messages")
+            .execute(&pools.write)
+            .await?;
+        sqlx::query(
+            "INSERT INTO messages (id, parent_id, role, blocks_json, usage_json, created_at) \
+             VALUES ('bad_usage', NULL, 'assistant', '[]', 'nope', 1)",
+        )
+        .execute(&pools.write)
+        .await?;
+        let err = storage.get_all_messages("s_bad").await.unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("bad_usage") && msg.contains("usage"), "{msg}");
         Ok(())
     }
 

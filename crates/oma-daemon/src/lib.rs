@@ -1490,6 +1490,31 @@ async fn send_server_message(
     sender.send(Message::text(json)).await
 }
 
+/// 计算 ready 载荷里的上下文占用：上次记录值 + 其后新增消息的估算。
+///
+/// 两处存储读取都向上抛错（调用方会回给客户端），不做「读不到就当没有」的降级：
+/// 记录值损坏或消息行读不出来都是需要人工处理的问题，静默吞掉只会让界面看起来正常。
+async fn load_context_usage(room: &SessionRoom) -> Result<Option<oma_contract::ContextUsage>, StorageError> {
+    let Some((tokens, context_len, covered)) = room.storage.context_usage(&room.session_id).await? else {
+        return Ok(None);
+    };
+    let msgs = room
+        .storage
+        .get_linear_messages(&room.session_id, None)
+        .await?;
+    // 历史短于记录时说明前缀已变（分支切换/删除消息），估算不可靠：
+    // 只用记录值，宁可短暂偏差等下次请求刷新
+    let added = if msgs.len() >= covered {
+        estimate_tokens(&msgs[covered..])
+    } else {
+        0
+    };
+    Ok(Some(oma_contract::ContextUsage {
+        tokens: tokens + added,
+        context_len,
+    }))
+}
+
 async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     // 1. 等待客户端首包 Connect
     let first_msg = match socket.recv().await {
@@ -1562,30 +1587,21 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     };
     // 上下文占用：用上次记录值 + 其后新增部分的估算，与 TokenAnchor 的做法一致。
     // 绝不能对整段历史重估 —— 启发式折算对代码/中文会明显高估，会把准确值盖掉。
-    let context_usage = match room
-        .storage
-        .context_usage(&room.session_id)
-        .await
-        .ok()
-        .flatten()
-    {
-        Some((tokens, context_len, covered)) => {
-            let added = match room
-                .storage
-                .get_linear_messages(&room.session_id, None)
-                .await
-            {
-                // 历史短于记录时说明前缀已变（分支切换/删除消息），估算不可靠：
-                // 只用记录值，宁可短暂偏差等下次请求刷新
-                Ok(msgs) if msgs.len() >= covered => estimate_tokens(&msgs[covered..]),
-                _ => 0,
-            };
-            Some(oma_contract::ContextUsage {
-                tokens: tokens + added,
-                context_len,
-            })
+    // 读取失败不做降级：成因（数据损坏 / 旧格式）不会自愈，静默当成「未知占用」
+    // 只会让界面看起来一切正常，所以直接把错误回给客户端。
+    let context_usage = match load_context_usage(&room).await {
+        Ok(usage) => usage,
+        Err(e) => {
+            let (mut sink, _) = socket.split();
+            let _ = send_server_message(
+                &mut sink,
+                &ServerMessage::Error {
+                    message: format!("Failed to load context usage: {e}"),
+                },
+            )
+            .await;
+            return;
         }
-        None => None,
     };
 
     let ready = Ready {
