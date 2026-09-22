@@ -143,6 +143,13 @@ watch(
   { deep: true },
 );
 
+// 系统提示词随会话（工作区）、模型与预设变化：它由服务端按当时参数拼好，
+// 前端只是把结果画出来（见 stores/chat.ts 的 refreshSystemPrompt）
+watch(
+  () => [activeSessionId.value, chat.activeModel.value, chat.activeAgent.value],
+  () => void chat.refreshSystemPrompt(),
+);
+
 // 历史树切换查看位置后回到最新一条，避免停在中间看不见变化
 watch(
   () => chat.viewLeafId.value,
@@ -592,6 +599,14 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         </div>
 
         <template v-else>
+          <!--
+            会话级系统提示词：模型真正收到的那段（预设正文 + 环境块 + 项目上下文 +
+            技能目录），与思考/工具调用同一套折叠行样式，默认收起。
+          -->
+          <article v-if="chat.systemPrompt.value" class="msg prompt">
+            <MessageBlocks :blocks="[]" :streaming="false" :system-prompt="chat.systemPrompt.value" />
+          </article>
+
           <!--
             一轮 = 一条用户消息 + 其后到下一轮开始前的全部助手消息。
 

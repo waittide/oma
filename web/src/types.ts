@@ -68,6 +68,20 @@ export interface AgentSummary {
   description: string;
 }
 
+/** `GET /api/system-prompt`：真正下发给厂商的那段系统提示词 */
+export interface SystemPromptResp {
+  workspace: string;
+  model: string;
+  agent: string;
+  prompt: string;
+}
+
+/** 系统提示词的展示信息：所属预设 + 拼好的正文 */
+export interface SystemPromptInfo {
+  agent: string;
+  prompt: string;
+}
+
 export interface ToolCallStartedData {
   call_id: string;
   /** 被调用的工具名 */

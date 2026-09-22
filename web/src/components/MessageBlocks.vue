@@ -6,10 +6,11 @@ import {
   LuChevronRight,
   LuFileDiff,
   LuGlobe,
+  LuScrollText,
   LuTerminalSquare,
   LuWrench,
 } from 'vue-icons-plus/lu';
-import type { Block } from '../types';
+import type { Block, SystemPromptInfo } from '../types';
 import { UiButton } from '@waittide/ui';
 import { prettyJson, renderMarkdown } from '../lib/format';
 import { splitUnifiedDiff } from '../lib/patchDiff';
@@ -24,12 +25,18 @@ const props = defineProps<{
   streaming: boolean;
   /** 跨消息的 tool_use_id → 结果映射（重载后完成态） */
   results?: Record<string, { content: string; is_error: boolean; durationMs?: number | null }>;
+  /**
+   * 会话级系统提示词：非空时在最前渲染一个折叠块，样式与思考/工具调用一致。
+   *
+   * 单独一个实例、`blocks` 传空数组即可只渲染该块（见 ChatView）。
+   */
+  systemPrompt?: SystemPromptInfo | null;
 }>();
 
 const { t } = useTranslations('blocks');
 
 interface Item {
-  kind: 'text' | 'thinking' | 'tool' | 'image';
+  kind: 'text' | 'thinking' | 'tool' | 'image' | 'system';
   key: string;
   /** 思考块正在流式输出（位于末尾）：未手动操作时默认展开 */
   active?: boolean;
@@ -48,11 +55,20 @@ interface Item {
   durationMs?: number | null;
   /** 思考段耗时（毫秒）：服务端测量，落在 thinking 块上 */
   thinkingMs?: number | null;
+  /** 系统提示词正文（kind === 'system'） */
+  prompt?: string;
+  /** 系统提示词所属预设（折叠头副标题） */
+  promptAgent?: string;
 }
 
 /** 把 tool_use 与其 tool_result 合并成单个条目；tool_result 不单独渲染。 */
 const items = computed<Item[]>(() => {
   const out: Item[] = [];
+  // 系统提示词排在最前：它是本轮提示侧的开头，且整场会话共用一份
+  const sys = props.systemPrompt;
+  if (sys?.prompt) {
+    out.push({ kind: 'system', key: 'system', prompt: sys.prompt, promptAgent: sys.agent });
+  }
   const toolIndex: Record<string, number> = {};
   const live = props.streaming;
   props.blocks.forEach((b, i) => {
@@ -298,7 +314,22 @@ onMounted(() => void nextTick(syncCodeCopy));
 <template>
   <div ref="blocksRoot" class="blocks">
     <template v-for="it in items" :key="it.key">
-      <div v-if="it.kind === 'text' && it.text" class="md" v-html="renderMarkdown(it.text)" />
+      <!-- 系统提示词：模型真正收到的那段，样式与思考/工具调用同一套折叠行，默认收起 -->
+      <div v-if="it.kind === 'system'" class="fold system" :class="{ open: isOpen(it) }">
+        <UiButton variant="ghost" tone="neutral" block class="fold-head" @click="toggleFold(it)">
+          <LuScrollText :size="13" class="tool-icon" />
+          <span class="fold-title">{{ t('systemPrompt') }}</span>
+          <span v-if="it.promptAgent" class="fold-sub">{{ it.promptAgent }}</span>
+          <LuChevronRight :size="13" class="caret" />
+        </UiButton>
+        <div
+          v-show="isOpen(it)"
+          class="fold-body think-body md"
+          v-html="renderMarkdown(it.prompt ?? '')"
+        />
+      </div>
+
+      <div v-else-if="it.kind === 'text' && it.text" class="md" v-html="renderMarkdown(it.text)" />
       <div v-else-if="it.kind === 'thinking'" class="fold think" :class="{ open: isOpen(it) }">
         <UiButton variant="ghost" tone="neutral" block class="fold-head think" @click="toggleFold(it)">
           <LuBrain :size="13" class="think-icon" />

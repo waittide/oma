@@ -10,6 +10,7 @@ import type {
   ServerStatus,
   SessionRecord,
   SkillFile,
+  SystemPromptResp,
   ToolInfo,
   UploadAttachmentResp,
 } from './types';
@@ -106,6 +107,19 @@ export const api = {
     ),
   /** 预设编辑器可勾选的工具（内置 + 已发现的 MCP） */
   tools: () => request<ToolInfo[]>('/api/tools'),
+
+  /**
+   * 真正下发的系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录）。
+   *
+   * 提示词由服务端拼装，客户端看不到对应的源文件；`model` 只影响环境块里的
+   * `Active Model` 一行，`agent` 缺省用配置里的默认预设。
+   */
+  systemPrompt: (workspace: string, model?: string, agent?: string) => {
+    const qs = new URLSearchParams({ workspace });
+    if (model) qs.set('model', model);
+    if (agent) qs.set('agent', agent);
+    return request<SystemPromptResp>(`/api/system-prompt?${qs.toString()}`);
+  },
 
   /** 工作区 git 变更（分支 + 文件清单） */
   gitStatus: (workspace: string) =>

@@ -114,6 +114,7 @@
   },
   "blocks": {
     "thinking": "思考",
+    "systemPrompt": "システムプロンプト",
     "running": "実行中…",
     "failed": "失敗",
     "done": "完了",

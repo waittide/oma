@@ -114,6 +114,7 @@
   },
   "blocks": {
     "thinking": "Thinking",
+    "systemPrompt": "System prompt",
     "running": "Running…",
     "failed": "Failed",
     "done": "Done",

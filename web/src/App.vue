@@ -10,7 +10,7 @@ import RightPanel from './components/RightPanel.vue';
 import PanelResizer from './components/PanelResizer.vue';
 import { loadConfig } from './stores/theme';
 import { initClientConfig } from './stores/clientConfig';
-import { reset as resetChat } from './stores/chat';
+import { refreshSystemPrompt, reset as resetChat } from './stores/chat';
 import * as layout from './stores/layout';
 
 const settingsOpen = ref(false);
@@ -56,6 +56,15 @@ async function onReconnect() {
   settingsOpen.value = false;
   await probe();
 }
+
+/**
+ * 关掉设置后重取系统提示词：预设、默认模型等都可能在里面被改过，
+ * 呈现的提示词必须跟着变，否则界面上是上一份内容。
+ */
+function onSettingsClose() {
+  settingsOpen.value = false;
+  void refreshSystemPrompt(true);
+}
 </script>
 
 <template>
@@ -80,7 +89,7 @@ async function onReconnect() {
       :open="settingsOpen"
       :online="online"
       :initial-section="settingsSection"
-      @close="settingsOpen = false"
+      @close="onSettingsClose"
       @reconnect="onReconnect"
     />
   </div>

@@ -1,8 +1,15 @@
 # Oma 多类型多客户端协同 Agent 技术规格书 (Technical Specification)
 
-> 版本：v2.10
+> 版本：v2.11
 > 状态：Implementation Verified（文档与代码同步）
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
+
+> **v2.11 变更（对话界面可见系统提示词）**：
+> - **系统提示词回到对话界面**：消息区顶部新增一个可折叠块，展示模型本次真正收到的
+>   系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录），样式与思考 / 工具调用同一套
+>   折叠行（默认收起，点开渲染 Markdown、超出高度内滚）；数据取自 `GET /api/system-prompt`，
+>   随会话（工作区）、模型、预设置换重取，关掉设置面板时强制刷新
+> - 顶栏仍不提供「系统提示词」入口：该块属于「这一轮模型收到什么」的上下文，跟着消息流走
 
 > **v2.10 变更（工具集再收敛）**：
 > - **移除 `ls`**：内置工具集由 5 个收敛为 4 个（`read` / `write` / `edit` / `shell`）；
@@ -843,7 +850,7 @@ ToolOutput {
 | `GET` | `/api/tools` | 列出可用工具（内置 4 个 + 已发现的 MCP 工具），供预设编辑器勾选 |
 | `GET` | `/api/presets?workspace=...` | 列出 Agent 预设（bundled / global / project） |
 | `GET`/`PUT`/`DELETE` | `/api/presets/{preset_id}` | 读取 / 写入 / 删除预设；内置预设只读 |
-| `GET` | `/api/system-prompt?workspace=&model=&agent=` | 返回真正下发的系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录）；缺 `agent` 用 `default_agent` |
+| `GET` | `/api/system-prompt?workspace=&model=&agent=` | 返回真正下发的系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录）；缺 `agent` 用 `default_agent`。Web 端消息区顶部的折叠块取它展示 |
 | `GET` | `/api/git/status?workspace=...` | 当前分支 + 变更文件清单 |
 | `GET` | `/api/git/diff?workspace=&path=` | 单文件相对 HEAD 的 diff（未跟踪文件按整篇新增） |
 | `GET` | `/api/skills?workspace=...` | 列出技能（global / agent / project） |
@@ -952,9 +959,12 @@ pub struct Palette {
   9. 轮次完成等需要人参与的事件**仅在失焦时**发出通知：
      应用内走 vue-sonner，并补一条浏览器系统通知；
      页面聚焦时不提示（消息已在眼前）；
-  10. 右侧面板与顶部工具栏的部分入口（文件树/预览、Git 变更、分支）
-      仍为占位，待后续分期接入；顶栏不做会话导出与系统提示词入口
-      （`GET /api/system-prompt` 端点保留，供外部客户端调用）。
+  10. 消息区顶部有一个可折叠的「系统提示词」块：展示当前会话真正下发的提示词，
+      与思考 / 工具调用同一套折叠行样式，默认收起；数据来自 `GET /api/system-prompt`，
+      随工作区 / 模型 / 预设变化重取，关掉设置面板时强制刷新（改过预设立即生效）；
+  11. 右侧面板与顶部工具栏的部分入口（文件树/预览、Git 变更、分支）
+      仍为占位，待后续分期接入；顶栏不做会话导出与系统提示词入口，
+      提示词在消息区顶部展示（`GET /api/system-prompt` 端点同时对其它客户端开放）。
 
 ### 9.3 客户端本地配置 `client.json`
 - 路径：`<配置目录>/oma/client.json`，与 Daemon 的 `settings.json` 分离，属「这台机器上的客户端」信息；

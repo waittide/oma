@@ -114,6 +114,7 @@
   },
   "blocks": {
     "thinking": "思考",
+    "systemPrompt": "系統提示詞",
     "running": "執行中…",
     "failed": "失敗",
     "done": "完成",

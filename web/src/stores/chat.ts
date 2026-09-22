@@ -12,6 +12,7 @@ import type {
   ClientMessage,
   ModelInfo,
   ServerMessage,
+  SystemPromptInfo,
 } from '../types';
 import { tr } from '../composables/i18n';
 import { notifyHumanEvent } from '../lib/notify';
@@ -92,6 +93,20 @@ export const toolDurations = ref<Record<string, number>>({});
 /** 最近一次模型请求的上下文占用（提示侧总量，含缓存） */
 export const contextUsage = ref<{ tokens: number; contextLen: number } | null>(null);
 export const queued = ref(0);
+
+/**
+ * 当前会话真正下发的系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录）。
+ *
+ * 只能由服务端拼好回给客户端：提示词由内置常量与工作区里的文件拼成，前端看不到
+ * 对应的源文件。工作区 / 模型 / 预设任一变化都要重取，否则展示的是上一份。
+ */
+export const systemPrompt = ref<SystemPromptInfo | null>(null);
+
+/** 在途请求代次：切会话或换模型时丢弃过期响应，避免旧提示词盖住新的。 */
+let promptSeq = 0;
+/** 最近一次成功取用提示词的参数（工作区 + 模型 + 预设），用于跳过重复请求。 */
+let promptKey = '';
+
 /**
  * 排队中的用户输入（尚未落库）。
  *
@@ -135,6 +150,35 @@ function send(msg: ClientMessage): boolean {
 
 export function command(cmd: AgentCommand): boolean {
   return send({ kind: 'command', command: cmd });
+}
+
+/**
+ * 拉取系统提示词。
+ *
+ * 属辅助展示：工作区不可用或接口报错时整块不显示，不打断对话。`sessionId` 由
+ * [`open`] 在会话 watch 之后赋值，与 `activeSessionId` 不一致说明会话正在切换，
+ * 此时先清空，等握手回来再取。
+ */
+export async function refreshSystemPrompt(force = false): Promise<void> {
+  if (!sessionId || !workspacePath || activeSessionId.value !== sessionId) {
+    systemPrompt.value = null;
+    promptKey = '';
+    return;
+  }
+  const key = [workspacePath, activeModel.value, activeAgent.value].join('\u{0}');
+  if (!force && key === promptKey) return;
+  promptKey = key;
+  const seq = ++promptSeq;
+  try {
+    const resp = await api.systemPrompt(workspacePath, activeModel.value, activeAgent.value);
+    if (seq !== promptSeq) return;
+    systemPrompt.value = { agent: resp.agent, prompt: resp.prompt };
+  } catch {
+    if (seq !== promptSeq) return;
+    systemPrompt.value = null;
+    // 失败不进「已取过」缓存：下次参数或上下文变化时再试一次
+    promptKey = '';
+  }
 }
 
 /**
@@ -463,6 +507,10 @@ export function reset() {
   toolDurations.value = {};
   queued.value = 0;
   queuedMessages.value = [];
+  // 提示词属于会话：切会话期间先清掉，避免把上一会话的留在屏幕上
+  systemPrompt.value = null;
+  promptSeq += 1;
+  promptKey = '';
 }
 
 function close() {
