@@ -11,6 +11,7 @@ import {
 import { useTranslations } from '../composables/i18n';
 import { activeSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
+import { workspaceRevision } from '../stores/workspaceSync';
 import { api } from '../api';
 import type { FileNode } from '../types';
 import FileTree from './FileTree.vue';
@@ -23,6 +24,9 @@ import HistoryTree from './HistoryTree.vue';
  *
  * 「文件」「变更」「历史树」已接入真实内容（工作区文件树 / 预览、Git status + 逐文件
  * diff、会话分支树）。
+ *
+ * 前两者是磁盘快照，服务端不推送：订阅 `workspaceRevision`，在窗口重新获得焦点或
+ * agent 改过文件后重取（历史树走 WebSocket 事件，本身就是实时的）。
  *
  * 不提供内置终端：面板不做 pty 通道，命令执行一律由 Agent 的 `shell` 工具承担。
  */
@@ -97,6 +101,17 @@ watch(
   },
   { immediate: true },
 );
+
+/**
+ * 工作区可能已变化时重取文件树。
+ *
+ * 重取只替换根层，展开过的目录由 `FileTree` 的 immediate watcher 重新下发 `expand`
+ * 补回（`loadTree` 已清空 `loadedDirs`），所以展开状态不会因此丢掉。
+ * 正在取数时跳过这一次，避免两次请求互相覆盖。
+ */
+watch(workspaceRevision, () => {
+  if (!treeLoading.value) void loadTree();
+});
 </script>
 
 <template>

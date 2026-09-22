@@ -13,6 +13,7 @@ import { api } from '../api';
 import type { GitFileChange } from '../types';
 import { useTranslations } from '../composables/i18n';
 import * as layout from '../stores/layout';
+import { workspaceRevision } from '../stores/workspaceSync';
 import { buildChangeRows, changeRowIndent } from '../lib/changesTree';
 import { changeStatus, type ChangeStatus } from '../lib/gitStatus';
 
@@ -27,6 +28,9 @@ import { changeStatus, type ChangeStatus } from '../lib/gitStatus';
  *
  * 状态不用徽标，直接染文件名：绿=创建、黄=修改（含改名）、红=删除。
  * 具体状态仍以 tooltip 文字给出，颜色不承担全部信息。
+ *
+ * 数据是磁盘快照，服务端不推送：窗口重新获得焦点、或 agent 用写类工具改过文件时，
+ * 订阅 `workspaceRevision` 静默重取（见 `refreshQuiet`）。
  */
 const props = defineProps<{ workspace: string }>();
 const { t } = useTranslations('panel');
@@ -57,6 +61,7 @@ async function load() {
   }
   loading.value = true;
   error.value = '';
+  // 手动/首次读取是「重新开始看」：关掉正在看的 diff，回到清单
   selected.value = '';
   diff.value = '';
   // 重新读取后目录结构与上次可能完全不同，折叠状态一并重置为全展开
@@ -85,6 +90,30 @@ async function openDiff(path: string) {
     diffError.value = e instanceof Error ? e.message : String(e);
   } finally {
     diffLoading.value = false;
+  }
+}
+
+/**
+ * 静默刷新：后台发现工作区变了时更新清单，但不打断正在阅读的 diff。
+ *
+ * 不能直接调 `load()`——它会清掉 `selected`，把用户从 diff 里踢回清单。
+ * 只有该文件确实已不在变更中（被提交或撤回）时才关掉 diff，否则那内容已经是错的。
+ * 失败时不动界面：后台刷新出错不该把用户正在看的清单换成一条报错，手动刷新仍在。
+ */
+async function refreshQuiet() {
+  const ws = props.workspace;
+  if (!ws) return;
+  try {
+    const status = await api.gitStatus(ws);
+    branch.value = status.branch;
+    files.value = status.files;
+    error.value = '';
+    if (selected.value && !status.files.some((f) => f.path === selected.value)) {
+      selected.value = '';
+      diff.value = '';
+    }
+  } catch {
+    // 忽略：保留界面上已有的内容
   }
 }
 
@@ -151,6 +180,9 @@ function toggleDir(path: string) {
 const rows = computed(() => buildChangeRows(files.value, collapsedDirs.value));
 
 watch(() => props.workspace, load, { immediate: true });
+
+// 工作区可能已变化（窗口重新获得焦点、agent 用写类工具改过文件）时静默重取
+watch(workspaceRevision, () => void refreshQuiet());
 </script>
 
 <template>

@@ -12,6 +12,7 @@ import { loadConfig } from './stores/theme';
 import { initClientConfig } from './stores/clientConfig';
 import { refreshSystemPrompt, reset as resetChat } from './stores/chat';
 import * as layout from './stores/layout';
+import { markWorkspaceDirty } from './stores/workspaceSync';
 
 const settingsOpen = ref(false);
 const settingsSection = ref<string | undefined>(undefined);
@@ -38,9 +39,15 @@ onMounted(async () => {
   await probe();
   layout.viewportWidth.value = window.innerWidth;
   window.addEventListener('resize', onViewportResize);
+  window.addEventListener('focus', onWindowActive);
+  document.addEventListener('visibilitychange', onWindowActive);
 });
 
-onUnmounted(() => window.removeEventListener('resize', onViewportResize));
+onUnmounted(() => {
+  window.removeEventListener('resize', onViewportResize);
+  window.removeEventListener('focus', onWindowActive);
+  document.removeEventListener('visibilitychange', onWindowActive);
+});
 
 /**
  * 视口变窄时只更新用于渲染的宽度（`layout` 里的 computed 会夹），
@@ -48,6 +55,18 @@ onUnmounted(() => window.removeEventListener('resize', onViewportResize));
  */
 function onViewportResize() {
   layout.viewportWidth.value = window.innerWidth;
+}
+
+/**
+ * 窗口重新获得焦点、或标签页重新可见时，声明工作区可能已变化。
+ *
+ * 「文件」与「变更」两页取的是磁盘快照，服务端不推送：去终端 commit 完切回来，
+ * 面板还停在旧内容上。这两个事件覆盖的正是「离开过界面又回来」这一场景。
+ * 同时触发时（切标签页常伴随获得焦点）由信号侧的合并窗口吸收。
+ */
+function onWindowActive() {
+  if (document.visibilityState === 'hidden') return;
+  markWorkspaceDirty();
 }
 
 /** 设置里改完连接后重新握手：否则界面仍停在旧 Daemon 的数据上。 */

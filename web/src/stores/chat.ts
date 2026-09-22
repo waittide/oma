@@ -19,6 +19,7 @@ import { notifyHumanEvent } from '../lib/notify';
 import { accumulateUsage, hasUsage } from '../lib/sessionUsage';
 import { activeSession, activeSessionId, applyRemoteRename, applyRemoteRunning } from './sessions';
 import { applyResolvedTheme } from './theme';
+import { markToolFinished } from './workspaceSync';
 import { releaseAll } from '../lib/attachments';
 import {
   emptyLive,
@@ -283,6 +284,9 @@ function handleEvent(ev: AgentEvent) {
     case 'tool_call_finished': {
       const d = ev.data;
       if (!d) break;
+      // 写类工具刚动过磁盘上的文件：声明工作区已变化，让「文件」「变更」两页重取。
+      // 只读工具（read）不改动，不触发。
+      markToolFinished(d.tool_name);
       // 完成事件作用于全部同 id 段，已存在的重复段不会残留为「执行中」
       for (const seg of live.value.segments) {
         if (seg.kind === 'tool' && seg.tool.call_id === d.call_id) {
