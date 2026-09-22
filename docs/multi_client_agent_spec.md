@@ -1,8 +1,14 @@
 # Oma 多类型多客户端协同 Agent 技术规格书 (Technical Specification)
 
-> 版本：v2.8
+> 版本：v2.9
 > 状态：Implementation Verified（文档与代码同步）
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
+
+> **v2.9 变更（工具集收敛）**：
+> - **移除 `find` / `grep`**：内置工具集由 7 个收敛为 5 个（`read` / `write` / `edit` /
+>   `shell` / `ls`）；检索改由 `shell` 调用外部命令统一承担
+> - **移除外部二进制管理**：`binaries` 模块（`fd` / `ripgrep` 的解析、下载与安装）一并删除，
+>   `oma-tool` 不再依赖 `reqwest` / `oma-config`
 
 > **v2.8 变更（工具命名与形态、默认预设与调色板、配置字段、前端外壳）**：
 > - **工具命名与形态**：终端执行工具名为 `shell`，工具集即 `read` / `write` /
@@ -89,10 +95,9 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  │               Agent Runtime Engine & Subsystems                   │  │
 │  │  - oma-provider: LLM Streaming Normalization & Deep Merge         │  │
 │  │  - oma-storage:  SQLite Session Store (index + per-session DB)   │  │
-│  │  - oma-tool:     7 Tools (read/write/edit/shell/ls/find/grep)     │  │
+│  │  - oma-tool:     5 Tools (read/write/edit/shell/ls)               │  │
 │  │  - oma-config:   JSON Config & Built-in System Prompt             │  │
 │  │  - oma-contract: Shared Wire Protocol, Events, Data Models        │  │
-│  │  - external:     fd / ripgrep（find / grep 的后端，缺失时自动安装）   │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -104,7 +109,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | `crates/oma-contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
 | `crates/oma-storage` | SQLite 双层持久化：全局索引库 `oma.db` 的 `sessions_index` 存会话元数据，每会话库 `sessions/<id>/session.db` 存 `messages` 消息树与 `session_meta` 运行时状态；附件仍落 `attachments/` 目录。WAL + 写池串行、读池并行，同数据目录多实例互相可见。 |
 | `crates/oma-provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
-| `crates/oma-tool` | 内置 7 大工具（`read`, `write`, `edit` apply_patch 补丁, `shell` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含统一的输出截断与工具集定义。 |
+| `crates/oma-tool` | 内置 5 大工具（`read`, `write`, `edit` apply_patch 补丁, `shell` 进程组守卫, `ls` 目录列举），含统一的输出截断与工具集定义。 |
 | `crates/oma-mcp` | MCP 客户端：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），工具按 `mcp__{server}__{tool}` 统一命名空间注册；只暴露已预热的工具缓存。 |
 | `crates/oma-config` | 配置文件 `settings.json` / `models.json` 解析、内置 Agent 预设（4 套模板：`plan` / `explore` / `review` / `build`）与三层覆盖、上下文文件（`AGENTS.md`）加载、提示词拼装、调色板加载、数据目录定位。 |
 | `crates/oma-runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、70% 阈值两阶段上下文压缩。 |
@@ -588,7 +593,7 @@ pub struct ContextUsage {
 1. **Agent 预设 = 角色 + 工具白名单，且模板即提示词**：
    - 编译期内嵌 4 套模板：`plan` / `explore` / `review` / `build`
      （`crates/oma-config/src/templates/*.md`）；
-   - `default_agent` 默认指向 `build`：它拥有全部 7 个内置工具，
+   - `default_agent` 默认指向 `build`：它拥有全部 5 个内置工具，
      因此 `build.md` 不声明 `tools`（空 = 不限制，新装即完整可用）；
      `plan` / `explore` / `review` 各自声明受限的工具子集；
    - 同名文件优先取更具体的一层：项目 `<workspace>/.oma/agents/<id>.md`
@@ -722,22 +727,20 @@ ToolOutput {
 1. **统一的输出截断（行数 + 字节双上限）**：
    `crates/oma-tool/src/truncate.rs` 提供两套互相独立的上限：
    - 默认上限：**2000 行 / 50KB**，先到者生效；除「末行本身超限」边界外不返回半行；
-   - 方向：`read` / `ls` / `find` / `grep` 用 `truncate_head`（保留开头）；
+   - 方向：`read` / `ls` 用 `truncate_head`（保留开头）；
      `shell` 用 `truncate_tail`（保留末尾，错误与结果在那里）；
    - 截断时在末尾追加**可操作**提示而非静默截断，例如
      `[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]`；
-   - `grep` 额外把单行截到 500 字符（`GREP_MAX_LINE_LENGTH`）；
    - `edit` 的结果（成功文案 + unified diff）另受 24k 字符兜底限制。
 2. **进程组管理 (`libc::killpg`)**：
-   `shell` 创建独立进程组，发生超时（默认 60s）或用户取消时统一 `killpg` 杀掉整个进程树；
-   `find` / `grep` 拉起的 `fd` / `rg` 用 `kill_on_drop` 随 future 一起回收。
+   `shell` 创建独立进程组，发生超时（默认 60s）或用户取消时统一 `killpg` 杀掉整个进程树。
 3. **宿主直跑与安全边界**：
    不做 OS 容器沙箱与路径限制，相对路径按工作区解析，绝对路径直通；
    安全边界由「本地回环监听 + Bearer Token」共同提供。
 
-### 7.2 7 大核心内置工具
+### 7.2 5 大核心内置工具
 
-内置工具集：`shell` / `edit` / `find` / `grep` / `ls` / `read` / `write`。
+内置工具集：`shell` / `edit` / `ls` / `read` / `write`。
 
 1. **`read`**：
    - 参数：`{ "path": "...", "offset": 1, "limit": null }`（offset 为 1 起始行号，仅对文本生效）
@@ -781,36 +784,6 @@ ToolOutput {
    - 参数：`{ "path": ".", "limit": 500 }`
    - 按名排序（大小写不敏感），目录名带 `/` 后缀，含 dotfile；默认 500 条上限。
    - 不遵循 `.gitignore`（看目录就是看目录）。
-6. **`find`**（外部 `fd`）：
-   - 参数：`{ "pattern": "*.rs", "path": ".", "limit": 1000 }`
-   - 实际命令：`fd --glob --color=never --hidden [--no-require-git] --max-results N -- <pattern> <path>`；
-   - **遵循 `.gitignore`**；非 git 仓库补 `--no-require-git` 让 `.gitignore` 仍然生效；
-     含 `/` 的 pattern 改走 `--full-path` 并自动补 `**/` 前缀；
-   - 结果相对搜索根展示（正斜杠）；默认 1000 条上限。
-7. **`grep`**（外部 `ripgrep`）：
-   - 参数：
-     `{ "pattern": "...", "path": ".", "glob": "*.rs", "ignore_case": false, "literal": false, "context": 0, "limit": 100 }`
-   - 实际命令：`rg --json --line-number --color=never --hidden [--ignore-case] [--fixed-strings] [--glob G] -- <pattern> <path>`；
-   - **遵循 `.gitignore`**；流式解析 `--json` 输出；`context > 0` 时回读文件渲染
-     上下文行（命中 `path:12: text`，上下文 `path-12- text`）；默认 100 条上限。
-
-### 7.3 外部二进制的获取（fd / ripgrep）
-
-`find` / `grep` 不自己实现文件遍历与正则匹配，而是调用外部二进制，
-因此 `.gitignore`、隐藏文件、二进制跳过等语义由上游工具本身保证。`binaries` 模块负责解析与安装：
-
-1. **解析顺序**：`<数据目录>/bin`（oma 先前下载的）→ 系统 `PATH`
-   （`fd` 兼容 Debian 的 `fdfind`）→ 从 GitHub Releases 下载解压到 `<数据目录>/bin`；
-2. **下载**：经 `https://github.com/<repo>/releases/latest` 的重定向头取版本号
-   （不用 GitHub API：匿名配额在共享出口 IP 上常已耗尽，且下载本身也不必额外请求），
-   再拉取对应平台的归档，解压后把二进制移到 `<数据目录>/bin` 并置 `0755`；
-   归档位于 `~/.local/share/oma/bin`，解压临时目录用完即删；
-3. **离线与缓存**：`OMA_OFFLINE=1|true|yes` 跳过下载；解析结果进程内缓存，
-   并用单飞锁避免多会话并发首次使用时重复下载；
-4. **失败即硬失败**：不可用（未安装且无法下载）时工具直接返回错误，
-   不回退到自研实现。
-
-> 平台差异：darwin/x64 上的 fd 不钉固定版本。
 
 ---
 
@@ -832,7 +805,7 @@ ToolOutput {
 | `GET` | `/api/sessions/{id}/attachments/{name}` | 下载/预览附件 |
 | `GET` | `/api/workspace/tree?workspace=...` | 获取工作区目录文件树（深度 4、最多 2000 项） |
 | `GET` | `/api/workspace/file?workspace=...&path=...` | 读取工作区文件内容（供代码查看与编辑器） |
-| `GET` | `/api/tools` | 列出可用工具（内置 7 个 + 已发现的 MCP 工具），供预设编辑器勾选 |
+| `GET` | `/api/tools` | 列出可用工具（内置 5 个 + 已发现的 MCP 工具），供预设编辑器勾选 |
 | `GET` | `/api/presets?workspace=...` | 列出 Agent 预设（bundled / global / project） |
 | `GET`/`PUT`/`DELETE` | `/api/presets/{preset_id}` | 读取 / 写入 / 删除预设；内置预设只读 |
 | `GET` | `/api/system-prompt?workspace=&model=&agent=` | 返回真正下发的系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录）；缺 `agent` 用 `default_agent` |
@@ -960,8 +933,7 @@ pub struct Palette {
 | 鉴权传输 | REST 仅接受 `Authorization: Bearer`；WebSocket 握手额外接受 `?token=`，因为浏览器无法为 WS 请求设置自定义头。 |
 | 前端静态资源 | `oma web` 提供界面：资产由 `rust-embed` 内嵌进二进制，debug 下从 `web/dist` 实时读取（改前端只需 `pnpm build`），release 下真正内嵌。Daemon 不直出资产、保持 Headless。 |
 | 上下文压缩 | 第一阶段只替换 `ToolResult` 内容（保持配对），第二阶段按**完整轮次**丢弃前缀；旧的「按消息条数切半」会切出孤儿回执或以 assistant 开头，长会话下必然被厂商 API 拒绝。 |
-| 工具实现 | `find` / `grep` 调用外部 `fd` / `ripgrep` 而非自研遍历：`.gitignore`、隐藏文件、二进制跳过等语义只有上游工具本身能保证一致；自研版只看 `.git`，会把 `target/`、`node_modules/` 当结果返回。 |
-| 外部二进制获取 | 先查 `<数据目录>/bin` 再查 `PATH`，都没有才从 GitHub Releases 下载（`OMA_OFFLINE=1` 可禁用）；不可用时**硬失败**，不回退到自研实现——两套行为不一致比「没有工具」更难排查。 |
+| 内置工具集 | 只保留 `read` / `write` / `edit` / `shell` / `ls`：检索统一交给 `shell` 调用外部命令，不再为 `find` / `grep` 维护 `fd` / `ripgrep` 的下载链路。 |
 | 输出截断 | 统一走 `truncate` 模块（2000 行 / 50KB 双上限，先到者生效），不再每个工具一套字符数上限；截断必须给出可操作的后续动作（续读的 offset / 缩小 pattern），否则模型只能瞎猜。 |
 | 会话标识 | `session_id` 会被拼接进文件系统路径，因此全局校验为 `[A-Za-z0-9_-]{1,128}`；附件名同样只允许安全字符并丢弃任何目录成分。 |
 | 版本号来源 | `Cargo.toml` 的 `version` **不会**被 CI 自动递增，只在无标签的分支 / PR 构建里作为回退值被读取；正式版用人工推送的语义化标签（`v0.2.0`），每日快照用日期标签（`v2026.09.17`）。构建标识与制品名由 `.github/workflows/build.yml` 的 `meta` job 统一计算（标签优先），不再存在单独的发布工作流。 |

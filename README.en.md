@@ -65,9 +65,9 @@ ships Traditional Chinese, English and Japanese.
   onto one shared `Block` model.
 - **Three-level recursive merge** for headers and request bodies: provider $\prec$ model $\prec$
   reasoning-level override, so vendor-specific fields can be injected freely.
-- **Seven built-in tools**: `read` (including images), `write`, `edit` (apply_patch envelopes, several
-  files per call), `shell` (process-group guard with configurable timeout), `ls`, `find` (glob) and
-  `grep` (regex or literal search). The set stays minimal: read, write and search only.
+- **Five built-in tools**: `read` (including images), `write`, `edit` (apply_patch envelopes, several
+  files per call), `shell` (process-group guard with configurable timeout) and `ls`. The set stays
+  minimal: read, write and listing only.
 - **Per-model capabilities**: thinking / text / image and audio input-output are declared per model,
   and the UI decides from that whether to inline images or expose the thinking toggle.
 
@@ -335,10 +335,8 @@ them, and tool grants come from `GET /api/tools`. For lighter-weight extras, use
 | `edit` | apply_patch: `input` holds a patch wrapped in `*** Begin Patch` … `*** End Patch`, adding / deleting / updating files (with `*** Move to:` for renames), several files per call, and nothing is written unless the whole patch applies |
 | `shell` | Run a command in its own process group with a `killpg` fallback and a configurable timeout |
 | `ls` | List directory entries |
-| `find` | Find files by glob pattern (`**` crosses directories) |
-| `grep` | Search file contents by regex or literal string |
 
-The set stays minimal: read, write and search only.
+The set stays minimal: read, write and listing only.
 
 ---
 
