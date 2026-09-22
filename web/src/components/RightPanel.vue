@@ -40,8 +40,6 @@ const workspace = computed(() => activeSession.value?.workspace ?? '');
 const tree = ref<FileNode[]>([]);
 const treeLoading = ref(false);
 const treeError = ref('');
-/** 选中的文件：非空时展示预览，否则展示树 */
-const selectedPath = ref('');
 
 async function loadTree() {
   const ws = workspace.value;
@@ -62,11 +60,11 @@ async function loadTree() {
   }
 }
 
+// 打开过的文件按工作区记住（面板关掉重开、切走再切回都不丢）
+layout.useWorkspaceFileState(workspace);
+
 // 换工作区要重取；换会话但工作区相同时不必（树与 git 都只看工作区）
-watch(workspace, () => {
-  selectedPath.value = '';
-  void loadTree();
-}, { immediate: true });
+watch(workspace, () => void loadTree(), { immediate: true });
 </script>
 
 <template>
@@ -104,7 +102,11 @@ watch(workspace, () => {
       <div v-if="!activeSession" class="empty">{{ t('noSession') }}</div>
 
       <template v-else-if="layout.rightTab.value === 'files'">
-        <FilePreview v-if="selectedPath" :path="selectedPath" @back="selectedPath = ''" />
+        <FilePreview
+          v-if="layout.openFilePath.value"
+          :path="layout.openFilePath.value"
+          @back="layout.selectFilePath(workspace, '')"
+        />
         <div v-else-if="treeLoading" class="empty">{{ t('loading') }}</div>
         <div v-else-if="treeError" class="empty err">{{ treeError }}</div>
         <div v-else-if="tree.length === 0" class="empty">{{ t('emptyWorkspace') }}</div>
@@ -113,9 +115,9 @@ watch(workspace, () => {
           class="tree-root"
           :nodes="tree"
           :depth="0"
-          :selected="selectedPath"
-          :reveal-prefix="selectedPath"
-          @select="(n) => (selectedPath = n.path)"
+          :selected="layout.openFilePath.value"
+          :reveal-prefix="layout.openFilePath.value"
+          @select="(n) => layout.selectFilePath(workspace, n.path)"
         />
       </template>
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { UiButton, UiIconButton, UiTooltip } from '@waittide/ui';
+import { UiButton, UiIconButton, UiSegmented, UiTooltip } from '@waittide/ui';
 import { LuArrowLeft, LuCheck, LuCopy, LuRefreshCw } from 'vue-icons-plus/lu';
 import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
@@ -35,6 +35,7 @@ import { renderMarkdown } from '../lib/format';
 import { fileLanguage } from '../lib/fileKinds';
 import { useTranslations } from '../composables/i18n';
 import { activeSession } from '../stores/sessions';
+import { markdownSource, setMarkdownSource } from '../stores/layout';
 
 // 按需注册：完整包会把 ~200 种语言都打进产物，这里只挑面板里真会遇到的
 const LANGUAGES = {
@@ -92,10 +93,12 @@ let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
 const name = computed(() => props.path.split('/').pop() ?? props.path);
 const isMarkdown = computed(() => /\.(md|markdown)$/i.test(props.path));
+/** markdown 默认看渲染结果，切到源码时按 `markdown` 语言高亮 */
+const showRendered = computed(() => isMarkdown.value && !markdownSource.value);
 const lines = computed(() => content.value.split('\n'));
 /** 高亮后的 HTML；空串表示走纯文本渲染（未知语言、超长文件或高亮失败） */
 const highlighted = computed(() => {
-  if (isMarkdown.value || !content.value || lines.value.length > HIGHLIGHT_MAX_LINES) return '';
+  if (showRendered.value || !content.value || lines.value.length > HIGHLIGHT_MAX_LINES) return '';
   const language = fileLanguage(props.path);
   if (language === 'plaintext') return '';
   try {
@@ -104,6 +107,12 @@ const highlighted = computed(() => {
     return '';
   }
 });
+
+/** 「预览 / 源码」切换项：只对 markdown 文件出现 */
+const viewOptions = computed(() => [
+  { value: 'preview', label: t('viewPreview') },
+  { value: 'source', label: t('viewSource') },
+]);
 
 async function load() {
   const workspace = activeSession.value?.workspace;
@@ -145,6 +154,14 @@ watch(() => props.path, load, { immediate: true });
       </UiTooltip>
       <span class="name" :title="path">{{ name }}</span>
       <span v-if="truncated" class="trunc">{{ t('truncated') }}</span>
+      <UiSegmented
+        v-if="isMarkdown && content"
+        class="view-toggle"
+        size="sm"
+        :model-value="markdownSource ? 'source' : 'preview'"
+        :options="viewOptions"
+        @update:model-value="(v) => setMarkdownSource(v === 'source')"
+      />
       <span class="spacer" />
       <UiTooltip :content="t('reload')" align="end">
         <UiIconButton size="sm" :label="t('reload')" @click="load">
@@ -164,7 +181,7 @@ watch(() => props.path, load, { immediate: true });
       <p>{{ error }}</p>
       <UiButton variant="soft" tone="neutral" size="sm" @click="load">{{ t('reload') }}</UiButton>
     </div>
-    <div v-else-if="isMarkdown" class="md" v-html="renderMarkdown(content)" />
+    <div v-else-if="showRendered" class="md" v-html="renderMarkdown(content)" />
     <div v-else class="code">
       <!-- 高亮分支：行号列 sticky 固定，代码列横向滚动 -->
       <div v-if="highlighted" class="hl">
@@ -214,6 +231,10 @@ watch(() => props.path, load, { immediate: true });
   font-size: 10.5px;
   color: var(--warning);
   background: color-mix(in srgb, var(--warning) 14%, transparent);
+}
+/* 预览/源码切换：放在文件名旁，不占右侧动作位 */
+.view-toggle {
+  flex-shrink: 0;
 }
 .spacer {
   flex: 1;

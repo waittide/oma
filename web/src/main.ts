@@ -2,6 +2,7 @@ import { createApp } from 'vue';
 import { bindUiDocumentLocale, initUiTheme, setUiLocale } from '@waittide/ui';
 import App from './App.vue';
 import { bindDocumentLocale } from './composables/i18n';
+import { suppressNativeTooltipTitles } from './lib/tooltipTitles';
 import { settingStore } from './stores/setting';
 
 // 样式顺序：组件库令牌在前，应用样式在后，应用可覆盖。
@@ -19,5 +20,7 @@ initUiTheme({
 setUiLocale(settingStore.locale);
 bindUiDocumentLocale();
 bindDocumentLocale();
+// 组件库的图标按钮自带原生 `title`，与我们的 UiTooltip 会重复弹两个提示
+suppressNativeTooltipTitles();
 
 createApp(App).mount('#app');

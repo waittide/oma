@@ -345,6 +345,8 @@
     "backToList": "返回變更清單",
     "copyContent": "複製內容",
     "truncated": "僅顯示開頭 256 KB",
+    "viewPreview": "預覽",
+    "viewSource": "原始碼",
     "emptyWorkspace": "工作區是空的",
     "gitUntracked": "新增",
     "gitAdded": "新增",

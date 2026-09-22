@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
-import { UiIconButton } from '@waittide/ui';
 import { useTranslations } from '../composables/i18n';
 
 export interface RailItem {
@@ -10,37 +9,143 @@ export interface RailItem {
   text: string;
 }
 
-const props = defineProps<{ items: RailItem[] }>();
+/**
+ * 对话记录指示器（对齐 pi-web 的 ChatMinimap 思路）。
+ *
+ * 每条用户消息一个标记，自上而下按固定间距铺开：`gap = min(MAX_GAP,
+ * 可用高度 / (n-1))`——数量少时聚在上方不强行铺满，数量多时自然收紧、正好占满整
+ * 条竖线，因此标记的位置与对话长度是对应的。当前所在的一轮由 `activeId` 高亮。
+ *
+ * 与 pi-web 的差异：这里**始终显示**（只要有消息就渲染，不等滚动条出现）。
+ */
+const props = defineProps<{
+  items: RailItem[];
+  /** 当前视口所在一轮的消息 id */
+  activeId?: string | null;
+}>();
 const emit = defineEmits<{ jump: [id: string] }>();
 
 const { t } = useTranslations('chat');
 
+/** 竖线两端留白 */
+const PAD = 10;
+/** 相邻标记的最大间距：数量少时聚在上方 */
+const MAX_GAP = 50;
+/** 单个标记的点击热区高度（比圆点大，便于点中） */
+const HIT = 16;
 /** 气泡与点的水平间距 */
 const GAP = 10;
 /** 气泡与视口边缘的最小留白 */
 const EDGE = 8;
 
+const railEl = ref<HTMLElement | null>(null);
+const railHeight = ref(0);
 const hoverId = ref<string | null>(null);
-const tipEl = ref<HTMLElement | null>(null);
-const tipPos = ref({ top: '0px', left: '0px' });
-/** 每个点的 DOM 引用：气泡需要按点的实时位置定位 */
-const dotEls: Record<string, HTMLElement | null> = {};
+/** 拖拽中：按住后滑动可连续跳转 */
+const dragging = ref(false);
 
-function setDotEl(id: string, el: unknown) {
-  // 组件 ref 拿到的是实例，需取其根元素做定位测量
-  const raw = el && typeof el === 'object' && '$el' in el ? (el as { $el: HTMLElement }).$el : el;
-  const node = (raw ?? null) as HTMLElement | null;
-  if (node) dotEls[id] = node;
-  else delete dotEls[id];
+const gap = computed(() => {
+  const count = props.items.length;
+  if (count <= 1) return 0;
+  return Math.min(MAX_GAP, Math.max(0, (railHeight.value - PAD * 2) / (count - 1)));
+});
+
+/** 第 i 个标记的中心 y（相对竖线容器） */
+function centerOf(index: number): number {
+  return PAD + index * gap.value;
 }
 
-/** 悬停/聚焦到某个点时展示气泡；事件用对象传入以兼容组件的事件类型。 */
-function dotEvents(id: string): Record<string, unknown> {
-  return {
-    onMouseenter: () => enter(id),
-    onMouseleave: () => leave(),
-    onFocus: () => enter(id),
-    onBlur: () => leave(),
+/** 指针 y → 最近的标记下标 */
+function indexAt(clientY: number): number {
+  const box = railEl.value?.getBoundingClientRect();
+  if (!box) return 0;
+  const y = clientY - box.top;
+  if (gap.value <= 0) return 0;
+  return Math.min(props.items.length - 1, Math.max(0, Math.round((y - PAD) / gap.value)));
+}
+
+// 竖线高度变化（换会话、窗口缩放）时重排：`ResizeObserver` 比监听 window 更准
+let observer: ResizeObserver | undefined;
+function observeRail(el: HTMLElement | null) {
+  railEl.value = el;
+  observer?.disconnect();
+  if (!el) return;
+  railHeight.value = el.clientHeight;
+  observer = new ResizeObserver(() => {
+    railHeight.value = el.clientHeight;
+  });
+  observer.observe(el);
+}
+
+onBeforeUnmount(() => observer?.disconnect());
+
+function jumpTo(index: number) {
+  const item = props.items[index];
+  if (item) emit('jump', item.id);
+}
+
+function onPointerDown(ev: PointerEvent) {
+  if (ev.button !== 0) return;
+  dragging.value = true;
+  jumpTo(indexAt(ev.clientY));
+  // 指针捕获让拖拽时的事件继续落在本元素上；合成事件或部分环境会抛错，
+  // 失败也不能影响这次点击跳转本身
+  try {
+    (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+  } catch {
+    // 忽略：没有捕获时拖拽仍可在轨道内继续
+  }
+}
+
+function onPointerMove(ev: PointerEvent) {
+  if (!dragging.value) {
+    // 未拖拽时也让悬停的点高亮，拖拽中则连续跳转
+    const index = indexAt(ev.clientY);
+    hoverId.value = props.items[index]?.id ?? null;
+    return;
+  }
+  const index = indexAt(ev.clientY);
+  if (props.items[index]?.id !== hoverId.value) {
+    hoverId.value = props.items[index]?.id ?? null;
+    jumpTo(index);
+  }
+}
+
+function endDrag(ev: PointerEvent) {
+  if (!dragging.value) return;
+  dragging.value = false;
+  try {
+    (ev.currentTarget as HTMLElement).releasePointerCapture?.(ev.pointerId);
+  } catch {
+    // 忽略：未捕获时释放会抛错，不影响后续交互
+  }
+}
+
+function onPointerLeave() {
+  if (!dragging.value) hoverId.value = null;
+}
+
+/** 悬停/聚焦到某个标记时高亮它并展示气泡 */
+function enter(id: string) {
+  if (dragging.value) return;
+  hoverId.value = id;
+  void nextTick(updateTip);
+}
+
+const tipEl = ref<HTMLElement | null>(null);
+const tipPos = ref({ top: '0px', left: '0px' });
+
+/** 气泡固定定位在标记的左侧并垂直居中，超出视口时夹取。 */
+function updateTip() {
+  const marker = hoverId.value ? markerEls[hoverId.value] : null;
+  const tip = tipEl.value;
+  if (!marker || !tip) return;
+  const rect = marker.getBoundingClientRect();
+  const vh = document.documentElement.clientHeight;
+  const centered = rect.top + rect.height / 2 - tip.offsetHeight / 2;
+  tipPos.value = {
+    top: `${Math.round(Math.min(Math.max(EDGE, centered), Math.max(EDGE, vh - tip.offsetHeight - EDGE)))}px`,
+    left: `${Math.round(Math.max(EDGE, rect.left - tip.offsetWidth - GAP))}px`,
   };
 }
 
@@ -50,38 +155,23 @@ const hoverText = computed(() => {
   return raw.replace(/\n{2,}/g, '\n').trim();
 });
 
-/** 气泡固定定位在点的左侧并垂直居中，超出视口时夹取。 */
-function updateTip() {
-  const dot = hoverId.value ? dotEls[hoverId.value] : null;
-  const tip = tipEl.value;
-  if (!dot || !tip) return;
-  const rect = dot.getBoundingClientRect();
-  const vh = document.documentElement.clientHeight;
-  // 点靠近视口上下边缘时气泡夹取到边界，仍尽量与点同高
-  const centered = rect.top + rect.height / 2 - tip.offsetHeight / 2;
-  tipPos.value = {
-    top: `${Math.round(Math.min(Math.max(EDGE, centered), Math.max(EDGE, vh - tip.offsetHeight - EDGE)))}px`,
-    left: `${Math.round(Math.max(EDGE, rect.left - tip.offsetWidth - GAP))}px`,
-  };
+/** 每个标记的 DOM 引用：气泡需要按标记的实时位置定位 */
+const markerEls: Record<string, HTMLElement | null> = {};
+function setMarkerEl(id: string, el: unknown) {
+  const raw = el && typeof el === 'object' && '$el' in el ? (el as { $el: HTMLElement }).$el : el;
+  const node = (raw ?? null) as HTMLElement | null;
+  if (node) markerEls[id] = node;
+  else delete markerEls[id];
 }
 
-function enter(id: string) {
-  hoverId.value = id;
-  void nextTick(updateTip);
-}
-
-function leave() {
-  hoverId.value = null;
-}
-
-/** 消息流滚动或视口变化时让气泡跟随其点 */
+/** 消息流滚动或视口变化时让气泡跟随其标记 */
 function onViewportChange() {
   if (hoverId.value) updateTip();
 }
 
 onMounted(() => {
   window.addEventListener('resize', onViewportChange);
-  // capture 捕获消息流自身的滚动，气泡才不会与点错位
+  // capture 捕获消息流自身的滚动，气泡才不会与标记错位
   window.addEventListener('scroll', onViewportChange, true);
 });
 
@@ -92,105 +182,87 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- 竖线在可视区域垂直居中；消息过多时内部滚动，点间距保持恒定 -->
-  <nav v-if="items.length" class="rail" :aria-label="t('messageRail')">
-    <div class="rail-scroll">
-      <div class="dot-col">
-        <span class="line" />
-        <UiIconButton
-          v-for="it in items"
-          :key="it.id"
-          :ref="(el) => setDotEl(it.id, el)"
-          v-bind="dotEvents(it.id)"
-          class="dot"
-          round="circle"
-          size="sm"
-          :label="it.text"
-          @click="emit('jump', it.id)"
-        />
-      </div>
-    </div>
+  <nav
+    v-if="items.length"
+    :ref="(el) => observeRail(el as HTMLElement | null)"
+    class="rail"
+    :aria-label="t('messageRail')"
+    @pointerdown="onPointerDown"
+    @pointermove="onPointerMove"
+    @pointerup="endDrag"
+    @pointercancel="endDrag"
+    @pointerleave="onPointerLeave"
+  >
+    <span class="line" :style="{ top: `${PAD}px`, bottom: `${PAD}px` }" />
+    <button
+      v-for="(it, i) in items"
+      :key="it.id"
+      :ref="(el) => setMarkerEl(it.id, el)"
+      type="button"
+      class="marker"
+      :class="{ active: it.id === activeId, on: it.id === hoverId }"
+      :style="{ top: `${centerOf(i) - HIT / 2}px`, height: `${HIT}px` }"
+      :aria-label="it.text"
+      @mouseenter="enter(it.id)"
+      @focus="enter(it.id)"
+      @blur="hoverId = null"
+    />
   </nav>
   <Teleport to="body">
     <Transition name="rail-tip">
-      <div v-if="hoverId" ref="tipEl" class="tip" :style="tipPos">{{ hoverText }}</div>
+      <div v-if="hoverId && hoverText" ref="tipEl" class="tip" :style="tipPos">{{ hoverText }}</div>
     </Transition>
   </Teleport>
 </template>
 
 <style scoped>
-/* 只占右侧一窄列，鼠标离开后不遮挡消息；整列在消息流可视高度内垂直居中 */
+/* 覆盖消息流右侧一整列：标记的纵向位置与对话长度对应，不再内部滚动 */
 .rail {
   position: absolute;
   top: 0;
   bottom: 0;
-  right: 6px;
-  display: flex;
-  align-items: center;
-  /* 仅点与竖线自身可交互：空白处不拦截消息流上的操作 */
-  pointer-events: none;
-}
-/* 隐藏滚动条，但它仍可滚动：消息很多时点可滑到任意一条而不挤压消息宽度 */
-.rail-scroll {
-  max-height: 100%;
-  overflow-y: auto;
-  padding: 2px 6px;
-  scrollbar-width: none;
+  right: 4px;
+  width: 20px;
   pointer-events: auto;
+  touch-action: none;
 }
-.rail-scroll::-webkit-scrollbar {
-  width: 0;
-}
-.dot-col {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-/* 竖线贯穿所有点，作为位置参考而不是装饰；悬停整段时高亮 */
+/* 竖线贯穿整条轨道，作为位置参考而不是装饰 */
 .line {
   position: absolute;
-  top: 7px;
-  bottom: 7px;
   left: 50%;
   width: 2px;
   transform: translateX(-50%);
   border-radius: 99px;
-  background: color-mix(in srgb, var(--overlay0) 42%, transparent);
-  transition: background-color 0.15s ease;
+  background: color-mix(in srgb, var(--overlay0) 34%, transparent);
 }
-.rail-scroll:hover .line {
-  background: color-mix(in srgb, var(--accent) 70%, transparent);
-}
-/* 点自带较大点击热区，视觉尺寸由 ::before 控制 */
-.dot {
+/* 标记：整条热区负责命中，圆点由 ::before 绘制（活跃/悬停时放大并上色） */
+.marker {
+  position: absolute;
+  left: 0;
+  width: 100%;
   display: grid;
   place-items: center;
-  width: 14px;
-  height: 14px;
-  min-width: 0;
   padding: 0;
   border: none;
   background: transparent;
   cursor: pointer;
 }
-/* 组件库按钮的悬停底色会干扰“小圆点”的视觉，这里只保留点本身的悬停态 */
-.dot:hover {
-  background: transparent;
-}
-.dot::before {
+.marker::before {
   content: '';
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--overlay0);
   transition:
     transform 0.12s ease,
     background-color 0.12s ease;
 }
-.dot:hover::before,
-.dot:focus-visible::before {
+.marker:hover::before,
+.marker.on::before {
+  transform: scale(1.5);
+  background: var(--accent);
+}
+.marker.active::before {
   transform: scale(1.7);
   background: var(--accent);
 }

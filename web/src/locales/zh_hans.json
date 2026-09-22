@@ -345,6 +345,8 @@
     "backToList": "返回变更列表",
     "copyContent": "复制内容",
     "truncated": "仅显示开头 256 KB",
+    "viewPreview": "预览",
+    "viewSource": "源码",
     "emptyWorkspace": "工作区为空",
     "gitUntracked": "新增",
     "gitAdded": "新增",

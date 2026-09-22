@@ -435,33 +435,39 @@ onMounted(() => void nextTick(syncCodeCopy));
   color: var(--success);
 }
 
-/* 折叠行：无边框扁平形态（参照 opencode basic-tool） */
+/* 折叠行：无边框扁平形态（参照 opencode basic-tool）。
+   自身不留纵向内边距——容器的 8px 间距就是它到相邻块的全部距离，
+   连续的工具调用/思考才会与正文保持同一行距（对齐 pi-web 的块间距） */
 .fold {
   display: flex;
   flex-direction: column;
-  padding: 2px 0;
 }
 /*
  * 工具调用失败：整块换成危险色底 + 描边（对齐 pi-web 的 `isError` 卡片），
  * 不再用左侧一条竖线——竖线既占掉了内容的起点，又和消息列左侧对不齐。
  */
 .fold.error {
-  /* 负数左右外边距抵消内边距：底色有呼吸感，内容仍与正文左对齐 */
+  /* 负数左右外边距抵消内边距：底色有呼吸感，内容仍与正文左对齐；
+     纵向不留内边距，失败卡片的行距与普通折叠行一致 */
   margin: 0 -7px;
-  padding: 2px 6px 4px;
+  padding: 0 6px;
   border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
   border-radius: 6px;
   background: color-mix(in srgb, var(--danger) 7%, transparent);
 }
-.fold-head {
+/* 折叠头：纯文本行，压到 20px 高。
+   `.blocks` 前缀是为了压过组件库的 `.ui-button--md[data-v-*]`（同为 0-2-0，而库的
+   样式表在开发模式下注入得更晚，同特异性时它会赢） */
+.blocks .fold-head {
   display: flex;
   align-items: center;
   gap: 6px;
+  height: auto;
   min-height: 20px;
   width: 100%;
   border: none;
   background: transparent;
-  padding: 2px 0;
+  padding: 0;
   font-family: inherit;
   color: var(--text-secondary);
   cursor: pointer;

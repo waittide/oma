@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { toast, UiButton, UiIconButton, UiSelect, UiTextarea, UiTooltip } from '@waittide/ui';
 import {
   LuAlertTriangle,
@@ -144,10 +144,42 @@ function scrollToBottom() {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
+/** 消息流可视高度与滚动位置：指示器据此判断当前落在哪一轮 */
+const streamViewport = ref(0);
+const streamScrollTop = ref(0);
+/** 消息渲染/尺寸变化都会挪动锚点位置，用它触发重算 */
+const layoutTick = ref(0);
+/**
+ * 平滑跳转的导航锁：滚动动画期间按位置判定会一路掠过中间几轮，高亮跟着乱闪，
+ * 所以先把高亮钉在用户点选的那一项上，动画结束后再交还给位置判定。
+ *
+ * 必须做成响应式：锁定用普通变量的话，到期后没有任何依赖变化，计算属性不会重算，
+ * 高亮会一直卡在被点的那一项上。
+ */
+const navLockId = ref<string | null>(null);
+let navLockTimer: ReturnType<typeof setTimeout> | undefined;
+
+function lockNav(id: string) {
+  navLockId.value = id;
+  clearTimeout(navLockTimer);
+  navLockTimer = setTimeout(() => {
+    navLockId.value = null;
+  }, NAV_LOCK_MS);
+}
+
 function onScroll() {
   const el = scrollEl.value;
   if (!el) return;
+  streamScrollTop.value = el.scrollTop;
+  streamViewport.value = el.clientHeight;
   stickBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+}
+
+function onStreamResize() {
+  const el = scrollEl.value;
+  if (!el) return;
+  streamViewport.value = el.clientHeight;
+  layoutTick.value += 1;
 }
 
 async function pickFiles(ev: Event) {
@@ -374,10 +406,71 @@ function setMsgEl(id: string, el: unknown) {
   else delete msgEls[id];
 }
 
-/** 点击点：把对应用户消息滚动到可视区（而非顶部，保留上下文）。 */
-function jumpToMessage(id: string) {
-  msgEls[id]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+/** 跳转后锚点停在可视高度的这个比例处（与 `railActiveId` 用同一基准线） */
+const ANCHOR_RATIO = 0.35;
+/** 平滑滚动动画的时长上限：这段时间内高亮钉在被点的那一轮（对齐 pi-web） */
+const NAV_LOCK_MS = 1000;
+
+/** 某条消息相对消息流内容顶部的位置 */
+function offsetOf(id: string): number | null {
+  const el = msgEls[id];
+  if (!el) return null;
+  const stream = scrollEl.value;
+  if (!stream) return el.offsetTop;
+  // 用 rect 差值算，避免 offsetParent 变化时偏移基准搞错
+  return el.getBoundingClientRect().top - stream.getBoundingClientRect().top + stream.scrollTop;
 }
+
+/**
+ * 当前所在的一轮：基准线之前（含）的最后一条锚点。
+ *
+ * pi-web 用的是「离基准线最近」——只有两条锚点时，停在顶部反而会高亮第二条。改成
+ * 「区间」判定后语义与阅读位置一致：滚到哪一轮，就高亮哪一轮；还没到第一轮时高亮
+ * 第一轮；跳转把锚点对到基准线上，因此跳完命中的必然是被点的那一轮。
+ *
+ * 依赖 `layoutTick`——消息渲染、窗口缩放都会挪动锚点位置，而那时的 scrollTop
+ * 可能没变，必须显式触发重算。
+ */
+const railActiveId = computed<string | null>(() => {
+  void layoutTick.value;
+  const items = railItems.value;
+  if (items.length === 0) return null;
+  if (navLockId.value) return navLockId.value;
+  const line = streamScrollTop.value + streamViewport.value * ANCHOR_RATIO;
+  let current: string | null = null;
+  for (const item of items) {
+    const offset = offsetOf(item.id);
+    if (offset === null) continue;
+    if (current === null) current = item.id;
+    if (offset <= line) current = item.id;
+    else break;
+  }
+  return current;
+});
+
+/** 点击/拖拽标记：把对应用户消息滚到基准线附近（而非顶部，保留上下文）。 */
+function jumpToMessage(id: string) {
+  const stream = scrollEl.value;
+  const offset = offsetOf(id);
+  if (!stream || offset === null) return;
+  lockNav(id);
+  stream.scrollTo({
+    top: Math.max(0, offset - stream.clientHeight * ANCHOR_RATIO),
+    behavior: 'smooth',
+  });
+}
+
+onMounted(() => {
+  const el = scrollEl.value;
+  if (!el) return;
+  streamViewport.value = el.clientHeight;
+  const observer = new ResizeObserver(onStreamResize);
+  observer.observe(el);
+  onBeforeUnmount(() => observer.disconnect());
+});
+
+// 消息增删或换分支后锚点位置会变，重新判定当前一轮
+watch(() => [chat.messages.value, activeSessionId.value], () => void nextTick(() => (layoutTick.value += 1)));
 
 const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length > 0);
 </script>
@@ -489,7 +582,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
           </article>
         </template>
       </div>
-      <MessageRail :items="railItems" @jump="jumpToMessage" />
+      <MessageRail :items="railItems" :active-id="railActiveId" @jump="jumpToMessage" />
     </div>
 
     <footer class="composer">

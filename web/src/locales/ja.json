@@ -345,6 +345,8 @@
     "backToList": "変更一覧に戻る",
     "copyContent": "内容をコピー",
     "truncated": "先頭 256 KB のみ表示",
+    "viewPreview": "プレビュー",
+    "viewSource": "ソース",
     "emptyWorkspace": "ワークスペースは空です",
     "gitUntracked": "新規",
     "gitAdded": "追加",

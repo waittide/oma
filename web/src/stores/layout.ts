@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue';
+import { computed, ref, watch, type Ref } from 'vue';
 
 /**
  * 工作区外壳的面板布局状态。
@@ -138,6 +138,75 @@ export const sidebarRenderWidth = computed(() => {
   const room = viewportWidth.value - chatMinWidth(viewportWidth.value) - reserved;
   return clamp(sidebarWidth.value, SIDEBAR_MIN_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, room));
 });
+
+/**
+ * 右侧面板「文件」页的状态：按工作区记住当前打开的文件。
+ *
+ * 面板关掉（或切走标签页）时组件会卸载，选中项若只放在组件里就会丢；
+ * 放在这里既能跨开关恢复，也不至于把不同工作区的路径混在一起。
+ */
+const FILE_STATE_KEY = 'oma.panelFile';
+
+interface FilePanelState {
+  /** 工作区 → 正在预览的文件相对路径 */
+  open: Record<string, string>;
+  /** markdown 是否直接看源码（默认渲染后的预览） */
+  mdSource: boolean;
+}
+
+function readFileState(): FilePanelState {
+  const fallback: FilePanelState = { open: {}, mdSource: false };
+  try {
+    const raw = localStorage.getItem(FILE_STATE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<FilePanelState>;
+    return { open: parsed.open ?? {}, mdSource: parsed.mdSource ?? false };
+  } catch {
+    return fallback;
+  }
+}
+
+const fileState = readFileState();
+
+/** 当前工作区正在预览的文件（空串表示显示文件树） */
+export const openFilePath = ref('');
+/** markdown 文件的「预览 / 源码」开关 */
+export const markdownSource = ref(fileState.mdSource);
+
+function persistFileState() {
+  try {
+    localStorage.setItem(FILE_STATE_KEY, JSON.stringify(fileState));
+  } catch {
+    // 隐私模式下写不了：状态退化为仅当前会话有效
+  }
+}
+
+/** 切换工作区时载入该工作区上次打开的文件 */
+export function useWorkspaceFileState(workspace: Ref<string>) {
+  watch(
+    workspace,
+    (ws) => {
+      openFilePath.value = ws ? (fileState.open[ws] ?? '') : '';
+    },
+    { immediate: true },
+  );
+}
+
+/** 选中文件（空串表示退回文件树），并记到当前工作区名下 */
+export function selectFilePath(workspace: string, path: string) {
+  openFilePath.value = path;
+  if (!workspace) return;
+  if (path) fileState.open[workspace] = path;
+  else delete fileState.open[workspace];
+  persistFileState();
+}
+
+/** 切换 markdown 的预览/源码视图；该偏好与工作区无关，全局记住 */
+export function setMarkdownSource(source: boolean) {
+  markdownSource.value = source;
+  fileState.mdSource = source;
+  persistFileState();
+}
 
 export function setSidebarWidth(width: number) {
   sidebarWidth.value = clamp(width, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
