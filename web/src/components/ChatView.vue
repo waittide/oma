@@ -76,6 +76,21 @@ function persistBoxHeight() {
   else localStorage.setItem(BOX_H_KEY, String(boxHeight.value));
 }
 
+/** 视口高度（用于自适应输入框的增高上限） */
+const viewportHeight = ref(typeof window === 'undefined' ? 900 : window.innerHeight);
+
+/**
+ * 输入框自动增高的上限。
+ *
+ * 固定框高时填满框内空间（减去底部工具条与内边距），否则最多占视口的 40%：
+ * 低于上限就只增高、不出滚动条——此前组件库默认按 2 行截断，写到第三行就开始
+ * 内部滚动，而框里其实还有大片空位。
+ */
+const composerMaxHeight = computed(() => {
+  if (boxHeight.value !== null) return Math.max(40, boxHeight.value - 52);
+  return Math.max(80, Math.min(320, Math.round(viewportHeight.value * 0.4)));
+});
+
 /** 拖动输入框上边沿：向上拉高、向下压低。 */
 function startResize(e: PointerEvent) {
   const el = boxEl.value;
@@ -477,12 +492,20 @@ function jumpToMessage(id: string) {
 }
 
 onMounted(() => {
+  const onResize = () => {
+    viewportHeight.value = window.innerHeight;
+  };
+  window.addEventListener('resize', onResize);
+
   const el = scrollEl.value;
-  if (!el) return;
-  streamViewport.value = el.clientHeight;
+  streamViewport.value = el?.clientHeight ?? 0;
   const observer = new ResizeObserver(onStreamResize);
-  observer.observe(el);
-  onBeforeUnmount(() => observer.disconnect());
+  if (el) observer.observe(el);
+
+  onBeforeUnmount(() => {
+    window.removeEventListener('resize', onResize);
+    observer.disconnect();
+  });
 });
 
 // 消息增删或换分支后锚点位置会变，重新判定当前一轮
@@ -660,7 +683,8 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         <div class="composer-input" @keydown.enter.exact.prevent="send">
           <UiTextarea
             v-model="draft"
-            :rows="2"
+            auto-resize
+            :max-height="composerMaxHeight"
             :placeholder="activeSessionId ? t('placeholder') : t('placeholderNoSession')"
             :disabled="!ready"
           />

@@ -208,6 +208,20 @@ export function setMarkdownSource(source: boolean) {
   persistFileState();
 }
 
+/**
+ * 文件树里已展开的目录（相对路径 → true）。
+ *
+ * 放在 store 而不是组件里：打开一个文件预览时树会被卸载，返回时若状态在组件内，
+ * 之前展开的目录就全折起来了。换工作区时清空——同一批相对路径在另一个仓库里
+ * 指向的不是同一批目录。
+ */
+export const fileTreeOpen = ref<Record<string, boolean>>({});
+
+/** 换工作区：清掉上一个工作区留下的展开状态 */
+export function resetFileTreeOpen() {
+  fileTreeOpen.value = {};
+}
+
 export function setSidebarWidth(width: number) {
   sidebarWidth.value = clamp(width, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
   persist();

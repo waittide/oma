@@ -64,7 +64,15 @@ async function loadTree() {
 layout.useWorkspaceFileState(workspace);
 
 // 换工作区要重取；换会话但工作区相同时不必（树与 git 都只看工作区）
-watch(workspace, () => void loadTree(), { immediate: true });
+watch(
+  workspace,
+  () => {
+    // 展开状态是「一批相对路径」，另一个工作区里指的不是同一批目录
+    layout.resetFileTreeOpen();
+    void loadTree();
+  },
+  { immediate: true },
+);
 </script>
 
 <template>

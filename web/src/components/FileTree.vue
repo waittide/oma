@@ -2,14 +2,16 @@
 import { ref } from 'vue';
 import { LuChevronRight } from 'vue-icons-plus/lu';
 import type { FileNode } from '../types';
+import { fileTreeOpen } from '../stores/layout';
 import FileIcon from './FileIcon.vue';
 
 /**
  * 工作区文件树（递归组件）。
  *
- * 展开状态放在节点自身：默认全收起——工作区动辄上千条，全展开既无意义也拖慢渲染。
- * 目录内容随 `GET /api/workspace/tree` 一次性带回（深度 4、上限 2000 项），
- * 因此展开不再发请求。
+ * 展开状态存在 layout store 里（`fileTreeOpen`）：打开文件预览时本组件会被卸载，
+ * 状态若留在组件内，返回时之前展开的目录就全折起来了。默认全收起——工作区动辄
+ * 上千条，全展开既无意义也拖慢渲染。目录内容随 `GET /api/workspace/tree`
+ * 一次性带回（深度 4、上限 2000 项），因此展开不再发请求。
  */
 defineOptions({ name: 'FileTree' });
 
@@ -24,7 +26,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{ select: [node: FileNode] }>();
 
-const open = ref<Record<string, boolean>>({});
+/** 展开状态直接引用 store（跨卸载保留） */
+const open = fileTreeOpen;
 
 function isOpen(node: FileNode): boolean {
   if (node.path in open.value) return open.value[node.path]!;
