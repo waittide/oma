@@ -10,8 +10,6 @@
 pub const DEFAULT_MAX_LINES: usize = 2000;
 /// 默认字节上限（50KB）
 pub const DEFAULT_MAX_BYTES: usize = 50 * 1024;
-/// grep 单行最长字符数
-pub const GREP_MAX_LINE_LENGTH: usize = 500;
 
 /// 触发了哪一条上限
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,17 +227,6 @@ fn truncate_to_bytes_from_end(s: &str, max_bytes: usize) -> String {
     String::from_utf8_lossy(&bytes[start..]).into_owned()
 }
 
-/// 把单行截到 `max_chars` 个字符，超出时追加 `... [truncated]`。
-///
-/// 返回 `(文本, 是否被截断)`。
-pub fn truncate_line(line: &str, max_chars: usize) -> (String, bool) {
-    if line.chars().count() <= max_chars {
-        return (line.to_string(), false);
-    }
-    let head: String = line.chars().take(max_chars).collect();
-    (format!("{head}... [truncated]"), true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,16 +287,6 @@ mod tests {
         let t = truncate_tail_with("中文中文中文", 10, 5);
         assert!(t.last_line_partial);
         assert_eq!(t.content, "文");
-    }
-
-    #[test]
-    fn line_truncation_appends_marker() {
-        let (text, cut) = truncate_line("0123456789", 4);
-        assert!(cut);
-        assert_eq!(text, "0123... [truncated]");
-        let (text, cut) = truncate_line("abc", 4);
-        assert!(!cut);
-        assert_eq!(text, "abc");
     }
 
     #[test]

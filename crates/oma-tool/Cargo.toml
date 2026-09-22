@@ -8,12 +8,8 @@ repository.workspace = true
 description = "内置工具集：read / write / edit(apply_patch) / shell / ls"
 
 [dependencies]
-anyhow = { workspace = true }
 async-trait = { workspace = true }
-oma-config = { workspace = true }
 oma-contract = { workspace = true }
-# 下载 fd / ripgrep 需要 HTTP 客户端
-reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 similar = { workspace = true }
@@ -29,4 +25,5 @@ libc = { workspace = true }
 workspace = true
 
 [dev-dependencies]
+anyhow = { workspace = true }
 tempfile = { workspace = true }

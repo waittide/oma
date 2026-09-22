@@ -11,7 +11,6 @@ pub use oma_contract::ToolOutput;
 use serde::Deserialize;
 
 pub mod apply_patch;
-pub mod binaries;
 pub mod image;
 pub mod ls;
 pub mod truncate;
