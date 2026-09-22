@@ -465,38 +465,45 @@ onMounted(() => void nextTick(syncCodeCopy));
 }
 
 /* 折叠行：无边框扁平形态（参照 opencode basic-tool）。
-   自身不留纵向内边距——容器的 8px 间距就是它到相邻块的全部距离，
-   连续的工具调用/思考才会与正文保持同一行距 */
+   横向用「负外边距抵消内边距」向两侧借 1px 呼吸感：底色/描边能盖住这圈内边距，
+   而内容仍与正文左对齐；纵向不留内边距——容器的 8px 间距就是它到相邻块的全部
+   距离，连续的工具调用/思考才会与正文保持同一行距 */
 .fold {
   display: flex;
   flex-direction: column;
-}
-/*
- * 工具调用失败：整块换成危险色底 + 描边，
- * 不再用左侧一条竖线——竖线既占掉了内容的起点，又和消息列左侧对不齐。
- */
-.fold.error {
-  /* 负数左右外边距抵消内边距：底色有呼吸感，内容仍与正文左对齐；
-     纵向不留内边距，失败卡片的行距与普通折叠行一致 */
   margin: 0 -7px;
   padding: 0 6px;
-  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
+}
+/*
+ * 工具调用失败：整块换成危险色底 + 描边，不再用左侧一条竖线。
+ * 盒模型与普通行完全一致，描边走 inset 阴影（不占布局），
+ * 悬停高亮、错误卡片、内嵌块因此同尺寸、同圆角。
+ */
+.fold.error {
   background: color-mix(in srgb, var(--danger) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent);
 }
 /* 折叠头：纯文本行，压到 20px 高。
-   `.blocks` 前缀是为了压过组件库的 `.ui-button--md[data-v-*]`（同为 0-2-0，而库的
-   样式表在开发模式下注入得更晚，同特异性时它会赢） */
-.blocks .fold-head {
+   `.blocks .fold` 两级前缀是为了压过组件库的 `.ui-button.is-block`（同为 0-2-0，
+   而库的样式表在开发模式下注入得更晚，同特异性时它会赢）。 */
+.blocks .fold .fold-head {
   display: flex;
   align-items: center;
   gap: 6px;
   height: auto;
   min-height: 20px;
-  width: 100%;
+  /* 不用 width:100%——它等于折叠行的内容宽度，配上负外边距只会左移、右侧缺一截。
+     交给 flex 交叉轴拉伸（.fold 是 column flex），盒子才会真正覆盖到内边距边缘 */
+  width: auto;
+  align-self: stretch;
   border: none;
   background: transparent;
-  padding: 0;
+  /* 顶到折叠行的内边距边缘并补回同宽内边距：悬停高亮的盒子与 .fold 完全重合，
+     不会比错误卡片的描边窄一圈；圆角与内嵌块统一取 --radius-sm */
+  margin: 0 -6px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
   font-family: inherit;
   color: var(--text-secondary);
   cursor: pointer;
