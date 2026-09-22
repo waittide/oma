@@ -1,8 +1,6 @@
 //! `apply_patch` 模式的解析与应用。
 //!
-//! 参照 oh-my-pi `crates/pi-edit`：模型可见契约是其 `prompts/apply_patch.md`，
-//! 解析/报错文案来自 `modes/apply_patch.rs`，hunk 语义来自
-//! `diff_string.rs`（`parse_diff_hunks`）与 `modes/patch.rs`（`apply_hunks`）。
+//! 模型可见的契约是一段补丁原文；envelope 解析、报错文案与 hunk 语义都由本模块实现。
 //!
 //! 本模块保留 envelope / hunk / 拒绝情形的语义，但不做模糊（fuzzy）与
 //! 字符级匹配：上下文按**逐行精确**匹配，失败时给出相似度最高的窗口作为提示。

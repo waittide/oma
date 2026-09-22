@@ -1,8 +1,7 @@
 //! ls 工具：列目录内容。
 //!
-//! 与 pi `core/tools/ls.ts` 行为一致：按名排序、目录名带 `/` 后缀、
-//! 默认 500 条上限、字节上限用统一的 50KB 截断。这里仍是本地文件系统调用
-//! （pi 也没有外部二进制），只是上限与提示文案对齐。
+//! 按名排序、目录名带 `/` 后缀、默认 500 条上限、字节上限用统一的 50KB 截断。
+//! 这里用本地文件系统调用，不依赖外部二进制。
 
 use std::path::Path;
 
@@ -14,7 +13,7 @@ use crate::{
     truncate::{self, DEFAULT_MAX_BYTES},
 };
 
-/// 默认条目数上限（与 pi 相同）
+/// 默认条目数上限
 const DEFAULT_LIMIT: usize = 500;
 
 pub struct LsTool;
@@ -91,7 +90,7 @@ impl Tool for LsTool {
                 Err(e) => return ToolOutput::error(format!("Cannot read directory: {e}")),
             }
         }
-        // 大小写不敏感排序，与 pi 的 `toLowerCase().localeCompare()` 对齐
+        // 大小写不敏感排序
         names.sort_by_key(|name| name.to_lowercase());
 
         let mut results: Vec<String> = Vec::new();
@@ -101,7 +100,7 @@ impl Tool for LsTool {
                 limit_reached = true;
                 break;
             }
-            // 拿不到类型的条目直接跳过（与 pi 的 stat 失败处理一致）
+            // 拿不到类型的条目直接跳过
             let Ok(meta) = tokio::fs::symlink_metadata(dir.join(&name)).await else {
                 continue;
             };

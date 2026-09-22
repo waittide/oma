@@ -869,7 +869,7 @@ fn draw_picker(frame: &mut Frame, app: &App, index: usize, area: Rect, theme: Tu
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
-/// 上下文占用进度条：10 格 + 百分比，参照 oh-my-pi 的 contextGauge。
+/// 上下文占用进度条：10 格 + 百分比。
 fn context_gauge(tokens: usize, window: usize) -> String {
     if window == 0 {
         return format!("ctx {}", tokens);

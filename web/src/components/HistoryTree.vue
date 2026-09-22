@@ -8,7 +8,7 @@ import { useTranslations } from '../composables/i18n';
 
 const { t } = useTranslations('historyTree');
 
-/** 每个缩进层占 3 个等宽字符（参照 oh-my-pi tree-selector） */
+/** 每个缩进层占 3 个等宽字符 */
 const LEVEL_CHARS = 3;
 /** 光标槽宽度（字符） */
 const CURSOR_CHARS = 2;
@@ -43,7 +43,7 @@ function hasText(m: ChatMessage): boolean {
 
 /**
  * 展平消息树：跳过运行时内部消息（子节点挂到最近可见祖先），按先序排列。
- * 分层与引导线规则对齐 oh-my-pi tree-selector：
+ * 分层与引导线规则：
  * - 仅父节点分叉（多子）时子节点 indent+1，线性对话保持同层；
  * - 含激活叶子的子树在同级中优先排列；
  * - 祖先分叉点以 gutter 向下传递，非末位兄弟继续画竖线。

@@ -1,20 +1,19 @@
 /**
  * 文件类型 → 图标、图标配色、语法语言。
  *
- * 图标沿用 pi-web 的做法：把 Catppuccin VSCode 图标（`v1.26.0`，MIT，见
+ * 图标把 Catppuccin VSCode 图标（`v1.26.0`，MIT，见
  * `web/public/icons/catppuccin/LICENSE`）当 alpha 蒙版用，颜色由我们自己的调色板
- * 令牌给——pi-web 统一用 `var(--text-dim)` 保持单色，这里按类型上色，文件树才能一眼
- * 分出「代码 / 配置 / 文档 / 数据」。
+ * 令牌给——按类型上色，文件树才能一眼分出「代码 / 配置 / 文档 / 数据」。
  *
- * 语言判定同样对齐 pi-web 的 `EXT_TO_LANGUAGE` + 文件名特例，但映射到
- * `highlight.js` 的语言 id（它的 `xml` 覆盖 html/xml，`ini` 覆盖 toml）。
+ * 语言判定覆盖常见扩展名与文件名特例，并映射到 `highlight.js` 的语言 id
+ * （它的 `xml` 覆盖 html/xml，`ini` 覆盖 toml）。
  */
 
 /** 缺省回退：未知类型用通用文件图标 + 次级文字色 */
 const FALLBACK_ICON = '_file';
 const FALLBACK_COLOR = 'var(--subtext0, currentColor)';
 
-/** 扩展名 → 图标（对齐 pi-web 的 EXTENSION_ICONS） */
+/** 扩展名 → 图标 */
 const EXTENSION_ICONS: Record<string, string> = {
   ts: 'typescript',
   tsx: 'typescript-react',
@@ -89,7 +88,7 @@ const ICON_COLORS: Record<string, string> = {
   'ms-word': 'var(--blue, currentColor)',
 };
 
-/** 具体文件名 → 图标（对齐 pi-web 的 getSpecialFileIcon） */
+/** 具体文件名 → 图标 */
 function specialIcon(name: string): string | undefined {
   if (name === 'dockerfile' || name.startsWith('dockerfile.')) return 'docker';
   if (name === '.env' || name.startsWith('.env.')) return 'env';

@@ -15,7 +15,7 @@ const wsPath = computed(() => activeSession.value?.workspace ?? '');
 /**
  * 整会话 token 合计（`in · out · cache R · cache W`）。
  *
- * 与 pi-web 顶栏的 token/成本统计对齐；oma 的模型配置没有价格字段，故不含成本。
+ * 顶栏展示 token 统计；oma 的模型配置没有价格字段，故不含成本。
  */
 const usage = computed(() => usageLine(sessionUsage(chat.messages.value), t));
 

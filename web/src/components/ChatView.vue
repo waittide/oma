@@ -354,7 +354,7 @@ const isEmpty = computed(() => chat.messages.value.length === 0 && !chat.running
  * 消息上的模型标签（`provider/model` → 模型显示名）。
  *
  * 会话中途可切模型，因此模型跟着消息走（见后端 `ChatMessage.model`）；
- * 旧数据没有该字段，退回当前模型名（与 pi-web 一致）。
+ * 旧数据没有该字段，退回当前模型名。
  */
 function messageModelLabel(model?: string | null): string {
   const selector = model || chat.activeModel.value;
@@ -365,7 +365,7 @@ function messageModelLabel(model?: string | null): string {
 /**
  * 本轮 token 开销行（`耗时 · N 输入 · N 输出 · N 缓存读 · N 缓存写`）。
  *
- * 与 pi-web 的 `formatUsage` 对齐；oma 的模型配置里没有价格字段，故不展示成本。
+ * oma 的模型配置里没有价格字段，故不展示成本。
  * 单位是各语言里的词（中文「输入/输出」），数字按当前语言做千分位。
  */
 function usageText(usage?: TokenUsage | null, elapsedMs?: number): string {
@@ -439,7 +439,7 @@ function setMsgEl(id: string, el: unknown) {
 
 /** 跳转后锚点停在可视高度的这个比例处（与 `railActiveId` 用同一基准线） */
 const ANCHOR_RATIO = 0.35;
-/** 平滑滚动动画的时长上限：这段时间内高亮钉在被点的那一轮（对齐 pi-web） */
+/** 平滑滚动动画的时长上限：这段时间内高亮钉在被点的那一轮 */
 const NAV_LOCK_MS = 1000;
 
 /** 某条消息相对消息流内容顶部的位置 */
@@ -455,8 +455,8 @@ function offsetOf(id: string): number | null {
 /**
  * 当前所在的一轮：基准线之前（含）的最后一条锚点。
  *
- * pi-web 用的是「离基准线最近」——只有两条锚点时，停在顶部反而会高亮第二条。改成
- * 「区间」判定后语义与阅读位置一致：滚到哪一轮，就高亮哪一轮；还没到第一轮时高亮
+ * 用「区间」判定而非「离基准线最近」：后者只有两条锚点时，停在顶部反而会高亮第二条。
+ * 「区间」判定的语义与阅读位置一致：滚到哪一轮，就高亮哪一轮；还没到第一轮时高亮
  * 第一轮；跳转把锚点对到基准线上，因此跳完命中的必然是被点的那一轮。
  *
  * 依赖 `layoutTick`——消息渲染、窗口缩放都会挪动锚点位置，而那时的 scrollTop
@@ -881,13 +881,13 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
      取值一致，图标上下留白相等 */
   margin-top: 16px;
 }
-/* 每轮的模型标签：弱色小字，压在消息内容上方（对齐 pi-web） */
+/* 每轮的模型标签：弱色小字，压在消息内容上方 */
 .model-label {
   font-size: 11px;
   color: var(--overlay0);
   margin-bottom: 4px;
 }
-/* 本轮 token 开销：与 pi-web 的 `N in · N out · …` 行一致 */
+/* 本轮 token 开销：`N in · N out · …` 格式的一行 */
 .turn-usage {
   font-size: 11px;
   color: var(--overlay0);

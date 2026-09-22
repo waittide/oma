@@ -1,7 +1,7 @@
 //! find 工具：调用外部 `fd` 按 glob 查找文件。
 //!
-//! 与 pi `core/tools/find.ts` 行为一致：`--hidden`、`.gitignore` 感知、
-//! 含 `/` 的 pattern 走 `--full-path` 并自动补 `**/` 前缀、结果相对搜索根展示。
+//! `--hidden`、`.gitignore` 感知、含 `/` 的 pattern 走 `--full-path` 并自动补
+//! `**/` 前缀、结果相对搜索根展示。
 
 use std::{path::Path, process::Stdio};
 
@@ -16,7 +16,7 @@ use crate::{
     truncate::{self, DEFAULT_MAX_BYTES},
 };
 
-/// 默认结果条数上限（与 pi 相同）
+/// 默认结果条数上限
 const DEFAULT_LIMIT: usize = 1000;
 
 pub struct FindTool;
@@ -194,7 +194,7 @@ impl Tool for FindTool {
     }
 }
 
-/// 结果相对搜索根展示，并统一成正斜杠（与 pi `relativizeFindResultPath` 相同）。
+/// 结果相对搜索根展示，并统一成正斜杠。
 fn relativize(result: &str, search_path: &Path) -> String {
     let path = Path::new(result);
     if !path.is_absolute() {

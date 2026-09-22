@@ -39,7 +39,7 @@ const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 const TREE_PAGE_DEPTH: usize = 1;
 const TREE_PAGE_ENTRIES: usize = 2000;
 
-/// 文件树里固定忽略的生成物目录/文件（对齐 pi-web 的忽略名单）。
+/// 文件树里固定忽略的生成物目录/文件。
 ///
 /// 这里**只**挡这些确定没有浏览价值的名字：早先的实现把「以 `.` 开头」一并跳过，
 /// 于是家目录这类以点文件为主的工作区直接变成空树（`.zshrc`、`.config` 全被滤掉）。
@@ -607,7 +607,7 @@ struct WorkspaceFileQuery {
     path:      String,
 }
 
-/// 文本预览上限（对齐 pi-web 的 `TEXT_PREVIEW_MAX_BYTES`）。
+/// 文本预览上限。
 ///
 /// 面板只用来扫一眼内容，整读一个几百 MB 的文件既会拖垮 daemon 也会把响应撑爆；
 /// 超出部分在响应里以 `truncated` 标记，由前端提示。

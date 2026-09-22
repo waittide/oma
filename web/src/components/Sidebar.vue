@@ -67,7 +67,7 @@ watch(store.newSessionRequested, (v) => {
 
 const groups = store.groups;
 
-/** 搜索框默认收起（对齐 pi-web：顶栏只留一个搜索图标）。 */
+/** 搜索框默认收起（顶栏只留一个搜索图标）。 */
 const searchOpen = ref(false);
 /** 项目过滤：空串 = 全部工作区（保留分组展示）。 */
 const projectFilter = ref('');
@@ -214,7 +214,7 @@ const deleteTarget = computed(
       </UiTooltip>
     </header>
 
-    <!-- 项目选择：对齐 pi-web 的侧栏顶部项目下拉；选「全部」时保留按工作区分组 -->
+    <!-- 项目选择：侧栏顶部项目下拉；选「全部」时保留按工作区分组 -->
     <div class="project-row">
       <UiSelect
         :model-value="projectFilter"
@@ -482,7 +482,7 @@ const deleteTarget = computed(
   background: var(--surface-hover);
   color: var(--ink);
 }
-/* 项目选择行：与 pi-web 一致占满侧栏宽度 */
+/* 项目选择行：占满侧栏宽度 */
 .project-row {
   padding: 0 12px 8px;
 }

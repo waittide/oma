@@ -1,14 +1,14 @@
-//! 外部检索二进制的解析与安装，与 pi `utils/tools-manager.ts` 行为一致。
+//! 外部检索二进制的解析与安装。
 //!
 //! `find` / `grep` 不自己实现文件遍历与匹配，而是调用 `fd` / `ripgrep`：
-//! 只有这样才能得到与 pi 一致的 `.gitignore` 语义、隐藏文件语义与匹配性能。
+//! 只有这样才能得到正确的 `.gitignore` 语义、隐藏文件语义与匹配性能。
 //!
-//! 解析顺序（与 pi 相同）：
+//! 解析顺序：
 //!   1. oma 自己的二进制目录 `<数据目录>/bin`（先前下载留下的）
 //!   2. 系统 `PATH`（`fd` 兼容 Debian 的 `fdfind`）
 //!   3. 从 GitHub Releases 下载解压到 `<数据目录>/bin`
 //!
-//! 设置 `OMA_OFFLINE=1` 可跳过第 3 步（与 pi 的 `PI_OFFLINE` 对应），
+//! 设置 `OMA_OFFLINE=1` 可跳过第 3 步，
 //! 便于离线环境与测试。
 
 use std::{
@@ -33,7 +33,7 @@ pub enum ExternalTool {
     Rg,
 }
 
-/// 单个工具的发布信息（对应 pi `TOOLS` 表里的一项）
+/// 单个工具的发布信息
 struct ToolSpec {
     /// GitHub 仓库，形如 `sharkdp/fd`
     repo:         &'static str,
@@ -67,7 +67,7 @@ impl ExternalTool {
         }
     }
 
-    /// 面向日志/报错的完整名字（与 pi 的 `ToolConfig.name` 一致）
+    /// 面向日志/报错的完整名字
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Fd => "fd",
@@ -90,7 +90,7 @@ fn binary_file_name(spec: &ToolSpec) -> String {
     }
 }
 
-/// 在 `PATH` 中查找可用命令；`--version` 能跑起来即视为存在（与 pi 相同）。
+/// 在 `PATH` 中查找可用命令；`--version` 能跑起来即视为存在。
 fn command_exists(cmd: &str) -> bool {
     std::process::Command::new(cmd)
         .arg("--version")
@@ -194,7 +194,7 @@ fn parse_offline(value: Option<&str>) -> bool {
     }
 }
 
-/// 归档文件名（对应 pi 的 `getAssetName`）。
+/// 归档文件名。
 fn asset_name(binary: &str, version: &str, os: &str, arch: &str) -> Option<String> {
     let arch = match arch {
         "aarch64" | "x86_64" => arch,

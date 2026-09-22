@@ -171,7 +171,7 @@ function toolIcon(name?: string) {
 /**
  * 补丁里的文件头（`*** Update File: <path>` / `*** Add File:` / `*** Delete File:`）。
  *
- * 带补丁文本的工具（oh-my-pi 的 apply_patch 形式，`edit` 即其一）入参就是一段补丁原文，
+ * 带补丁文本的工具（apply_patch 形式，`edit` 即其一）入参就是一段补丁原文，
  * 文件头里的路径正是被改文件，可直接当副标题用。
  */
 const PATCH_FILES_RE = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm;
@@ -235,7 +235,7 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
-/** 思考块的折叠态预览（与 pi-web 一致：单行、去标记、截断） */
+/** 思考块的折叠态预览（单行、去标记、截断） */
 function thinkingPreview(it: Item, max = 96): string {
   const text = stripMarkdown(it.thinking ?? '');
   return text.length > max ? `${text.slice(0, max)}…` : text;
@@ -451,13 +451,13 @@ onMounted(() => void nextTick(syncCodeCopy));
 
 /* 折叠行：无边框扁平形态（参照 opencode basic-tool）。
    自身不留纵向内边距——容器的 8px 间距就是它到相邻块的全部距离，
-   连续的工具调用/思考才会与正文保持同一行距（对齐 pi-web 的块间距） */
+   连续的工具调用/思考才会与正文保持同一行距 */
 .fold {
   display: flex;
   flex-direction: column;
 }
 /*
- * 工具调用失败：整块换成危险色底 + 描边（对齐 pi-web 的 `isError` 卡片），
+ * 工具调用失败：整块换成危险色底 + 描边，
  * 不再用左侧一条竖线——竖线既占掉了内容的起点，又和消息列左侧对不齐。
  */
 .fold.error {
@@ -505,7 +505,7 @@ onMounted(() => void nextTick(syncCodeCopy));
 .fold.think .fold-head {
   color: var(--mauve);
 }
-/* 折叠态的思考预览：一行灰字，与 pi-web 的紧凑折叠条一致 */
+/* 折叠态的思考预览：一行灰字 */
 .fold-preview {
   flex: 1;
   min-width: 0;

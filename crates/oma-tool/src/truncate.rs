@@ -1,4 +1,4 @@
-//! 工具输出截断，与 pi `core/tools/truncate.ts` 行为一致。
+//! 工具输出截断。
 //!
 //! 两套互相独立的上限，**先到者生效**：
 //!   - 行数上限（默认 2000 行）
@@ -75,7 +75,7 @@ fn untouched(content: &str, total_lines: usize, total_bytes: usize, max_lines: u
     }
 }
 
-/// 字节数的人类可读形式（与 pi `formatSize` 一致，如 `50.0KB`）。
+/// 字节数的人类可读形式（如 `50.0KB`）。
 pub fn format_size(bytes: usize) -> String {
     if bytes < 1024 {
         format!("{bytes}B")

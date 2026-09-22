@@ -1,8 +1,8 @@
 //! grep 工具：调用外部 `ripgrep` 搜索文件内容。
 //!
-//! 与 pi `core/tools/grep.ts` 行为一致：参数映射、`--json` 流式解析、
-//! `context` 行的回读渲染、上限与截断提示都对齐。之所以不自己遍历文件，
-//! 是因为 `.gitignore` / 隐藏文件语义只有 `rg` 能保证一致。
+//! 参数映射、`--json` 流式解析、`context` 行的回读渲染、上限与截断提示都在这里
+//! 处理。之所以不自己遍历文件，是因为 `.gitignore` / 隐藏文件语义只有 `rg` 能
+//! 保证一致。
 
 use std::{collections::HashMap, path::Path, process::Stdio};
 
@@ -17,7 +17,7 @@ use crate::{
     truncate::{self, DEFAULT_MAX_BYTES, GREP_MAX_LINE_LENGTH},
 };
 
-/// 默认匹配条数上限（与 pi 相同）
+/// 默认匹配条数上限
 const DEFAULT_LIMIT: usize = 100;
 
 pub struct GrepTool;
@@ -307,7 +307,7 @@ fn format_path(search_path: &Path, is_directory: bool, file: &str) -> String {
         .unwrap_or_else(|| file.to_string())
 }
 
-/// rg 给的行文本带换行；去掉行尾换行与 `\r`（与 pi 相同）。
+/// rg 给的行文本带换行；去掉行尾换行与 `\r`。
 fn sanitize_line(text: &str) -> String {
     text.replace("\r\n", "\n")
         .replace('\r', "")
@@ -315,7 +315,7 @@ fn sanitize_line(text: &str) -> String {
         .to_string()
 }
 
-/// 读文件并渲染匹配行（含前后文），行号前缀与 pi 一致：
+/// 读文件并渲染匹配行（含前后文），行号前缀格式：
 /// 命中行 `path:12: text`，上下文行 `path-12- text`。
 async fn render_block(
     search_path: &Path,

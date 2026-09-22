@@ -24,7 +24,7 @@ const percentText = computed(() =>
 );
 
 /**
- * 占用分档：阈值对齐 oh-my-pi（50 / 70 / 90）。
+ * 占用分档：阈值 50 / 70 / 90。
  * 70% 恰好是 oma 的压缩触发点（`context_len * 0.7`），故该档起即已进入压缩区。
  */
 const level = computed<'normal' | 'warning' | 'pending' | 'danger'>(() => {

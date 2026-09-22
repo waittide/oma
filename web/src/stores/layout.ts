@@ -3,8 +3,7 @@ import { computed, ref, watch, type Ref } from 'vue';
 /**
  * 工作区外壳的面板布局状态。
  *
- * 尺寸与断点对齐 pi-web 的 `lib/panel-layout.ts`：
- * 侧栏默认 260（180–480），右侧面板默认 42% 视口并夹在 360–640（300–1200），
+ * 侧栏默认 340（280–480），右侧面板默认 42% 视口并夹在 360–640（300–1200），
  * 视口 < 960 视为紧凑布局，< 640 视为移动端。宽度持久化在 localStorage。
  */
 export const SIDEBAR_DEFAULT_WIDTH = 340;
@@ -35,7 +34,7 @@ function clamp(width: number, min: number, max: number): number {
   return Math.round(Math.max(min, Math.min(Math.max(min, max), finite)));
 }
 
-/** 右侧面板默认宽度：视口 42%，夹在 360–640（与 pi-web 一致）。 */
+/** 右侧面板默认宽度：视口 42%，夹在 360–640。 */
 export function defaultRightPanelWidth(viewportWidth: number): number {
   return clamp(viewportWidth * 0.42, 360, 640);
 }

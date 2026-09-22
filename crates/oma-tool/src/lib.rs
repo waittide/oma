@@ -23,7 +23,7 @@ use std::path::Component;
 /// 最大工具输出字符数限制。
 ///
 /// 现在只剩 `edit` 的 diff 在用（作为超大 diff 的兜底）；
-/// `read` / `shell` 与 `ls` / `find` / `grep` 已统一走 [`truncate`] 的行数 + 字节双上限，与 pi 一致。
+/// `read` / `shell` 与 `ls` / `find` / `grep` 已统一走 [`truncate`] 的行数 + 字节双上限。
 pub const RESULT_MAX_CHARS: usize = 24_000;
 
 /// 工具输出截断保护函数（字符数口径）。
@@ -284,7 +284,7 @@ impl Tool for ReadTool {
             ));
         }
 
-        // 行号前缀是 oma 自有的展示形式（pi 给原样内容），只在这里拼接；
+        // 行号前缀是 oma 自有的展示形式，只在这里拼接；
         // 截断后的行数与源文件行一一对应，提示里的行号因此仍指向文件真实行号。
         let numbered = |line_no: usize, text: &str| format!("{line_no:4} | {text}");
 
@@ -926,7 +926,7 @@ impl Drop for ProcessGroupGuard {
 }
 
 /// 命令输出格式化：保留末尾（错误与最终结果在末尾），
-/// 用与 pi 相同的 2000 行 / 50KB 双上限，并在截断时给出可读的范围提示。
+/// 用 2000 行 / 50KB 双上限，并在截断时给出可读的范围提示。
 fn format_command_output(combined: &str) -> String {
     if combined.is_empty() {
         return "(no output)".to_string();
@@ -1363,8 +1363,7 @@ mod tests {
     // ------------------------------------------------------------------
     // edit（apply_patch envelope）
     //
-    // 用例对照 oh-my-pi `crates/pi-edit/tests/fixtures/apply_patch/`：
-    // 目录名即场景名，行为与期望文件内容保持一致。
+    // 用例覆盖 envelope / hunk 的各类场景，函数名即场景名。
     // ------------------------------------------------------------------
 
     /// 在工作区里跑一次 `edit`，返回工具输出。
@@ -2005,7 +2004,7 @@ mod tests {
         );
     }
 
-    /// 工具集必须与 pi 对齐：edit / find / grep / ls / read / shell / write。
+    /// 内置工具集：edit / find / grep / ls / read / shell / write。
     #[test]
     fn test_builtin_tool_set_matches_pi() {
         let reg = ToolRegistry::with_builtins();
@@ -2025,7 +2024,7 @@ mod tests {
         assert_eq!(required("shell"), serde_json::json!(["command"]));
     }
 
-    /// ls 不依赖外部二进制，直接验证 pi 对齐后的输出形态（目录带 `/` 后缀、无体积列）。
+    /// ls 不依赖外部二进制，直接验证输出形态（目录带 `/` 后缀、无体积列）。
     #[tokio::test]
     async fn test_ls_lists_entries_sorted() -> Result<()> {
         let tmp = tempfile::tempdir()?;
@@ -2037,7 +2036,7 @@ mod tests {
         assert!(!ls.is_error, "{}", ls.output);
         assert!(ls.output.contains("src/"), "{}", ls.output);
         assert!(ls.output.contains("README.md"), "{}", ls.output);
-        // 条目行不再附体积（pi 只给名字与 `/` 后缀）
+        // 条目行不附体积（只给名字与 `/` 后缀）
         assert!(!ls.output.contains(" B"), "{}", ls.output);
 
         let empty = tempfile::tempdir()?;

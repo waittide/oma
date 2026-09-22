@@ -282,8 +282,7 @@ impl PaletteLoader {
 
 /// Oma 配置文件的磁盘位置。
 ///
-/// 参照 pi 的 `settings.json` / `models.json` 分层：常规偏好与「提供商/模型清单」
-/// 分文件存放，便于手改与版本管理。
+/// 常规偏好与「提供商/模型清单」分文件存放，便于手改与版本管理。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigPaths {
     /// 常规设置：默认模型/预设、推理等级、主题、服务端、MCP
@@ -786,7 +785,7 @@ fn parse_template_parts(id: &str, raw: &str) -> ParsedTemplate {
 /// 上下文文件的候选名（按优先级）。
 ///
 /// `AGENTS.override.md` 用于「临时改行为而不动仓库里的 AGENTS.md」，
-/// `CLAUDE.md` 是为了直接复用已有 Claude Code 项目里的说明（与 pi 一致）。
+/// `CLAUDE.md` 是为了直接复用已有 Claude Code 项目里的说明。
 const CONTEXT_FILE_NAMES: [&str; 5] = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 
 /// 全局上下文文件所在目录：`<配置目录>/oma`。
@@ -969,7 +968,7 @@ impl AgentLoader {
             active_model
         );
 
-        // 项目说明常驻上下文（与 pi 的 project_context 一致）：
+        // 项目说明常驻上下文：
         // 它是「这个仓库要遵守的约定」，不该等模型想起去 read 才生效
         if let Some(section) = render_project_context(&load_project_context_files(workspace)) {
             prompt.push_str("\n\n");
