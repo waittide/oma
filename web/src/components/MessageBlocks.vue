@@ -46,6 +46,8 @@ interface Item {
   resultDone?: boolean;
   /** 工具执行耗时（毫秒）：优先取回执里服务端记下的值 */
   durationMs?: number | null;
+  /** 思考段耗时（毫秒）：服务端测量，落在 thinking 块上 */
+  thinkingMs?: number | null;
 }
 
 /** 把 tool_use 与其 tool_result 合并成单个条目；tool_result 不单独渲染。 */
@@ -56,7 +58,12 @@ const items = computed<Item[]>(() => {
   props.blocks.forEach((b, i) => {
     if (b.type === 'text') out.push({ kind: 'text', key: `t${i}`, text: b.text });
     else if (b.type === 'thinking') {
-      const it: Item = { kind: 'thinking', key: `h${i}`, thinking: b.thinking };
+      const it: Item = {
+        kind: 'thinking',
+        key: `h${i}`,
+        thinking: b.thinking,
+        thinkingMs: b.duration_ms ?? null,
+      };
       // 仅流式轮次末尾、仍在增长中的思考块视为 active
       it.active = live && i === props.blocks.length - 1;
       out.push(it);
@@ -218,15 +225,31 @@ function isPatchTool(it: Item): boolean {
 }
 
 /**
+ * 毫秒 → 折叠头上的耗时文案（秒，最多一位小数；长耗时取整）。
+ * 与旧的工具展示保持一致：5s / 6.5s。
+ */
+function formatSeconds(ms: number): string {
+  const seconds = ms < 10_000 ? Math.round(ms / 100) / 10 : Math.round(ms / 1000);
+  return `${seconds}s`;
+}
+
+/**
  * 工具执行耗时：服务端随回执落库的毫秒数优先（历史消息也有），
  * 其次用本次连接内 `tool_call_finished` 带来的即时值。
  */
 function toolDuration(it: Item): string {
   const ms = it.durationMs ?? toolDurations.value[it.key];
   if (ms === undefined || ms === null) return '';
-  // 秒为单位、最多一位小数：与旧展示一致（5s / 6.5s），长耗时取整
-  const seconds = ms < 10_000 ? Math.round(ms / 100) / 10 : Math.round(ms / 1000);
-  return `${seconds}s`;
+  return formatSeconds(ms);
+}
+
+/**
+ * 思考段耗时：服务端在落库时测好、随 thinking 块一起回来的毫秒数。
+ * 流式进行中的那一段还没有值（请求没结束就没有确定数字），此时不显示。
+ */
+function thinkingDuration(it: Item): string {
+  const ms = it.thinkingMs;
+  return ms === undefined || ms === null ? '' : formatSeconds(ms);
 }
 
 /**
@@ -281,6 +304,7 @@ onMounted(() => void nextTick(syncCodeCopy));
           <LuBrain :size="13" class="think-icon" />
           <span v-if="isOpen(it)" class="fold-title">{{ t('thinking') }}</span>
           <span v-else class="fold-preview">{{ thinkingPreview(it) || t('thinking') }}</span>
+          <span v-if="thinkingDuration(it)" class="fold-dur">{{ thinkingDuration(it) }}</span>
           <LuChevronRight :size="13" class="caret" />
         </UiButton>
         <div
@@ -300,7 +324,7 @@ onMounted(() => void nextTick(syncCodeCopy));
           <span class="tool-name">{{ it.toolName }}</span>
           <span v-if="toolSubtitle(it)" class="fold-sub">{{ toolSubtitle(it) }}</span>
           <span v-if="!it.resultDone" class="tstatus running">{{ t('running') }}</span>
-          <span v-else-if="toolDuration(it)" class="tool-dur">{{ toolDuration(it) }}</span>
+          <span v-else-if="toolDuration(it)" class="fold-dur">{{ toolDuration(it) }}</span>
           <LuChevronRight :size="13" class="caret" />
         </UiButton>
         <div v-show="isOpen(it)" class="fold-body-wrap">
@@ -550,8 +574,8 @@ onMounted(() => void nextTick(syncCodeCopy));
 .fold.tool.error .tool-name {
   color: var(--danger);
 }
-/* 工具耗时：紧贴折叠箭头，等宽数字避免行内跳动 */
-.tool-dur {
+/* 折叠头上的单项耗时（思考段 / 工具执行）：紧贴折叠箭头，等宽数字避免行内跳动 */
+.fold-dur {
   margin-left: auto;
   flex-shrink: 0;
   font-size: 11px;

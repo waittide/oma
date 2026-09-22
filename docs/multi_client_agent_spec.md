@@ -181,7 +181,9 @@ pub enum Block {
         text: String 
     },
     Thinking { 
-        thinking: String 
+        thinking: String,
+        // 这一段思考的墙钟耗时（毫秒），运行时测量；不可测时为 null
+        duration_ms: Option<u64>
     },
     Image { 
         mime_type: String, 
@@ -254,7 +256,7 @@ CREATE TABLE messages (
     role        TEXT NOT NULL,                   -- user / assistant
     blocks_json TEXT NOT NULL,                   -- oma 契约的 Block 数组
     model       TEXT,                            -- 产出该消息的模型（provider/modelId）
-    usage_json  TEXT,                            -- 产生该消息那次请求的 token 用量（TokenUsage）
+    usage_json  TEXT,                            -- 产生该消息那次请求的用量与墙钟耗时（TokenUsage）
     created_at  INTEGER NOT NULL,
     FOREIGN KEY(parent_id) REFERENCES messages(id)
 );
@@ -527,6 +529,9 @@ pub struct TokenUsage {
     pub cache_read_tokens:  usize,
     #[serde(default)]
     pub cache_write_tokens: usize,
+    /// 该用量所属那次模型请求的墙钟耗时；聚合值（TurnFinished / 追赶快照）为 None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms:        Option<u64>,
 }
 
 /// 上下文占用快照
@@ -916,7 +921,9 @@ pub struct Palette {
   2. 树状对话流展示、Markdown 渲染、Thinking 思维链折叠；**流式中的那条回复与持久化
      消息一样带模型标签与用量行**——模型标签取轮次开始时记录的模型（回退当前模型），
      用量行取服务端每次模型请求后下发的**该次请求**的用量（`usage_updated` / 追赶快照），
-     与随后回读到的这条助手消息上的数字完全一致；轮次耗时只在整轮收尾后出现；
+     与随后回读到的这条助手消息上的数字完全一致；**每条助手消息的耗时取该次请求的墙钟**
+     （`usage.duration_ms`，服务端测量），思考段与每次工具调用各自在折叠按钮左侧显示
+     自己的耗时（`thinking.duration_ms` / 回执里的 `duration_ms`）；
   3. Tool 执行过程与参数/Diff 展示；
   4. 分支切换与回溯（`SwitchBranch`, `ForkAndRun`）与历史树弹层；
   5. 三栏工作区外壳（侧栏 / 消息区 / 右侧面板）与顶部工具栏，
@@ -974,4 +981,5 @@ pub struct Palette {
 | 内置终端 | **不做**：右侧面板只保留文件 / 变更 / 历史树三页，不提供终端标签页，也不引入 pty 通道（原先的占位标签页与文案已删除）。工作区里的命令执行由 Agent 的 `shell` 工具承担；面板开一个交互式 shell 等于把「任意命令执行」直接交给任何持 token 的客户端，与本项目「内核只做最小必要能力」的口径冲突。 |
 | 数据兼容与迁移 | **不做**：存储层不保留任何旧格式兼容或补列迁移——老库缺列、`context_usage` 冒号串、坏 `blocks_json` / `role` / `usage_json` 一律硬报错（错误信息带缺失列名或消息 id），而不是自动补列、退化成 `None` 或兜底成空内容。理由：这些兼容分支只服务于「曾经存在过的格式」，保留它们会让「静默降级」在界面上看起来像正常历史，排障成本远高于让用户重建数据；协议层的 `#[serde(default)]`、前端可选字段与未知事件忽略不属于此类，它们是字段可选与前向兼容，保留。 |
 | 用量口径 | 助手消息的 `usage` 只记**产生它的那一次模型请求**（含该次请求的整个提示侧，故缓存命中通常占大头）；整轮总量由 `TurnFinished.usage` 给出，不落到任何单条消息上。早期实现把「本轮累计值」逐条写进消息，于是长工具循环里最后一条会显示成整轮之和（实测上千万输入），被正确地读成了「这个工具调用消耗了这么多 token」。 |
+| 耗时口径 | **谁的时间就记在谁身上**，且一律由服务端测量：每条助手消息记该次模型请求的墙钟（`usage.duration_ms`，发起到流读完）；每段思维链记这一段思考的耗时（`thinking.duration_ms`，首帧思考增量到该段结束）；每次工具调用记执行耗时（回执里的 `duration_ms`）。三者各自显示在自己的位置（消息底部统计行 / 折叠按钮左侧），不再用「整轮墙钟挂最后一条」的近似——那种做法要求前端拿消息 `created_at` 相减，即「提问到收尾」的累积值，贴在中间那条上会被读成这条消息本身的耗时。 |
 | 设置面板结构 | 提供商页：提供商配置为单个带底色容器（标题在其内），模型配置为容器外分区标题，其下每个模型各自一个容器；预设页的工具授权用多选下拉（标签可逐个移除），选项来自 `GET /api/tools`。 |

@@ -162,6 +162,11 @@ async fn chat_completions(State(state): State<MockState>, body: Bytes) -> Respon
 
     chunks.push(sse(&usage));
 
+    // 「think aloud」场景：先来一段思维链，供思考段耗时用例断言
+    if user_text.contains("think aloud") {
+        chunks.insert(0, sse(r#"{"choices":[{"delta":{"reasoning_content":"先想想…"}}]}"#));
+    }
+
     let mut payload = String::new();
     for chunk in chunks {
         payload.push_str(&chunk);
@@ -551,6 +556,61 @@ async fn test_usage_is_recorded_per_request() -> Result<()> {
         per_msg.iter().all(|v| *v < turn_total.input_tokens as u64),
         "单条消息只能是某一次请求的量，不能等于整轮之和：{per_msg:?} vs {}",
         turn_total.input_tokens
+    );
+    Ok(())
+}
+
+/// 耗时口径：每条助手消息带上它那次请求的墙钟（`usage.duration_ms`），
+/// 每段思维链带上这一段思考的耗时（`thinking.duration_ms`）。
+///
+/// 本地 mock 下数值可能是 0（毫秒级），所以断言「字段存在」——这是契约；
+/// 为 0 时界面显示 `0s`，与「没有这个数」是两回事。
+#[tokio::test]
+async fn test_request_and_thinking_durations_are_recorded() -> Result<()> {
+    let h = start_harness().await?;
+    let session = h
+        .api
+        .create_session(&h.workspace, Some("durations"))
+        .await?;
+
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "durations".into(),
+    })
+    .await?;
+
+    client
+        .send_command(AgentCommand::UserInput {
+            content:     "think aloud".into(),
+            attachments: vec![],
+        })
+        .await?;
+    drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    let messages = fetch_messages(&h, &session.session_id).await?;
+    let assistant = messages
+        .iter()
+        .find(|m| m["role"] == "assistant")
+        .expect("至少应有一条助手消息");
+    assert!(
+        assistant["usage"]["duration_ms"].as_u64().is_some(),
+        "助手消息必须带该次请求的耗时：{}",
+        assistant["usage"]
+    );
+
+    let thinking = assistant["content"]
+        .as_array()
+        .expect("content 是块数组")
+        .iter()
+        .find(|b| b["type"] == "thinking")
+        .expect("provider 上报了 reasoning_content，应当落成 thinking 块");
+    assert!(
+        thinking["duration_ms"].as_u64().is_some(),
+        "thinking 块必须带这一段思考的耗时：{thinking}"
     );
     Ok(())
 }

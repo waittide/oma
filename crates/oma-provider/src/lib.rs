@@ -200,7 +200,7 @@ fn build_openai_messages(
                 for b in &msg.content {
                     match b {
                         Block::Text { text } => text_parts.push(text.clone()),
-                        Block::Thinking { thinking } => reasoning.push_str(thinking),
+                        Block::Thinking { thinking, .. } => reasoning.push_str(thinking),
                         Block::ToolUse { id, name, input } => {
                             tool_calls.push(serde_json::json!({
                                 "id": id,
@@ -660,7 +660,7 @@ impl UniversalProvider {
                             "text": text
                         }));
                     }
-                    Block::Thinking { thinking } => {
+                    Block::Thinking { thinking, .. } => {
                         content_blocks.push(serde_json::json!({
                             "type": "thinking",
                             "thinking": thinking
@@ -2788,7 +2788,10 @@ data: [DONE]\n\n";
     fn assistant_with_thinking(thinking: Option<&str>) -> ChatMessage {
         let mut content = Vec::new();
         if let Some(t) = thinking {
-            content.push(Block::Thinking { thinking: t.into() });
+            content.push(Block::Thinking {
+                thinking:    t.into(),
+                duration_ms: None,
+            });
         }
         content.push(Block::ToolUse {
             id:    "call_1".into(),
@@ -2842,7 +2845,8 @@ data: [DONE]\n\n";
             parent_id:  Some("u1".into()),
             role:       Role::Assistant,
             content:    vec![Block::Thinking {
-                thinking: "想到一半就被打断".into(),
+                thinking:    "想到一半就被打断".into(),
+                duration_ms: None,
             }],
             created_at: 0,
             model:      None,

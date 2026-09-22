@@ -120,7 +120,7 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         for b in &m.content {
             match b {
                 Block::Text { text } => total_chars += text.chars().count(),
-                Block::Thinking { thinking } => total_chars += thinking.chars().count(),
+                Block::Thinking { thinking, .. } => total_chars += thinking.chars().count(),
                 Block::ToolResult { content, .. } => total_chars += content.chars().count(),
                 Block::ToolUse { input, name, .. } => {
                     total_chars += name.chars().count() + input.to_string().chars().count();
@@ -868,6 +868,8 @@ impl SessionRoom {
             let mut model_cfg = model_cfg.clone();
             apply_reasoning_level(&mut model_cfg, &self.reasoning_level.read());
             let provider = UniversalProvider::new(provider_cfg);
+            // 本次请求的墙钟起点：从发起到流读完，供消息上的「耗时」使用
+            let request_started = std::time::Instant::now();
             let mut stream_rx = match provider
                 .send_stream(&messages, Some(&system_prompt), &tools_defs, &model_cfg)
                 .await
@@ -890,6 +892,9 @@ impl SessionRoom {
             let mut request_usage = TokenUsage::default();
             let mut stop_reason = StopReason::EndTurn;
             let mut cancelled = false;
+            // 思考段的墙钟：首帧思考增量起算，遇到第一段正文/工具调用（或流结束）为止
+            let mut thinking_started: Option<std::time::Instant> = None;
+            let mut thinking_ended: Option<std::time::Instant> = None;
             // 本次请求的权威输入占用（Anthropic 在 message_start 上报，OpenAI 等在收尾）
             let mut request_input_tokens = 0usize;
 
@@ -909,6 +914,9 @@ impl SessionRoom {
 
                 match event {
                     ProviderStreamEvent::ThinkingDelta(delta) => {
+                        if thinking_started.is_none() {
+                            thinking_started = Some(std::time::Instant::now());
+                        }
                         assistant_thinking.push_str(&delta);
                         if let Some(turn) = self.active_turn.write().as_mut() {
                             turn.accumulated_thinking.push_str(&delta);
@@ -916,6 +924,10 @@ impl SessionRoom {
                         self.broadcast(AgentEvent::ThinkingDelta { delta });
                     }
                     ProviderStreamEvent::TextDelta(delta) => {
+                        // 正文开始 = 这一段思考结束（思考在正文之前输出）
+                        if thinking_started.is_some() && thinking_ended.is_none() {
+                            thinking_ended = Some(std::time::Instant::now());
+                        }
                         assistant_text.push_str(&delta);
                         if let Some(turn) = self.active_turn.write().as_mut() {
                             turn.accumulated_text.push_str(&delta);
@@ -923,6 +935,10 @@ impl SessionRoom {
                         self.broadcast(AgentEvent::TextDelta { delta });
                     }
                     ProviderStreamEvent::ToolCall { id, name, input } => {
+                        // 直接给出工具调用（无正文）时同样视为思考结束
+                        if thinking_started.is_some() && thinking_ended.is_none() {
+                            thinking_ended = Some(std::time::Instant::now());
+                        }
                         assistant_tool_calls.push((id, name, input));
                     }
                     ProviderStreamEvent::Usage {
@@ -953,6 +969,18 @@ impl SessionRoom {
                 }
             }
 
+            // 本次请求的墙钟耗时（发起到流读完），以及这一段思考的耗时
+            let request_ms = request_started.elapsed().as_millis() as u64;
+            let thinking_ms = thinking_started.map(|start| {
+                let end = thinking_ended.unwrap_or_else(std::time::Instant::now);
+                end.saturating_duration_since(start).as_millis() as u64
+            });
+            // 消息与流式事件共用同一份「这次请求」的统计，两处数字必须完全一致
+            let request_stats = TokenUsage {
+                duration_ms: Some(request_ms),
+                ..request_usage
+            };
+
             // 回填权威锚点：本次请求的真实输入占用对应 history[..covered]。
             // 厂商未上报用量时保留旧锚点，绝不写入 0 覆盖。
             if let Some(recorded) = TokenAnchor::record(covered, request_input_tokens) {
@@ -974,7 +1002,8 @@ impl SessionRoom {
             let mut assistant_blocks = Vec::new();
             if !assistant_thinking.is_empty() {
                 assistant_blocks.push(Block::Thinking {
-                    thinking: assistant_thinking,
+                    thinking:    assistant_thinking,
+                    duration_ms: thinking_ms,
                 });
             }
             if !assistant_text.is_empty() {
@@ -1003,9 +1032,9 @@ impl SessionRoom {
                     // 记下产出这一轮时生效的模型：会话中途切模型后，历史里
                     // 每一轮的归属仍然可读（界面据此显示每轮模型标签）
                     model:      Some(active_model_sel.clone()),
-                    // 只记**本次请求**的用量：一条助手消息对应一次模型请求，
+                    // 只记**本次请求**的用量与墙钟：一条助手消息对应一次模型请求，
                     // 把整轮累计值写在这里会让长工具循环的最后一条看起来消耗巨大
-                    usage:      Some(request_usage),
+                    usage:      Some(request_stats),
                 };
                 if let Err(e) = self
                     .storage
@@ -1022,9 +1051,9 @@ impl SessionRoom {
                 // 该请求的助手消息已落库：把本轮累计用量同步给客户端。
                 // 口径与落库值一致（本次请求），流式界面据此显示输入/输出
                 if let Some(turn) = self.active_turn.write().as_mut() {
-                    turn.usage = request_usage;
+                    turn.usage = request_stats;
                 }
-                self.broadcast(AgentEvent::UsageUpdated { usage: request_usage });
+                self.broadcast(AgentEvent::UsageUpdated { usage: request_stats });
 
                 // 首次回复已完成：立刻后台命名，不再等整轮（含工具调用）结束
                 if !naming_attempted {

@@ -363,14 +363,16 @@ function messageModelLabel(model?: string | null): string {
 }
 
 /**
- * 本轮 token 开销行（`耗时 · N 输入 · N 输出 · N 缓存读 · N 缓存写`）。
+ * 一条助手消息的统计行（`耗时 · N 输入 · N 输出 · N 缓存读 · N 缓存写`）。
  *
  * oma 的模型配置里没有价格字段，故不展示成本。
  * 单位是各语言里的词（中文「输入/输出」），数字按当前语言做千分位。
+ * 耗时取服务端为**该次请求**测得的墙钟（`usage.duration_ms`），因此每条消息
+ * 显示的都是它自己的那次模型请求，而不是整轮之和。
  */
-function usageText(usage?: TokenUsage | null, elapsedMs?: number): string {
+function usageText(usage?: TokenUsage | null): string {
   const parts: string[] = [];
-  if (elapsedMs) parts.push(t('usageElapsed', { time: formatDuration(elapsedMs) }));
+  if (usage?.duration_ms) parts.push(t('usageElapsed', { time: formatDuration(usage.duration_ms) }));
   if (usage) {
     if (usage.input_tokens) parts.push(t('usageIn', { count: usage.input_tokens.toLocaleString() }));
     if (usage.output_tokens) parts.push(t('usageOut', { count: usage.output_tokens.toLocaleString() }));
@@ -394,47 +396,12 @@ const liveModelLabel = computed(() => messageModelLabel(chat.live.value.model ||
  * 流式消息的用量行。
  *
  * 服务端在每次模型请求结束后下发**该次请求**的用量（`usage_updated`），因此这里显示
- * 的是最近一次请求的输入/输出（含它的整个提示侧），与回读后落在那条助手消息上的数字
- * 一致；不含耗时——整轮还没走完，那一个数字只该在收尾时出现（见 `turnElapsedMs`）。
+ * 的是最近一次请求的耗时与输入/输出（含它的整个提示侧），与回读后落在那条助手消息上
+ * 的数字一致——整轮还在跑，但那一次请求已经结束，数字是确定的。
  */
 const liveUsageText = computed(() => usageText(chat.live.value.usage));
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */
 const ready = computed(() => !!activeSessionId.value && props.online && chat.connected.value);
-
-/**
- * 每轮的整体耗时（毫秒），只挂在**该轮最后一条助手消息**上。
- *
- * 中间那些带工具调用的助手消息，`created_at` 只是「本次模型请求读完流」的时刻，
- * 工具是在它之后才跑的：把差值挂到它们身上会被读成「这个工具只花了一点几秒」，
- * 而工具行自己显示的才是真正的执行耗时。整轮耗时统一落在最后一条回复上，
- * 两处数字就不再打架（服务端没有轮次起始时间戳，只能按用户消息的 created_at 推）。
- *
- * 流式中的消息还没有 created_at，不显示。
- */
-const turnElapsedMs = computed<Record<string, number>>(() => {
-  const elapsed: Record<string, number> = {};
-  let askedAt = 0;
-  let lastId: string | null = null;
-  let lastAt = 0;
-  const flush = () => {
-    if (lastId && askedAt > 0 && lastAt > askedAt) elapsed[lastId] = lastAt - askedAt;
-    lastId = null;
-    lastAt = 0;
-  };
-  for (const m of chat.messages.value) {
-    if (m.role === 'user' && !chat.isInternalMessage(m)) {
-      flush();
-      askedAt = m.created_at;
-      continue;
-    }
-    if (m.role === 'assistant') {
-      lastId = m.id;
-      lastAt = m.created_at;
-    }
-  }
-  flush();
-  return elapsed;
-});
 
 /**
  * 右侧竖线导航：每条用户消息对应一个点，悬停展示提示词。
@@ -606,8 +573,8 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
             <template v-else>
               <div v-if="messageModelLabel(m.model)" class="model-label">{{ messageModelLabel(m.model) }}</div>
               <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
-              <div v-if="usageText(m.usage, turnElapsedMs[m.id])" class="turn-usage">
-                {{ usageText(m.usage, turnElapsedMs[m.id]) }}
+              <div v-if="usageText(m.usage)" class="turn-usage">
+                {{ usageText(m.usage) }}
               </div>
             </template>
           </article>

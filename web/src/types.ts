@@ -34,7 +34,7 @@ export const MODEL_CAPABILITIES: { value: ModelCapability; label: string }[] = [
 
 export type Block =
   | { type: 'text'; text: string }
-  | { type: 'thinking'; thinking: string }
+  | { type: 'thinking'; thinking: string; duration_ms?: number | null }
   | { type: 'image'; mime_type: string; data: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean; duration_ms?: number | null };
@@ -108,6 +108,8 @@ export interface TokenUsage {
   cache_read_tokens?: number;
   /** 写入缓存的输入 token */
   cache_write_tokens?: number;
+  /** 该用量所属那次模型请求的墙钟耗时；聚合值与历史数据缺省 */
+  duration_ms?: number | null;
 }
 
 export type AgentEvent =
