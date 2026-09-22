@@ -36,6 +36,34 @@ const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
 const TREE_MAX_DEPTH: usize = 4;
 const TREE_MAX_ENTRIES: usize = 2000;
 
+/// 文件树里固定忽略的生成物目录/文件（对齐 pi-web 的忽略名单）。
+///
+/// 这里**只**挡这些确定没有浏览价值的名字：早先的实现把「以 `.` 开头」一并跳过，
+/// 于是家目录这类以点文件为主的工作区直接变成空树（`.zshrc`、`.config` 全被滤掉）。
+const TREE_IGNORED_NAMES: &[&str] = &[
+    "node_modules",
+    ".git",
+    ".next",
+    ".turbo",
+    ".cache",
+    "dist",
+    "build",
+    "coverage",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    "target",
+    "vendor",
+    ".DS_Store",
+];
+/// 编译产物后缀，同样只挡确定无价值的
+const TREE_IGNORED_SUFFIXES: &[&str] = &[".pyc"];
+
+/// 是否属于固定忽略的条目
+fn is_ignored_entry(name: &str) -> bool {
+    TREE_IGNORED_NAMES.contains(&name) || TREE_IGNORED_SUFFIXES.iter().any(|s| name.ends_with(s))
+}
+
 /// 解析生效的访问 token。
 ///
 /// 优先级：命令行 `--token` > 环境变量 `OMA_AUTH_TOKEN` > 配置文件 `[server].token`。
@@ -521,7 +549,7 @@ async fn handle_workspace_tree(
     Ok(Json(tree))
 }
 
-/// 递归构建文件树；跳过大目录与点文件，受深度与总条目预算约束。
+/// 递归构建文件树；跳过生成物目录，受深度与总条目预算约束。
 fn build_tree(path: &Path, rel_root: &Path, max_depth: usize, budget: &mut usize) -> FileNode {
     let name = path
         .file_name()
@@ -537,16 +565,19 @@ fn build_tree(path: &Path, rel_root: &Path, max_depth: usize, budget: &mut usize
     let mut children = Vec::new();
     if is_dir && max_depth > 0 && *budget > 0 {
         if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
+            // read_dir 的顺序由文件系统决定，先排序再消耗预算：否则某个大目录可能
+            // 以任意顺序把 2000 条的额度吃掉，剩下的目录一个都进不来
+            let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+            paths.sort();
+            for p in paths {
                 if *budget == 0 {
                     break;
                 }
-                let p = entry.path();
                 let f_name = p
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                if f_name.starts_with('.') || f_name == "target" || f_name == "node_modules" {
+                if is_ignored_entry(&f_name) {
                     continue;
                 }
                 *budget -= 1;

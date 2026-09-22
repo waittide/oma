@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { UiIconButton, UiTooltip } from '@waittide/ui';
-import { LuListTree, LuPanelLeft, LuPanelRight, LuPlug } from 'vue-icons-plus/lu';
+import { LuPanelLeft, LuPanelRight, LuPlug } from 'vue-icons-plus/lu';
 import { useTranslations } from '../composables/i18n';
 import { activeSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
@@ -57,17 +57,6 @@ const mcpTip = computed(() =>
 
       <UiTooltip :content="chat.connected.value ? t('connected') : t('disconnected')" align="end" placement="bottom">
         <span class="dot" :class="chat.connected.value ? 'ok' : 'off'" />
-      </UiTooltip>
-      <UiTooltip :content="t('historyTree')" align="end" placement="bottom">
-        <UiIconButton
-          class="icon-ghost"
-          size="sm"
-          :label="t('historyTree')"
-          :disabled="!activeSession"
-          @click="layout.setTreeOpen(true)"
-        >
-          <LuListTree :size="14" />
-        </UiIconButton>
       </UiTooltip>
       <UiTooltip :content="t('toggleRightPanel')" align="end" placement="bottom">
         <UiIconButton

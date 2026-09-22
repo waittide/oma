@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { LuChevronRight, LuFile, LuFolder, LuFolderOpen } from 'vue-icons-plus/lu';
+import { LuChevronRight } from 'vue-icons-plus/lu';
 import type { FileNode } from '../types';
+import FileIcon from './FileIcon.vue';
 
 /**
  * 工作区文件树（递归组件）。
@@ -53,7 +54,7 @@ function toggle(node: FileNode) {
         <span class="caret-slot">
           <LuChevronRight v-if="node.is_dir && node.children?.length" :size="12" class="caret" :class="{ open: isOpen(node) }" />
         </span>
-        <component :is="node.is_dir ? (isOpen(node) ? LuFolderOpen : LuFolder) : LuFile" :size="13" class="icon" />
+        <FileIcon :name="node.name" :is-dir="node.is_dir" :open="isOpen(node)" />
         <span class="name">{{ node.name }}</span>
       </button>
       <FileTree
@@ -113,10 +114,6 @@ function toggle(node: FileNode) {
 }
 .caret.open {
   transform: rotate(90deg);
-}
-.icon {
-  flex-shrink: 0;
-  color: var(--overlay1);
 }
 .name {
   overflow: hidden;

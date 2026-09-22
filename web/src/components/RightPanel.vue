@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { UiIconButton, UiTooltip } from '@waittide/ui';
-import { LuFileText, LuGitCompare, LuPanelRight, LuRefreshCw, LuTerminal } from 'vue-icons-plus/lu';
+import {
+  LuFileText,
+  LuGitCompare,
+  LuListTree,
+  LuPanelRight,
+  LuRefreshCw,
+  LuTerminal,
+} from 'vue-icons-plus/lu';
 import { useTranslations } from '../composables/i18n';
 import { activeSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
@@ -10,18 +17,20 @@ import type { FileNode } from '../types';
 import FileTree from './FileTree.vue';
 import FilePreview from './FilePreview.vue';
 import GitChanges from './GitChanges.vue';
+import HistoryTree from './HistoryTree.vue';
 
 /**
  * 右侧工作面板。
  *
- * 「文件」与「变更」已接入真实内容（工作区文件树 / 预览、Git status + 逐文件 diff）；
- * 内置终端待 P9（需要后端 pty + WS）。
+ * 「文件」「变更」「历史树」已接入真实内容（工作区文件树 / 预览、Git status + 逐文件
+ * diff、会话分支树）；内置终端待 P9（需要后端 pty + WS）。
  */
 const { t } = useTranslations('panel');
 
 const tabs = computed(() => [
   { id: 'files' as const, label: t('files'), icon: LuFileText },
   { id: 'changes' as const, label: t('changes'), icon: LuGitCompare },
+  { id: 'tree' as const, label: t('tree'), icon: LuListTree },
   { id: 'terminal' as const, label: t('terminal'), icon: LuTerminal },
 ]);
 
@@ -74,7 +83,12 @@ watch(workspace, () => {
         <component :is="tab.icon" :size="13" />
         <span>{{ tab.label }}</span>
       </button>
-      <UiTooltip :content="t('refresh')" align="end" placement="bottom">
+      <UiTooltip
+        v-if="layout.rightTab.value === 'files'"
+        :content="t('refresh')"
+        align="end"
+        placement="bottom"
+      >
         <UiIconButton class="tab-action" size="sm" :label="t('refresh')" :disabled="!activeSession" @click="loadTree">
           <LuRefreshCw :size="13" />
         </UiIconButton>
@@ -107,6 +121,8 @@ watch(workspace, () => {
 
       <GitChanges v-else-if="layout.rightTab.value === 'changes'" :workspace="workspace" />
 
+      <HistoryTree v-else-if="layout.rightTab.value === 'tree'" />
+
       <div v-else class="empty">
         <p class="hint">{{ t('terminalHint') }}</p>
       </div>
@@ -131,6 +147,9 @@ watch(workspace, () => {
   flex-shrink: 0;
   padding: 0 6px;
   border-bottom: 1px solid var(--line);
+  /* 窄面板下四个标签会超出宽度：让标签条自己横向滚动，动作按钮仍钉在右侧 */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 .tab {
   display: inline-flex;
@@ -144,6 +163,7 @@ watch(workspace, () => {
   color: var(--muted);
   font: inherit;
   font-size: 12.5px;
+  flex-shrink: 0;
   cursor: pointer;
 }
 .tab:hover {

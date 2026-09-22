@@ -28,7 +28,7 @@ interface Persisted {
   rightTab: RightTab;
 }
 
-export type RightTab = 'files' | 'terminal' | 'changes';
+export type RightTab = 'files' | 'terminal' | 'changes' | 'tree';
 
 function clamp(width: number, min: number, max: number): number {
   const finite = Number.isFinite(width) ? width : min;
@@ -71,12 +71,6 @@ export const sidebarWidth = ref(state.sidebarWidth);
 export const rightOpen = ref(state.rightOpen);
 export const rightWidth = ref(state.rightWidth);
 export const rightTab = ref<RightTab>(state.rightTab);
-/** 历史树浮层开关（工具栏触发，ChatView 渲染）。 */
-export const treeOpen = ref(false);
-
-export function setTreeOpen(open: boolean) {
-  treeOpen.value = open;
-}
 
 function persist() {
   try {

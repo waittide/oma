@@ -1,13 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { LuChevronRight } from 'vue-icons-plus/lu';
-import { UiButton, UiModal } from '@waittide/ui';
+import { UiButton } from '@waittide/ui';
 import * as chat from '../stores/chat';
 import type { ChatMessage } from '../types';
 import { useTranslations } from '../composables/i18n';
-
-const props = defineProps<{ open: boolean }>();
-const emit = defineEmits<{ close: [] }>();
 
 const { t } = useTranslations('historyTree');
 
@@ -174,70 +171,66 @@ function pick(r: Row) {
     chat.showAt(r.msg.id);
     chat.startForkFrom(r.msg.id);
   }
-  emit('close');
 }
 </script>
 
 <template>
-  <UiModal :open="props.open" :title="t('title')" width="760px" @close="emit('close')">
-    <div class="tree">
-      <UiButton
-        v-for="r in rows"
-        :key="r.msg.id"
-        variant="ghost"
-        tone="neutral"
-        block
-        class="node"
-        :class="{ selected: r.leaf, off: !r.active }"
-        :style="{ paddingLeft: `${CURSOR_CHARS + r.indent * LEVEL_CHARS}ch` }"
-        :disabled="busy"
-        v-bind="{ title: snippet(r.msg) }"
-        @click="pick(r)"
-      >
-        <!-- 光标槽 -->
-        <span v-if="r.leaf" class="cursor"><LuChevronRight :size="12" /></span>
-        <!-- 祖先层竖线：贯穿整行，跨行无缝 -->
+  <div class="tree">
+    <UiButton
+      v-for="r in rows"
+      :key="r.msg.id"
+      variant="ghost"
+      tone="neutral"
+      block
+      class="node"
+      :class="{ selected: r.leaf, off: !r.active }"
+      :style="{ paddingLeft: `${CURSOR_CHARS + r.indent * LEVEL_CHARS}ch` }"
+      :disabled="busy"
+      v-bind="{ title: snippet(r.msg) }"
+      @click="pick(r)"
+    >
+      <!-- 光标槽 -->
+      <span v-if="r.leaf" class="cursor"><LuChevronRight :size="12" /></span>
+      <!-- 祖先层竖线：贯穿整行，跨行无缝 -->
+      <span
+        v-for="level in r.vlines"
+        :key="`v${level}`"
+        class="vline"
+        :style="{ left: `${CURSOR_CHARS + level * LEVEL_CHARS}ch` }"
+      />
+      <!-- 本层连接：末位兄弟为圆角转角（└），其余为贯通竖线 + 水平分支（├） -->
+      <template v-if="r.connector && !r.vlines.includes(r.indent - 1)">
         <span
-          v-for="level in r.vlines"
-          :key="`v${level}`"
-          class="vline"
-          :style="{ left: `${CURSOR_CHARS + level * LEVEL_CHARS}ch` }"
+          v-if="r.last"
+          class="elbow"
+          :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
         />
-        <!-- 本层连接：末位兄弟为圆角转角（└），其余为贯通竖线 + 水平分支（├） -->
-        <template v-if="r.connector && !r.vlines.includes(r.indent - 1)">
+        <template v-else>
           <span
-            v-if="r.last"
-            class="elbow"
+            class="vline"
             :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
           />
-          <template v-else>
-            <span
-              class="vline"
-              :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
-            />
-            <span
-              class="stub"
-              :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
-            />
-          </template>
+          <span
+            class="stub"
+            :style="{ left: `${CURSOR_CHARS + (r.indent - 1) * LEVEL_CHARS}ch` }"
+          />
         </template>
-        <!-- 激活分支圆点：无论是否激活都占活 2ch 槽位，
-             否则未选中分支会比选中分支少缩进一个圆点的宽度，两者无法左对齐 -->
-        <span class="bullet"><i v-if="r.active" /></span>
-        <span class="role" :class="r.msg.role">{{ r.msg.role }}:&nbsp;</span>
-        <span class="text">{{ snippet(r.msg) }}</span>
-      </UiButton>
-      <p v-if="rows.length === 0" class="empty">{{ t('empty') }}</p>
-    </div>
-  </UiModal>
+      </template>
+      <!-- 激活分支圆点：无论是否激活都占活 2ch 槽位，
+           否则未选中分支会比选中分支少缩进一个圆点的宽度，两者无法左对齐 -->
+      <span class="bullet"><i v-if="r.active" /></span>
+      <span class="role" :class="r.msg.role">{{ r.msg.role }}:&nbsp;</span>
+      <span class="text">{{ snippet(r.msg) }}</span>
+    </UiButton>
+    <p v-if="rows.length === 0" class="empty">{{ t('empty') }}</p>
+  </div>
 </template>
 
 <style scoped>
 .tree {
   display: flex;
   flex-direction: column;
-  max-height: 60vh;
-  overflow-y: auto;
+  padding: 4px 6px;
 }
 .node {
   position: relative;

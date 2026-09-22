@@ -25,8 +25,8 @@ import MessageRail from './MessageRail.vue';
 import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
 import { copyText } from '../lib/clipboard';
 import { ensureNotificationPermission } from '../lib/notify';
+import { formatDuration } from '../lib/format';
 import ContextGauge from './ContextGauge.vue';
-import HistoryTree from './HistoryTree.vue';
 import * as chat from '../stores/chat';
 import { activeSession, activeSessionId, requestNewSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
@@ -316,21 +316,45 @@ function messageModelLabel(model?: string | null): string {
 }
 
 /**
- * 本轮 token 开销行（`in · out · cache R · cache W`）。
+ * 本轮 token 开销行（`耗时 · N 输入 · N 输出 · N 缓存读 · N 缓存写`）。
  *
  * 与 pi-web 的 `formatUsage` 对齐；oma 的模型配置里没有价格字段，故不展示成本。
+ * 单位是各语言里的词（中文「输入/输出」），数字按当前语言做千分位。
  */
-function usageText(usage?: TokenUsage | null): string {
-  if (!usage) return '';
+function usageText(usage?: TokenUsage | null, elapsedMs?: number): string {
   const parts: string[] = [];
-  if (usage.input_tokens) parts.push(`${usage.input_tokens.toLocaleString()} in`);
-  if (usage.output_tokens) parts.push(`${usage.output_tokens.toLocaleString()} out`);
-  if (usage.cache_read_tokens) parts.push(`${usage.cache_read_tokens.toLocaleString()} cache R`);
-  if (usage.cache_write_tokens) parts.push(`${usage.cache_write_tokens.toLocaleString()} cache W`);
+  if (elapsedMs) parts.push(t('usageElapsed', { time: formatDuration(elapsedMs) }));
+  if (usage) {
+    if (usage.input_tokens) parts.push(t('usageIn', { count: usage.input_tokens.toLocaleString() }));
+    if (usage.output_tokens) parts.push(t('usageOut', { count: usage.output_tokens.toLocaleString() }));
+    if (usage.cache_read_tokens)
+      parts.push(t('usageCacheRead', { count: usage.cache_read_tokens.toLocaleString() }));
+    if (usage.cache_write_tokens)
+      parts.push(t('usageCacheWrite', { count: usage.cache_write_tokens.toLocaleString() }));
+  }
   return parts.join(' · ');
 }
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */
 const ready = computed(() => !!activeSessionId.value && props.online && chat.connected.value);
+
+/**
+ * 每条助手消息的耗时（毫秒）：从本轮提问（用户消息）到这条回复落库。
+ *
+ * 服务端只在助手消息上盖「这次请求读完流」的时刻，没有轮次起始时间戳，因此整轮
+ * 墙钟耗时只能按 `created_at` 差值推：一条含工具往返的轮次里，最后一条助手消息
+ * 的差值即整轮耗时，中间几条是当时的累计；流式中的消息还没有 `created_at`，不显示。
+ */
+const turnElapsedMs = computed<Record<string, number>>(() => {
+  const elapsed: Record<string, number> = {};
+  let askedAt = 0;
+  for (const m of chat.messages.value) {
+    if (m.role === 'user' && !chat.isInternalMessage(m)) askedAt = m.created_at;
+    else if (m.role === 'assistant' && askedAt > 0 && m.created_at > askedAt) {
+      elapsed[m.id] = m.created_at - askedAt;
+    }
+  }
+  return elapsed;
+});
 
 /**
  * 右侧竖线导航：每条用户消息对应一个点，悬停展示提示词。
@@ -433,7 +457,9 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
             <template v-else>
               <div v-if="messageModelLabel(m.model)" class="model-label">{{ messageModelLabel(m.model) }}</div>
               <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
-              <div v-if="usageText(m.usage)" class="turn-usage">{{ usageText(m.usage) }}</div>
+              <div v-if="usageText(m.usage, turnElapsedMs[m.id])" class="turn-usage">
+                {{ usageText(m.usage, turnElapsedMs[m.id]) }}
+              </div>
             </template>
           </article>
 
@@ -607,7 +633,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         </div>
       </div>
     </footer>
-    <HistoryTree :open="layout.treeOpen.value" @close="layout.setTreeOpen(false)" />
   </div>
 </template>
 

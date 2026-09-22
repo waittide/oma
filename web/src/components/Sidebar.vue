@@ -262,11 +262,6 @@ const deleteTarget = computed(
               class="gh-toggle"
               @click="store.toggleGroup(g.workspace)"
             >
-              <LuChevronRight
-                :size="14"
-                class="caret"
-                :class="{ expanded: !store.collapsed.value[g.workspace] }"
-              />
               <LuFolder :size="14" class="g-icon" />
               <span class="g-label">{{ g.label }}</span>
               <span class="g-count">{{ g.items.length }}</span>
@@ -296,6 +291,24 @@ const deleteTarget = computed(
               </UiIconButton>
             </UiTooltip>
           </div>
+          <!-- 折叠角标固定在行内最右侧：工作区名从左侧对齐，展开态向右旋转 90° -->
+          <UiTooltip
+            :content="store.collapsed.value[g.workspace] ? t('expandWorkspace') : t('collapseWorkspace')"
+            align="end"
+          >
+            <UiIconButton
+              class="gh-caret"
+              size="sm"
+              :label="store.collapsed.value[g.workspace] ? t('expandWorkspace') : t('collapseWorkspace')"
+              @click="store.toggleGroup(g.workspace)"
+            >
+              <LuChevronRight
+                :size="14"
+                class="caret"
+                :class="{ expanded: !store.collapsed.value[g.workspace] }"
+              />
+            </UiIconButton>
+          </UiTooltip>
         </div>
 
         <div v-if="!store.collapsed.value[g.workspace]" class="group-body">
@@ -605,6 +618,26 @@ const deleteTarget = computed(
 }
 .gh-add.danger:hover {
   color: var(--danger);
+}
+/* 行内最右的折叠角标：与 +/清除 同尺寸，hover 只提亮不换底色 */
+.gh-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 0 !important;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.gh-caret:hover {
+  background: var(--surface-active);
+}
+.gh-caret:hover .caret {
+  color: var(--ink);
 }
 .caret {
   flex-shrink: 0;

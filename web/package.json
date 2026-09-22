@@ -14,11 +14,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc && vite build",
-    "test": "node --experimental-strip-types scripts/liveSegments.check.ts && node --experimental-strip-types scripts/sessionUsage.check.ts",
+    "test": "node --experimental-strip-types scripts/liveSegments.check.ts && node --experimental-strip-types scripts/sessionUsage.check.ts && node --experimental-strip-types scripts/format.check.ts",
     "preview": "vite preview"
   },
   "dependencies": {
     "@waittide/ui": "link:../../waittide-ui/packages/ui",
+    "highlight.js": "^11.12.0",
     "markdown-it": "^15.0.1",
     "vue": "^3.5.42",
     "vue-icons-plus": "^0.1.8"
