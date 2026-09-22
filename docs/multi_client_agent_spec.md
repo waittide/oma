@@ -5,7 +5,7 @@
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
 
 > **v2.8 变更（工具命名与形态、默认预设与调色板、配置字段、前端外壳）**：
-> - **工具命名与形态**：终端执行工具与 pi 对齐为 `shell`，工具集即 `read` / `write` /
+> - **工具命名与形态**：终端执行工具名为 `shell`，工具集即 `read` / `write` /
 >   `edit` / `shell` / `ls` / `find` / `grep`；`edit` 改为 apply_patch 形态——输入是单个
 >   `input` 字符串，内容为 `*** Begin Patch` … `*** End Patch` 包裹的补丁，支持
 >   `*** Add File` / `*** Delete File` / `*** Update File`（含 `*** Move to:`）、
@@ -39,13 +39,13 @@
 > - `settings.json` 重新有 `default_agent`；会话头重新记录 `agent`
 > - 预设正文之上仍依次拼接：运行环境块 → 项目上下文（`AGENTS.md`）→ 技能目录
 >
-> **仍然保持删除**（pi 内核不内置）：熔断器、`ask` 提问工具、内置 MCP 客户端、
+> **仍然保持删除**：熔断器、`ask` 提问工具、内置 MCP 客户端、
 > 子代理 `task` 工具。
 
-> **v2.4 变更（向 pi 对齐的部分）**：
+> **v2.4 变更（工具实现方式与截断口径）**：
 > - **工具实现方式**：`find` / `grep` 不再自研文件遍历，改为调用外部 `fd` / `ripgrep`
 >   （缺失时自动下载到 `<数据目录>/bin`，`OMA_OFFLINE=1` 可禁用）；工具输出截断统一为
->   行数（2000）+ 字节（50KB）双上限，各工具条数限额与提示文案对齐 pi
+>   行数（2000）+ 字节（50KB）双上限，各工具条数限额与截断提示也一并统一
 > - **工具集**：内置工具共 7 个（`edit` / `find` / `grep` / `ls` / `read` / `write` + 终端执行）
 > - 新增 `AGENTS.md` / `CLAUDE.md` 上下文文件加载
 
@@ -104,7 +104,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | `crates/oma-contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
 | `crates/oma-storage` | SQLite 双层持久化：全局索引库 `oma.db` 的 `sessions_index` 存会话元数据，每会话库 `sessions/<id>/session.db` 存 `messages` 消息树与 `session_meta` 运行时状态；附件仍落 `attachments/` 目录。WAL + 写池串行、读池并行，同数据目录多实例互相可见。 |
 | `crates/oma-provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
-| `crates/oma-tool` | 内置 7 大工具（`read`, `write`, `edit` apply_patch 补丁, `shell` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含 pi 对齐的输出截断与工具集定义。 |
+| `crates/oma-tool` | 内置 7 大工具（`read`, `write`, `edit` apply_patch 补丁, `shell` 进程组守卫, `ls` 目录列举, `find` / `grep` 外部 `fd`/`ripgrep`），含统一的输出截断与工具集定义。 |
 | `crates/oma-mcp` | MCP 客户端：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），工具按 `mcp__{server}__{tool}` 统一命名空间注册；只暴露已预热的工具缓存。 |
 | `crates/oma-config` | 配置文件 `settings.json` / `models.json` 解析、内置 Agent 预设（4 套模板：`plan` / `explore` / `review` / `build`）与三层覆盖、上下文文件（`AGENTS.md`）加载、提示词拼装、调色板加载、数据目录定位。 |
 | `crates/oma-runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、70% 阈值两阶段上下文压缩。 |
@@ -519,7 +519,7 @@ pub struct ContextUsage {
 
 ### 5.1 配置文件规范 (`~/.config/oma/settings.json` + `models.json`)
 
-参照 pi 的 `settings.json` / `models.json` 分层：常规设置与提供商/模型清单分文件存放。
+常规设置与提供商/模型清单分文件存放。
 
 `settings.json`：
 
@@ -657,8 +657,7 @@ pub struct ContextUsage {
 - 注入形态：`<project_context>` 包一组 `<project_instructions path="…">`；
 - 去 BOM；单个文件不可读只跳过，不让整段提示词构建失败。
 
-> 与 pi 的差异：pi 对嵌套 git worktree 会跳过被「遮蔽」的那份，oma 尚未实现
-> （待 worktrees 能力一并做）；路径变量名也不同（pi 用 `~/.pi/agent/AGENTS.md`）。
+> 已知差异：嵌套 git worktree 中被「遮蔽」的那份尚未跳过（待 worktrees 能力一并做）。
 
 ---
 
@@ -721,7 +720,7 @@ ToolOutput {
 ### 7.1 输出截断与执行安全
 
 1. **统一的输出截断（行数 + 字节双上限）**：
-   `crates/oma-tool/src/truncate.rs` 与 pi 的 `core/tools/truncate.ts` 等价：
+   `crates/oma-tool/src/truncate.rs` 提供两套互相独立的上限：
    - 默认上限：**2000 行 / 50KB**，先到者生效；除「末行本身超限」边界外不返回半行；
    - 方向：`read` / `ls` / `find` / `grep` 用 `truncate_head`（保留开头）；
      `shell` 用 `truncate_tail`（保留末尾，错误与结果在那里）；
@@ -738,11 +737,11 @@ ToolOutput {
 
 ### 7.2 7 大核心内置工具
 
-工具集与 pi 对齐：`shell` / `edit` / `find` / `grep` / `ls` / `read` / `write`。
+内置工具集：`shell` / `edit` / `find` / `grep` / `ls` / `read` / `write`。
 
 1. **`read`**：
    - 参数：`{ "path": "...", "offset": 1, "limit": null }`（offset 为 1 起始行号，仅对文本生效）
-   - 按行分片读取文本文件，输出带行号前缀（oma 自有展示形式，pi 为原样内容）；
+   - 按行分片读取文本文件，输出带行号前缀（oma 自有的展示形式）；
      未给 `limit` 时由双上限决定，并在提示中给出续读用的 `offset`。
    - **图片文件**：按文件头识别 PNG / JPEG / GIF / WebP / BMP / TIFF（不引入解码器，
      仅解析头部取得宽高、通道数、alpha 与 MIME）：
@@ -781,7 +780,7 @@ ToolOutput {
 5. **`ls`**：
    - 参数：`{ "path": ".", "limit": 500 }`
    - 按名排序（大小写不敏感），目录名带 `/` 后缀，含 dotfile；默认 500 条上限。
-   - 不遵循 `.gitignore`（与 pi 一致：看目录就是看目录）。
+   - 不遵循 `.gitignore`（看目录就是看目录）。
 6. **`find`**（外部 `fd`）：
    - 参数：`{ "pattern": "*.rs", "path": ".", "limit": 1000 }`
    - 实际命令：`fd --glob --color=never --hidden [--no-require-git] --max-results N -- <pattern> <path>`；
@@ -798,7 +797,7 @@ ToolOutput {
 ### 7.3 外部二进制的获取（fd / ripgrep）
 
 `find` / `grep` 不自己实现文件遍历与正则匹配，而是调用外部二进制，
-因此 `.gitignore`、隐藏文件、二进制跳过等语义与 pi 完全一致。`binaries` 模块负责解析与安装：
+因此 `.gitignore`、隐藏文件、二进制跳过等语义由上游工具本身保证。`binaries` 模块负责解析与安装：
 
 1. **解析顺序**：`<数据目录>/bin`（oma 先前下载的）→ 系统 `PATH`
    （`fd` 兼容 Debian 的 `fdfind`）→ 从 GitHub Releases 下载解压到 `<数据目录>/bin`；
@@ -811,8 +810,7 @@ ToolOutput {
 4. **失败即硬失败**：不可用（未安装且无法下载）时工具直接返回错误，
    不回退到自研实现。
 
-> 与 pi 的差异：pi 的变量名是 `PI_OFFLINE`，且 fd 在 darwin/x64 上钉住了一个固定版本；
-> oma 不做 darwin 版本钉住。
+> 平台差异：darwin/x64 上的 fd 不钉固定版本。
 
 ---
 
@@ -962,7 +960,7 @@ pub struct Palette {
 | 鉴权传输 | REST 仅接受 `Authorization: Bearer`；WebSocket 握手额外接受 `?token=`，因为浏览器无法为 WS 请求设置自定义头。 |
 | 前端静态资源 | `oma web` 提供界面：资产由 `rust-embed` 内嵌进二进制，debug 下从 `web/dist` 实时读取（改前端只需 `pnpm build`），release 下真正内嵌。Daemon 不直出资产、保持 Headless。 |
 | 上下文压缩 | 第一阶段只替换 `ToolResult` 内容（保持配对），第二阶段按**完整轮次**丢弃前缀；旧的「按消息条数切半」会切出孤儿回执或以 assistant 开头，长会话下必然被厂商 API 拒绝。 |
-| 工具实现 | `find` / `grep` 调用外部 `fd` / `ripgrep` 而非自研遍历：`.gitignore`、隐藏文件、二进制跳过等语义只有用同一批上游工具才能与 pi 一致；自研版只看 `.git`，会把 `target/`、`node_modules/` 当结果返回。 |
+| 工具实现 | `find` / `grep` 调用外部 `fd` / `ripgrep` 而非自研遍历：`.gitignore`、隐藏文件、二进制跳过等语义只有上游工具本身能保证一致；自研版只看 `.git`，会把 `target/`、`node_modules/` 当结果返回。 |
 | 外部二进制获取 | 先查 `<数据目录>/bin` 再查 `PATH`，都没有才从 GitHub Releases 下载（`OMA_OFFLINE=1` 可禁用）；不可用时**硬失败**，不回退到自研实现——两套行为不一致比「没有工具」更难排查。 |
 | 输出截断 | 统一走 `truncate` 模块（2000 行 / 50KB 双上限，先到者生效），不再每个工具一套字符数上限；截断必须给出可操作的后续动作（续读的 offset / 缩小 pattern），否则模型只能瞎猜。 |
 | 会话标识 | `session_id` 会被拼接进文件系统路径，因此全局校验为 `[A-Za-z0-9_-]{1,128}`；附件名同样只允许安全字符并丢弃任何目录成分。 |
@@ -971,10 +969,10 @@ pub struct Palette {
 | 会话存储并发 | 每会话两套连接池：写池 `max_connections = 1` 严格串行、读池只读并行，读写互不阻塞；库以 WAL 打开并设 `busy_timeout`，因此同数据目录上的多个实例能互相看到最新提交。 |
 | 错误分类 | 存储层返回 `StorageError`、房间返回 `RoomError`，HTTP 状态码由类型映射，不再依赖错误文案匹配。 |
 | 配置校验 | `OmaConfig` 启用 `deny_unknown_fields`：拼错的键名（或前端字段映射错误）在 `PUT /api/config` 直接 400，不再「保存成功但配置没变」；启动时配置文件解析失败即报错退出，而非静默回退默认值。 |
-| 能力裁剪 | 仅剩 MCP 之外的三项仍是删除状态：子代理 `task`、`ask` 提问、熔断器（均因 pi 内核不内置而移除）。**已应用户要求恢复**：Agent 预设（v2.5）、内置 MCP（v2.7）。 |
+| 能力裁剪 | 仅剩 MCP 之外的三项仍是删除状态：子代理 `task`、`ask` 提问、熔断器（均按最小内核原则移除）。**已应用户要求恢复**：Agent 预设（v2.5）、内置 MCP（v2.7）。 |
 | 技能发现 | 按 `<root>/<name>/SKILL.md` 三层发现（global/agent/project），同名时更具体的一层覆盖更宽泛的一层；删除技能会连同其目录内的 `scripts/` 等资源一并移除（id 经严格校验，不可穿越）。技能与预设是两套独立机制：预设决定「以什么角色、能用哪些工具运行」，技能只是一段按需读取的知识，同名也不会互相覆盖。 |
 | skill frontmatter 容错 | 技能的 YAML 字段全部可选且忽略未知键：用户目录里存在只有 `description` 与自有键的文件时，名称即目录名，不应因严格解析而整条不可用。 |
-| 工具命名与 `edit` 形态 | 终端执行工具名为 `shell`（与 pi 对齐）。`edit` 放弃 `{path, edits[]}` 结构化替换，改为 apply_patch 形态——单个 `input` 字符串承载 `*** Begin Patch` 信封，可一次增 / 删 / 改 / 改名多个文件并整包原子落盘：多文件改动不再需要多次调用，也不会出现「改到一半失败、各文件状态不一致」。 |
+| 工具命名与 `edit` 形态 | 终端执行工具名为 `shell`。`edit` 放弃 `{path, edits[]}` 结构化替换，改为 apply_patch 形态——单个 `input` 字符串承载 `*** Begin Patch` 信封，可一次增 / 删 / 改 / 改名多个文件并整包原子落盘：多文件改动不再需要多次调用，也不会出现「改到一半失败、各文件状态不一致」。 |
 | 默认预设 | 内置 `Task` 删除，默认改为 `Build`：`Build` 不声明 `tools`（= 不限制，拥有全部工具），承担「装完即用」的默认角色；无配置文件时写入 `default_agent: build`，会话库列的 `active_agent` 默认值同步为 `build`。 |
 | 调色板默认 | 中性色调色板全部删除，内置 4 套全部为 Catppuccin 族（浅色 `latte`，深色 `frappe` / `macchiato` / `mocha`），默认深色 `mocha` + 浅色 `latte`。 |
 | `server` 配置字段 | 监听地址由单个字符串字段拆成 `host` + `port`：设置面板本就分两个字段编辑，拆开后前后端不必再做「host:port」字符串的拼装与解析；`oma daemon --addr` 仍可覆盖。 |

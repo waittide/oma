@@ -2006,7 +2006,7 @@ mod tests {
 
     /// 内置工具集：edit / find / grep / ls / read / shell / write。
     #[test]
-    fn test_builtin_tool_set_matches_pi() {
+    fn test_builtin_tool_set() {
         let reg = ToolRegistry::with_builtins();
         let mut names: Vec<&str> = reg.list().iter().map(|t| t.name()).collect();
         names.sort_unstable();

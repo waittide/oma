@@ -1740,7 +1740,7 @@ function pickLocale(v: Locale) {
               </div>
             </div>
 
-            <div v-for="(d, pi) in activeDraft ? [activeDraft] : []" :key="d.uid" class="prov">
+            <div v-for="d in activeDraft ? [activeDraft] : []" :key="d.uid" class="prov">
               <!-- 提供商配置：单个容器，标题与配置项同在其中 -->
               <section class="card cfg-block">
                 <header class="blk-head">

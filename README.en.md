@@ -67,8 +67,7 @@ ships Traditional Chinese, English and Japanese.
   reasoning-level override, so vendor-specific fields can be injected freely.
 - **Seven built-in tools**: `read` (including images), `write`, `edit` (apply_patch envelopes, several
   files per call), `shell` (process-group guard with configurable timeout), `ls`, `find` (glob) and
-  `grep` (regex or literal search). The tool set mirrors the pi core: only minimal read/write/search
-  capability.
+  `grep` (regex or literal search). The set stays minimal: read, write and search only.
 - **Per-model capabilities**: thinking / text / image and audio input-output are declared per model,
   and the UI decides from that whether to inline images or expose the thinking toggle.
 
@@ -339,7 +338,7 @@ them, and tool grants come from `GET /api/tools`. For lighter-weight extras, use
 | `find` | Find files by glob pattern (`**` crosses directories) |
 | `grep` | Search file contents by regex or literal string |
 
-The tool set mirrors the pi core: only minimal read/write/search capability.
+The set stays minimal: read, write and search only.
 
 ---
 
