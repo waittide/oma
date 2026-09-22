@@ -73,7 +73,9 @@ ships Traditional Chinese, English and Japanese.
 
 ### Clients
 
-- **Web (`web/`)**: Vue 3 + TypeScript with hand-written CSS and **zero external UI or CSS libraries**;
+- **Web (`web/`)**: Vue 3 + TypeScript whose controls all come from `@waittide/ui` (a local link),
+  with **no third-party UI or CSS framework** and hand-written application styles (`web/src` holds
+  about 90 lines of CSS in total);
   four built-in Catppuccin palettes (light `latte`; dark `frappe` / `macchiato` / `mocha`,
   defaulting to dark `mocha` / light `latte`),
   four locales, Markdown rendering, a history tree, a message rail, attachments and image previews.
@@ -117,7 +119,7 @@ flowchart TB
         subgraph Sub["Subsystems"]
             direction LR
             PROV["oma-provider<br/>stream normalization"]
-            TOOL["oma-tool<br/>seven tools"]
+            TOOL["oma-tool<br/>four tools"]
             STORE["oma-storage<br/>SQLite session store"]
             CONF["oma-config<br/>settings.json"]
         end
@@ -142,14 +144,14 @@ flowchart TB
 | `crates/oma-contract` | Pure types and protocol contracts (`Role`, `Block`, `ClientMessage`, `ServerMessage`, `AgentEvent`, …) with no heavy dependencies |
 | `crates/oma-storage` | SQLite two-layer persistence: global index `oma.db` (session metadata) plus a per-session `session.db` (message tree and runtime state); attachments stay in `attachments/` |
 | `crates/oma-provider` | Hand-written SSE state machine normalizing four streaming protocols (tool calls and multimodal included) |
-| `crates/oma-tool` | The seven built-in tools and output truncation |
+| `crates/oma-tool` | The four built-in tools and output truncation |
 | `crates/oma-config` | `settings.json` / `models.json` parsing, system prompt, palettes and project-level overrides |
 | `crates/oma-runtime` | Agent loop, session rooms, command queue, cascade cancel, compaction |
 | `crates/oma-daemon` | Axum HTTP / WebSocket gateway, bearer auth middleware, REST routes |
 | `crates/oma-client` | Pure Rust client SDK: `OmaClient` (event stream and commands) and `SessionApi` (session management) |
 | `crates/oma-tui` | Ratatui terminal client |
 | `crates/oma` | The `oma` executable: `daemon` / `web` / `tui` / `status` |
-| `web/` | Vue 3 + TypeScript + hand-written CSS web client |
+| `web/` | Vue 3 + TypeScript web client, controls from `@waittide/ui` |
 
 ---
 
@@ -162,6 +164,7 @@ flowchart TB
 | Rust | nightly | Pinned by `rust-toolchain.toml` in this repo (`edition = "2024"`) |
 | Node.js | ≥ 20 | Only needed to build the frontend; not needed at runtime |
 | pnpm | ≥ 9 | Frontend package manager |
+| `waittide-ui` | sibling directory | The frontend control library, pulled in as `link:../waittide-ui/packages/ui`; **clone it next to this repo before building the web frontend**. Not needed when using a prebuilt binary |
 
 Platforms: Linux and macOS are the day-to-day development environments; Windows has the corresponding
 `cfg` fallbacks but is untested.
@@ -209,9 +212,14 @@ cd oma-0.1.0-x86_64-unknown-linux-gnu
 
 ### Build
 
-The frontend assets are embedded into the binary at compile time by `rust-embed`, so **build the frontend first**:
+The frontend assets are embedded into the binary at compile time by `rust-embed`, so **build the
+frontend first**. A missing `web/dist` does not fail `cargo build` (`crates/oma/build.rs` creates an
+empty directory and warns), but `oma web` then reports the missing assets at startup:
 
 ```bash
+# 0) control library: @waittide/ui is a link: outside this repo, so clone it alongside
+git clone <waittide-ui repository> ../waittide-ui
+
 # 1) frontend
 cd web
 pnpm install
@@ -248,9 +256,11 @@ First run:
 ```bash
 cd web
 pnpm dev        # Vite dev server; /api and /ws are proxied to 127.0.0.1:17431
-pnpm test       # unit-level checks (stream segmentation)
-pnpm test:e2e   # end-to-end: a real daemon plus a fake vendor SSE server
+pnpm test       # checks: stream segmentation, usage totals, duration wording, patch parsing, change tree, status kinds, refresh signal
 ```
+
+End-to-end tests live on the Rust side rather than in the frontend project: `cargo test -p oma-daemon`
+runs `crates/oma-daemon/tests/e2e_smoke.rs` (a real daemon plus a fake vendor SSE server).
 
 In a debug `cargo build`, `rust-embed` reads `web/dist` straight from disk: after changing the frontend,
 one `pnpm build` is enough — no Rust recompilation required.

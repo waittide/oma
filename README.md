@@ -63,7 +63,8 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 
 ### 客户端
 
-- **Web（`web/`）**：Vue 3 + TypeScript，手写 CSS，**零外部 UI / CSS 库**；
+- **Web（`web/`）**：Vue 3 + TypeScript，控件全部来自本地 link 的 `@waittide/ui`，
+  **不引入第三方 UI / CSS 框架**，应用层样式手写（`web/src` 下仅约 90 行 CSS）；
   内置 4 套 Catppuccin 调色板（浅色 `latte`，深色 `frappe` / `macchiato` / `mocha`，
   默认深色 `mocha` + 浅色 `latte`）、
   四语言文案、Markdown 渲染、历史树、消息导航栏、附件与图片预览。
@@ -106,7 +107,7 @@ flowchart TB
         subgraph Sub["子系统"]
             direction LR
             PROV["oma-provider<br/>流式归一化"]
-            TOOL["oma-tool<br/>七个工具"]
+            TOOL["oma-tool<br/>四个工具"]
             STORE["oma-storage<br/>SQLite 会话库"]
             CONF["oma-config<br/>settings.json"]
         end
@@ -131,14 +132,14 @@ flowchart TB
 | `crates/oma-contract` | 纯类型与协议契约（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` 等），零重依赖 |
 | `crates/oma-storage` | SQLite 双层持久化：全局索引库 `oma.db`（会话元数据）+ 每会话库 `session.db`（messages 消息树与运行时状态），附件落 `attachments/` 目录 |
 | `crates/oma-provider` | 手写 SSE 状态机，归一化四家流式协议（含工具调用与多模态） |
-| `crates/oma-tool` | 七个内置工具与输出截断 |
+| `crates/oma-tool` | 四个内置工具与输出截断 |
 | `crates/oma-config` | `settings.json` / `models.json` 解析、系统提示词、调色板与项目级覆盖 |
 | `crates/oma-runtime` | Agent Loop、会话房间、命令队列、级联取消、上下文压缩 |
 | `crates/oma-daemon` | Axum HTTP / WebSocket 网关、Bearer 鉴权中间件、REST 路由 |
 | `crates/oma-client` | 纯 Rust 客户端 SDK：`OmaClient`（事件流与指令）与 `SessionApi`（会话管理） |
 | `crates/oma-tui` | Ratatui 终端客户端 |
 | `crates/oma` | 统一可执行文件 `oma`：`daemon` / `web` / `tui` / `status` |
-| `web/` | Vue 3 + TypeScript + 手写 CSS 的 Web 客户端 |
+| `web/` | Vue 3 + TypeScript 的 Web 客户端，控件来自 `@waittide/ui` |
 
 ---
 
@@ -151,6 +152,7 @@ flowchart TB
 | Rust | nightly | 仓库内 `rust-toolchain.toml` 已固定为 nightly（`edition = "2024"`） |
 | Node.js | ≥ 20 | 仅构建前端需要；运行时不需要 Node |
 | pnpm | ≥ 9 | 前端包管理器 |
+| `waittide-ui` | 同级目录 | 前端控件库，以 `link:../waittide-ui/packages/ui` 引入；**构建 Web 前端前必须先 clone 到本仓库的同级目录**，只用预编译产物则不需要 |
 
 平台：Linux 与 macOS 为日常开发环境；Windows 具备对应 `cfg` 回退分支，但未做验证。
 
@@ -194,9 +196,14 @@ cd oma-0.1.0-x86_64-unknown-linux-gnu
 
 ### 构建
 
-前端资产会在 `cargo build` 时经 `rust-embed` 内嵌进二进制，**必须先构建前端**：
+前端资产会在 `cargo build` 时经 `rust-embed` 内嵌进二进制，**必须先构建前端**。
+缺 `web/dist` 时 `cargo build` 不会失败（`crates/oma/build.rs` 会补一个空目录并告警），
+但 `oma web` 启动时会因缺少资产而报错：
 
 ```bash
+# 0) 前端控件库：@waittide/ui 以 link: 指向仓库之外的同级目录，先 clone 过来
+git clone <waittide-ui 仓库地址> ../waittide-ui
+
 # 1) 前端
 cd web
 pnpm install
@@ -231,9 +238,11 @@ cargo build --release
 ```bash
 cd web
 pnpm dev        # Vite 开发服务器，/api 与 /ws 自动代理到 127.0.0.1:17431
-pnpm test       # 单元级校验脚本（流式分段、子代理渲染）
-pnpm test:e2e   # 端到端：真实 Daemon + 假厂商 SSE 服务
+pnpm test       # 校验脚本：流式分段、用量合计、耗时文案、补丁解析、变更树、状态分类、刷新信号
 ```
+
+端到端测试在 Rust 侧，不在前端工程里：`cargo test -p oma-daemon` 跑
+`crates/oma-daemon/tests/e2e_smoke.rs`（真实 Daemon + 假厂商 SSE 服务）。
 
 `cargo build` 的 debug 构建下，`rust-embed` 直接从磁盘读取 `web/dist`：
 改完前端跑一次 `pnpm build` 即可生效，无需重新编译 Rust。

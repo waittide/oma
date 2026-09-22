@@ -73,7 +73,9 @@ CLI と UI は**中国語（簡体字）を第一言語**とし、Web クライ�
 
 ### クライアント
 
-- **Web（`web/`）**: Vue 3 + TypeScript、CSS は手書きで**外部 UI / CSS ライブラリはゼロ**。
+- **Web（`web/`）**: Vue 3 + TypeScript。コントロールはすべてローカル link の `@waittide/ui` 由来で、
+  **サードパーティ製の UI / CSS フレームワークは使いません**。アプリ側のスタイルは手書き
+  （`web/src` の CSS は合計 90 行程度）。
   組み込み Catppuccin パレット 4 種（ライト `latte`、ダーク `frappe` / `macchiato` / `mocha`、
   既定はダーク `mocha` + ライト `latte`）、4 言語、
   Markdown レンダリング、履歴ツリー、メッセージレール、添付と画像プレビュー。
@@ -117,7 +119,7 @@ flowchart TB
         subgraph Sub["サブシステム"]
             direction LR
             PROV["oma-provider<br/>ストリーム正規化"]
-            TOOL["oma-tool<br/>7 つのツール"]
+            TOOL["oma-tool<br/>4 つのツール"]
             STORE["oma-storage<br/>SQLite セッションストア"]
             CONF["oma-config<br/>settings.json"]
         end
@@ -142,14 +144,14 @@ flowchart TB
 | `crates/oma-contract` | 純粋な型とプロトコル契約（`Role`、`Block`、`ClientMessage`、`ServerMessage`、`AgentEvent` など）。重い依存なし |
 | `crates/oma-storage` | SQLite 二層永続化：グローバル索引 `oma.db`（セッションメタデータ）とセッションごとの `session.db`（メッセージ木と実行時状態）。添付は `attachments/` に保存 |
 | `crates/oma-provider` | 自作 SSE ステートマシンによる 4 プロトコルの正規化（ツール呼び出し・マルチモーダル含む） |
-| `crates/oma-tool` | 7 つの組み込みツール、出力切り詰め |
+| `crates/oma-tool` | 4 つの組み込みツール、出力切り詰め |
 | `crates/oma-config` | `settings.json` / `models.json` の解析、システムプロンプト、パレット、プロジェクト単位の上書き |
 | `crates/oma-runtime` | エージェントループ、セッションルーム、コマンドキュー、連鎖キャンセル、圧縮 |
 | `crates/oma-daemon` | Axum による HTTP / WebSocket ゲートウェイ、Bearer 認証ミドルウェア、REST ルート |
 | `crates/oma-client` | 純 Rust クライアント SDK：`OmaClient`（イベントストリームと命令）と `SessionApi`（セッション管理） |
 | `crates/oma-tui` | Ratatui 製ターミナルクライアント |
 | `crates/oma` | `oma` 実行ファイル：`daemon` / `web` / `tui` / `status` |
-| `web/` | Vue 3 + TypeScript + 手書き CSS の Web クライアント |
+| `web/` | Vue 3 + TypeScript の Web クライアント（コントロールは `@waittide/ui`） |
 
 ---
 
@@ -162,6 +164,7 @@ flowchart TB
 | Rust | nightly | リポジトリの `rust-toolchain.toml` で nightly に固定（`edition = "2024"`） |
 | Node.js | ≥ 20 | フロントエンドのビルド時のみ。実行時は不要 |
 | pnpm | ≥ 9 | フロントエンドのパッケージマネージャ |
+| `waittide-ui` | 隣接ディレクトリ | フロントエンドのコントロールライブラリ。`link:../waittide-ui/packages/ui` で参照するため、**Web フロントエンドをビルドする前にこのリポジトリの隣へ clone してください**。ビルド済みバイナリを使う場合は不要 |
 
 対応プラットフォーム：Linux と macOS が日常の開発環境です。Windows には対応する `cfg` フォールバックがありますが未検証です。
 
@@ -210,8 +213,13 @@ cd oma-0.1.0-x86_64-unknown-linux-gnu
 ### ビルド
 
 フロントエンドの成果物はコンパイル時に `rust-embed` でバイナリへ埋め込まれるため、**先にフロントエンドをビルド**します。
+`web/dist` が無くても `cargo build` は失敗しません（`crates/oma/build.rs` が空ディレクトリを作って警告します）が、
+`oma web` の起動時に成果物が無い旨のエラーになります。
 
 ```bash
+# 0) コントロールライブラリ：@waittide/ui はリポジトリ外を指す link: のため、隣へ clone
+git clone <waittide-ui リポジトリ> ../waittide-ui
+
 # 1) フロントエンド
 cd web
 pnpm install
@@ -247,9 +255,11 @@ cargo build --release
 ```bash
 cd web
 pnpm dev        # Vite 開発サーバー。/api と /ws は 127.0.0.1:17431 へプロキシ
-pnpm test       # 単体レベルの検証（ストリーム分割）
-pnpm test:e2e   # エンドツーエンド：実デーモン + 偽プロバイダの SSE サーバー
+pnpm test       # 検証：ストリーム分割、使用量の合計、所要時間の表記、パッチ解析、変更ツリー、状態分類、更新シグナル
 ```
+
+エンドツーエンドのテストはフロントエンド側ではなく Rust 側にあります。`cargo test -p oma-daemon` で
+`crates/oma-daemon/tests/e2e_smoke.rs`（実デーモン + 偽プロバイダの SSE サーバー）を実行します。
 
 debug ビルドの `cargo build` では `rust-embed` が `web/dist` をディスクから直接読むため、
 フロントエンドを変更したら `pnpm build` を 1 回実行するだけで反映されます（Rust の再コンパイルは不要）。
