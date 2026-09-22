@@ -164,7 +164,6 @@ flowchart TB
 | Rust | nightly | Pinned by `rust-toolchain.toml` in this repo (`edition = "2024"`) |
 | Node.js | ≥ 20 | Only needed to build the frontend; not needed at runtime |
 | pnpm | ≥ 9 | Frontend package manager |
-| `waittide-ui` | sibling directory | The frontend control library, pulled in as `link:../waittide-ui/packages/ui`; **clone it next to this repo before building the web frontend**. Not needed when using a prebuilt binary |
 
 Platforms: Linux and macOS are the day-to-day development environments; Windows has the corresponding
 `cfg` fallbacks but is untested.
@@ -217,9 +216,6 @@ frontend first**. A missing `web/dist` does not fail `cargo build` (`crates/oma/
 empty directory and warns), but `oma web` then reports the missing assets at startup:
 
 ```bash
-# 0) control library: @waittide/ui is a link: outside this repo, so clone it alongside
-git clone <waittide-ui repository> ../waittide-ui
-
 # 1) frontend
 cd web
 pnpm install

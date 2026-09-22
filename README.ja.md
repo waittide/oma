@@ -164,7 +164,6 @@ flowchart TB
 | Rust | nightly | リポジトリの `rust-toolchain.toml` で nightly に固定（`edition = "2024"`） |
 | Node.js | ≥ 20 | フロントエンドのビルド時のみ。実行時は不要 |
 | pnpm | ≥ 9 | フロントエンドのパッケージマネージャ |
-| `waittide-ui` | 隣接ディレクトリ | フロントエンドのコントロールライブラリ。`link:../waittide-ui/packages/ui` で参照するため、**Web フロントエンドをビルドする前にこのリポジトリの隣へ clone してください**。ビルド済みバイナリを使う場合は不要 |
 
 対応プラットフォーム：Linux と macOS が日常の開発環境です。Windows には対応する `cfg` フォールバックがありますが未検証です。
 
@@ -217,9 +216,6 @@ cd oma-0.1.0-x86_64-unknown-linux-gnu
 `oma web` の起動時に成果物が無い旨のエラーになります。
 
 ```bash
-# 0) コントロールライブラリ：@waittide/ui はリポジトリ外を指す link: のため、隣へ clone
-git clone <waittide-ui リポジトリ> ../waittide-ui
-
 # 1) フロントエンド
 cd web
 pnpm install

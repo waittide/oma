@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@waittide/ui':
-        specifier: link:../../waittide-ui/packages/ui
-        version: link:../../waittide-ui/packages/ui
+        specifier: ^0.1.0
+        version: 0.1.0(vue-icons-plus@0.1.8(vue@3.5.42(typescript@6.0.3)))(vue@3.5.42(typescript@6.0.3))
       highlight.js:
         specifier: ^11.12.0
         version: 11.12.0
@@ -223,6 +223,12 @@ packages:
 
   '@vue/shared@3.5.42':
     resolution: {integrity: sha512-2rPxex1jQf4jvl9MOHl6YaXCPcrNqz/FstMOEh3QWY+/OME9nQTvl9WYeCwhW7AFjaR0SnngZGlp/wkR6rkI6g==}
+
+  '@waittide/ui@0.1.0':
+    resolution: {integrity: sha512-JZ9aw/bQrumz20E/2XVb+QLCB31jETfUcKPCAEAcqrvx6XFlJ4tRgigi1yAbNHpXO9+rN4vuOxinNabMMS7s/Q==, tarball: https://registry.npmjs.org/@waittide/ui/-/ui-0.1.0.tgz}
+    peerDependencies:
+      vue: ^3.5.0
+      vue-icons-plus: ^0.1.8
 
   alien-signals@3.2.1:
     resolution: {integrity: sha512-I8FjmltrfnDFoZedi5CG8DghVYNhzb/Ijluz7tCSJH0xpd0484Kowhbb1XDYOxfJpU1p5wnM2X54dA+IfGyD1g==}
@@ -623,6 +629,11 @@ snapshots:
       '@vue/shared': 3.5.42
 
   '@vue/shared@3.5.42': {}
+
+  '@waittide/ui@0.1.0(vue-icons-plus@0.1.8(vue@3.5.42(typescript@6.0.3)))(vue@3.5.42(typescript@6.0.3))':
+    dependencies:
+      vue: 3.5.42(typescript@6.0.3)
+      vue-icons-plus: 0.1.8(vue@3.5.42(typescript@6.0.3))
 
   alien-signals@3.2.1: {}
 

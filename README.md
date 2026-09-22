@@ -63,7 +63,7 @@ Oma 把一个完整的编码 Agent 拆成两层：**无头的 Daemon 内核**（
 
 ### 客户端
 
-- **Web（`web/`）**：Vue 3 + TypeScript，控件全部来自本地 link 的 `@waittide/ui`，
+- **Web（`web/`）**：Vue 3 + TypeScript，控件全部来自 `@waittide/ui`（npm 上的自研组件库），
   **不引入第三方 UI / CSS 框架**，应用层样式手写（`web/src` 下仅约 90 行 CSS）；
   内置 4 套 Catppuccin 调色板（浅色 `latte`，深色 `frappe` / `macchiato` / `mocha`，
   默认深色 `mocha` + 浅色 `latte`）、
@@ -152,7 +152,6 @@ flowchart TB
 | Rust | nightly | 仓库内 `rust-toolchain.toml` 已固定为 nightly（`edition = "2024"`） |
 | Node.js | ≥ 20 | 仅构建前端需要；运行时不需要 Node |
 | pnpm | ≥ 9 | 前端包管理器 |
-| `waittide-ui` | 同级目录 | 前端控件库，以 `link:../waittide-ui/packages/ui` 引入；**构建 Web 前端前必须先 clone 到本仓库的同级目录**，只用预编译产物则不需要 |
 
 平台：Linux 与 macOS 为日常开发环境；Windows 具备对应 `cfg` 回退分支，但未做验证。
 
@@ -201,9 +200,6 @@ cd oma-0.1.0-x86_64-unknown-linux-gnu
 但 `oma web` 启动时会因缺少资产而报错：
 
 ```bash
-# 0) 前端控件库：@waittide/ui 以 link: 指向仓库之外的同级目录，先 clone 过来
-git clone <waittide-ui 仓库地址> ../waittide-ui
-
 # 1) 前端
 cd web
 pnpm install
