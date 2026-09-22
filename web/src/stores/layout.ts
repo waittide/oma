@@ -209,17 +209,47 @@ export function setMarkdownSource(source: boolean) {
 }
 
 /**
- * 文件树里已展开的目录（相对路径 → true）。
+ * 文件树里已展开的目录：`{ 工作区 → { 相对路径: true } }`。
  *
- * 放在 store 而不是组件里：打开一个文件预览时树会被卸载，返回时若状态在组件内，
- * 之前展开的目录就全折起来了。换工作区时清空——同一批相对路径在另一个仓库里
- * 指向的不是同一批目录。
+ * 放在 store 并落盘，有两个原因：打开文件预览时树会被卸载（状态留在组件里就会整棵
+ * 折起来），以及刷新页面后应当回到原来的展开位置。键按工作区区分——同一批相对路径
+ * 换到别的仓库里指的不是同一批目录。
  */
+const TREE_OPEN_KEY = 'oma.panelTreeOpen';
+
+function readTreeOpenState(): Record<string, Record<string, boolean>> {
+  try {
+    const raw = localStorage.getItem(TREE_OPEN_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, Record<string, boolean>>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+const treeOpenState = readTreeOpenState();
+/** 当前工作区的展开集合（与持久化结构共享同一份对象，改动会被写回） */
 export const fileTreeOpen = ref<Record<string, boolean>>({});
 
-/** 换工作区：清掉上一个工作区留下的展开状态 */
-export function resetFileTreeOpen() {
-  fileTreeOpen.value = {};
+/** 载入某工作区的展开集合（换工作区时调用） */
+export function loadFileTreeOpen(workspace: string) {
+  if (!workspace) {
+    fileTreeOpen.value = {};
+    return;
+  }
+  treeOpenState[workspace] ??= {};
+  fileTreeOpen.value = treeOpenState[workspace];
+}
+
+watch(fileTreeOpen, persistTreeOpen, { deep: true });
+
+function persistTreeOpen() {
+  try {
+    localStorage.setItem(TREE_OPEN_KEY, JSON.stringify(treeOpenState));
+  } catch {
+    // 隐私模式下写不了：展开状态退化为仅当前页面有效
+  }
 }
 
 export function setSidebarWidth(width: number) {

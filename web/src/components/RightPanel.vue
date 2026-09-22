@@ -40,6 +40,10 @@ const workspace = computed(() => activeSession.value?.workspace ?? '');
 const tree = ref<FileNode[]>([]);
 const treeLoading = ref(false);
 const treeError = ref('');
+/** 已取过子节点的目录（展开状态可能来自上次会话，挂载时要补取） */
+const loadedDirs = ref<Set<string>>(new Set());
+/** 正在取子节点的目录：只用于显示「加载中」 */
+const loadingDirs = ref<Set<string>>(new Set());
 
 async function loadTree() {
   const ws = workspace.value;
@@ -50,13 +54,33 @@ async function loadTree() {
   treeLoading.value = true;
   treeError.value = '';
   try {
+    // 只取一层，目录内容在展开时按需下钻（深度不再受限）
     const root = await api.workspaceTree(ws);
     tree.value = root.children ?? [];
+    loadedDirs.value = new Set([root.path]);
   } catch (e) {
     treeError.value = e instanceof Error ? e.message : String(e);
     tree.value = [];
   } finally {
     treeLoading.value = false;
+  }
+}
+
+/** 展开目录时补取它的子节点；同一个目录只取一次。 */
+async function ensureChildren(node: FileNode) {
+  const ws = workspace.value;
+  if (!ws || !node.is_dir || loadedDirs.value.has(node.path)) return;
+  loadedDirs.value = new Set(loadedDirs.value).add(node.path);
+  loadingDirs.value = new Set(loadingDirs.value).add(node.path);
+  try {
+    const sub = await api.workspaceTree(ws, node.path);
+    node.children = sub.children ?? [];
+  } catch {
+    // 取不到就当空目录，并把标记撤回，下次展开可以重试
+    loadedDirs.value = new Set([...loadedDirs.value].filter((p) => p !== node.path));
+    node.children = [];
+  } finally {
+    loadingDirs.value = new Set([...loadingDirs.value].filter((p) => p !== node.path));
   }
 }
 
@@ -66,9 +90,9 @@ layout.useWorkspaceFileState(workspace);
 // 换工作区要重取；换会话但工作区相同时不必（树与 git 都只看工作区）
 watch(
   workspace,
-  () => {
-    // 展开状态是「一批相对路径」，另一个工作区里指的不是同一批目录
-    layout.resetFileTreeOpen();
+  (ws) => {
+    // 展开状态按工作区记（脚本里落盘），换过去就换入那一份
+    layout.loadFileTreeOpen(ws);
     void loadTree();
   },
   { immediate: true },
@@ -125,7 +149,9 @@ watch(
           :depth="0"
           :selected="layout.openFilePath.value"
           :reveal-prefix="layout.openFilePath.value"
+          :loading-dirs="loadingDirs"
           @select="(n) => layout.selectFilePath(workspace, n.path)"
+          @expand="ensureChildren"
         />
       </template>
 

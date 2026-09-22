@@ -14,6 +14,8 @@ import { copyText } from './clipboard';
 
 /** 复制成功后的图标回退延时（ms） */
 const FEEDBACK_MS = 1200;
+/** 图标尺寸：与界面里其它小图标同档，默认 24px 塞进按钮里会显得过大 */
+const ICON_SIZE = 13;
 
 let copyIcon = '';
 let checkIcon = '';
@@ -21,7 +23,7 @@ let checkIcon = '';
 /** 把图标组件渲染成 SVG 字符串并缓存（只做一次）。 */
 function iconSvg(component: unknown): string {
   const holder = document.createElement('div');
-  render(h(component as never), holder);
+  render(h(component as never, { size: ICON_SIZE }), holder);
   const svg = holder.innerHTML;
   render(null, holder); // 卸载，避免留下游离组件实例
   return svg;

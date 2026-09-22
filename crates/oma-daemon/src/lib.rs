@@ -32,9 +32,12 @@ use tower_http::{
 
 /// 附件上传体积上限（单请求）
 const MAX_UPLOAD_BYTES: usize = 16 * 1024 * 1024;
-/// 工作区文件树最大深度与总条目上限（避免大仓库阻塞/撑爆响应）
-const TREE_MAX_DEPTH: usize = 4;
-const TREE_MAX_ENTRIES: usize = 2000;
+/// 工作区文件树每次只列一层，展开某个目录时再取下一层。
+///
+/// 早先是「一次性递归到深度 4」：更深的目录永远是空的（第 4 层之后不再展开），
+/// 而大仓库又会被条目预算截断。改成按需下钻后深度不再受限，每次响应的体积也可控。
+const TREE_PAGE_DEPTH: usize = 1;
+const TREE_PAGE_ENTRIES: usize = 2000;
 
 /// 文件树里固定忽略的生成物目录/文件（对齐 pi-web 的忽略名单）。
 ///
@@ -531,6 +534,8 @@ async fn handle_rename_session(
 #[derive(Deserialize)]
 struct WorkspaceTreeQuery {
     workspace: String,
+    /// 相对工作区的目录路径；不传表示列工作区根
+    path:      Option<String>,
 }
 
 #[derive(Serialize)]
@@ -557,9 +562,19 @@ async fn handle_workspace_tree(
         return Err((StatusCode::NOT_FOUND, "Workspace not found".into()));
     }
 
+    // 下钻目录仍以工作区为相对根：客户端拿到的 path 始终是工作区相对路径，
+    // 拼下一层请求时不需要自己维护前缀
+    let target = match query.path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(relative) => resolve_path(&ws_path, relative),
+        None => ws_path.clone(),
+    };
+    if !target.is_dir() {
+        return Err((StatusCode::NOT_FOUND, "Directory not found".into()));
+    }
+
     let tree = tokio::task::spawn_blocking(move || {
-        let mut budget = TREE_MAX_ENTRIES;
-        build_tree(&ws_path, &ws_path, TREE_MAX_DEPTH, &mut budget)
+        let mut budget = TREE_PAGE_ENTRIES;
+        build_tree(&target, &ws_path, TREE_PAGE_DEPTH, &mut budget)
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -567,7 +582,7 @@ async fn handle_workspace_tree(
     Ok(Json(tree))
 }
 
-/// 递归构建文件树；跳过生成物目录，受深度与总条目预算约束。
+/// 递归构建文件树；跳过生成物目录，受深度与单次条目预算约束。
 fn build_tree(path: &Path, rel_root: &Path, max_depth: usize, budget: &mut usize) -> FileNode {
     let name = path
         .file_name()

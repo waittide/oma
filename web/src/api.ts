@@ -3,6 +3,7 @@ import type {
   AgentFile,
   ChatMessage,
   ClientConfig,
+  FileNode,
   GitStatusResp,
   OmaConfig,
   Palette,
@@ -177,9 +178,10 @@ export const api = {
     return request<ChatMessage[]>(`/api/sessions/${id}/messages${q}`);
   },
 
-  workspaceTree: (workspace: string) =>
-    request<import('./types').FileNode>(
-      `/api/workspace/tree?workspace=${encodeURIComponent(workspace)}`,
+  /** 列目录：`path` 为空表示工作区根，传相对路径则只列该目录一层 */
+  workspaceTree: (workspace: string, path?: string) =>
+    request<FileNode>(
+      `/api/workspace/tree?workspace=${encodeURIComponent(workspace)}${path ? `&path=${encodeURIComponent(path)}` : ''}`,
     ),
 
   workspaceFile: (workspace: string, path: string) =>

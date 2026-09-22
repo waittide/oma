@@ -414,8 +414,9 @@ onMounted(() => void nextTick(syncCodeCopy));
   right: 6px;
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  /* 与 13px 图标同档的紧凑按钮：26px 相对代码块显得过大 */
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -429,6 +430,10 @@ onMounted(() => void nextTick(syncCodeCopy));
     color 0.12s ease,
     background-color 0.12s ease,
     border-color 0.12s ease;
+}
+.blocks :deep(.code-copy svg) {
+  width: 13px;
+  height: 13px;
 }
 .blocks :deep(.code-block:hover .code-copy),
 .blocks :deep(.code-copy:focus-visible) {

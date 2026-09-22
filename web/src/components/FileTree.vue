@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { watch } from 'vue';
 import { LuChevronRight } from 'vue-icons-plus/lu';
 import type { FileNode } from '../types';
+import { useTranslations } from '../composables/i18n';
 import { fileTreeOpen } from '../stores/layout';
 import FileIcon from './FileIcon.vue';
 
@@ -22,9 +23,17 @@ const props = defineProps<{
   selected?: string;
   /** 上一次可见的路径前缀，用于把祖先目录默认展开 */
   revealPrefix?: string;
+  /** 正在取子节点的目录路径集合（展开时按需下钻，这里只用于显示加载态） */
+  loadingDirs?: Set<string>;
 }>();
 
-const emit = defineEmits<{ select: [node: FileNode] }>();
+const emit = defineEmits<{
+  select: [node: FileNode];
+  /** 展开目录：由持有树数据的一方去取这一层的子节点 */
+  expand: [node: FileNode];
+}>();
+
+const { t } = useTranslations('panel');
 
 /** 展开状态直接引用 store（跨卸载保留） */
 const open = fileTreeOpen;
@@ -34,6 +43,15 @@ function isOpen(node: FileNode): boolean {
   // 点击预览时展开对应目录链，否则用户会以为树里没有这个文件
   return !!props.revealPrefix && node.is_dir && props.revealPrefix.startsWith(node.path);
 }
+
+// 展开（含上次会话遗留的展开态）都要把该目录的子节点取回来
+watch(
+  () => props.nodes.map((n) => isOpen(n)).join(','),
+  () => {
+    for (const node of props.nodes) if (node.is_dir && isOpen(node)) emit('expand', node);
+  },
+  { immediate: true },
+);
 
 function toggle(node: FileNode) {
   if (!node.is_dir) {
@@ -55,18 +73,23 @@ function toggle(node: FileNode) {
         @click="toggle(node)"
       >
         <span class="caret-slot">
-          <LuChevronRight v-if="node.is_dir && node.children?.length" :size="12" class="caret" :class="{ open: isOpen(node) }" />
+          <LuChevronRight v-if="node.is_dir" :size="12" class="caret" :class="{ open: isOpen(node) }" />
         </span>
         <FileIcon :name="node.name" :is-dir="node.is_dir" :open="isOpen(node)" />
         <span class="name">{{ node.name }}</span>
       </button>
+      <div v-if="node.is_dir && isOpen(node) && loadingDirs?.has(node.path)" class="tree-loading">
+        {{ t('loading') }}
+      </div>
       <FileTree
         v-if="node.is_dir && isOpen(node) && node.children?.length"
         :nodes="node.children"
         :depth="depth + 1"
         :selected="selected"
         :reveal-prefix="revealPrefix"
+        :loading-dirs="loadingDirs"
         @select="(n) => emit('select', n)"
+        @expand="(n) => emit('expand', n)"
       />
     </li>
   </ul>
@@ -122,5 +145,11 @@ function toggle(node: FileNode) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 下钻中的提示：与行同缩进，避免加载时目录突然“空着” */
+.tree-loading {
+  padding: 2px 6px 2px calc(4px + (var(--depth) + 1) * 12px);
+  font-size: 11.5px;
+  color: var(--overlay0);
 }
 </style>
