@@ -699,6 +699,8 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::ThinkingDelta { delta } => {
             app.append_stream("思", &delta, Style::default().fg(app.theme.thinking));
         }
+        // 思考段耗时只在 Web 端的折叠头上展示；TUI 的思考是顺序流式输出，不另挂耗时
+        AgentEvent::ThinkingFinished { .. } => {}
         AgentEvent::TextDelta { delta } => {
             app.append_stream("AI", &delta, Style::default().fg(app.theme.success));
         }

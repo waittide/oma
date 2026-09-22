@@ -21,13 +21,16 @@ export function prettyJson(value: unknown): string {
 }
 
 /**
- * 耗时文案：`3.2 s` / `2 m 05 s` / `1 h 02 m`。
+ * 耗时文案：`320 ms` / `3.2 s` / `2 m 05 s` / `1 h 02 m`。
  *
- * 单位用固定的 s/m/h（与用户习惯一致，不做本地化）；小于 10 秒保留一位小数，
- * 更长的按整秒/整分取整，避免「125 s」这种要心算的读数。
+ * 单位用固定的 ms/s/m/h（与用户习惯一致，不做本地化）；最小单位是毫秒——
+ * 不足 1 秒直接给毫秒（`0.9 s` 会抹掉亚秒级信息，`0.0 s` 更是等于没给），
+ * 1 秒到 10 秒保留一位小数，更长的按整秒/整分取整，避免「125 s」这种要心算的读数。
  */
 export function formatDuration(ms: number): string {
-  const seconds = Math.max(0, ms) / 1000;
+  const clamped = Math.max(0, ms);
+  if (clamped < 1000) return `${Math.round(clamped)} ms`;
+  const seconds = clamped / 1000;
   if (seconds < 10) return `${seconds.toFixed(1)} s`;
   // 先归一到整秒再拆时分：否则 59.9s 会显示成「60 s」、59分59.6秒会显示成「59 m 60 s」
   const total = Math.round(seconds);

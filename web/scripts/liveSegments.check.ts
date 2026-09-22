@@ -61,5 +61,12 @@ eq(
   ],
 );
 
+// --- 5. 思考段耗时（服务端 `thinking_finished` 下发）随块带出，供折叠头显示 ---
+eq(
+  'thinking duration carried through',
+  foldSegments([{ kind: 'thinking', key: 'th2', text: 'think', durationMs: 318 }]),
+  [{ type: 'thinking', thinking: 'think', duration_ms: 318 }],
+);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

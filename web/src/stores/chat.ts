@@ -249,6 +249,13 @@ function handleEvent(ev: AgentEvent) {
         });
       break;
     }
+    case 'thinking_finished': {
+      // 该段思考已结束：服务端给出确定耗时，落在刚结束的那一段上。
+      // 事件先于触发收尾的正文/工具调用到达，因此末尾一段正是它。
+      const last = live.value.segments[live.value.segments.length - 1];
+      if (last && last.kind === 'thinking' && ev.data) last.durationMs = ev.data.duration_ms;
+      break;
+    }
     case 'text_delta': {
       const last = live.value.segments[live.value.segments.length - 1];
       if (last && last.kind === 'text') last.text += ev.data?.delta ?? '';
@@ -393,7 +400,12 @@ function applyCatchUp(c: ActiveTurnCatchUp | null) {
   // 会照常压栈归位；此前已发生的子代理输出无法恢复（服务端不留存）
   const segments: LiveSegment[] = [];
   if (c.accumulated_thinking)
-    segments.push({ kind: 'thinking', key: 'cu-th', text: c.accumulated_thinking });
+    segments.push({
+      kind: 'thinking',
+      key: 'cu-th',
+      text: c.accumulated_thinking,
+      durationMs: c.thinking_duration_ms ?? undefined,
+    });
   if (c.accumulated_text) segments.push({ kind: 'text', key: 'cu-tx', text: c.accumulated_text });
   if (c.active_tool_call)
     segments.push({

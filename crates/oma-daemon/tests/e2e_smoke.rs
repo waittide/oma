@@ -588,7 +588,25 @@ async fn test_thinking_duration_is_recorded() -> Result<()> {
             attachments: vec![],
         })
         .await?;
-    drive_turn(&mut client, Duration::from_secs(30)).await?;
+    let events = drive_turn(&mut client, Duration::from_secs(30)).await?;
+
+    // 流式口径：段一结束（第一段正文/工具调用出现）就广播确定耗时，
+    // 界面不必等整轮结束后的回读，折叠头当场就能显示这段思考花了多久
+    let announced: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ThinkingFinished { duration_ms } => Some(*duration_ms),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !announced.is_empty(),
+        "每一段思考都应在结束时广播 ThinkingFinished：{events:?}"
+    );
+    assert!(
+        announced.iter().all(|ms| *ms < 30_000),
+        "思考耗时应是可信的墙钟读数：{announced:?}"
+    );
 
     let messages = fetch_messages(&h, &session.session_id).await?;
     let assistant = messages
@@ -604,6 +622,12 @@ async fn test_thinking_duration_is_recorded() -> Result<()> {
     assert!(
         thinking["duration_ms"].as_u64().is_some(),
         "thinking 块必须带这一段思考的耗时：{thinking}"
+    );
+    // 广播值与落库值必须同源：两处显示的数字不能打架
+    assert_eq!(
+        thinking["duration_ms"].as_u64(),
+        announced.first().copied(),
+        "广播的那份耗时必须与落库的是同一次测量"
     );
     Ok(())
 }

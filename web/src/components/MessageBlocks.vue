@@ -241,10 +241,13 @@ function isPatchTool(it: Item): boolean {
 }
 
 /**
- * 毫秒 → 折叠头上的耗时文案（秒，最多一位小数；长耗时取整）。
- * 与旧的工具展示保持一致：5s / 6.5s。
+ * 毫秒 → 折叠头上的耗时文案。
+ *
+ * 最小单位是毫秒：不足 1 秒直接给 `320ms`（而不是四舍五入成 `0.3s`/`0s`，
+ * 秒级以下的信息不该被抹掉）；1 秒到 10 秒保留一位小数（`6.5s`），更长取整（`34s`）。
  */
-function formatSeconds(ms: number): string {
+function formatShortElapsed(ms: number): string {
+  if (ms < 1_000) return `${Math.round(ms)}ms`;
   const seconds = ms < 10_000 ? Math.round(ms / 100) / 10 : Math.round(ms / 1000);
   return `${seconds}s`;
 }
@@ -256,7 +259,7 @@ function formatSeconds(ms: number): string {
 function toolDuration(it: Item): string {
   const ms = it.durationMs ?? toolDurations.value[it.key];
   if (ms === undefined || ms === null) return '';
-  return formatSeconds(ms);
+  return formatShortElapsed(ms);
 }
 
 /**
@@ -265,7 +268,7 @@ function toolDuration(it: Item): string {
  */
 function thinkingDuration(it: Item): string {
   const ms = it.thinkingMs;
-  return ms === undefined || ms === null ? '' : formatSeconds(ms);
+  return ms === undefined || ms === null ? '' : formatShortElapsed(ms);
 }
 
 /**

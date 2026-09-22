@@ -92,6 +92,8 @@ export interface ToolCallStartedData {
 export interface ActiveTurnCatchUp {
   turn_id: string;
   accumulated_thinking: string;
+  /** 最近一段已结束思考的耗时（毫秒）；未结束/本轮无思考时缺省 */
+  thinking_duration_ms?: number | null;
   accumulated_text: string;
   active_tool_call?: ToolCallStartedData | null;
   /** 本轮最近一次完成的请求的用量；全零/缺省表示尚未有请求完成 */
@@ -133,6 +135,7 @@ export type AgentEvent =
   | { type: 'queue_updated'; data?: { pending: number } }
   | { type: 'sync_required'; data?: Record<string, never> }
   | { type: 'thinking_delta'; data?: { delta: string } }
+  | { type: 'thinking_finished'; data?: { duration_ms: number } }
   | { type: 'text_delta'; data?: { delta: string } }
   | { type: 'tool_call_started'; data?: ToolCallStartedData }
   | { type: 'tool_call_finished'; data?: { call_id: string; tool_name: string; output: string; is_error: boolean; duration_ms?: number } }

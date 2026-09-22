@@ -12,7 +12,8 @@ export interface LiveTool {
 }
 
 export type LiveSegment =
-  | { kind: 'thinking'; key: string; text: string }
+  /** 思考段；`durationMs` 由服务端在该段结束时下发（`thinking_finished`），未结束为 undefined */
+  | { kind: 'thinking'; key: string; text: string; durationMs?: number }
   | { kind: 'text'; key: string; text: string }
   | { kind: 'tool'; key: string; tool: LiveTool };
 
@@ -44,7 +45,7 @@ export function foldSegments(segments: LiveSegment[]): Block[] {
   const out: Block[] = [];
   for (const seg of segments) {
     if (seg.kind === 'thinking') {
-      out.push({ type: 'thinking', thinking: seg.text });
+      out.push({ type: 'thinking', thinking: seg.text, duration_ms: seg.durationMs });
       continue;
     }
     if (seg.kind === 'text') {

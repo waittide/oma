@@ -609,6 +609,11 @@ pub struct ToolCallStartedData {
 pub struct ActiveTurnCatchUp {
     pub turn_id:              String,
     pub accumulated_thinking: String,
+    /// 最近一段已结束思考的墙钟耗时（毫秒）；该段尚未结束或本轮没有思考时为 `None`。
+    ///
+    /// 中途接入的客户端拿不到当时那条 `ThinkingFinished`，靠它立刻显示耗时。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_duration_ms: Option<u64>,
     pub accumulated_text:     String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_tool_call:     Option<ToolCallStartedData>,
@@ -652,6 +657,14 @@ pub enum AgentEvent {
     SyncRequired {},
     ThinkingDelta {
         delta: String,
+    },
+    /// 一段思维链结束：该段墙钟耗时（毫秒），由运行时测量。
+    ///
+    /// 发在 `thinking.duration_ms` 落库之前、**当场**广播：段结束（第一段正文或
+    /// 第一个工具调用出现）时立即下发，界面不必等整轮结束后的回读就能在折叠头上
+    /// 显示这段思考花了多久。
+    ThinkingFinished {
+        duration_ms: u64,
     },
     TextDelta {
         delta: String,
@@ -859,6 +872,7 @@ mod tests {
         let catch_up = ActiveTurnCatchUp {
             turn_id:              "t1".into(),
             accumulated_thinking: "thinking...".into(),
+            thinking_duration_ms: Some(1_234),
             accumulated_text:     "hello".into(),
             active_tool_call:     None,
             usage:                TokenUsage {

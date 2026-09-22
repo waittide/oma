@@ -348,6 +348,28 @@ fn repair_tool_pairing(messages: &mut Vec<ChatMessage>) {
     }
 }
 
+/// 思考段收尾：算出该段墙钟并返回，且**只返回一次**。
+///
+/// 段结束的时机是「第一段正文或第一个工具调用出现」（思考在正文之前输出），
+/// 此时就该把耗时广播出去，界面上的折叠头不必等整次请求流读完。流到最后都没
+/// 等到正文/工具调用（纯思考收尾）时，由调用方在循环外再收一次尾。
+///
+/// `announced` 保证同一次请求只播报一次：正文与工具调用可能先后到达，
+/// 但只有第一次遇到时会真正收尾。
+fn take_thinking_duration(
+    started: Option<std::time::Instant>,
+    ended: &mut Option<std::time::Instant>,
+    announced: &mut bool,
+) -> Option<u64> {
+    let start = started?;
+    if *announced {
+        return None;
+    }
+    *announced = true;
+    let end = ended.get_or_insert_with(std::time::Instant::now);
+    Some(end.saturating_duration_since(start).as_millis() as u64)
+}
+
 // =========================================================================
 // 4. 活跃轮次状态机快照
 // =========================================================================
@@ -362,6 +384,8 @@ type ToolCallResult = (String, String, bool, Vec<ToolImage>, Option<u64>);
 pub struct ActiveTurnState {
     pub turn_id:              String,
     pub accumulated_thinking: String,
+    /// 最近一段已结束思考的耗时（毫秒），随 `ThinkingFinished` 一起更新
+    pub thinking_duration_ms: Option<u64>,
     pub accumulated_text:     String,
     pub active_tool_call:     Option<ToolCallStartedData>,
     /// 本轮累计用量（到目前为止），供中途接入的客户端立即显示输入/输出
@@ -475,12 +499,24 @@ impl SessionRoom {
         self.is_running.load(Ordering::SeqCst)
     }
 
+    /// 广播一段思考的耗时，并同步进活跃轮次快照。
+    ///
+    /// 快照里的那份供中途接入的客户端回放：它没收到当时那条 `ThinkingFinished`，
+    /// 否则直到整轮回读前都看不到这段思考花了多久。
+    fn announce_thinking_duration(&self, ms: u64) {
+        if let Some(turn) = self.active_turn.write().as_mut() {
+            turn.thinking_duration_ms = Some(ms);
+        }
+        self.broadcast(AgentEvent::ThinkingFinished { duration_ms: ms });
+    }
+
     /// 捕获新接入客户端的追赶快照
     pub fn get_catch_up(&self) -> Option<ActiveTurnCatchUp> {
         let turn = self.active_turn.read().clone()?;
         Some(ActiveTurnCatchUp {
             turn_id:              turn.turn_id,
             accumulated_thinking: turn.accumulated_thinking,
+            thinking_duration_ms: turn.thinking_duration_ms,
             accumulated_text:     turn.accumulated_text,
             active_tool_call:     turn.active_tool_call,
             usage:                turn.usage,
@@ -991,6 +1027,8 @@ impl SessionRoom {
             // 思考段的墙钟：首帧思考增量起算，遇到第一段正文/工具调用（或流结束）为止
             let mut thinking_started: Option<std::time::Instant> = None;
             let mut thinking_ended: Option<std::time::Instant> = None;
+            // 该段耗时是否已广播；正文与工具调用可能先后到达，只播报一次
+            let mut thinking_announced = false;
             // 本次请求的权威输入占用（Anthropic 在 message_start 上报，OpenAI 等在收尾）
             let mut request_input_tokens = 0usize;
 
@@ -1021,8 +1059,10 @@ impl SessionRoom {
                     }
                     ProviderStreamEvent::TextDelta(delta) => {
                         // 正文开始 = 这一段思考结束（思考在正文之前输出）
-                        if thinking_started.is_some() && thinking_ended.is_none() {
-                            thinking_ended = Some(std::time::Instant::now());
+                        if let Some(ms) =
+                            take_thinking_duration(thinking_started, &mut thinking_ended, &mut thinking_announced)
+                        {
+                            self.announce_thinking_duration(ms);
                         }
                         assistant_text.push_str(&delta);
                         if let Some(turn) = self.active_turn.write().as_mut() {
@@ -1032,8 +1072,10 @@ impl SessionRoom {
                     }
                     ProviderStreamEvent::ToolCall { id, name, input } => {
                         // 直接给出工具调用（无正文）时同样视为思考结束
-                        if thinking_started.is_some() && thinking_ended.is_none() {
-                            thinking_ended = Some(std::time::Instant::now());
+                        if let Some(ms) =
+                            take_thinking_duration(thinking_started, &mut thinking_ended, &mut thinking_announced)
+                        {
+                            self.announce_thinking_duration(ms);
                         }
                         assistant_tool_calls.push((id, name, input));
                     }
@@ -1065,7 +1107,13 @@ impl SessionRoom {
                 }
             }
 
-            // 这一段思考的耗时（首帧思考增量到该段结束）
+            // 纯思考收尾（既没有正文也没有工具调用）：直到流结束才等到收尾时机，
+            // 这里补一次广播，保证「每段思考都及时给出耗时」对这条路径也成立
+            if let Some(ms) = take_thinking_duration(thinking_started, &mut thinking_ended, &mut thinking_announced) {
+                self.announce_thinking_duration(ms);
+            }
+
+            // 这一段思考的耗时（首帧思考增量到该段结束）；与上面广播的是同一个值
             let thinking_ms = thinking_started.map(|start| {
                 let end = thinking_ended.unwrap_or_else(std::time::Instant::now);
                 end.saturating_duration_since(start).as_millis() as u64
