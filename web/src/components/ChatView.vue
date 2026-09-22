@@ -22,16 +22,17 @@ import {
 } from 'vue-icons-plus/lu';
 import MessageBlocks from './MessageBlocks.vue';
 import MessageRail from './MessageRail.vue';
+import type { Block, ChatMessage, TokenUsage } from '../types';
 import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
 import { copyText } from '../lib/clipboard';
 import { ensureNotificationPermission } from '../lib/notify';
 import { formatDuration } from '../lib/format';
+import { sessionUsage } from '../lib/sessionUsage';
 import ContextGauge from './ContextGauge.vue';
 import * as chat from '../stores/chat';
 import { activeSession, activeSessionId, requestNewSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
 import { useTranslations } from '../composables/i18n';
-import type { TokenUsage } from '../types';
 
 const props = defineProps<{ online: boolean }>();
 const emit = defineEmits<{ needSettings: [] }>();
@@ -363,16 +364,16 @@ function messageModelLabel(model?: string | null): string {
 }
 
 /**
- * 一条助手消息的统计行（`耗时 · N 输入 · N 输出 · N 缓存读 · N 缓存写`）。
+ * 一轮的统计行（`耗时 · N 输入 · N 输出 · N 缓存读 · N 缓存写`）。
  *
  * oma 的模型配置里没有价格字段，故不展示成本。
  * 单位是各语言里的词（中文「输入/输出」），数字按当前语言做千分位。
- * 耗时取服务端为**该次请求**测得的墙钟（`usage.duration_ms`），因此每条消息
- * 显示的都是它自己的那次模型请求，而不是整轮之和。
+ * `elapsedMs` 是该轮墙钟（提问到收尾，由消息时间戳推算）；流式中的那一轮还没走完，
+ * 不传它——数字还在动，不显示比显示一个半成品好。
  */
-function usageText(usage?: TokenUsage | null): string {
+function usageText(usage?: TokenUsage | null, elapsedMs?: number): string {
   const parts: string[] = [];
-  if (usage?.duration_ms) parts.push(t('usageElapsed', { time: formatDuration(usage.duration_ms) }));
+  if (elapsedMs) parts.push(t('usageElapsed', { time: formatDuration(elapsedMs) }));
   if (usage) {
     if (usage.input_tokens) parts.push(t('usageIn', { count: usage.input_tokens.toLocaleString() }));
     if (usage.output_tokens) parts.push(t('usageOut', { count: usage.output_tokens.toLocaleString() }));
@@ -400,6 +401,71 @@ const liveModelLabel = computed(() => messageModelLabel(chat.live.value.model ||
  * 的数字一致——整轮还在跑，但那一次请求已经结束，数字是确定的。
  */
 const liveUsageText = computed(() => usageText(chat.live.value.usage));
+
+/**
+ * 一轮：一条用户消息 + 其后到下一轮开始前的全部助手消息。
+ *
+ * 工具回执是 `user` 角色的**内部消息**，不构成轮次边界；会话最早的一批助手消息
+ * （理论上不该出现）会落成 `user` 为 null 的一组，同样照常渲染。
+ */
+interface Turn {
+  key: string;
+  user: ChatMessage | null;
+  assistants: ChatMessage[];
+  /** 该轮全部助手块，按到达顺序拼成一条，交给 MessageBlocks 统一渲染 */
+  blocks: Block[];
+  /** 该轮生效的模型（首个非空）；整轮共用一条标签 */
+  model: string | null;
+  /** 该轮各次请求的用量之和 */
+  usage: TokenUsage | null;
+  /** 该轮墙钟（用户消息 → 该轮最后一条助手消息）；推算不出时为 0 */
+  elapsedMs: number;
+}
+
+const turns = computed<Turn[]>(() => {
+  const out: Turn[] = [];
+  let current: Turn | null = null;
+  const push = () => {
+    if (current && (current.user || current.assistants.length > 0)) out.push(current);
+    current = null;
+  };
+  for (const m of chat.messages.value) {
+    if (chat.isInternalMessage(m)) continue;
+    if (m.role === 'user') {
+      push();
+      current = {
+        key: m.id,
+        user: m,
+        assistants: [],
+        blocks: [],
+        model: null,
+        usage: null,
+        elapsedMs: 0,
+      };
+      continue;
+    }
+    current ??= {
+      key: `lead-${m.id}`,
+      user: null,
+      assistants: [],
+      blocks: [],
+      model: null,
+      usage: null,
+      elapsedMs: 0,
+    };
+    current.assistants.push(m);
+    current.blocks.push(...m.content);
+    current.model ??= m.model ?? null;
+    // 最后一条助手消息的落库时刻就是这一轮走完的时刻
+    if (current.user && m.created_at > 0) {
+      const askedAt = current.user.created_at;
+      if (m.created_at > askedAt) current.elapsedMs = m.created_at - askedAt;
+    }
+  }
+  push();
+  for (const turn of out) turn.usage = sessionUsage(turn.assistants);
+  return out;
+});
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */
 const ready = computed(() => !!activeSessionId.value && props.online && chat.connected.value);
 
@@ -526,16 +592,21 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         </div>
 
         <template v-else>
-          <article
-            v-for="m in chat.messages.value.filter((x) => !chat.isInternalMessage(x))"
-            :key="m.id"
-            :ref="(el) => setMsgEl(m.id, el)"
-            class="msg"
-            :class="m.role"
-          >
-            <template v-if="m.role === 'user'">
+          <!--
+            一轮 = 一条用户消息 + 其后到下一轮开始前的全部助手消息。
+
+            助手侧合并成**一整组**渲染：顶部一个模型标签、中间按到达顺序排开的
+            思考/工具/正文（每个折叠头各自带自己的耗时）、底部一行整轮合计。
+            一次工具循环会落很多条助手消息，逐条都重复模型名与统计行只是噪声。
+          -->
+          <template v-for="turn in turns" :key="turn.key">
+            <article
+              v-if="turn.user"
+              :ref="(el) => setMsgEl(turn.user!.id, el)"
+              class="msg user"
+            >
               <div class="user-bubble">
-                <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
+                <MessageBlocks :blocks="turn.user.content" :streaming="false" :results="chat.toolResults.value" />
               </div>
               <div class="user-actions">
                 <UiButton
@@ -543,19 +614,19 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
                   variant="ghost"
                   tone="neutral"
                   size="sm"
-                  @click="copyMessage(m.id)"
+                  @click="copyMessage(turn.user.id)"
                 >
-                  <LuCheck v-if="copiedId === m.id" :size="11" />
+                  <LuCheck v-if="copiedId === turn.user.id" :size="11" />
                   <LuCopy v-else :size="11" />
                   {{ t('copy') }}
                 </UiButton>
                 <UiButton
-                  v-if="m.parent_id"
+                  v-if="turn.user.parent_id"
                   class="fork"
                   variant="ghost"
                   tone="neutral"
                   size="sm"
-                  @click="startFork(m.parent_id, userText(m.id))"
+                  @click="startFork(turn.user.parent_id, userText(turn.user.id))"
                 >
                   <LuPencil :size="11" /> {{ t('editResend') }}
                 </UiButton>
@@ -564,20 +635,21 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
                   variant="ghost"
                   tone="neutral"
                   size="sm"
-                  @click="chat.deleteMessage(m.id)"
+                  @click="chat.deleteMessage(turn.user.id)"
                 >
                   <LuTrash2 :size="11" /> {{ t('delete') }}
                 </UiButton>
               </div>
-            </template>
-            <template v-else>
-              <div v-if="messageModelLabel(m.model)" class="model-label">{{ messageModelLabel(m.model) }}</div>
-              <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
-              <div v-if="usageText(m.usage)" class="turn-usage">
-                {{ usageText(m.usage) }}
+            </article>
+
+            <article v-if="turn.assistants.length > 0" class="msg assistant">
+              <div v-if="messageModelLabel(turn.model)" class="model-label">{{ messageModelLabel(turn.model) }}</div>
+              <MessageBlocks :blocks="turn.blocks" :streaming="false" :results="chat.toolResults.value" />
+              <div v-if="usageText(turn.usage, turn.elapsedMs)" class="turn-usage">
+                {{ usageText(turn.usage, turn.elapsedMs) }}
               </div>
-            </template>
-          </article>
+            </article>
+          </template>
 
           <article v-if="chat.running.value || chat.finalizing.value" class="msg assistant">
             <div v-if="liveModelLabel" class="model-label">{{ liveModelLabel }}</div>
