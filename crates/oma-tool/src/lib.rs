@@ -964,8 +964,10 @@ impl Tool for ShellTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command with process group management and timeout. Returns stdout and \
-         stderr. Output is truncated to the last 2000 lines or 50KB (whichever is hit first)."
+        "Execute a shell command. It already runs in the workspace root (the working directory is \
+         set for you), so do not prefix commands with `cd`. Process group management with timeout; \
+         returns stdout and stderr. Output is truncated to the last 2000 lines or 50KB (whichever \
+         is hit first)."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {

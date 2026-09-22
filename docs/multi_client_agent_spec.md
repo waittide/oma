@@ -614,7 +614,7 @@ pub struct ContextUsage {
    ```text
    <预设正文>
 
-   <runtime_context>            ← 工作区 / 系统 / 日期 / 当前模型
+   <runtime_context>            ← 工作区 / shell 工作目录 / 系统 / 日期 / 当前模型
 
    <project_context>            ← AGENTS.md / CLAUDE.md（见 5.4）
 
@@ -624,6 +624,7 @@ pub struct ContextUsage {
    ```text
    <runtime_context>
    - Workspace: /absolute/path/to/project
+   - Shell working directory: /absolute/path/to/project (shell commands already start here, do not prepend `cd`)
    - Operating System: linux (x86_64)
    - Today: 2026-09-20
    - Active Model: my_anthropic/claude-3-7-sonnet
@@ -776,6 +777,8 @@ ToolOutput {
 4. **`shell`**：
    - 参数：`{ "command": "cargo test" }`
    - 工作目录绑定当前 workspace，捕获标准输出与标准错误（合并后按尾部截断）。
+     环境块与工具描述都显式声明「命令已从工作区启动，无需 `cd`」，
+     避免模型在每条命令前重复拼接工作区路径。
    - 解释器与环境取自启动时的登录 shell 快照：Daemon 启动时以 `$SHELL -lic`
      采集一次完整环境（含 rc 文件里的 `export` 与 `PATH`）并缓存，
      因此命令与用户交互终端一致；采集失败时退回直接继承 Daemon 进程环境。

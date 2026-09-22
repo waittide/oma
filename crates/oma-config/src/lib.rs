@@ -959,8 +959,10 @@ impl AgentLoader {
         let arch = std::env::consts::ARCH;
 
         let mut prompt = format!(
-            "{}\n\n<runtime_context>\n- Workspace: {}\n- Operating System: {} ({})\n- Today: {}\n- Active Model: {}\n</runtime_context>",
+            "{}\n\n<runtime_context>\n- Workspace: {}\n- Shell working directory: {} (shell commands already \
+             start here, do not prepend `cd`)\n- Operating System: {} ({})\n- Today: {}\n- Active Model: {}\n</runtime_context>",
             template.system_prompt_body.trim(),
+            workspace.display(),
             workspace.display(),
             os,
             arch,
