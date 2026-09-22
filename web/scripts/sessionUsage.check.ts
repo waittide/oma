@@ -77,14 +77,34 @@ eq(
   { input_tokens: 30, output_tokens: 4, cache_read_tokens: 0, cache_write_tokens: 0 },
 );
 
-// --- 4. 用量行的展示（0 值整段省略，带缩写） ---
+// --- 4. 用量行的展示（0 值整段省略，带缩写，文案走 i18n） ---
+// 与 ChatView 里逐条消息的用量行共用同一套 key，这里用英文桩函数对照
+const en = (key: string, params?: Record<string, string | number>) =>
+  ({
+    usageIn: `${params?.count} in`,
+    usageOut: `${params?.count} out`,
+    usageCacheRead: `${params?.count} cache read`,
+    usageCacheWrite: `${params?.count} cache write`,
+  })[key] ?? key;
+
 eq(
   'usage line',
-  usageLine({ input_tokens: 27345, output_tokens: 1578, cache_read_tokens: 21000, cache_write_tokens: 1200 }),
-  '27.3k in · 1.6k out · 21.0k cache R · 1.2k cache W',
+  usageLine(
+    { input_tokens: 27345, output_tokens: 1578, cache_read_tokens: 21000, cache_write_tokens: 1200 },
+    en,
+  ),
+  '27.3k in · 1.6k out · 21.0k cache read · 1.2k cache write',
 );
-eq('usage line with zeros', usageLine({ input_tokens: 0, output_tokens: 7 }), '7 out');
-eq('usage line with null', usageLine(null), '');
+eq('usage line with zeros', usageLine({ input_tokens: 0, output_tokens: 7 }, en), '7 out');
+eq('usage line with null', usageLine(null, en), '');
+// 中文词序与英文不同（数字在前、单位在后），确保插值没写死在字符串里
+eq(
+  'usage line zh',
+  usageLine({ input_tokens: 12000, output_tokens: 800 }, (key, params) =>
+    key === 'usageIn' ? `${params?.count} 输入` : `${params?.count} 输出`,
+  ),
+  '12.0k 输入 · 800 输出',
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

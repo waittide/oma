@@ -17,7 +17,7 @@ const wsPath = computed(() => activeSession.value?.workspace ?? '');
  *
  * 与 pi-web 顶栏的 token/成本统计对齐；oma 的模型配置没有价格字段，故不含成本。
  */
-const usage = computed(() => usageLine(sessionUsage(chat.messages.value)));
+const usage = computed(() => usageLine(sessionUsage(chat.messages.value), t));
 
 /** MCP 概览：已发现的服务端与它们提供的工具总数（悬停看逐个明细） */
 const mcpToolTotal = computed(() => chat.mcpServers.value.reduce((sum, s) => sum + s.tool_count, 0));

@@ -87,9 +87,41 @@ export const lastUsage = ref<TokenUsage | null>(null);
  * call_id → 工具执行耗时（秒）。
  *
  * 由 `tool_call_started` / `tool_call_finished` 的到达时间差算出（与 pi-web 一致），
- * 服务端不记录耗时，因此重连后历史里的工具没有耗时。
+ * 服务端不记录耗时。这里把算好的值顺带缓存到 localStorage：call_id 全局唯一，
+ * 刷新页面后同一个工具行仍能显示当初那次执行的耗时，而不是变成空白。
  */
-export const toolDurations = ref<Record<string, number>>({});
+const TOOL_DURATIONS_KEY = 'oma.toolDurations';
+/** 缓存上限：超出后丢掉最早记录，避免无限增长 */
+const TOOL_DURATIONS_MAX = 500;
+
+function readToolDurations(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(TOOL_DURATIONS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, number>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export const toolDurations = ref<Record<string, number>>(readToolDurations());
+
+/** 记录一次工具耗时：内存态用于立即渲染，缓存用于刷新后仍可读 */
+function rememberToolDuration(callId: string, seconds: number): void {
+  toolDurations.value = { ...toolDurations.value, [callId]: seconds };
+  try {
+    const cached = readToolDurations();
+    cached[callId] = seconds;
+    const keys = Object.keys(cached);
+    if (keys.length > TOOL_DURATIONS_MAX) {
+      for (const stale of keys.slice(0, keys.length - TOOL_DURATIONS_MAX)) delete cached[stale];
+    }
+    localStorage.setItem(TOOL_DURATIONS_KEY, JSON.stringify(cached));
+  } catch {
+    // 隐私模式下写不了：退化为只在当前页面有效
+  }
+}
 /** 未完成调用的开始时刻（仅内存，不对外暴露） */
 const toolStartedAt = new Map<string, number>();
 /** 最近一次模型请求的上下文占用（提示侧总量，含缓存） */
@@ -246,10 +278,7 @@ function handleEvent(ev: AgentEvent) {
       const startedAt = toolStartedAt.get(d.call_id);
       if (startedAt !== undefined) {
         toolStartedAt.delete(d.call_id);
-        toolDurations.value = {
-          ...toolDurations.value,
-          [d.call_id]: Math.round(((Date.now() - startedAt) / 1000) * 10) / 10,
-        };
+        rememberToolDuration(d.call_id, Math.round(((Date.now() - startedAt) / 1000) * 10) / 10);
       }
       break;
     }
@@ -461,7 +490,7 @@ export function reset() {
   forkFrom.value = null;
   lastUsage.value = null;
   contextUsage.value = null;
-  toolDurations.value = {};
+  toolDurations.value = readToolDurations();
   toolStartedAt.clear();
   queued.value = 0;
   queuedMessages.value = [];

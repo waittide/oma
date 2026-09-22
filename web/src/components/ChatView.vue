@@ -370,21 +370,37 @@ function usageText(usage?: TokenUsage | null, elapsedMs?: number): string {
 const ready = computed(() => !!activeSessionId.value && props.online && chat.connected.value);
 
 /**
- * 每条助手消息的耗时（毫秒）：从本轮提问（用户消息）到这条回复落库。
+ * 每轮的整体耗时（毫秒），只挂在**该轮最后一条助手消息**上。
  *
- * 服务端只在助手消息上盖「这次请求读完流」的时刻，没有轮次起始时间戳，因此整轮
- * 墙钟耗时只能按 `created_at` 差值推：一条含工具往返的轮次里，最后一条助手消息
- * 的差值即整轮耗时，中间几条是当时的累计；流式中的消息还没有 `created_at`，不显示。
+ * 中间那些带工具调用的助手消息，`created_at` 只是「本次模型请求读完流」的时刻，
+ * 工具是在它之后才跑的：把差值挂到它们身上会被读成「这个工具只花了一点几秒」，
+ * 而工具行自己显示的才是真正的执行耗时。整轮耗时统一落在最后一条回复上，
+ * 两处数字就不再打架（服务端没有轮次起始时间戳，只能按用户消息的 created_at 推）。
+ *
+ * 流式中的消息还没有 created_at，不显示。
  */
 const turnElapsedMs = computed<Record<string, number>>(() => {
   const elapsed: Record<string, number> = {};
   let askedAt = 0;
+  let lastId: string | null = null;
+  let lastAt = 0;
+  const flush = () => {
+    if (lastId && askedAt > 0 && lastAt > askedAt) elapsed[lastId] = lastAt - askedAt;
+    lastId = null;
+    lastAt = 0;
+  };
   for (const m of chat.messages.value) {
-    if (m.role === 'user' && !chat.isInternalMessage(m)) askedAt = m.created_at;
-    else if (m.role === 'assistant' && askedAt > 0 && m.created_at > askedAt) {
-      elapsed[m.id] = m.created_at - askedAt;
+    if (m.role === 'user' && !chat.isInternalMessage(m)) {
+      flush();
+      askedAt = m.created_at;
+      continue;
+    }
+    if (m.role === 'assistant') {
+      lastId = m.id;
+      lastAt = m.created_at;
     }
   }
+  flush();
   return elapsed;
 });
 

@@ -51,13 +51,24 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-/** 用量行的统一展示：`12.3k in · 678 out · 9.0k cache R`（无价格字段，不含成本）。 */
-export function usageLine(usage: TokenUsage | null): string {
+/** 用量行的统一展示：`12.3k 输入 · 678 输出 · 9.0k 缓存读`（无价格字段，不含成本）。
+ *
+ * 文案与助手消息底部的用量行共用一套 i18n key，两处口径一致；`t` 由调用方注入
+ * （ChatView / TopToolbar 各自的 chat 命名空间），纯函数本身不依赖 i18n 上下文。
+ */
+export function usageLine(
+  usage: TokenUsage | null,
+  t: (key: string, params?: Record<string, string | number>) => string,
+): string {
   if (!usage) return '';
   const parts: string[] = [];
-  if (usage.input_tokens) parts.push(`${formatTokens(usage.input_tokens)} in`);
-  if (usage.output_tokens) parts.push(`${formatTokens(usage.output_tokens)} out`);
-  if (usage.cache_read_tokens) parts.push(`${formatTokens(usage.cache_read_tokens)} cache R`);
-  if (usage.cache_write_tokens) parts.push(`${formatTokens(usage.cache_write_tokens)} cache W`);
+  if (usage.input_tokens) parts.push(t('usageIn', { count: formatTokens(usage.input_tokens) }));
+  if (usage.output_tokens) parts.push(t('usageOut', { count: formatTokens(usage.output_tokens) }));
+  if (usage.cache_read_tokens) {
+    parts.push(t('usageCacheRead', { count: formatTokens(usage.cache_read_tokens) }));
+  }
+  if (usage.cache_write_tokens) {
+    parts.push(t('usageCacheWrite', { count: formatTokens(usage.cache_write_tokens) }));
+  }
   return parts.join(' · ');
 }
