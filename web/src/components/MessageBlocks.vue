@@ -441,9 +441,17 @@ onMounted(() => void nextTick(syncCodeCopy));
   flex-direction: column;
   padding: 2px 0;
 }
+/*
+ * 工具调用失败：整块换成危险色底 + 描边（对齐 pi-web 的 `isError` 卡片），
+ * 不再用左侧一条竖线——竖线既占掉了内容的起点，又和消息列左侧对不齐。
+ */
 .fold.error {
-  border-left: 2px solid var(--danger);
-  padding-left: 10px;
+  /* 负数左右外边距抵消内边距：底色有呼吸感，内容仍与正文左对齐 */
+  margin: 0 -7px;
+  padding: 2px 6px 4px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
 }
 .fold-head {
   display: flex;
@@ -561,7 +569,7 @@ onMounted(() => void nextTick(syncCodeCopy));
 .fold-body-wrap {
   display: flex;
   flex-direction: column;
-  padding-left: 22px;
+  /* 不再左侧缩进：输入/结果块与正文左对齐，否则整块看着比模型回复凹进去 */
 }
 .fold-body {
   margin: 4px 0 0;
@@ -579,8 +587,11 @@ onMounted(() => void nextTick(syncCodeCopy));
   /* 滚动到底时不再把滚动链传给外层消息流 */
   overscroll-behavior: contain;
 }
-/* 思考正文：与正文一样按 Markdown 渲染，但整体压一档、默认偏弱色 */
+/* 思考正文：与正文一样按 Markdown 渲染，但整体压一档、默认偏弱色。
+   不套底板也不留左右内边距——思考内容要与模型回复左对齐 */
 .think-body {
+  padding: 4px 0 0;
+  background: transparent;
   font-family: var(--font-sans);
   font-size: 12.5px;
   line-height: 1.65;

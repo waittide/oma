@@ -642,6 +642,9 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
   flex-direction: column;
   flex: 1;
   min-width: 0;
+  /* 竖向收缩下限必须归零：默认的 auto 会让聊天列按内容高度撑开，
+     输入框控件一旦换行就把整列顶出外壳（外壳 overflow: hidden，滚不回来） */
+  min-height: 0;
   background: var(--paper);
   /* 消息与输入框共用同一列宽，保证左右边缘对齐 */
   --chat-col: 1120px;

@@ -344,6 +344,7 @@
     "backToTree": "Back to file tree",
     "backToList": "Back to changes",
     "copyContent": "Copy content",
+    "truncated": "First 256 KB only",
     "emptyWorkspace": "Workspace is empty",
     "gitUntracked": "new",
     "gitAdded": "added",

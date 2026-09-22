@@ -36,23 +36,18 @@ onMounted(async () => {
   await initClientConfig();
   await loadConfig();
   await probe();
+  layout.viewportWidth.value = window.innerWidth;
   window.addEventListener('resize', onViewportResize);
-  clampPanelsToViewport();
 });
 
 onUnmounted(() => window.removeEventListener('resize', onViewportResize));
 
-/** 视口变窄时把两侧面板夹回可用范围，避免聊天区被挤没。 */
-function clampPanelsToViewport() {
-  const width = window.innerWidth;
-  const chatMin = width < layout.SPLIT_PANEL_MIN_WIDTH ? 320 : 420;
-  const rightVisible = layout.rightOpen.value && width >= layout.SPLIT_PANEL_MIN_WIDTH ? layout.rightWidth.value : 0;
-  const maxSidebar = Math.min(layout.SIDEBAR_MAX_WIDTH, Math.max(layout.SIDEBAR_MIN_WIDTH, width - chatMin - rightVisible));
-  if (layout.sidebarWidth.value > maxSidebar) layout.setSidebarWidth(maxSidebar);
-}
-
+/**
+ * 视口变窄时只更新用于渲染的宽度（`layout` 里的 computed 会夹），
+ * 不改用户拖出来的面板宽度——拉回去时布局应恢复原样。
+ */
 function onViewportResize() {
-  clampPanelsToViewport();
+  layout.viewportWidth.value = window.innerWidth;
 }
 
 /** 设置里改完连接后重新握手：否则界面仍停在旧 Daemon 的数据上。 */
@@ -76,9 +71,9 @@ async function onReconnect() {
       <ChatView :online="online" @need-settings="openSettings()" />
     </main>
 
-    <template v-if="layout.rightOpen.value">
+    <template v-if="layout.rightRenderWidth.value > 0">
       <PanelResizer invert @resize="(d) => layout.setRightWidth(layout.rightWidth.value + d)" />
-      <RightPanel class="right" :style="{ width: layout.rightWidth.value + 'px' }" />
+      <RightPanel class="right" :style="{ width: layout.rightRenderWidth.value + 'px' }" />
     </template>
 
     <SettingsModal
@@ -103,6 +98,8 @@ async function onReconnect() {
 .main {
   flex: 1;
   min-width: 0;
+  /* 竖向也必须允许收缩：否则聊天列的内容（输入框控件换行变高）会把整列顶出外壳 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }

@@ -111,6 +111,34 @@ export function setRightTab(tab: RightTab) {
   persist();
 }
 
+/**
+ * 当前视口宽度：由 App 在挂载与 resize 时写入。
+ *
+ * 面板宽度必须按视口夹一次——侧栏与右侧面板都是 `flex-shrink: 0`，三列放不下时
+ * 被挤扁的只有中间那列：聊天区会窄到输入框控件换行、越堆越高，最终把输入框顶出
+ * 屏幕外（外壳是 `overflow: hidden`，连滚都滚不回来）。
+ */
+export const viewportWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth);
+
+/** 聊天区至少要留出的宽度；紧凑视口下再放宽一点给两栏 */
+function chatMinWidth(width: number): number {
+  return width < SPLIT_PANEL_MIN_WIDTH ? 320 : 420;
+}
+
+/** 渲染用右侧面板宽度：三列放不下时返回 0，App 据此整块不渲染 */
+export const rightRenderWidth = computed(() => {
+  if (!rightOpen.value || viewportWidth.value < SPLIT_PANEL_MIN_WIDTH) return 0;
+  const room = viewportWidth.value - chatMinWidth(viewportWidth.value) - SIDEBAR_MIN_WIDTH;
+  return clamp(rightWidth.value, RIGHT_PANEL_MIN_WIDTH, Math.max(RIGHT_PANEL_MIN_WIDTH, room));
+});
+
+/** 渲染用侧栏宽度：先给聊天空出下限，再给右侧面板留出最小宽度 */
+export const sidebarRenderWidth = computed(() => {
+  const reserved = rightRenderWidth.value > 0 ? RIGHT_PANEL_MIN_WIDTH : 0;
+  const room = viewportWidth.value - chatMinWidth(viewportWidth.value) - reserved;
+  return clamp(sidebarWidth.value, SIDEBAR_MIN_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, room));
+});
+
 export function setSidebarWidth(width: number) {
   sidebarWidth.value = clamp(width, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH);
   persist();

@@ -85,6 +85,8 @@ const { t } = useTranslations('panel');
 const loading = ref(false);
 const error = ref('');
 const content = ref('');
+/** 服务端只回了文件开头（超过预览上限），要在标题栏说明 */
+const truncated = ref(false);
 const copied = ref(false);
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -111,9 +113,11 @@ async function load() {
   try {
     const resp = await api.workspaceFile(workspace, props.path);
     content.value = resp.content;
+    truncated.value = !!resp.truncated;
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
     content.value = '';
+    truncated.value = false;
   } finally {
     loading.value = false;
   }
@@ -140,6 +144,7 @@ watch(() => props.path, load, { immediate: true });
         </UiIconButton>
       </UiTooltip>
       <span class="name" :title="path">{{ name }}</span>
+      <span v-if="truncated" class="trunc">{{ t('truncated') }}</span>
       <span class="spacer" />
       <UiTooltip :content="t('reload')" align="end">
         <UiIconButton size="sm" :label="t('reload')" @click="load">
@@ -200,6 +205,15 @@ watch(() => props.path, load, { immediate: true });
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 只回了开头一段的提示：标题旁的小胶囊，不抢文件名 */
+.trunc {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-size: 10.5px;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
 }
 .spacer {
   flex: 1;

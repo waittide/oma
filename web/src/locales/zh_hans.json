@@ -344,6 +344,7 @@
     "backToTree": "返回文件树",
     "backToList": "返回变更列表",
     "copyContent": "复制内容",
+    "truncated": "仅显示开头 256 KB",
     "emptyWorkspace": "工作区为空",
     "gitUntracked": "新增",
     "gitAdded": "新增",

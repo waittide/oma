@@ -250,10 +250,13 @@ function pick(r: Row) {
   text-align: left;
   transition: background-color 0.12s ease;
 }
-/* 组件库按钮的标签盒需要恢复成普通行盒，绝对定位的树线才能以本行为基准 */
+/* 组件库按钮的标签盒改回整行 flex：绝对定位的树线仍以本行为基准，
+   同时让末尾的摘要文本拿到 flex 宽度，过长时才能出省略号 */
 .node :deep(.ui-button__label) {
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
+  min-width: 0;
   text-align: left;
 }
 .node:hover:not(:disabled) {

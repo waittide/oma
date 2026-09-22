@@ -190,7 +190,7 @@ const deleteTarget = computed(
 </script>
 
 <template>
-  <aside class="sidebar" :style="{ width: layout.sidebarWidth.value + 'px' }">
+  <aside class="sidebar" :style="{ width: layout.sidebarRenderWidth.value + 'px' }">
     <header class="brand">
       <span class="logo"><LuSparkles :size="15" /></span>
       <span class="brand-name">Oma</span>

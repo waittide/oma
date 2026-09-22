@@ -417,6 +417,22 @@ struct GetMessagesQuery {
     leaf_id: Option<String>,
 }
 
+/// 读接口的前置校验：会话必须已存在于索引里。
+///
+/// 存储层取会话连接池时会按需建目录与库（`StorageManager::session_pools`），
+/// 所以读接口如果不先查索引，任何带未知 id 的 GET 都会在服务端**凭空造出**一条
+/// 空会话；GET 不该有副作用，未知 id 一律 404。
+async fn ensure_session_exists(
+    state: &DaemonState,
+    session_id: &str,
+) -> Result<(), (StatusCode, String)> {
+    match state.storage.get_session(session_id).await {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err((StatusCode::NOT_FOUND, "Session not found".into())),
+        Err(e) => Err(storage_error(e)),
+    }
+}
+
 async fn handle_get_messages(
     State(state): State<DaemonState>,
     headers: HeaderMap,
@@ -426,6 +442,7 @@ async fn handle_get_messages(
     if check_auth(&headers, None, &state.token, false).is_none() {
         return Err(unauthorized());
     }
+    ensure_session_exists(&state, &session_id).await?;
 
     state
         .storage
@@ -443,6 +460,7 @@ async fn handle_get_message_tree(
     if check_auth(&headers, None, &state.token, false).is_none() {
         return Err(unauthorized());
     }
+    ensure_session_exists(&state, &session_id).await?;
 
     state
         .storage
@@ -601,6 +619,12 @@ struct WorkspaceFileQuery {
     path:      String,
 }
 
+/// 文本预览上限（对齐 pi-web 的 `TEXT_PREVIEW_MAX_BYTES`）。
+///
+/// 面板只用来扫一眼内容，整读一个几百 MB 的文件既会拖垮 daemon 也会把响应撑爆；
+/// 超出部分在响应里以 `truncated` 标记，由前端提示。
+const FILE_PREVIEW_MAX_BYTES: usize = 256 * 1024;
+
 async fn handle_workspace_file(
     State(state): State<DaemonState>,
     headers: HeaderMap,
@@ -611,10 +635,49 @@ async fn handle_workspace_file(
     }
 
     let target = resolve_path(Path::new(&query.workspace), &query.path);
-    tokio::fs::read_to_string(&target)
+    let meta = tokio::fs::metadata(&target)
         .await
-        .map(|c| Json(serde_json::json!({ "content": c })))
-        .map_err(|e| (StatusCode::NOT_FOUND, format!("Failed to read file: {}", e)))
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Failed to read file: {}", e)))?;
+    if meta.is_dir() {
+        return Err((StatusCode::BAD_REQUEST, "Path is a directory".into()));
+    }
+
+    let truncated = meta.len() > FILE_PREVIEW_MAX_BYTES as u64;
+    let bytes = read_prefix(&target, FILE_PREVIEW_MAX_BYTES)
+        .await
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Failed to read file: {}", e)))?;
+
+    // 非 UTF-8 一律当二进制：与其回一串乱码，不如让前端显示一条明确的错误。
+    // 例外是「截断正好切在多字节字符中间」——那是我们自己切出来的，丢掉尾部不完整
+    // 的那几个字节即可（`error_len() == None` 表示错误只出在末尾）。
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(t) => t.to_string(),
+        // 错误只出在末尾（`error_len() == None`）说明截断正好切在多字节字符中间：
+        // 丢掉尾部不完整的字节，其余照常显示
+        Err(e) if e.error_len().is_none() => {
+            String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned()
+        }
+        Err(_) => {
+            return Err((
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Not a UTF-8 text file".into(),
+            ));
+        }
+    };
+
+    Ok(Json(
+        serde_json::json!({ "content": text, "truncated": truncated }),
+    ))
+}
+
+/// 读取文件开头最多 `limit` 字节（不整读，避免大文件把内存打满）。
+async fn read_prefix(path: &Path, limit: usize) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::File::open(path).await?;
+    let mut buf = Vec::with_capacity(limit.min(64 * 1024));
+    file.take(limit as u64).read_to_end(&mut buf).await?;
+    Ok(buf)
 }
 
 /// 系统提示词面板：展示当前工作区 + 模型下真正发给厂商的那段提示词。
@@ -893,6 +956,7 @@ async fn handle_get_attachment(
     if check_auth(&headers, None, &state.token, false).is_none() {
         return Err(unauthorized());
     }
+    ensure_session_exists(&state, &session_id).await?;
     validate_attachment_name(&name).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let path = state

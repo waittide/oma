@@ -183,7 +183,7 @@ export const api = {
     ),
 
   workspaceFile: (workspace: string, path: string) =>
-    request<{ content: string }>(
+    request<{ content: string; truncated?: boolean }>(
       `/api/workspace/file?workspace=${encodeURIComponent(workspace)}&path=${encodeURIComponent(path)}`,
     ),
 
