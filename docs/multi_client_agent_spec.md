@@ -1,8 +1,12 @@
 # Oma 多类型多客户端协同 Agent 技术规格书 (Technical Specification)
 
-> 版本：v2.9
+> 版本：v2.10
 > 状态：Implementation Verified（文档与代码同步）
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
+
+> **v2.10 变更（工具集再收敛）**：
+> - **移除 `ls`**：内置工具集由 5 个收敛为 4 个（`read` / `write` / `edit` / `shell`）；
+>   目录列举改由 `shell` 执行系统命令承担
 
 > **v2.9 变更（工具集收敛）**：
 > - **移除 `find` / `grep`**：内置工具集由 7 个收敛为 5 个（`read` / `write` / `edit` /
@@ -95,7 +99,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 │  │               Agent Runtime Engine & Subsystems                   │  │
 │  │  - oma-provider: LLM Streaming Normalization & Deep Merge         │  │
 │  │  - oma-storage:  SQLite Session Store (index + per-session DB)   │  │
-│  │  - oma-tool:     5 Tools (read/write/edit/shell/ls)               │  │
+│  │  - oma-tool:     4 Tools (read/write/edit/shell)                  │  │
 │  │  - oma-config:   JSON Config & Built-in System Prompt             │  │
 │  │  - oma-contract: Shared Wire Protocol, Events, Data Models        │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
@@ -109,7 +113,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | `crates/oma-contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
 | `crates/oma-storage` | SQLite 双层持久化：全局索引库 `oma.db` 的 `sessions_index` 存会话元数据，每会话库 `sessions/<id>/session.db` 存 `messages` 消息树与 `session_meta` 运行时状态；附件仍落 `attachments/` 目录。WAL + 写池串行、读池并行，同数据目录多实例互相可见。 |
 | `crates/oma-provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
-| `crates/oma-tool` | 内置 5 大工具（`read`, `write`, `edit` apply_patch 补丁, `shell` 进程组守卫, `ls` 目录列举），含统一的输出截断与工具集定义。 |
+| `crates/oma-tool` | 内置 4 大工具（`read`, `write`, `edit` apply_patch 补丁, `shell` 进程组守卫），含统一的输出截断与工具集定义。 |
 | `crates/oma-mcp` | MCP 客户端：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），工具按 `mcp__{server}__{tool}` 统一命名空间注册；只暴露已预热的工具缓存。 |
 | `crates/oma-config` | 配置文件 `settings.json` / `models.json` 解析、内置 Agent 预设（4 套模板：`plan` / `explore` / `review` / `build`）与三层覆盖、上下文文件（`AGENTS.md`）加载、提示词拼装、调色板加载、数据目录定位。 |
 | `crates/oma-runtime` | 核心 Agent Loop、Room 调度、命令 FIFO 队列、级联取消、70% 阈值两阶段上下文压缩。 |
@@ -593,7 +597,7 @@ pub struct ContextUsage {
 1. **Agent 预设 = 角色 + 工具白名单，且模板即提示词**：
    - 编译期内嵌 4 套模板：`plan` / `explore` / `review` / `build`
      （`crates/oma-config/src/templates/*.md`）；
-   - `default_agent` 默认指向 `build`：它拥有全部 5 个内置工具，
+   - `default_agent` 默认指向 `build`：它拥有全部 4 个内置工具，
      因此 `build.md` 不声明 `tools`（空 = 不限制，新装即完整可用）；
      `plan` / `explore` / `review` 各自声明受限的工具子集；
    - 同名文件优先取更具体的一层：项目 `<workspace>/.oma/agents/<id>.md`
@@ -728,7 +732,7 @@ ToolOutput {
 1. **统一的输出截断（行数 + 字节双上限）**：
    `crates/oma-tool/src/truncate.rs` 提供两套互相独立的上限：
    - 默认上限：**2000 行 / 50KB**，先到者生效；除「末行本身超限」边界外不返回半行；
-   - 方向：`read` / `ls` 用 `truncate_head`（保留开头）；
+   - 方向：`read` 用 `truncate_head`（保留开头）；
      `shell` 用 `truncate_tail`（保留末尾，错误与结果在那里）；
    - 截断时在末尾追加**可操作**提示而非静默截断，例如
      `[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]`；
@@ -739,9 +743,9 @@ ToolOutput {
    不做 OS 容器沙箱与路径限制，相对路径按工作区解析，绝对路径直通；
    安全边界由「本地回环监听 + Bearer Token」共同提供。
 
-### 7.2 5 大核心内置工具
+### 7.2 4 大核心内置工具
 
-内置工具集：`shell` / `edit` / `ls` / `read` / `write`。
+内置工具集：`shell` / `edit` / `read` / `write`。
 
 1. **`read`**：
    - 参数：`{ "path": "...", "offset": 1, "limit": null }`（offset 为 1 起始行号，仅对文本生效）
@@ -783,10 +787,6 @@ ToolOutput {
      采集一次完整环境（含 rc 文件里的 `export` 与 `PATH`）并缓存，
      因此命令与用户交互终端一致；采集失败时退回直接继承 Daemon 进程环境。
      （写死的 `/bin/sh` 不会读 rc，环境也只继承 Daemon 而未必是用户终端。）
-5. **`ls`**：
-   - 参数：`{ "path": ".", "limit": 500 }`
-   - 按名排序（大小写不敏感），目录名带 `/` 后缀，含 dotfile；默认 500 条上限。
-   - 不遵循 `.gitignore`（看目录就是看目录）。
 
 ---
 
@@ -808,7 +808,7 @@ ToolOutput {
 | `GET` | `/api/sessions/{id}/attachments/{name}` | 下载/预览附件 |
 | `GET` | `/api/workspace/tree?workspace=...` | 获取工作区目录文件树（深度 4、最多 2000 项） |
 | `GET` | `/api/workspace/file?workspace=...&path=...` | 读取工作区文件内容（供代码查看与编辑器） |
-| `GET` | `/api/tools` | 列出可用工具（内置 5 个 + 已发现的 MCP 工具），供预设编辑器勾选 |
+| `GET` | `/api/tools` | 列出可用工具（内置 4 个 + 已发现的 MCP 工具），供预设编辑器勾选 |
 | `GET` | `/api/presets?workspace=...` | 列出 Agent 预设（bundled / global / project） |
 | `GET`/`PUT`/`DELETE` | `/api/presets/{preset_id}` | 读取 / 写入 / 删除预设；内置预设只读 |
 | `GET` | `/api/system-prompt?workspace=&model=&agent=` | 返回真正下发的系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录）；缺 `agent` 用 `default_agent` |
@@ -936,7 +936,7 @@ pub struct Palette {
 | 鉴权传输 | REST 仅接受 `Authorization: Bearer`；WebSocket 握手额外接受 `?token=`，因为浏览器无法为 WS 请求设置自定义头。 |
 | 前端静态资源 | `oma web` 提供界面：资产由 `rust-embed` 内嵌进二进制，debug 下从 `web/dist` 实时读取（改前端只需 `pnpm build`），release 下真正内嵌。Daemon 不直出资产、保持 Headless。 |
 | 上下文压缩 | 第一阶段只替换 `ToolResult` 内容（保持配对），第二阶段按**完整轮次**丢弃前缀；旧的「按消息条数切半」会切出孤儿回执或以 assistant 开头，长会话下必然被厂商 API 拒绝。 |
-| 内置工具集 | 只保留 `read` / `write` / `edit` / `shell` / `ls`：检索统一交给 `shell` 调用外部命令，不再为 `find` / `grep` 维护 `fd` / `ripgrep` 的下载链路。 |
+| 内置工具集 | 只保留 `read` / `write` / `edit` / `shell`：检索与目录列举统一交给 `shell` 调用外部命令，不再为 `find` / `grep` / `ls` 维护各自的实现。 |
 | 输出截断 | 统一走 `truncate` 模块（2000 行 / 50KB 双上限，先到者生效），不再每个工具一套字符数上限；截断必须给出可操作的后续动作（续读的 offset / 缩小 pattern），否则模型只能瞎猜。 |
 | 会话标识 | `session_id` 会被拼接进文件系统路径，因此全局校验为 `[A-Za-z0-9_-]{1,128}`；附件名同样只允许安全字符并丢弃任何目录成分。 |
 | 版本号来源 | `Cargo.toml` 的 `version` **不会**被 CI 自动递增，只在无标签的分支 / PR 构建里作为回退值被读取；正式版用人工推送的语义化标签（`v0.2.0`），每日快照用日期标签（`v2026.09.17`）。构建标识与制品名由 `.github/workflows/build.yml` 的 `meta` job 统一计算（标签优先），不再存在单独的发布工作流。 |
