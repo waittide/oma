@@ -430,6 +430,38 @@ async fn test_end_to_end_turn_with_read_tool() -> Result<()> {
         calls
     );
 
+    // 耗时由运行时测量：完成事件必须带上，且回执块要把它落库（刷新后仍可展示）
+    let finished_ms: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallFinished { duration_ms, .. } => Some(*duration_ms),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        finished_ms.len(),
+        calls.len(),
+        "every finished tool call should report a duration"
+    );
+    assert!(
+        finished_ms.iter().all(|ms| *ms < 30_000),
+        "tool duration should be a plausible wall-clock reading: {finished_ms:?}"
+    );
+
+    // 落库形态：回执块里带着同一个耗时字段（前端刷新后据此展示）
+    let stored: Vec<Option<u64>> = fetch_messages(&h, &session.session_id)
+        .await?
+        .iter()
+        .flat_map(|m| m["content"].as_array().cloned().unwrap_or_default())
+        .filter(|b| b["type"] == "tool_result")
+        .map(|b| b.get("duration_ms").and_then(|v| v.as_u64()))
+        .collect();
+    assert!(!stored.is_empty(), "tool results should be persisted");
+    assert!(
+        stored.iter().all(|d| d.is_some()),
+        "persisted tool results must keep the measured duration: {stored:?}"
+    );
+
     // Mock 侧观测：工具清单不含 task
     let observed = h.mock.observed.lock().clone();
     let main = observed.first().expect("agent request observed");

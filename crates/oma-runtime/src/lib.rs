@@ -257,6 +257,12 @@ pub fn compact_messages(messages: &mut Vec<ChatMessage>, context_len: usize, anc
 // 4. 活跃轮次状态机快照
 // =========================================================================
 
+/// 单次工具调用的回执：(tool_use_id, 文本, is_error, 图片, 耗时毫秒)。
+///
+/// 耗时是运行时测出的墙钟时间，落库进 `Block::ToolResult.duration_ms`，界面上的
+/// 工具行直接展示它，不必再由前端猜。未执行（整轮被取消）的调用为 `None`。
+type ToolCallResult = (String, String, bool, Vec<ToolImage>, Option<u64>);
+
 #[derive(Debug, Clone, Default)]
 pub struct ActiveTurnState {
     pub turn_id:              String,
@@ -607,7 +613,11 @@ impl SessionRoom {
         tool_input: serde_json::Value,
         allowed: Option<&HashSet<String>>,
         cancel: &CancellationToken,
-    ) -> (ToolOutput, bool) {
+    ) -> (ToolOutput, bool, u64) {
+        // 计时从「广播 ToolCallStarted」之前开始：白名单/插件拦截这类提前返回
+        // 也是这次调用真实花掉的时间
+        let clock = std::time::Instant::now();
+        let elapsed_ms = || clock.elapsed().as_millis() as u64;
         let started = ToolCallStartedData {
             call_id:   call_id.to_string(),
             tool_name: tool_name.to_string(),
@@ -622,7 +632,11 @@ impl SessionRoom {
         if let Some(allowed) = allowed {
             if !allowed.contains(tool_name) {
                 let output = ToolOutput::error(format!("Tool '{}' is not permitted for the active agent.", tool_name));
-                return (self.finish_tool_call(call_id, tool_name, output).await, false);
+                return (
+                    self.finish_tool_call(call_id, tool_name, output, elapsed_ms()).await,
+                    false,
+                    elapsed_ms(),
+                );
             }
         }
 
@@ -640,9 +654,11 @@ impl SessionRoom {
                         call_id,
                         tool_name,
                         ToolOutput::error(format!("Execution blocked by plugin: {}", reason)),
+                        elapsed_ms(),
                     )
                     .await,
                     false,
+                    elapsed_ms(),
                 );
             }
         }
@@ -654,9 +670,11 @@ impl SessionRoom {
                     call_id,
                     tool_name,
                     ToolOutput::error(format!("Tool '{}' not found in registry", tool_name)),
+                    elapsed_ms(),
                 )
                 .await,
                 false,
+                elapsed_ms(),
             );
         };
         // 先取出模型能力再进 select：临时值不能在 select 分支里悬空
@@ -667,7 +685,12 @@ impl SessionRoom {
             out = tool.execute_with(&self.workspace, tool_input, &vision_ctx) => out,
         };
         let cancelled = cancel.is_cancelled();
-        (self.finish_tool_call(call_id, tool_name, output).await, cancelled)
+        let duration = elapsed_ms();
+        (
+            self.finish_tool_call(call_id, tool_name, output, duration).await,
+            cancelled,
+            duration,
+        )
     }
 
     /// 当前模型能否直接接收图片输入。
@@ -683,7 +706,13 @@ impl SessionRoom {
     }
 
     /// 广播工具执行结果并清理活跃工具槽位，把输出交回调用方用于落库
-    async fn finish_tool_call(&self, call_id: &str, tool_name: &str, output: ToolOutput) -> ToolOutput {
+    async fn finish_tool_call(
+        &self,
+        call_id: &str,
+        tool_name: &str,
+        output: ToolOutput,
+        duration_ms: u64,
+    ) -> ToolOutput {
         if let Some(turn) = self.active_turn.write().as_mut() {
             turn.active_tool_call = None;
         }
@@ -692,6 +721,7 @@ impl SessionRoom {
             tool_name: tool_name.to_string(),
             output:    output.output.clone(),
             is_error:  output.is_error,
+            duration_ms,
         });
         output
     }
@@ -1069,7 +1099,10 @@ impl SessionRoom {
                             parent,
                             assistant_tool_calls
                                 .iter()
-                                .map(|(id, _, _)| (id.clone(), reason.to_string(), true, Vec::new()))
+                                // 这些工具根本没执行，耗时留空
+                                .map(|(id, _, _)| {
+                                    (id.clone(), reason.to_string(), true, Vec::new(), None)
+                                })
                                 .collect(),
                             history,
                         )
@@ -1082,19 +1115,25 @@ impl SessionRoom {
 
             // 执行工具调用
             let parent_id = assistant_msg_id.expect("assistant message persisted for tool use");
-            let mut results: Vec<(String, String, bool, Vec<ToolImage>)> =
-                Vec::with_capacity(assistant_tool_calls.len());
+            let mut results: Vec<ToolCallResult> = Vec::with_capacity(assistant_tool_calls.len());
             let mut cancelled = false;
             for (call_id, tool_name, tool_input) in assistant_tool_calls {
                 if cancelled {
-                    results.push((call_id, "Tool call cancelled.".into(), true, Vec::new()));
+                    // 后续工具没执行：耗时留空，不要写成 0 秒
+                    results.push((call_id, "Tool call cancelled.".into(), true, Vec::new(), None));
                     continue;
                 }
-                let (output, was_cancelled) = self
+                let (output, was_cancelled, duration_ms) = self
                     .execute_tool_call(&call_id, &tool_name, tool_input, allowed.as_ref(), cancel_token)
                     .await;
                 cancelled = was_cancelled;
-                results.push((call_id, output.output, output.is_error, output.images));
+                results.push((
+                    call_id,
+                    output.output,
+                    output.is_error,
+                    output.images,
+                    Some(duration_ms),
+                ));
             }
 
             self.append_tool_results(&parent_id, results, history).await;
@@ -1107,14 +1146,14 @@ impl SessionRoom {
 
     /// 持久化工具回执消息（role = user），并同步到内存历史
     ///
-    /// `results` 为 (tool_use_id, 文本, is_error, 图片)。图片与回执同处一条消息：
-    /// 它属于工具输出而非用户发言，落库形态与展示形态都据此统一（见
+    /// `results` 为 (tool_use_id, 文本, is_error, 图片, 耗时毫秒)。图片与回执同处一条
+    /// 消息：它属于工具输出而非用户发言，落库形态与展示形态都据此统一（见
     /// `isInternalMessage`）。只有 Anthropic 能原样消费这种结构，completion /
     /// response 在发请求时才把图片拆到紧随其后的用户消息里（协议翻译属 provider 职责）。
     async fn append_tool_results(
         &self,
         parent_id: &str,
-        results: Vec<(String, String, bool, Vec<ToolImage>)>,
+        results: Vec<ToolCallResult>,
         history: &mut Vec<ChatMessage>,
     ) {
         if results.is_empty() {
@@ -1122,11 +1161,12 @@ impl SessionRoom {
         }
         let blocks: Vec<Block> = results
             .into_iter()
-            .flat_map(|(tool_use_id, content, is_error, images)| {
+            .flat_map(|(tool_use_id, content, is_error, images, duration_ms)| {
                 let mut out = vec![Block::ToolResult {
                     tool_use_id,
                     content,
                     is_error,
+                    duration_ms,
                 }];
                 out.extend(images.into_iter().map(|img| Block::Image {
                     mime_type: img.mime_type,
@@ -1463,6 +1503,7 @@ mod tests {
                 tool_use_id: call_id.into(),
                 content:     body.into(),
                 is_error:    false,
+                duration_ms: None,
             }],
             created_at: 0,
             model:      None,
@@ -2021,6 +2062,7 @@ mod tests {
                 tool_use_id: "c1".into(),
                 content:     "ok".into(),
                 is_error:    false,
+                duration_ms: None,
             }],
             created_at: 0,
             model:      None,

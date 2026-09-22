@@ -82,6 +82,7 @@ fn build_gemini_body(
                     tool_use_id,
                     content,
                     is_error,
+                    ..
                 } => {
                     let name = tool_names
                         .get(tool_use_id)
@@ -680,6 +681,7 @@ impl UniversalProvider {
                         tool_use_id,
                         content,
                         is_error,
+                        ..
                     } => {
                         // 紧跟在回执后的图片属于该回执（如 read 读图片）：
                         // Anthropic 允许 tool_result.content 为内容块数组，
@@ -922,6 +924,7 @@ impl UniversalProvider {
                                 tool_use_id,
                                 content,
                                 is_error,
+                                ..
                             } = b
                             {
                                 let output = if *is_error {
@@ -1972,6 +1975,7 @@ mod tests {
                         tool_use_id: "call_1".into(),
                         content:     "mime: image/png".into(),
                         is_error:    false,
+                        duration_ms: None,
                     },
                     Block::Image {
                         mime_type: "image/png".into(),
@@ -2100,6 +2104,7 @@ mod tests {
                 tool_use_id: "call_1".into(),
                 content:     "file body".into(),
                 is_error:    false,
+                duration_ms: None,
             }],
             created_at: 0,
             model:      None,

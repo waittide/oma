@@ -37,7 +37,7 @@ export type Block =
   | { type: 'thinking'; thinking: string }
   | { type: 'image'; mime_type: string; data: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean };
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error: boolean; duration_ms?: number | null };
 
 export interface ChatMessage {
   id: string;
@@ -119,7 +119,7 @@ export type AgentEvent =
   | { type: 'thinking_delta'; data?: { delta: string } }
   | { type: 'text_delta'; data?: { delta: string } }
   | { type: 'tool_call_started'; data?: ToolCallStartedData }
-  | { type: 'tool_call_finished'; data?: { call_id: string; tool_name: string; output: string; is_error: boolean } }
+  | { type: 'tool_call_finished'; data?: { call_id: string; tool_name: string; output: string; is_error: boolean; duration_ms?: number } }
   | { type: 'active_branch_changed'; data?: { current_leaf_id: string } }
   | { type: 'model_changed'; data?: { active_model: string } }
   | { type: 'agent_changed'; data?: { active_agent: string } }

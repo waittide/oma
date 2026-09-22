@@ -84,46 +84,12 @@ export const agents = ref<AgentSummary[]>([]);
 export const mcpServers = ref<McpServerSummary[]>([]);
 export const lastUsage = ref<TokenUsage | null>(null);
 /**
- * call_id → 工具执行耗时（秒）。
+ * call_id → 工具执行耗时（毫秒）。
  *
- * 由 `tool_call_started` / `tool_call_finished` 的到达时间差算出（与 pi-web 一致），
- * 服务端不记录耗时。这里把算好的值顺带缓存到 localStorage：call_id 全局唯一，
- * 刷新页面后同一个工具行仍能显示当初那次执行的耗时，而不是变成空白。
+ * 由服务端测量：`tool_call_finished` 事件带 `duration_ms`，回执块也会把它落库
+ * （`Block::ToolResult.duration_ms`），因此历史消息刷新后同样有耗时，不需要前端计时。
  */
-const TOOL_DURATIONS_KEY = 'oma.toolDurations';
-/** 缓存上限：超出后丢掉最早记录，避免无限增长 */
-const TOOL_DURATIONS_MAX = 500;
-
-function readToolDurations(): Record<string, number> {
-  try {
-    const raw = localStorage.getItem(TOOL_DURATIONS_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, number>;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-export const toolDurations = ref<Record<string, number>>(readToolDurations());
-
-/** 记录一次工具耗时：内存态用于立即渲染，缓存用于刷新后仍可读 */
-function rememberToolDuration(callId: string, seconds: number): void {
-  toolDurations.value = { ...toolDurations.value, [callId]: seconds };
-  try {
-    const cached = readToolDurations();
-    cached[callId] = seconds;
-    const keys = Object.keys(cached);
-    if (keys.length > TOOL_DURATIONS_MAX) {
-      for (const stale of keys.slice(0, keys.length - TOOL_DURATIONS_MAX)) delete cached[stale];
-    }
-    localStorage.setItem(TOOL_DURATIONS_KEY, JSON.stringify(cached));
-  } catch {
-    // 隐私模式下写不了：退化为只在当前页面有效
-  }
-}
-/** 未完成调用的开始时刻（仅内存，不对外暴露） */
-const toolStartedAt = new Map<string, number>();
+export const toolDurations = ref<Record<string, number>>({});
 /** 最近一次模型请求的上下文占用（提示侧总量，含缓存） */
 export const contextUsage = ref<{ tokens: number; contextLen: number } | null>(null);
 export const queued = ref(0);
@@ -261,7 +227,6 @@ function handleEvent(ev: AgentEvent) {
           tool: { ...d, done: false },
         });
       }
-      if (d) toolStartedAt.set(d.call_id, Date.now());
       break;
     }
     case 'tool_call_finished': {
@@ -275,10 +240,8 @@ function handleEvent(ev: AgentEvent) {
           seg.tool.done = true;
         }
       }
-      const startedAt = toolStartedAt.get(d.call_id);
-      if (startedAt !== undefined) {
-        toolStartedAt.delete(d.call_id);
-        rememberToolDuration(d.call_id, Math.round(((Date.now() - startedAt) / 1000) * 10) / 10);
+      if (d.duration_ms !== undefined) {
+        toolDurations.value = { ...toolDurations.value, [d.call_id]: d.duration_ms };
       }
       break;
     }
@@ -490,8 +453,7 @@ export function reset() {
   forkFrom.value = null;
   lastUsage.value = null;
   contextUsage.value = null;
-  toolDurations.value = readToolDurations();
-  toolStartedAt.clear();
+  toolDurations.value = {};
   queued.value = 0;
   queuedMessages.value = [];
 }
@@ -617,10 +579,17 @@ export function forkAndRun(parentMessageId: string, newContent: string): boolean
 
 /** 全树 tool_use_id → tool_result 映射：跨消息配对，重载后工具卡片仍为完成态。 */
 export const toolResults = computed(() => {
-  const out: Record<string, { content: string; is_error: boolean }> = {};
+  const out: Record<string, { content: string; is_error: boolean; durationMs: number | null }> = {};
   for (const m of messages.value) {
     for (const b of m.content) {
-      if (b.type === 'tool_result') out[b.tool_use_id] = { content: b.content, is_error: b.is_error };
+      if (b.type === 'tool_result') {
+        // 耗时随回执一起落库：刷新后仍能显示当时的执行时间
+        out[b.tool_use_id] = {
+          content: b.content,
+          is_error: b.is_error,
+          durationMs: b.duration_ms ?? null,
+        };
+      }
     }
   }
   return out;

@@ -63,6 +63,10 @@ pub enum Block {
         tool_use_id: String,
         content:     String,
         is_error:    bool,
+        /// 该工具执行的耗时（毫秒），由运行时测量。
+        /// 旧数据没有这个字段，反序列化为 `None`；工具被取消时也不写。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
 }
 
@@ -651,6 +655,8 @@ pub enum AgentEvent {
         tool_name: String,
         output:    String,
         is_error:  bool,
+        /// 本次工具执行的耗时（毫秒），由运行时测量
+        duration_ms: u64,
     },
     ActiveBranchChanged {
         current_leaf_id: String,

@@ -22,7 +22,7 @@ const props = defineProps<{
   blocks: Block[];
   streaming: boolean;
   /** 跨消息的 tool_use_id → 结果映射（重载后完成态） */
-  results?: Record<string, { content: string; is_error: boolean }>;
+  results?: Record<string, { content: string; is_error: boolean; durationMs?: number | null }>;
 }>();
 
 const { t } = useTranslations('blocks');
@@ -41,6 +41,8 @@ interface Item {
   output?: string;
   resultError?: boolean;
   resultDone?: boolean;
+  /** 工具执行耗时（毫秒）：优先取回执里服务端记下的值 */
+  durationMs?: number | null;
 }
 
 /** 把 tool_use 与其 tool_result 合并成单个条目；tool_result 不单独渲染。 */
@@ -69,6 +71,7 @@ const items = computed<Item[]>(() => {
         output: carried?.content,
         resultError: carried?.is_error,
         resultDone: carried !== undefined,
+        durationMs: carried?.durationMs ?? null,
       });
     } else {
       const idx = toolIndex[b.tool_use_id];
@@ -77,6 +80,7 @@ const items = computed<Item[]>(() => {
         target.output = b.content;
         target.resultError = b.is_error;
         target.resultDone = true;
+        if (b.duration_ms !== undefined) target.durationMs = b.duration_ms;
       }
     }
   });
@@ -200,10 +204,15 @@ function toolSubtitle(it: Item): string {
   return text.length > 64 ? `${text.slice(0, 64)}…` : text;
 }
 
-/** 工具执行耗时（秒）；服务端不记录，仅本次连接内采集到的调用有值 */
+/**
+ * 工具执行耗时：服务端随回执落库的毫秒数优先（历史消息也有），
+ * 其次用本次连接内 `tool_call_finished` 带来的即时值。
+ */
 function toolDuration(it: Item): string {
-  const seconds = toolDurations.value[it.key];
-  if (seconds === undefined) return '';
+  const ms = it.durationMs ?? toolDurations.value[it.key];
+  if (ms === undefined || ms === null) return '';
+  // 秒为单位、最多一位小数：与旧展示一致（5s / 6.5s），长耗时取整
+  const seconds = ms < 10_000 ? Math.round(ms / 100) / 10 : Math.round(ms / 1000);
   return `${seconds}s`;
 }
 
