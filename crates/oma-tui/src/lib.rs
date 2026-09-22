@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use oma_client::{ConnectOptions, OmaClient, SessionApi};
+use oma_client::{ConnectOptions, OmaClient, SessionApi, SessionRecord};
 use oma_contract::{AgentCommand, AgentEvent, ClientType, Palette, ResolvedTheme, StopReason, ThemeMode};
 use ratatui::{
     Frame,
@@ -89,14 +89,53 @@ pub struct TuiOptions {
     pub active:      Option<String>,
 }
 
-/// 会话循环的出口：退出，或切换到另一条连接后重建会话。
+/// 会话循环的出口：退出，或换一条连接 / 一个会话后重建。
 enum Outcome {
     Quit,
+    /// 换连接：地址与 token 一并更换，会话要重新挑
     Switch {
         addr:  String,
         token: String,
         name:  String,
     },
+    /// 换会话：连接不动，只换 session_id（标题已在弹窗里提示过，这里不再带）
+    SwitchSession {
+        session_id: String,
+    },
+}
+
+/// 弹窗里的一条：显示文本 + 选中后要执行的动作。
+///
+/// 动作随条目一起带着，渲染与按键就不必知道条目是什么种类；
+/// 将来加模型、预设只是多几个构造点。
+struct PickerItem {
+    /// 主文本：连接名 / 会话标题
+    label:   String,
+    /// 右侧说明：地址 / 模型与预设
+    detail:  String,
+    /// 是否就是当前生效的那一项（渲染 ✓）
+    current: bool,
+    action:  PickerAction,
+}
+
+/// 弹窗条目被确认后要做的事
+enum PickerAction {
+    SwitchConnection {
+        addr:  String,
+        token: String,
+        name:  String,
+    },
+    SwitchSession {
+        session_id: String,
+    },
+}
+
+/// 弹窗选择器：连接与会话共用同一套渲染与按键。
+struct Picker {
+    /// 标题栏文案（自带按键提示）
+    title: String,
+    items: Vec<PickerItem>,
+    index: usize,
 }
 
 /// 由握手下发的调色板导出的语义配色。
@@ -196,6 +235,10 @@ struct App {
     workspace:   String,
     model:       String,
     agent:       String,
+    /// 当前会话 id；弹窗里据此标记「就是它」
+    session_id:  String,
+    /// 当前工作区的会话列表：连接时取一次快照，供切换弹窗使用
+    sessions:    Vec<SessionRecord>,
     connected:   bool,
     busy:        bool,
     queue:       usize,
@@ -210,8 +253,8 @@ struct App {
     connections: Vec<TuiConnection>,
     /// 当前活动连接名
     active_conn: Option<String>,
-    /// 连接切换弹窗的高亮下标；None = 未打开
-    picker:      Option<usize>,
+    /// 弹窗选择器；None = 未打开
+    picker:      Option<Picker>,
     /// 终端是否处于聚焦状态；仅失焦时才发系统通知
     focused:     bool,
     /// 由握手下发主题导出的语义配色
@@ -224,6 +267,8 @@ impl App {
             workspace,
             model,
             agent,
+            session_id: String::new(),
+            sessions: Vec::new(),
             connected: true,
             busy: false,
             queue: 0,
@@ -402,13 +447,25 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
     let mut addr = options.addr.clone();
     let mut token = options.token.clone();
     let mut active = options.active.clone();
+    // 用户显式挑过的会话：换连接后作废，重新按工作区挑
+    let mut session: Option<String> = None;
 
     let mut terminal = ratatui::init();
     // 开启焦点变化上报（CSI ?1004h）：仅用于判断终端是否失焦，退出时恢复。
     // 终端不支持该序列时会直接忽略，不会报错。
     let _ = execute!(std::io::stdout(), EnableFocusChange);
     let result = loop {
-        match run_session(&mut terminal, &addr, &token, &options, active.clone(), &mut key_rx).await {
+        let outcome = run_session(
+            &mut terminal,
+            &addr,
+            &token,
+            &options,
+            active.clone(),
+            session.clone(),
+            &mut key_rx,
+        )
+        .await;
+        match outcome {
             Ok(Outcome::Quit) => break Ok(active),
             Ok(Outcome::Switch {
                 addr: next_addr,
@@ -418,7 +475,9 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
                 addr = next_addr;
                 token = next_token;
                 active = Some(name);
+                session = None;
             }
+            Ok(Outcome::SwitchSession { session_id, .. }) => session = Some(session_id),
             Err(e) => break Err(e),
         }
     };
@@ -435,12 +494,15 @@ async fn run_session(
     token: &str,
     options: &TuiOptions,
     active: Option<String>,
+    wanted_session: Option<String>,
     key_rx: &mut mpsc::Receiver<InputEvent>,
 ) -> Result<Outcome> {
     let workspace = options.workspace.as_str();
     let api = SessionApi::new(addr, token);
-    let record = match api.list_sessions(Some(workspace)).await?.into_iter().next() {
-        Some(existing) => existing,
+    // 会话列表既用于挑选连接目标，也供切换弹窗使用：连接时取一次快照
+    let sessions = api.list_sessions(Some(workspace)).await?;
+    let record = match pick_session(&sessions, wanted_session.as_deref()) {
+        Some(existing) => existing.clone(),
         None => api
             .create_session(workspace, None)
             .await
@@ -474,6 +536,8 @@ async fn run_session(
                 .find(|c| c.url == addr)
                 .map(|c| c.name.clone())
         });
+        app.session_id = record.session_id.clone();
+        app.sessions = sessions;
         app.push(
             "·",
             format!("会话 {} 已连接", short_id(&ready.session_id)),
@@ -490,6 +554,16 @@ async fn run_session(
     };
 
     event_loop(terminal, &mut app, &mut client, key_rx).await
+}
+
+/// 在会话列表里选出要连的那个：显式指定的 id 优先，找不到就退回列表首个。
+///
+/// 显式 id 可能因为「在别处被删掉」而落空，此时退回首个而不是新建会话——
+/// 用户按的是「切到那个会话」，不该换来一个空的。
+fn pick_session<'a>(sessions: &'a [SessionRecord], wanted: Option<&str>) -> Option<&'a SessionRecord> {
+    wanted
+        .and_then(|id| sessions.iter().find(|s| s.session_id == id))
+        .or_else(|| sessions.first())
 }
 
 async fn event_loop(
@@ -554,9 +628,9 @@ fn classify_input(app: &mut App, input: InputEvent) -> Option<KeyEvent> {
 
 /// 处理按键；返回 Some 表示离开当前会话（退出或切换连接）。
 async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Result<Option<Outcome>> {
-    // 连接切换弹窗：先于普通输入消费按键
+    // 弹窗：先于普通输入消费按键
     if app.picker.is_some() {
-        return Ok(handle_picker_key(app, key));
+        return Ok(handle_picker_key(app, key).and_then(apply_picker_action));
     }
 
     match key.code {
@@ -565,6 +639,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
             return Ok(Some(Outcome::Quit));
         }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => open_picker(app),
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => open_session_picker(app),
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
             app.stick = false;
@@ -599,7 +674,9 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, key: KeyEvent) -> Res
                 app.push("!", format!("发送失败: {}", e), Style::default().fg(app.theme.error));
             }
         }
-        KeyCode::Char(c) => app.input.push(c),
+        // 未定义的 Ctrl+字母不落进输入框：`Ctrl-D` 之类只该被忽略，
+        // 不该在输入区留下一个 `d`
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => app.input.push(c),
         _ => {}
     }
     Ok(None)
@@ -615,37 +692,107 @@ fn open_picker(app: &mut App) {
         );
         return;
     }
-    let index = app
-        .active_conn
-        .as_ref()
-        .and_then(|name| app.connections.iter().position(|c| &c.name == name))
-        .unwrap_or(0);
-    app.picker = Some(index);
-}
-
-/// 连接切换弹窗按键：上下选择、Enter 切换、Esc 取消。
-fn handle_picker_key(app: &mut App, key: KeyEvent) -> Option<Outcome> {
-    let index = app.picker?;
-    let last = app.connections.len().saturating_sub(1);
-    match key.code {
-        KeyCode::Esc => app.picker = None,
-        KeyCode::Up | KeyCode::Char('k') => app.picker = Some(index.saturating_sub(1)),
-        KeyCode::Down | KeyCode::Char('j') => app.picker = Some((index + 1).min(last)),
-        KeyCode::Enter => {
-            let Some(conn) = app.connections.get(index) else {
-                app.picker = None;
-                return None;
-            };
-            let outcome = Outcome::Switch {
+    let items: Vec<PickerItem> = app
+        .connections
+        .iter()
+        .map(|conn| PickerItem {
+            label:   conn.name.clone(),
+            detail:  conn.url.clone(),
+            current: app.active_conn.as_deref() == Some(conn.name.as_str()),
+            action:  PickerAction::SwitchConnection {
                 addr:  conn.url.clone(),
                 token: conn.token.clone(),
                 name:  conn.name.clone(),
-            };
-            return Some(outcome);
+            },
+        })
+        .collect();
+    // 高亮落在当前连接上：与旧行为一致，打开就能看到「现在在哪」
+    let index = picker_current_index(&items);
+    app.picker = Some(Picker {
+        title: " 切换连接 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ".into(),
+        items,
+        index,
+    });
+}
+
+/// 打开会话切换弹窗。
+///
+/// 列表是连接时取的快照：别处新建的会话要等下次连接才会出现。只有一个会话时
+/// 不弹窗——切过去只会重连同一个会话、清掉当前记录，没有意义。
+fn open_session_picker(app: &mut App) {
+    if app.sessions.len() < 2 {
+        app.push(
+            "·",
+            "当前工作区只有一个会话（在 Web 侧新建后重进本界面即可切换）",
+            Style::default().fg(app.theme.muted),
+        );
+        return;
+    }
+    let items: Vec<PickerItem> = app
+        .sessions
+        .iter()
+        .map(|s| PickerItem {
+            label:   s.title.clone(),
+            detail:  format!("{} · {}", short_id(&s.session_id), s.active_model),
+            current: s.session_id == app.session_id,
+            action:  PickerAction::SwitchSession {
+                session_id: s.session_id.clone(),
+            },
+        })
+        .collect();
+    // 高亮落在当前会话上：打开弹窗第一眼就知道「现在在哪」
+    let index = picker_current_index(&items);
+    app.picker = Some(Picker {
+        title: " 切换会话 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ".into(),
+        items,
+        index,
+    });
+}
+
+/// 当前生效那一项的下标；没有则从第一项开始。
+fn picker_current_index(items: &[PickerItem]) -> usize {
+    items.iter().position(|item| item.current).unwrap_or(0)
+}
+
+/// 弹窗按键：上下选择（j/k 亦可）、Enter 取出动作并关闭、Esc 关闭。
+///
+/// 返回 `Some(action)` 表示用户确认了某一项；`None` 表示按键已被消费。
+fn handle_picker_key(app: &mut App, key: KeyEvent) -> Option<PickerAction> {
+    // 只取两个数就放掉借用：下面要 take/清空 app.picker
+    let (index, last) = {
+        let picker = app.picker.as_ref()?;
+        (picker.index, picker.items.len().saturating_sub(1))
+    };
+    match key.code {
+        KeyCode::Esc => app.picker = None,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(picker) = app.picker.as_mut() {
+                picker.index = index.saturating_sub(1);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(picker) = app.picker.as_mut() {
+                picker.index = (index + 1).min(last);
+            }
+        }
+        KeyCode::Enter => {
+            let picker = app.picker.take()?;
+            return picker.items.into_iter().nth(index).map(|item| item.action);
         }
         _ => {}
     }
     None
+}
+
+/// 把弹窗里确认的动作翻成会话循环的出口。
+///
+/// 动作只带「切换所需的最小信息」：切换会重建 App，任何写给当前界面的提示
+/// 都活不过这一步，所以不在这里 push 提示；新会话的连接行本身就是回执。
+fn apply_picker_action(action: PickerAction) -> Option<Outcome> {
+    match action {
+        PickerAction::SwitchConnection { addr, token, name } => Some(Outcome::Switch { addr, token, name }),
+        PickerAction::SwitchSession { session_id } => Some(Outcome::SwitchSession { session_id }),
+    }
 }
 
 fn apply_event(app: &mut App, event: AgentEvent) {
@@ -809,17 +956,17 @@ fn draw(frame: &mut Frame, app: &App) {
     draw_transcript(frame, app, body, theme);
     draw_input(frame, app, input, theme);
 
-    if let Some(index) = app.picker {
-        draw_picker(frame, app, index, area, theme);
+    if let Some(picker) = &app.picker {
+        draw_picker(frame, picker, area, theme);
     }
 }
 
-/// 连接切换弹窗：列出已保存连接，高亮当前选中项。
-fn draw_picker(frame: &mut Frame, app: &App, index: usize, area: Rect, theme: TuiTheme) {
-    if app.connections.is_empty() {
+/// 弹窗：列出条目，标记当前生效的那一项。
+fn draw_picker(frame: &mut Frame, picker: &Picker, area: Rect, theme: TuiTheme) {
+    if picker.items.is_empty() {
         return;
     }
-    let height = (app.connections.len() as u16 + 3).min(area.height);
+    let height = (picker.items.len() as u16 + 3).min(area.height);
     let width = area.width.saturating_sub(8).min(64);
     let popup = Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
@@ -833,10 +980,7 @@ fn draw_picker(frame: &mut Frame, app: &App, index: usize, area: Rect, theme: Tu
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
-        .title(Span::styled(
-            " 切换连接 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ",
-            Style::default().fg(theme.muted),
-        ));
+        .title(Span::styled(picker.title.clone(), Style::default().fg(theme.muted)));
     frame.render_widget(block, popup);
 
     let inner = Rect {
@@ -845,17 +989,17 @@ fn draw_picker(frame: &mut Frame, app: &App, index: usize, area: Rect, theme: Tu
         width:  popup.width.saturating_sub(2),
         height: popup.height.saturating_sub(2),
     };
-    let lines: Vec<Line<'static>> = app
-        .connections
+    let lines: Vec<Line<'static>> = picker
+        .items
         .iter()
         .enumerate()
-        .map(|(i, conn)| {
-            let selected = i == index;
+        .map(|(i, item)| {
+            let selected = i == picker.index;
             let marker = if selected { "> " } else { "  " };
-            let name = if app.active_conn.as_deref() == Some(conn.name.as_str()) {
-                format!("{} ✓", conn.name)
+            let label = if item.current {
+                format!("{} ✓", item.label)
             } else {
-                conn.name.clone()
+                item.label.clone()
             };
             let style = if selected {
                 Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
@@ -864,9 +1008,9 @@ fn draw_picker(frame: &mut Frame, app: &App, index: usize, area: Rect, theme: Tu
             };
             Line::from(vec![
                 Span::styled(marker, Style::default().fg(theme.accent)),
-                Span::styled(name, style),
+                Span::styled(label, style),
                 Span::raw("  "),
-                Span::styled(conn.url.clone(), Style::default().fg(theme.muted)),
+                Span::styled(item.detail.clone(), Style::default().fg(theme.muted)),
             ])
         })
         .collect();
@@ -949,7 +1093,7 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     let hint = if app.connected {
-        " Enter 发送 · Ctrl+X 中止 · Ctrl+O 切换连接 · Ctrl+U 清空 · Esc 退出 "
+        " Enter 发送 · Ctrl+X 中止 · Ctrl+N 会话 · Ctrl+O 连接 · Ctrl+U 清空 · Esc 退出 "
     } else {
         " 连接已断开 "
     };
@@ -1038,13 +1182,7 @@ mod tests {
     /// 连接切换弹窗：打开时定位活动连接，上下选择不越界，Enter 返回切换目标。
     #[test]
     fn test_picker_navigation_and_switch() {
-        let theme = TuiTheme::new(&ResolvedTheme {
-            mode:   ThemeMode::Dark,
-            accent: "blue".into(),
-            light:  palette_with("latte", "#111111", "#222222"),
-            dark:   palette_with("mocha", "#eeeeee", "#dddddd"),
-        });
-        let mut app = App::new("/w".into(), "m".into(), "a".into(), theme);
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), TuiTheme::test());
         app.connections = vec![
             TuiConnection {
                 name:  "a".into(),
@@ -1061,27 +1199,69 @@ mod tests {
 
         // 打开时高亮活动连接；向上不越界
         open_picker(&mut app);
-        assert_eq!(app.picker, Some(1));
+        assert_eq!(picker_index(&app), Some(1));
         handle_picker_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.picker, Some(0));
+        assert_eq!(picker_index(&app), Some(0));
         handle_picker_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.picker, Some(0));
+        assert_eq!(picker_index(&app), Some(0));
 
-        // Enter 返回切换目标
+        // Enter 取出切换目标并关掉弹窗
         match handle_picker_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
-            Some(Outcome::Switch { addr, token, name }) => {
+            Some(PickerAction::SwitchConnection { addr, token, name }) => {
                 assert_eq!(name, "a");
                 assert_eq!(addr, "http://a");
                 assert_eq!(token, "ta");
             }
             _ => panic!("Enter 应返回切换目标"),
         }
+        assert!(app.picker.is_none(), "确认后弹窗应关闭");
 
         // 没有已保存连接时仅提示，不进入空列表
         app.connections.clear();
-        app.picker = None;
         open_picker(&mut app);
-        assert_eq!(app.picker, None);
+        assert!(app.picker.is_none());
+    }
+
+    /// 会话弹窗：高亮当前会话并标 ✓，确认后返回该会话。
+    #[test]
+    fn test_session_picker_marks_current_and_returns_target() {
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), TuiTheme::test());
+        app.session_id = "s2".into();
+        app.sessions = vec![record("s1", "第一个会话"), record("s2", "当前会话")];
+
+        open_session_picker(&mut app);
+        assert_eq!(picker_index(&app), Some(1), "应停在当前会话上");
+        let items = &app.picker.as_ref().unwrap().items;
+        assert!(items[1].current && !items[0].current, "只有当前会话带 ✓");
+        // 说明里带模型名，便于区分同名会话
+        assert!(items[1].detail.contains('m'));
+
+        match handle_picker_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+            Some(PickerAction::SwitchSession { session_id }) => {
+                assert_eq!(session_id, "s2");
+            }
+            _ => panic!("Enter 应返回会话切换目标"),
+        }
+
+        // Esc 关掉弹窗且不返回动作
+        open_session_picker(&mut app);
+        assert!(handle_picker_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
+        assert!(app.picker.is_none());
+
+        // 只有一个会话时只提示，不弹窗
+        app.sessions.truncate(1);
+        open_session_picker(&mut app);
+        assert!(app.picker.is_none());
+    }
+
+    /// 选会话：显式 id 优先；id 已不存在（别处删掉了）时退回首个而非新建。
+    #[test]
+    fn test_pick_session_prefers_explicit_id() {
+        let list = vec![record("s1", "一"), record("s2", "二")];
+        assert_eq!(pick_session(&list, Some("s2")).unwrap().session_id, "s2");
+        assert_eq!(pick_session(&list, Some("已删除")).unwrap().session_id, "s1");
+        assert_eq!(pick_session(&list, None).unwrap().session_id, "s1");
+        assert!(pick_session(&[], None).is_none());
     }
 
     /// 焦点上报驱动通知开关：未上报焦点时按聚焦处理（不打扰），
@@ -1166,6 +1346,21 @@ mod tests {
             pink:      String::new(),
             flamingo:  String::new(),
             rosewater: String::new(),
+        }
+    }
+
+    /// 弹窗当前高亮项；未打开时为 None
+    fn picker_index(app: &App) -> Option<usize> {
+        app.picker.as_ref().map(|picker| picker.index)
+    }
+
+    fn record(id: &str, title: &str) -> SessionRecord {
+        SessionRecord {
+            session_id:   id.into(),
+            workspace:    "/w".into(),
+            title:        title.into(),
+            active_model: "m".into(),
+            active_agent: "a".into(),
         }
     }
 }
