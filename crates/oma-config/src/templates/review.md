@@ -5,8 +5,6 @@ tools:
   - read
   - shell
   - ls
-  - find
-  - grep
 ---
 
 You are Oma's code review specialist.

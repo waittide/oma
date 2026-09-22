@@ -12,8 +12,6 @@ use serde::Deserialize;
 
 pub mod apply_patch;
 pub mod binaries;
-pub mod find;
-pub mod grep;
 pub mod image;
 pub mod ls;
 pub mod truncate;
@@ -23,7 +21,7 @@ use std::path::Component;
 /// 最大工具输出字符数限制。
 ///
 /// 现在只剩 `edit` 的 diff 在用（作为超大 diff 的兜底）；
-/// `read` / `shell` 与 `ls` / `find` / `grep` 已统一走 [`truncate`] 的行数 + 字节双上限。
+/// `read` / `shell` 与 `ls` 已统一走 [`truncate`] 的行数 + 字节双上限。
 pub const RESULT_MAX_CHARS: usize = 24_000;
 
 /// 工具输出截断保护函数（字符数口径）。
@@ -1085,8 +1083,6 @@ impl ToolRegistry {
         reg.register(Arc::new(EditTool));
         reg.register(Arc::new(ShellTool::default()));
         reg.register(Arc::new(crate::ls::LsTool));
-        reg.register(Arc::new(crate::find::FindTool));
-        reg.register(Arc::new(crate::grep::GrepTool));
         reg
     }
 
@@ -1123,7 +1119,6 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::binaries::ExternalTool;
 
     /// 可切换图像输入能力的测试上下文
     struct Ctx(bool);
@@ -2004,13 +1999,13 @@ mod tests {
         );
     }
 
-    /// 内置工具集：edit / find / grep / ls / read / shell / write。
+    /// 内置工具集：edit / ls / read / shell / write。
     #[test]
     fn test_builtin_tool_set() {
         let reg = ToolRegistry::with_builtins();
         let mut names: Vec<&str> = reg.list().iter().map(|t| t.name()).collect();
         names.sort_unstable();
-        assert_eq!(names, vec!["edit", "find", "grep", "ls", "read", "shell", "write"]);
+        assert_eq!(names, vec!["edit", "ls", "read", "shell", "write"]);
 
         // 下发给模型的参数契约：edit 只认 apply_patch 的 `input`，shell 仍只认 `command`
         let defs = reg.to_definitions(&[]);
@@ -2044,150 +2039,6 @@ mod tests {
             .execute(empty.path(), serde_json::json!({}))
             .await;
         assert!(ls.output.contains("(empty directory)"));
-        Ok(())
-    }
-
-    /// find / grep 依赖外部 fd / ripgrep：本机没装就跳过，不让离线环境误红。
-    fn external_tool_available(tool: ExternalTool) -> bool {
-        if binaries::installed_path(tool).is_some() {
-            return true;
-        }
-        eprintln!("skip: {} 不可用，跳过依赖外部二进制的用例", tool.display_name());
-        false
-    }
-
-    /// 核心诉求：find / grep 必须遵循 `.gitignore`（旧的纯 Rust 实现只看 `.git`）。
-    #[tokio::test]
-    async fn test_find_and_grep_respect_gitignore() -> Result<()> {
-        if !external_tool_available(ExternalTool::Fd) || !external_tool_available(ExternalTool::Rg) {
-            return Ok(());
-        }
-
-        let tmp = tempfile::tempdir()?;
-        let ws = tmp.path();
-        // 建出 `.git`，让 fd / rg 走 git 仓库语义（才会读 .gitignore）
-        std::fs::create_dir(ws.join(".git"))?;
-        std::fs::create_dir_all(ws.join("src"))?;
-        std::fs::create_dir_all(ws.join("target"))?;
-        std::fs::write(ws.join(".gitignore"), "target/\n")?;
-        std::fs::write(ws.join("src/main.rs"), "fn main() {}\n// needle line\n")?;
-        std::fs::write(ws.join("target/junk.rs"), "// needle line\n")?;
-
-        let find = crate::find::FindTool
-            .execute(ws, serde_json::json!({ "pattern": "*.rs" }))
-            .await;
-        assert!(!find.is_error, "{}", find.output);
-        assert!(find.output.contains("src/main.rs"), "{}", find.output);
-        assert!(
-            !find.output.contains("junk.rs"),
-            "被 ignore 的文件不该出现：{}",
-            find.output
-        );
-
-        let grep = crate::grep::GrepTool
-            .execute(ws, serde_json::json!({ "pattern": "needle" }))
-            .await;
-        assert!(!grep.is_error, "{}", grep.output);
-        assert!(grep.output.contains("src/main.rs:2:"), "{}", grep.output);
-        assert!(
-            !grep.output.contains("junk.rs"),
-            "被 ignore 的文件不该被搜：{}",
-            grep.output
-        );
-        Ok(())
-    }
-
-    /// grep 的 glob 过滤 / 无匹配 / context 行 / 条数上限提示。
-    #[tokio::test]
-    async fn test_grep_filters_context_and_limits() -> Result<()> {
-        if !external_tool_available(ExternalTool::Rg) {
-            return Ok(());
-        }
-
-        let tmp = tempfile::tempdir()?;
-        let ws = tmp.path();
-        std::fs::create_dir_all(ws.join("src"))?;
-        std::fs::write(ws.join("src/main.rs"), "fn main() {}\n// needle line\n")?;
-        std::fs::write(ws.join("README.md"), "# title\nneedle here\n")?;
-
-        // glob 过滤
-        let filtered = crate::grep::GrepTool
-            .execute(ws, serde_json::json!({ "pattern": "needle", "glob": "*.rs" }))
-            .await;
-        assert!(!filtered.is_error, "{}", filtered.output);
-        assert!(filtered.output.contains("main.rs"), "{}", filtered.output);
-        assert!(!filtered.output.contains("README.md"), "{}", filtered.output);
-
-        // 无匹配
-        let none = crate::grep::GrepTool
-            .execute(ws, serde_json::json!({ "pattern": "absent-token" }))
-            .await;
-        assert!(!none.is_error);
-        assert!(none.output.contains("No matches"), "{}", none.output);
-
-        // context：上下文行用 `-` 分隔前缀，命中行仍用 `:`
-        let with_context = crate::grep::GrepTool
-            .execute(ws, serde_json::json!({ "pattern": "needle", "context": 1 }))
-            .await;
-        assert!(!with_context.is_error, "{}", with_context.output);
-        assert!(
-            with_context.output.contains("main.rs:2: // needle line"),
-            "{}",
-            with_context.output
-        );
-        assert!(
-            with_context.output.contains("main.rs-1- fn main() {}"),
-            "{}",
-            with_context.output
-        );
-
-        // 条数上限：命中两条但只要一条时给出可操作的提示
-        let limited = crate::grep::GrepTool
-            .execute(ws, serde_json::json!({ "pattern": "needle", "limit": 1 }))
-            .await;
-        assert!(!limited.is_error, "{}", limited.output);
-        assert!(limited.output.contains("1 matches limit reached"), "{}", limited.output);
-        Ok(())
-    }
-
-    /// find 的结果条数上限与 `**/` 前缀处理。
-    #[tokio::test]
-    async fn test_find_limits_and_path_patterns() -> Result<()> {
-        if !external_tool_available(ExternalTool::Fd) {
-            return Ok(());
-        }
-
-        let tmp = tempfile::tempdir()?;
-        let ws = tmp.path();
-        std::fs::create_dir_all(ws.join("src/deep"))?;
-        std::fs::write(ws.join("src/deep/main.rs"), "fn main() {}\n")?;
-        std::fs::write(ws.join("README.md"), "# title\n")?;
-
-        let all = crate::find::FindTool
-            .execute(ws, serde_json::json!({ "pattern": "*.rs" }))
-            .await;
-        assert!(!all.is_error, "{}", all.output);
-        assert!(all.output.contains("src/deep/main.rs"), "{}", all.output);
-        assert!(!all.output.contains("README.md"), "{}", all.output);
-
-        // 含 `/` 的 pattern 走 --full-path，应能定位到子目录
-        let scoped = crate::find::FindTool
-            .execute(ws, serde_json::json!({ "pattern": "src/**/*.rs" }))
-            .await;
-        assert!(!scoped.is_error, "{}", scoped.output);
-        assert!(scoped.output.contains("src/deep/main.rs"), "{}", scoped.output);
-
-        let limited = crate::find::FindTool
-            .execute(ws, serde_json::json!({ "pattern": "*", "limit": 1 }))
-            .await;
-        assert!(!limited.is_error, "{}", limited.output);
-        assert!(limited.output.contains("1 results limit reached"), "{}", limited.output);
-
-        let none = crate::find::FindTool
-            .execute(ws, serde_json::json!({ "pattern": "*.nonexistent" }))
-            .await;
-        assert!(!none.is_error);
-        assert!(none.output.contains("No files found"), "{}", none.output);
         Ok(())
     }
 }

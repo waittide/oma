@@ -6,7 +6,6 @@ import {
   LuChevronRight,
   LuFileDiff,
   LuGlobe,
-  LuSearch,
   LuTerminalSquare,
   LuWrench,
 } from 'vue-icons-plus/lu';
@@ -156,8 +155,6 @@ function toolIcon(name?: string) {
     case 'write':
     case 'edit':
       return LuFileDiff;
-    case 'grep':
-      return LuSearch;
     case 'web_fetch':
     case 'web_search':
       return LuGlobe;
