@@ -1894,6 +1894,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "oma-client",
  "oma-config",
  "oma-contract",
  "oma-daemon",

@@ -354,7 +354,9 @@ fn index_html() -> Response {
 async fn run_status(addr: &str, token_opt: Option<&str>) -> Result<()> {
     let token = read_token(token_opt, &config_path(None))?;
 
-    let url = format!("http://{}/api/server/status", addr);
+    // `--addr` 允许裸 `host:port`，也允许 `http://host:port`（用户常直接粘贴
+    // client.json 里的地址），规整交给 oma-client，避免两处各拼一次 URL。
+    let url = format!("{}/api/server/status", oma_client::http_base(addr));
     let client = reqwest::Client::new();
     let resp = client
         .get(&url)

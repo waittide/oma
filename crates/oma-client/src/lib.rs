@@ -42,6 +42,55 @@ use tokio_tungstenite::tungstenite::Message;
 /// 保证同一个二进制对外只自称一个版本。
 pub const CLIENT_VERSION: &str = oma_contract::VERSION;
 
+/// 把地址规整成 REST 基础 URL。
+///
+/// 调用方给的地址有两种形态，来源不同、形态也不同：命令行 `--addr` 与
+/// `settings.json` 是裸 `host:port`，而 `client.json` 的连接项是 Web 界面写入的
+/// 完整 URL（`http://host:port`）。这里两种都接受。
+///
+/// 早期实现无条件前缀 `http://`，遇到后者会拼出 `http://http://host:port`——
+/// reqwest 把 `http` 当成主机名，请求发到一个不存在的主机上，
+/// 于是「TUI 连不上、界面什么都显示不出来」。
+pub fn http_base(addr: &str) -> String {
+    match split_scheme(addr) {
+        Some((scheme, rest)) => format!("{scheme}://{rest}"),
+        None => format!("http://{}", trim_addr(addr)),
+    }
+}
+
+/// 把地址规整成 WebSocket 基础 URL：`http` → `ws`，`https` → `wss`。
+///
+/// 与 [`http_base`] 同一套入参形态；已经写成 `ws://` / `wss://` 的原样保留。
+pub fn ws_base(addr: &str) -> String {
+    match split_scheme(addr) {
+        Some(("https" | "wss", rest)) => format!("wss://{rest}"),
+        Some((_, rest)) => format!("ws://{rest}"),
+        None => format!("ws://{}", trim_addr(addr)),
+    }
+}
+
+/// 去掉首尾空白与结尾斜杠（`http://host:port/` 与 `host:port` 等价）
+fn trim_addr(addr: &str) -> &str {
+    addr.trim().trim_end_matches('/')
+}
+
+/// 拆出地址里的 scheme：`http://host:port` → `Some(("http", "host:port"))`，
+/// 裸 `host:port` → `None`。
+///
+/// scheme 限定为字母数字，避免把 IPv6 字面量里的东西误当 scheme
+/// （IPv6 用方括号书写，本来也不含 `://`）。
+fn split_scheme(addr: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = trim_addr(addr).split_once("://")?;
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+')
+    {
+        return None;
+    }
+    Some((scheme, rest.trim_end_matches('/')))
+}
+
 /// 会话索引记录（与 daemon 的 `SessionRecord` 对应）
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionRecord {
@@ -60,10 +109,11 @@ pub struct SessionApi {
 }
 
 impl SessionApi {
-    /// `addr` 形如 `127.0.0.1:17431`（与 `--addr` 一致）
+    /// `addr` 可以是裸 `127.0.0.1:17431`，也可以是 `http://127.0.0.1:17431`
+    /// （`client.json` 里存的就是后者），见 [`http_base`]。
     pub fn new(addr: &str, token: &str) -> Self {
         Self {
-            base:  format!("http://{}", addr.trim_end_matches('/')),
+            base:  http_base(addr),
             token: token.to_string(),
             http:  reqwest::Client::new(),
         }
@@ -183,7 +233,7 @@ pub struct OmaClient {
 impl OmaClient {
     /// 建立连接并完成握手，返回服务端就绪载荷
     pub async fn connect(opts: ConnectOptions) -> Result<Self> {
-        let url = format!("ws://{}/ws?token={}", opts.addr, opts.token);
+        let url = format!("{}/ws?token={}", ws_base(&opts.addr), opts.token);
         let (socket, _) = tokio_tungstenite::connect_async(&url)
             .await
             .with_context(|| format!("Failed to connect to oma daemon at {}", opts.addr))?;
@@ -315,5 +365,45 @@ async fn pump<S, R>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 两种形态都要接受：命令行与 `settings.json` 是裸 `host:port`，
+    /// `client.json` 的连接项是 Web 界面写入的完整 URL。
+    #[test]
+    fn test_http_base_accepts_bare_and_full_urls() {
+        assert_eq!(http_base("127.0.0.1:17431"), "http://127.0.0.1:17431");
+        assert_eq!(http_base("http://127.0.0.1:9633"), "http://127.0.0.1:9633");
+        assert_eq!(http_base("https://oma.example.com"), "https://oma.example.com");
+        // 结尾斜杠与首尾空白不该影响结果
+        assert_eq!(http_base("  127.0.0.1:17431/  "), "http://127.0.0.1:17431");
+        assert_eq!(http_base("http://127.0.0.1:9633/"), "http://127.0.0.1:9633");
+        // IPv6 字面量：方括号里含冒号，但不含 `://`，不该被当 scheme
+        assert_eq!(http_base("[::1]:17431"), "http://[::1]:17431");
+    }
+
+    /// WS 侧要按 scheme 换协议，且不能把 `wss` 降级成 `ws`。
+    #[test]
+    fn test_ws_base_maps_scheme() {
+        assert_eq!(ws_base("127.0.0.1:17431"), "ws://127.0.0.1:17431");
+        assert_eq!(ws_base("http://127.0.0.1:9633"), "ws://127.0.0.1:9633");
+        assert_eq!(ws_base("https://oma.example.com"), "wss://oma.example.com");
+        // 已经是 ws 形态时原样保留
+        assert_eq!(ws_base("ws://127.0.0.1:17431"), "ws://127.0.0.1:17431");
+        assert_eq!(ws_base("wss://oma.example.com"), "wss://oma.example.com");
+        assert_eq!(ws_base("http://127.0.0.1:9633/"), "ws://127.0.0.1:9633");
+    }
+
+    /// 回归：早期实现无条件前缀 `http://`，完整 URL 会被拼成 `http://http://…`，
+    /// reqwest 把 `http` 当主机名，TUI 因此连不上任何东西。
+    #[test]
+    fn test_full_url_is_not_double_prefixed() {
+        let base = http_base("http://127.0.0.1:9633");
+        assert!(!base.contains("http://http"), "scheme 被重复前缀: {base}");
+        assert_eq!(base.matches("://").count(), 1, "出现了多个 scheme: {base}");
     }
 }
