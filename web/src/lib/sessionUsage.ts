@@ -70,3 +70,15 @@ export function hasUsage(usage?: TokenUsage | null): boolean {
     (usage.cache_write_tokens ?? 0) > 0
   );
 }
+
+/**
+ * 两次请求的用量相加：把一轮里的多次请求累加成整轮合计。
+ *
+ * 只累计 token 字段；整轮的耗时由界面按墙钟（提问到收尾）给出，不在这里掺和。
+ */
+export function accumulateUsage(base: TokenUsage | null, addend: TokenUsage | null): TokenUsage | null {
+  if (!addend) return base;
+  const out: TokenUsage = base ? { ...base } : { input_tokens: 0, output_tokens: 0 };
+  add(out, addend);
+  return out;
+}

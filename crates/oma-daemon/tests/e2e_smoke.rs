@@ -560,13 +560,12 @@ async fn test_usage_is_recorded_per_request() -> Result<()> {
     Ok(())
 }
 
-/// 耗时口径：每条助手消息带上它那次请求的墙钟（`usage.duration_ms`），
-/// 每段思维链带上这一段思考的耗时（`thinking.duration_ms`）。
+/// 思考段耗时：每段思维链带上这一段思考的墙钟（`thinking.duration_ms`）。
 ///
 /// 本地 mock 下数值可能是 0（毫秒级），所以断言「字段存在」——这是契约；
 /// 为 0 时界面显示 `0s`，与「没有这个数」是两回事。
 #[tokio::test]
-async fn test_request_and_thinking_durations_are_recorded() -> Result<()> {
+async fn test_thinking_duration_is_recorded() -> Result<()> {
     let h = start_harness().await?;
     let session = h
         .api
@@ -596,12 +595,6 @@ async fn test_request_and_thinking_durations_are_recorded() -> Result<()> {
         .iter()
         .find(|m| m["role"] == "assistant")
         .expect("至少应有一条助手消息");
-    assert!(
-        assistant["usage"]["duration_ms"].as_u64().is_some(),
-        "助手消息必须带该次请求的耗时：{}",
-        assistant["usage"]
-    );
-
     let thinking = assistant["content"]
         .as_array()
         .expect("content 是块数组")

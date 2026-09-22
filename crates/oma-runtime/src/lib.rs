@@ -868,8 +868,6 @@ impl SessionRoom {
             let mut model_cfg = model_cfg.clone();
             apply_reasoning_level(&mut model_cfg, &self.reasoning_level.read());
             let provider = UniversalProvider::new(provider_cfg);
-            // 本次请求的墙钟起点：从发起到流读完，供消息上的「耗时」使用
-            let request_started = std::time::Instant::now();
             let mut stream_rx = match provider
                 .send_stream(&messages, Some(&system_prompt), &tools_defs, &model_cfg)
                 .await
@@ -969,17 +967,11 @@ impl SessionRoom {
                 }
             }
 
-            // 本次请求的墙钟耗时（发起到流读完），以及这一段思考的耗时
-            let request_ms = request_started.elapsed().as_millis() as u64;
+            // 这一段思考的耗时（首帧思考增量到该段结束）
             let thinking_ms = thinking_started.map(|start| {
                 let end = thinking_ended.unwrap_or_else(std::time::Instant::now);
                 end.saturating_duration_since(start).as_millis() as u64
             });
-            // 消息与流式事件共用同一份「这次请求」的统计，两处数字必须完全一致
-            let request_stats = TokenUsage {
-                duration_ms: Some(request_ms),
-                ..request_usage
-            };
 
             // 回填权威锚点：本次请求的真实输入占用对应 history[..covered]。
             // 厂商未上报用量时保留旧锚点，绝不写入 0 覆盖。
@@ -1034,7 +1026,7 @@ impl SessionRoom {
                     model:      Some(active_model_sel.clone()),
                     // 只记**本次请求**的用量与墙钟：一条助手消息对应一次模型请求，
                     // 把整轮累计值写在这里会让长工具循环的最后一条看起来消耗巨大
-                    usage:      Some(request_stats),
+                    usage:      Some(request_usage),
                 };
                 if let Err(e) = self
                     .storage
@@ -1049,11 +1041,12 @@ impl SessionRoom {
                 history.push(assistant_msg);
                 assistant_msg_id = Some(msg_id);
                 // 该请求的助手消息已落库：把本轮累计用量同步给客户端。
-                // 口径与落库值一致（本次请求），流式界面据此显示输入/输出
+                // 事件里给的是**该次请求**的用量（客户端自行累加成整轮），
+                // 追赶快照里存的则是**本轮累计**，两者语义不同但可相互校验
                 if let Some(turn) = self.active_turn.write().as_mut() {
-                    turn.usage = request_stats;
+                    turn.usage = *turn_usage;
                 }
-                self.broadcast(AgentEvent::UsageUpdated { usage: request_stats });
+                self.broadcast(AgentEvent::UsageUpdated { usage: request_usage });
 
                 // 首次回复已完成：立刻后台命名，不再等整轮（含工具调用）结束
                 if !naming_attempted {

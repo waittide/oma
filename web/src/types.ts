@@ -108,8 +108,6 @@ export interface TokenUsage {
   cache_read_tokens?: number;
   /** 写入缓存的输入 token */
   cache_write_tokens?: number;
-  /** 该用量所属那次模型请求的墙钟耗时；聚合值与历史数据缺省 */
-  duration_ms?: number | null;
 }
 
 export type AgentEvent =

@@ -593,12 +593,6 @@ pub struct TokenUsage {
     /// 写入缓存的输入 token（Anthropic `cache_creation_input_tokens`）
     #[serde(default)]
     pub cache_write_tokens: usize,
-    /// 该用量所属那次模型请求的墙钟耗时（毫秒）。
-    ///
-    /// 只有描述「某一次具体请求」时才带值（消息的 `usage`、`UsageUpdated`）；
-    /// 聚合值（`TurnFinished`、追赶快照）与历史数据为 `None`。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_ms:        Option<u64>,
 }
 
 /// 工具调用发起数据

@@ -22,17 +22,17 @@ import {
 } from 'vue-icons-plus/lu';
 import MessageBlocks from './MessageBlocks.vue';
 import MessageRail from './MessageRail.vue';
+import type { Block, ChatMessage, TokenUsage } from '../types';
 import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
 import { copyText } from '../lib/clipboard';
 import { ensureNotificationPermission } from '../lib/notify';
 import { formatDuration } from '../lib/format';
+import { sessionUsage } from '../lib/sessionUsage';
 import ContextGauge from './ContextGauge.vue';
 import * as chat from '../stores/chat';
 import { activeSession, activeSessionId, requestNewSession } from '../stores/sessions';
 import * as layout from '../stores/layout';
 import { useTranslations } from '../composables/i18n';
-import { sessionUsage } from '../lib/sessionUsage';
-import type { ChatMessage, TokenUsage } from '../types';
 
 const props = defineProps<{ online: boolean }>();
 const emit = defineEmits<{ needSettings: [] }>();
@@ -364,12 +364,12 @@ function messageModelLabel(model?: string | null): string {
 }
 
 /**
- * 一条助手消息的统计行（`耗时 · N 输入 · N 输出 · N 缓存读 · N 缓存写`）。
+ * 一轮的统计行（`耗时 · N 输入 · N 输出 · N 缓存读 · N 缓存写`）。
  *
  * oma 的模型配置里没有价格字段，故不展示成本。
  * 单位是各语言里的词（中文「输入/输出」），数字按当前语言做千分位。
- * `elapsedMs` 由调用方按位置给：中间步骤是该次请求的墙钟，整轮收尾那条是整轮墙钟
- * （见 `statsByMessage`）。
+ * `elapsedMs` 是该轮墙钟（提问到收尾，由消息时间戳推算）；流式中的那一轮还没走完，
+ * 不传它——数字还在动，不显示比显示一个半成品好。
  */
 function usageText(usage?: TokenUsage | null, elapsedMs?: number): string {
   const parts: string[] = [];
@@ -398,22 +398,24 @@ const liveModelLabel = computed(() => messageModelLabel(chat.live.value.model ||
  *
  * 服务端在每次模型请求结束后下发**该次请求**的用量（`usage_updated`），因此这里显示
  * 的是最近一次请求的耗时与输入/输出（含它的整个提示侧），与回读后落在那条助手消息上
- * 的数字一致——整轮还在跑，但那一次请求已经结束，数字是确定的。整轮合计等收尾后
- * 由该轮最后一块给出。
+ * 的数字一致——整轮还在跑，但那一次请求已经结束，数字是确定的。
  */
-const liveUsageText = computed(() => {
-  const usage = chat.live.value.usage;
-  return usageText(usage, usage?.duration_ms ?? 0);
-});
+const liveUsageText = computed(() => usageText(chat.live.value.usage));
 
 /**
  * 一轮：一条用户消息 + 其后到下一轮开始前的全部助手消息。
  *
- * 只用于算统计与间距，渲染仍是一条助手消息一块（每块自己的模型标签 + 自己的过程）。
+ * 工具回执是 `user` 角色的**内部消息**，不构成轮次边界；会话最早的一批助手消息
+ * （理论上不该出现）会落成 `user` 为 null 的一组，同样照常渲染。
  */
 interface Turn {
+  key: string;
   user: ChatMessage | null;
   assistants: ChatMessage[];
+  /** 该轮全部助手块，按到达顺序拼成一条，交给 MessageBlocks 统一渲染 */
+  blocks: Block[];
+  /** 该轮生效的模型（首个非空）；整轮共用一条标签 */
+  model: string | null;
   /** 该轮各次请求的用量之和 */
   usage: TokenUsage | null;
   /** 该轮墙钟（用户消息 → 该轮最后一条助手消息）；推算不出时为 0 */
@@ -428,56 +430,40 @@ const turns = computed<Turn[]>(() => {
     current = null;
   };
   for (const m of chat.messages.value) {
-    // 工具回执是 user 角色的内部消息，不构成轮次边界
     if (chat.isInternalMessage(m)) continue;
     if (m.role === 'user') {
       push();
-      current = { user: m, assistants: [], usage: null, elapsedMs: 0 };
+      current = {
+        key: m.id,
+        user: m,
+        assistants: [],
+        blocks: [],
+        model: null,
+        usage: null,
+        elapsedMs: 0,
+      };
       continue;
     }
-    current ??= { user: null, assistants: [], usage: null, elapsedMs: 0 };
+    current ??= {
+      key: `lead-${m.id}`,
+      user: null,
+      assistants: [],
+      blocks: [],
+      model: null,
+      usage: null,
+      elapsedMs: 0,
+    };
     current.assistants.push(m);
-    if (current.user && m.created_at > current.user.created_at) {
-      current.elapsedMs = m.created_at - current.user.created_at;
+    current.blocks.push(...m.content);
+    current.model ??= m.model ?? null;
+    // 最后一条助手消息的落库时刻就是这一轮走完的时刻
+    if (current.user && m.created_at > 0) {
+      const askedAt = current.user.created_at;
+      if (m.created_at > askedAt) current.elapsedMs = m.created_at - askedAt;
     }
   }
   push();
   for (const turn of out) turn.usage = sessionUsage(turn.assistants);
-  return out;
-});
-
-/**
- * 每条助手消息底部的统计。
- *
- * - 中间步骤：`耗时` = 它自己那次模型请求的墙钟（服务端测的 `usage.duration_ms`），
- *   用量 = 该次请求。一次工具循环里每一步的量本身很小，各看各的；
- * - 该轮**最后一条**：换成整轮口径——`耗时` = 整轮墙钟（提问到收尾），
- *   用量 = 各次请求之和。整轮的量只在这一条上给，不铺到每一步。
- */
-const statsByMessage = computed<Record<string, { usage: TokenUsage | null; elapsedMs: number }>>(() => {
-  const out: Record<string, { usage: TokenUsage | null; elapsedMs: number }> = {};
-  for (const turn of turns.value) {
-    for (const m of turn.assistants) {
-      out[m.id] = { usage: m.usage ?? null, elapsedMs: m.usage?.duration_ms ?? 0 };
-    }
-    const last = turn.assistants[turn.assistants.length - 1];
-    if (last) out[last.id] = { usage: turn.usage, elapsedMs: turn.elapsedMs };
-  }
-  return out;
-});
-
-/** 该消息的统计行文案；没有可展示的数字时返回空串（调用方据此不渲染）。 */
-function statsText(m: ChatMessage): string {
-  const stats = statsByMessage.value[m.id];
-  return stats ? usageText(stats.usage, stats.elapsedMs) : '';
-}
-
-/** 同一轮里跟在前一条助手消息之后的块：收窄间距，读成一条连续的过程。 */
-const followIds = computed<Set<string>>(() => {
-  const out = new Set<string>();
-  for (const turn of turns.value) {
-    for (const m of turn.assistants.slice(1)) out.add(m.id);
-  }
   return out;
 });
 /** 会话已建立且 WebSocket 在线时才允许提交指令 */
@@ -606,16 +592,21 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         </div>
 
         <template v-else>
-          <article
-            v-for="m in chat.messages.value.filter((x) => !chat.isInternalMessage(x))"
-            :key="m.id"
-            :ref="(el) => setMsgEl(m.id, el)"
-            class="msg"
-            :class="[m.role, followIds.has(m.id) ? 'follow' : '']"
-          >
-            <template v-if="m.role === 'user'">
+          <!--
+            一轮 = 一条用户消息 + 其后到下一轮开始前的全部助手消息。
+
+            助手侧合并成**一整组**渲染：顶部一个模型标签、中间按到达顺序排开的
+            思考/工具/正文（每个折叠头各自带自己的耗时）、底部一行整轮合计。
+            一次工具循环会落很多条助手消息，逐条都重复模型名与统计行只是噪声。
+          -->
+          <template v-for="turn in turns" :key="turn.key">
+            <article
+              v-if="turn.user"
+              :ref="(el) => setMsgEl(turn.user!.id, el)"
+              class="msg user"
+            >
               <div class="user-bubble">
-                <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
+                <MessageBlocks :blocks="turn.user.content" :streaming="false" :results="chat.toolResults.value" />
               </div>
               <div class="user-actions">
                 <UiButton
@@ -623,19 +614,19 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
                   variant="ghost"
                   tone="neutral"
                   size="sm"
-                  @click="copyMessage(m.id)"
+                  @click="copyMessage(turn.user.id)"
                 >
-                  <LuCheck v-if="copiedId === m.id" :size="11" />
+                  <LuCheck v-if="copiedId === turn.user.id" :size="11" />
                   <LuCopy v-else :size="11" />
                   {{ t('copy') }}
                 </UiButton>
                 <UiButton
-                  v-if="m.parent_id"
+                  v-if="turn.user.parent_id"
                   class="fork"
                   variant="ghost"
                   tone="neutral"
                   size="sm"
-                  @click="startFork(m.parent_id, userText(m.id))"
+                  @click="startFork(turn.user.parent_id, userText(turn.user.id))"
                 >
                   <LuPencil :size="11" /> {{ t('editResend') }}
                 </UiButton>
@@ -644,20 +635,21 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
                   variant="ghost"
                   tone="neutral"
                   size="sm"
-                  @click="chat.deleteMessage(m.id)"
+                  @click="chat.deleteMessage(turn.user.id)"
                 >
                   <LuTrash2 :size="11" /> {{ t('delete') }}
                 </UiButton>
               </div>
-            </template>
-            <template v-else>
-              <div v-if="messageModelLabel(m.model)" class="model-label">{{ messageModelLabel(m.model) }}</div>
-              <MessageBlocks :blocks="m.content" :streaming="false" :results="chat.toolResults.value" />
-              <div v-if="statsText(m)" class="turn-usage">
-                {{ statsText(m) }}
+            </article>
+
+            <article v-if="turn.assistants.length > 0" class="msg assistant">
+              <div v-if="messageModelLabel(turn.model)" class="model-label">{{ messageModelLabel(turn.model) }}</div>
+              <MessageBlocks :blocks="turn.blocks" :streaming="false" :results="chat.toolResults.value" />
+              <div v-if="usageText(turn.usage, turn.elapsedMs)" class="turn-usage">
+                {{ usageText(turn.usage, turn.elapsedMs) }}
               </div>
-            </template>
-          </article>
+            </article>
+          </template>
 
           <article v-if="chat.running.value || chat.finalizing.value" class="msg assistant">
             <div v-if="liveModelLabel" class="model-label">{{ liveModelLabel }}</div>
@@ -899,13 +891,6 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
 }
 .msg.user {
   align-items: flex-end;
-}
-/*
- * 同一轮里后续的助手块：上边距收窄，让「一次提问 → 一串工具步骤」读成一条连续的
- * 过程，而不是一叠各自独立的卡片；每块自己的模型标签与统计行照常保留。
- */
-.msg.assistant.follow {
-  padding-top: 2px;
 }
 .user-bubble {
   background: var(--surface-strong);
