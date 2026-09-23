@@ -178,6 +178,25 @@ struct Picker {
     index: usize,
 }
 
+/// 文本输入弹窗：标题 + 一行可编辑文本。
+///
+/// 列表弹窗（[`Picker`]）只能选不能写，而重命名会话需要输入；做成独立的小弹窗
+/// 而不是往列表里塞一个假条目，将来别的输入场景（如新建会话时填标题）可以直接用。
+struct TextPrompt {
+    /// 标题栏文案（自带按键提示）
+    title: String,
+    /// 当前输入内容
+    input: String,
+    kind:  PromptKind,
+}
+
+/// 文本输入弹窗确认后要做的事
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptKind {
+    /// 重命名当前会话
+    RenameSession,
+}
+
 /// 由握手下发的调色板导出的语义配色。
 ///
 /// 全部字段都是 `Color`（`Copy`），因此可按值传进绘制函数，无需处理借用。
@@ -307,6 +326,8 @@ struct App {
     active_conn:     Option<String>,
     /// 弹窗选择器；None = 未打开
     picker:          Option<Picker>,
+    /// 文本输入弹窗；None = 未打开
+    prompt:          Option<TextPrompt>,
     /// 终端是否处于聚焦状态；仅失焦时才发系统通知
     focused:         bool,
     /// 由握手下发主题导出的语义配色
@@ -339,6 +360,7 @@ impl App {
             connections: Vec::new(),
             active_conn: None,
             picker: None,
+            prompt: None,
             // 终端未上报焦点事件时按聚焦处理：宁可不打扰，也不在用户正看着时弹通知
             focused: true,
             theme,
@@ -744,6 +766,10 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         let action = handle_picker_key(app, key);
         return apply_picker_action(app, client, api, action).await;
     }
+    if app.prompt.is_some() {
+        let request = handle_prompt_key(app, key);
+        return apply_prompt(app, api, request).await;
+    }
     // 编辑重发中的 Esc 先取消分叉，再按一次才退出：直接退出会让用户丢掉正在编辑的内容
     if key.code == KeyCode::Esc && app.fork_from.is_some() {
         app.fork_from = None;
@@ -763,6 +789,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => open_reasoning_picker(app),
         KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => open_branch_picker(app, api).await,
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => open_fork_picker(app, api).await,
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => open_rename_prompt(app),
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
             app.stick = false;
@@ -1235,6 +1262,85 @@ fn leaf_snippet(message: &ChatMessage) -> String {
     truncate(&raw, 24)
 }
 
+/// 打开重命名弹窗：预填当前标题，Enter 确认、Esc 取消。
+///
+/// 标题从会话快照里取；快照里没有（列表拉取失败过）就留空，不影响改名本身。
+fn open_rename_prompt(app: &mut App) {
+    let current = app
+        .sessions
+        .iter()
+        .find(|s| s.session_id == app.session_id)
+        .map(|s| s.title.clone())
+        .unwrap_or_default();
+    app.prompt = Some(TextPrompt {
+        title: " 重命名会话 · Enter 确认 · Esc 取消 ".into(),
+        input: current,
+        kind:  PromptKind::RenameSession,
+    });
+}
+
+/// 文本弹窗按键：Backspace 编辑、Enter 取出请求并关闭、Esc 取消。
+///
+/// 返回 `Some((kind, input))` 表示用户确认；`None` 表示按键已被消费或弹窗未开。
+fn handle_prompt_key(app: &mut App, key: KeyEvent) -> Option<(PromptKind, String)> {
+    // 弹窗没开时按键不该走到这里
+    app.prompt.as_ref()?;
+    match key.code {
+        KeyCode::Esc => app.prompt = None,
+        KeyCode::Backspace => {
+            if let Some(prompt) = app.prompt.as_mut() {
+                prompt.input.pop();
+            }
+        }
+        KeyCode::Enter => {
+            let prompt = app.prompt.take()?;
+            return Some((prompt.kind, prompt.input));
+        }
+        // 与输入区一致：未定义的 Ctrl+字母不落进文本
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(prompt) = app.prompt.as_mut() {
+                prompt.input.push(c);
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+/// 执行文本弹窗确认后的动作。
+async fn apply_prompt(
+    app: &mut App,
+    api: &SessionApi,
+    request: Option<(PromptKind, String)>,
+) -> Result<Option<Outcome>> {
+    let Some((kind, input)) = request else {
+        return Ok(None);
+    };
+    match kind {
+        PromptKind::RenameSession => {
+            let title = input.trim().to_string();
+            if title.is_empty() {
+                app.push("!", "会话标题不能为空", Style::default().fg(app.theme.error));
+                return Ok(None);
+            }
+            match api.rename_session(&app.session_id, &title).await {
+                // 本地快照跟着改，列表弹窗在服务端事件到之前也是对的
+                Ok(()) => {
+                    if let Some(record) = app
+                        .sessions
+                        .iter_mut()
+                        .find(|s| s.session_id == app.session_id)
+                    {
+                        record.title = title;
+                    }
+                }
+                Err(e) => app.push("!", format!("重命名失败: {e}"), Style::default().fg(app.theme.error)),
+            }
+            Ok(None)
+        }
+    }
+}
+
 /// 弹窗按键：上下选择（j/k 亦可）、Enter 取出动作并关闭、Esc 关闭。
 ///
 /// 返回 `Some(action)` 表示用户确认了某一项；`None` 表示按键已被消费。
@@ -1511,6 +1617,35 @@ fn draw(frame: &mut Frame, app: &App) {
     if let Some(picker) = &app.picker {
         draw_picker(frame, picker, area, theme);
     }
+    if let Some(prompt) = &app.prompt {
+        draw_prompt(frame, prompt, area, theme);
+    }
+}
+
+/// 文本输入弹窗：标题 + 一行输入（光标落在文本末尾）。
+fn draw_prompt(frame: &mut Frame, prompt: &TextPrompt, area: Rect, theme: TuiTheme) {
+    let width = area.width.saturating_sub(8).min(64);
+    let height = 3;
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(prompt.title.clone(), Style::default().fg(theme.muted)));
+    let inner = block.inner(popup);
+    frame.render_widget(
+        Paragraph::new(Span::styled(prompt.input.clone(), Style::default().fg(theme.text))).block(block),
+        popup,
+    );
+    let cursor_x = inner.x + display_width(&prompt.input).min(inner.width.saturating_sub(1) as usize) as u16;
+    frame.set_cursor_position((cursor_x, inner.y));
 }
 
 /// 弹窗：列出条目，标记当前生效的那一项。
@@ -1655,8 +1790,8 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     } else if app.fork_from.is_some() {
         " 编辑重发：Enter 从历史处重新发送 · Esc 取消分叉 "
     } else {
-        " Enter 发送 · Ctrl+X 中止 · Ctrl+E 重发 · Ctrl+O 连接 N 会话 B 分支 · Ctrl+L 模型 A 预设 R 推理 · \
-         Ctrl+U 清空 · Esc 退出 "
+        " Enter 发送 · Ctrl+X 中止 · Ctrl+E 重发 T 改名 · Ctrl+O 连接 N 会话 B 分支 · Ctrl+L 模型 A 预设 R \
+         推理 · Ctrl+U 清空 · Esc 退出 "
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1850,6 +1985,46 @@ mod tests {
         });
         assert!(handle_picker_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
         assert!(app.picker.is_none());
+    }
+
+    /// 文本弹窗：预填当前标题，Backspace 编辑、Enter 取出请求、Esc 取消。
+    #[test]
+    fn test_prompt_edits_and_confirms() {
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), TuiTheme::test());
+        app.session_id = "s2".into();
+        app.sessions = vec![record("s1", "第一个会话"), record("s2", "当前会话")];
+
+        open_rename_prompt(&mut app);
+        let prompt = app.prompt.as_ref().unwrap();
+        assert_eq!(prompt.input, "当前会话", "应预填当前标题");
+        assert_eq!(prompt.kind, PromptKind::RenameSession);
+
+        // 退格删掉末字，再补一个字
+        handle_prompt_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        handle_prompt_key(&mut app, KeyEvent::new(KeyCode::Char('新'), KeyModifiers::NONE));
+        assert_eq!(app.prompt.as_ref().unwrap().input, "当前会新");
+
+        // 未定义的 Ctrl+字母不落进文本（与输入区一致）
+        handle_prompt_key(&mut app, KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        assert_eq!(app.prompt.as_ref().unwrap().input, "当前会新");
+
+        // Enter 取出请求并关窗
+        match handle_prompt_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+            Some((PromptKind::RenameSession, input)) => assert_eq!(input, "当前会新"),
+            _ => panic!("Enter 应取出重命名请求"),
+        }
+        assert!(app.prompt.is_none(), "确认后弹窗应关闭");
+
+        // Esc 关窗且不取出请求
+        open_rename_prompt(&mut app);
+        assert!(handle_prompt_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
+        assert!(app.prompt.is_none());
+
+        // 快照里没有当前会话（列表拉取失败过）：留空让用户自己写，不挡住改名
+        app.sessions.clear();
+        app.session_id = "s9".into();
+        open_rename_prompt(&mut app);
+        assert!(app.prompt.as_ref().unwrap().input.is_empty());
     }
 
     /// 选会话：显式 id 优先；id 已不存在（别处删掉了）时退回首个而非新建。

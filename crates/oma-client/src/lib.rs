@@ -197,6 +197,20 @@ impl SessionApi {
         Self::ensure_ok(resp).await?;
         Ok(())
     }
+
+    /// 重命名会话
+    pub async fn rename_session(&self, session_id: &str, title: &str) -> Result<()> {
+        let resp = self
+            .http
+            .patch(format!("{}/api/sessions/{}", self.base, session_id))
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({ "title": title }))
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        Self::ensure_ok(resp).await?;
+        Ok(())
+    }
 }
 
 /// 最小百分号编码（仅覆盖查询值中必须转义的字符）
