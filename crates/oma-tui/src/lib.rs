@@ -224,6 +224,8 @@ struct TuiTheme {
     warning:  Color,
     /// 思考内容（mauve）
     thinking: Color,
+    /// 用户消息背景：比中性底色深一档，用来替代角色标签
+    user_bg:  Color,
 }
 
 impl TuiTheme {
@@ -239,6 +241,7 @@ impl TuiTheme {
             error:    Color::Reset,
             warning:  Color::Reset,
             thinking: Color::Reset,
+            user_bg:  Color::Reset,
         }
     }
 
@@ -258,6 +261,7 @@ impl TuiTheme {
             error:    token_color(palette, "red"),
             warning:  token_color(palette, "yellow"),
             thinking: token_color(palette, "mauve"),
+            user_bg:  token_color(palette, "mantle"),
         }
     }
 }
@@ -545,6 +549,8 @@ impl App {
         for entry in &self.entries {
             match entry.kind {
                 EntryKind::Tool => self.push_tool_lines(&mut lines, entry, width),
+                // 用户消息用更深底色与模型内容区分，不再加角色标签
+                EntryKind::User => self.push_user_lines(&mut lines, entry, width),
                 // 折叠只作用于已结束的思考段：进行中的永远展开
                 EntryKind::Thinking if self.thinking_collapsed && !entry.open => {
                     lines.push(Line::from(Span::styled(
@@ -564,6 +570,14 @@ impl App {
             }
         }
         lines
+    }
+
+    /// 用户块：整行铺满背景色（右侧补空格），首行不再带「你」标签。
+    fn push_user_lines(&self, lines: &mut Vec<Line<'static>>, entry: &Entry, width: usize) {
+        let style = entry.style.bg(self.theme.user_bg);
+        for chunk in wrap_text(&entry.text, width.max(8)) {
+            lines.push(Line::from(Span::styled(pad_to_width(&chunk, width), style)));
+        }
     }
 
     /// 工具块：折叠（已结束）时只留一行头，展开时头 + 输出前几行。
@@ -606,8 +620,8 @@ impl App {
 /// 记录块前缀（标签）。
 fn entry_prefix(kind: EntryKind) -> &'static str {
     match kind {
-        EntryKind::User => "你",
-        EntryKind::Assistant => "AI",
+        // 用户/模型的块不再用角色标签区分（用户块另有底色，见 push_user_lines）
+        EntryKind::User | EntryKind::Assistant => "",
         EntryKind::Thinking => "思",
         EntryKind::Tool => "⚙",
         EntryKind::Notice => "·",
@@ -616,13 +630,31 @@ fn entry_prefix(kind: EntryKind) -> &'static str {
 
 /// 折行并写入渲染行：首行带前缀，续行按前缀宽度缩进。
 fn push_wrapped(lines: &mut Vec<Line<'static>>, prefix: &str, text: &str, style: Style, width: usize) {
-    let pad = display_width(prefix) + 1;
+    let pad = if prefix.is_empty() {
+        0
+    } else {
+        display_width(prefix) + 1
+    };
     for (i, chunk) in wrap_text(text, width.saturating_sub(pad).max(8))
         .into_iter()
         .enumerate()
     {
-        let head = if i == 0 { format!("{prefix} ") } else { " ".repeat(pad) };
+        let head = if i == 0 && !prefix.is_empty() {
+            format!("{prefix} ")
+        } else {
+            " ".repeat(pad)
+        };
         lines.push(Line::from(vec![Span::styled(head, style), Span::raw(chunk)]));
+    }
+}
+
+/// 右侧补空格到给定显示宽度（用于把背景色铺满整行）。
+fn pad_to_width(text: &str, width: usize) -> String {
+    let used = display_width(text);
+    if used >= width {
+        text.to_string()
+    } else {
+        format!("{text}{}", " ".repeat(width - used))
     }
 }
 
@@ -2291,6 +2323,24 @@ mod tests {
             tool_name: name.into(),
             input:     serde_json::json!({ "command": "echo hi" }),
         }
+    }
+
+    /// 用户块：整行铺满更深的背景色，且不再有「你 / AI」角色标签。
+    #[test]
+    fn test_user_block_has_background_and_no_role_label() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        app.push_user("hello", Style::default());
+        app.append_assistant("world", Style::default());
+
+        let lines = app.wrapped_lines(20);
+        let first = &lines[0];
+        assert_eq!(first.spans[0].style.bg, Some(Color::Reset), "用户块应带背景色");
+        assert_eq!(first.spans[0].content.as_ref(), format!("hello{}", " ".repeat(15)));
+
+        let text = plain_lines(&app);
+        assert!(!text.contains("你 "), "用户块不该再有角色标签：{text}");
+        assert!(!text.contains("AI "), "助手块不该再有角色标签：{text}");
+        assert!(text.contains("world"), "{text}");
     }
 
     /// 耗时文案的单位与边界：不足 1 秒按毫秒，1 秒以上一位小数，超过 1 分钟按分秒。
