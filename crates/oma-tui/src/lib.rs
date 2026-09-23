@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use oma_client::{ConnectOptions, OmaClient, SessionApi, SessionRecord};
 use oma_contract::{
     AgentCommand, AgentEvent, AgentSummary, ChatMessage, ClientType, ModelInfo, Palette, REASONING_LEVELS,
-    ResolvedTheme, StopReason, ThemeMode,
+    ResolvedTheme, Role, StopReason, ThemeMode,
 };
 use ratatui::{
     Frame,
@@ -157,6 +157,15 @@ enum PickerAction {
     SwitchBranch {
         leaf_message_id: String,
     },
+    /// 编辑重发：把历史消息的文本放回输入框，并在发送时从它之前分叉
+    ForkFrom {
+        /// 回填输入框的文本
+        text:      String,
+        /// 分叉点（那条用户消息的父节点）；None = 无处可分叉（会话首条）
+        parent_id: Option<String>,
+        /// 分叉点的展示文案，写进发送时的分隔行
+        label:     String,
+    },
     /// 为当前工作区新建一个会话，并切过去
     NewSession,
 }
@@ -284,6 +293,10 @@ struct App {
     status:          String,
     entries:         Vec<Entry>,
     input:           String,
+    /// 编辑重发的分叉点：`Some(parent_id)` 表示下一次发送要从该节点长出分支
+    fork_from:       Option<String>,
+    /// 分叉点的展示文案（来源用户消息的摘要），发送时写进分隔行
+    fork_label:      String,
     scroll:          u16,
     stick:           bool,
     /// 最近一次请求的上下文占用（tokens, context_len）
@@ -318,6 +331,8 @@ impl App {
             status: "就绪".into(),
             entries: Vec::new(),
             input: String::new(),
+            fork_from: None,
+            fork_label: String::new(),
             scroll: 0,
             stick: true,
             context: None,
@@ -729,6 +744,13 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         let action = handle_picker_key(app, key);
         return apply_picker_action(app, client, api, action).await;
     }
+    // 编辑重发中的 Esc 先取消分叉，再按一次才退出：直接退出会让用户丢掉正在编辑的内容
+    if key.code == KeyCode::Esc && app.fork_from.is_some() {
+        app.fork_from = None;
+        app.fork_label.clear();
+        app.push("·", "已取消编辑重发", Style::default().fg(app.theme.muted));
+        return Ok(None);
+    }
     if is_quit_key(key) {
         return Ok(Some(Outcome::Quit));
     }
@@ -740,6 +762,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => open_agent_picker(app),
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => open_reasoning_picker(app),
         KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => open_branch_picker(app, api).await,
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => open_fork_picker(app, api).await,
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
             app.stick = false;
@@ -762,15 +785,31 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
                 return Ok(None);
             }
             app.input.clear();
+            let fork = app.fork_from.take();
+            let label = std::mem::take(&mut app.fork_label);
+            // 分叉处插一条分隔行：TUI 的记录是只追加的日志，旧分支的尾巴还留在上方，
+            // 不标出边界就看不出新回答是从哪里长出来的
+            if fork.is_some() {
+                app.push(
+                    "·",
+                    format!("── 从「{label}」处重新开始 ──"),
+                    Style::default().fg(app.theme.muted),
+                );
+            }
             app.push("你", text.clone(), Style::default().fg(app.theme.accent));
             app.stick = true;
-            if let Err(e) = client
-                .send_command(AgentCommand::UserInput {
+            let command = match fork {
+                // 编辑重发：从分叉点长出新分支，而不是追加到当前叶子后面
+                Some(parent_message_id) => AgentCommand::ForkAndRun {
+                    parent_message_id,
+                    new_content: Some(text),
+                },
+                None => AgentCommand::UserInput {
                     content:     text,
                     attachments: Vec::new(),
-                })
-                .await
-            {
+                },
+            };
+            if let Err(e) = client.send_command(command).await {
                 app.push("!", format!("发送失败: {}", e), Style::default().fg(app.theme.error));
             }
         }
@@ -998,6 +1037,9 @@ async fn open_branch_picker(app: &mut App, api: &SessionApi) {
         );
         return;
     }
+    // 顺手把过时的叶子标记同步到真正的叶子：本地追加过轮次后握手给的 id 已不再是最末端
+    let leaf = branch_leaf(&tree, app.current_leaf.as_deref());
+    app.current_leaf = leaf.map(|message| message.id.clone());
     let current = app.current_leaf.clone();
     let items: Vec<PickerItem> = tips
         .iter()
@@ -1016,6 +1058,106 @@ async fn open_branch_picker(app: &mut App, api: &SessionApi) {
         items,
         index,
     });
+}
+
+/// 打开「编辑重发」弹窗：列出当前分支上的用户消息，新的在前。
+///
+/// 与 Web 端一致：选中一条即把它的文本放回输入框，并把分叉点记成它的父节点，
+/// 下次发送就从那里长出新分支。会话首条没有父节点，无处可分叉，降级为普通发送。
+async fn open_fork_picker(app: &mut App, api: &SessionApi) {
+    let tree = match api.message_tree(&app.session_id).await {
+        Ok(tree) => tree,
+        Err(e) => {
+            app.push("!", format!("读取历史失败: {e}"), Style::default().fg(app.theme.error));
+            return;
+        }
+    };
+    let leaf = branch_leaf(&tree, app.current_leaf.as_deref());
+    // 握手给的叶子在本地追加过轮次之后已经过时；趁着刚拉到整棵树，把标记同步到真正的叶子
+    app.current_leaf = leaf.map(|message| message.id.clone());
+    let items = fork_items(&tree, leaf);
+    if items.is_empty() {
+        app.push(
+            "·",
+            "当前分支还没有可重发的用户消息",
+            Style::default().fg(app.theme.muted),
+        );
+        return;
+    }
+    app.picker = Some(Picker {
+        title: " 编辑重发 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ".into(),
+        items,
+        index: 0,
+    });
+}
+
+/// 编辑重发弹窗的条目：每条用户消息一项，新的在前。
+fn fork_items(tree: &[ChatMessage], leaf: Option<&ChatMessage>) -> Vec<PickerItem> {
+    user_messages_on_branch(tree, leaf)
+        .into_iter()
+        .map(|message| PickerItem {
+            label:   leaf_snippet(message),
+            detail:  match &message.parent_id {
+                Some(parent) => format!("{} · 从 {} 处重新开始", short_id(&message.id), short_id(parent)),
+                None => format!("{} · 首条消息，无处可分叉", short_id(&message.id)),
+            },
+            current: false,
+            action:  PickerAction::ForkFrom {
+                text:      message_text(message),
+                parent_id: message.parent_id.clone(),
+                label:     leaf_snippet(message),
+            },
+        })
+        .collect()
+}
+
+/// 当前分支的代表叶子。
+///
+/// 服务端下发的叶子（握手、切换分支后）若仍是叶子就直接用；本地又追加过轮次之后
+/// 它已长出子节点，此时最新的那条叶子就是当前分支的末端——分支切换都会重连取新叶子，
+/// 不存在「别的分支比它还新」的情形。
+fn branch_leaf<'a>(tree: &'a [ChatMessage], preferred: Option<&str>) -> Option<&'a ChatMessage> {
+    let parents: HashSet<&str> = tree.iter().filter_map(|m| m.parent_id.as_deref()).collect();
+    let is_leaf = |m: &ChatMessage| !parents.contains(m.id.as_str());
+    if let Some(leaf) = preferred
+        .and_then(|id| tree.iter().find(|m| m.id == id))
+        .filter(|m| is_leaf(m))
+    {
+        return Some(leaf);
+    }
+    tree.iter()
+        .filter(|m| is_leaf(m))
+        .max_by_key(|m| m.created_at)
+}
+
+/// 当前分支上的用户消息：从叶子沿 `parent_id` 回溯到根，新的在前。
+fn user_messages_on_branch<'a>(tree: &'a [ChatMessage], leaf: Option<&'a ChatMessage>) -> Vec<&'a ChatMessage> {
+    let by_id: HashMap<&str, &ChatMessage> = tree.iter().map(|m| (m.id.as_str(), m)).collect();
+    let mut out = Vec::new();
+    let mut cursor = leaf;
+    while let Some(message) = cursor {
+        if message.role == Role::User {
+            out.push(message);
+        }
+        cursor = message
+            .parent_id
+            .as_deref()
+            .and_then(|id| by_id.get(id).copied());
+    }
+    out
+}
+
+/// 一条消息的完整正文：拼接全部 Text 块，供编辑重发时回填输入框。
+fn message_text(message: &ChatMessage) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            oma_contract::Block::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 可切换的分支代表：每个叶子向上退到最近的**用户可见**消息，按时间倒序。
@@ -1160,6 +1302,18 @@ async fn apply_picker_action(
             let session_id = app.session_id.clone();
             send_setting(app, client, AgentCommand::SwitchBranch { leaf_message_id }, "切换分支").await;
             Ok(Some(Outcome::Reload { session_id }))
+        }
+        PickerAction::ForkFrom { text, parent_id, label } => {
+            // 只把文本放回输入框并记下分叉点：真正的分叉发生在下次发送（见 handle_key 的 Enter）
+            app.input = text;
+            app.fork_from = parent_id;
+            app.fork_label = label;
+            let hint = match app.fork_from {
+                Some(_) => format!("编辑重发：Enter 从「{}」处重新开始 · Esc 取消", app.fork_label),
+                None => "这是会话首条消息，无处可分叉，将作为普通消息发送".into(),
+            };
+            app.push("·", hint, Style::default().fg(app.theme.muted));
+            Ok(None)
         }
         PickerAction::NewSession => {
             let workspace = app.workspace.clone();
@@ -1496,10 +1650,13 @@ fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
 }
 
 fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
-    let hint = if app.connected {
-        " Enter 发送 · Ctrl+X 中止 · Ctrl+O 连接 N 会话 B 分支 L 模型 A 预设 R 推理 · Ctrl+U 清空 · Esc 退出 "
-    } else {
+    let hint = if !app.connected {
         " 连接已断开 "
+    } else if app.fork_from.is_some() {
+        " 编辑重发：Enter 从历史处重新发送 · Esc 取消分叉 "
+    } else {
+        " Enter 发送 · Ctrl+X 中止 · Ctrl+E 重发 · Ctrl+O 连接 N 会话 B 分支 · Ctrl+L 模型 A 预设 R 推理 · \
+         Ctrl+U 清空 · Esc 退出 "
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1809,6 +1966,82 @@ mod tests {
         assert_eq!(leaf_snippet(&tool), "⚙ shell");
     }
 
+    /// 当前分支的代表叶子：服务端给的叶子若仍是叶子就用它（可能停在旧分支上），
+    /// 已经过时（长出子节点）时退回最新的叶子。
+    #[test]
+    fn test_branch_leaf_uses_live_hint_else_newest() {
+        let tree = vec![
+            user_msg("u1", None, "问题", 1),
+            msg("a1", Some("u1"), vec![body("回答")], 2),
+            msg("a2", Some("u1"), vec![body("另一条分支")], 3),
+        ];
+        // 服务端给的叶子仍是叶子：即使它不是最新的也照用（用户正停在旧分支上）
+        assert_eq!(branch_leaf(&tree, Some("a1")).unwrap().id, "a1");
+        // 过时的 hint（已长出子节点的 u1）与没有 hint 都退回最新叶子
+        assert_eq!(branch_leaf(&tree, Some("u1")).unwrap().id, "a2");
+        assert_eq!(branch_leaf(&tree, None).unwrap().id, "a2");
+        assert!(branch_leaf(&[], None).is_none());
+    }
+
+    /// 当前分支的用户消息：只回溯当前叶子这一条链，新的在前。
+    #[test]
+    fn test_user_messages_on_branch_newest_first() {
+        let tree = vec![
+            user_msg("u1", None, "第一个问题", 1),
+            msg("a1", Some("u1"), vec![body("回答")], 2),
+            user_msg("u2", Some("a1"), "第二个问题", 3),
+            msg("a2", Some("u2"), vec![body("回答二")], 4),
+            // 另一条分支：不该出现在 u2 → a2 这条链上
+            user_msg("u3", Some("u1"), "分叉问题", 5),
+            msg("a3", Some("u3"), vec![body("分叉回答")], 6),
+        ];
+        let leaf = branch_leaf(&tree, Some("a2")).unwrap();
+        let ids: Vec<&str> = user_messages_on_branch(&tree, Some(leaf))
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["u2", "u1"], "新的在前，且不含别的分支");
+
+        assert!(user_messages_on_branch(&tree, None).is_empty());
+    }
+
+    /// 编辑重发条目：首条消息没有父节点（无处可分叉），其余带父节点；
+    /// 回填的是完整正文而非截断后的摘要。
+    #[test]
+    fn test_fork_items_carry_text_and_parent() {
+        let long = "很长的正文".repeat(20);
+        let tree = vec![
+            user_msg("u1", None, "第一个问题", 1),
+            msg("a1", Some("u1"), vec![body("回答")], 2),
+            user_msg("u2", Some("a1"), &long, 3),
+            msg("a2", Some("u2"), vec![body("回答二")], 4),
+        ];
+        let leaf = branch_leaf(&tree, Some("a2")).unwrap();
+        let items = fork_items(&tree, Some(leaf));
+        assert_eq!(items.len(), 2);
+
+        match &items[0].action {
+            PickerAction::ForkFrom { text, parent_id, label } => {
+                assert_eq!(text, &long, "回填完整正文");
+                assert_eq!(parent_id.as_deref(), Some("a1"));
+                assert!(label.ends_with('…'), "标签仍是截断摘要：{label}");
+            }
+            _ => panic!("条目应下发 ForkFrom"),
+        }
+        match &items[1].action {
+            PickerAction::ForkFrom { parent_id, .. } => assert!(parent_id.is_none()),
+            _ => panic!("条目应下发 ForkFrom"),
+        }
+    }
+
+    /// 消息正文提取：拼接全部 Text 块，跳过思考与工具块。
+    #[test]
+    fn test_message_text_collects_text_blocks() {
+        let message = msg("m", None, vec![call("read"), body("正文")], 1);
+        assert_eq!(message_text(&message), "正文");
+        assert_eq!(message_text(&msg("m2", None, vec![receipt()], 2)), "");
+    }
+
     /// 推理等级选择器：只列规范等级（服务端拒绝空串），当前档带 ✓，
     /// 下发值与弹窗里显示的字符串完全一致。
     #[test]
@@ -1976,6 +2209,14 @@ mod tests {
             created_at,
             model: None,
             usage: None,
+        }
+    }
+
+    /// 造一条用户消息：编辑重发与分支回溯都只看角色与父节点。
+    fn user_msg(id: &str, parent: Option<&str>, text: &str, created_at: i64) -> ChatMessage {
+        ChatMessage {
+            role: Role::User,
+            ..msg(id, parent, vec![body(text)], created_at)
         }
     }
 
