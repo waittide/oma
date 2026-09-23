@@ -258,6 +258,60 @@ struct InfoPanel {
     scroll: usize,
 }
 
+/// 可编辑清单的种类（决定新增/编辑走哪套表单与接口）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListKind {
+    Presets,
+    Skills,
+}
+
+/// 可编辑清单的一条。
+struct ListEntry {
+    id:       String,
+    label:    String,
+    detail:   String,
+    scope:    String,
+    /// 内置项只读：不可编辑/删除
+    readonly: bool,
+    /// 原始 JSON，编辑时用来回填表单
+    raw:      serde_json::Value,
+}
+
+/// 可编辑清单面板（预设 / 技能）。
+struct ListPanel {
+    title: String,
+    kind:  ListKind,
+    items: Vec<ListEntry>,
+    index: usize,
+}
+
+/// 表单字段：单行元信息或多行正文。
+struct FormField {
+    label:     String,
+    value:     String,
+    multiline: bool,
+    /// 编辑既有条目时 id 不可改
+    locked:    bool,
+}
+
+/// 表单种类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormKind {
+    Preset,
+    Skill,
+}
+
+/// 通用编辑表单（预设 / 技能）。
+struct FormState {
+    title:  String,
+    kind:   FormKind,
+    fields: Vec<FormField>,
+    focus:  usize,
+    /// 光标在 focus 字段内的字符偏移
+    cursor: usize,
+    error:  Option<String>,
+}
+
 /// 设置界面按键的结果。
 enum SettingsAction {
     None,
@@ -535,6 +589,10 @@ struct App {
     panel:                   Option<SessionPanel>,
     /// 只读信息面板；None = 未打开
     info:                    Option<InfoPanel>,
+    /// 可编辑清单（预设/技能）；None = 未打开
+    list_panel:              Option<ListPanel>,
+    /// 通用编辑表单；None = 未打开
+    form:                    Option<FormState>,
     /// 连接清单是否被设置界面改过（决定退出时是否回传写盘）
     connections_dirty:       bool,
     /// 已上传、待随下一条消息发送的剪贴板图片附件（session_attachment:// 引用）
@@ -591,6 +649,8 @@ impl App {
             settings: None,
             panel: None,
             info: None,
+            list_panel: None,
+            form: None,
             connections_dirty: false,
             pending_images: Vec::new(),
             system_prompt: None,
@@ -1503,6 +1563,14 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         handle_info_key(app, key);
         return Ok(None);
     }
+    if app.form.is_some() {
+        handle_form_key(app, api, key).await?;
+        return Ok(None);
+    }
+    if app.list_panel.is_some() {
+        handle_list_panel_key(app, api, key).await?;
+        return Ok(None);
+    }
     if app.tree_view.is_some() {
         match handle_tree_key(app, key) {
             TreeAction::Close => app.tree_view = None,
@@ -1517,7 +1585,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         return Ok(None);
     }
     if app.settings.is_some() {
-        match handle_settings_key(app, key) {
+        match handle_settings_key(app, api, key).await {
             SettingsAction::Close => app.settings = None,
             SettingsAction::Switch { addr, token, name } => {
                 return Ok(Some(Outcome::Switch {
@@ -1869,7 +1937,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
 }
 
 /// 设置界面按键：移动、打开子项、增删改连接；Esc 关闭。
-fn handle_settings_key(app: &mut App, key: KeyEvent) -> SettingsAction {
+async fn handle_settings_key(app: &mut App, api: &SessionApi, key: KeyEvent) -> SettingsAction {
     // 表单打开时先给它消费按键
     if app
         .settings
@@ -1956,11 +2024,15 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> SettingsAction {
                 );
                 SettingsAction::None
             }
-            SettingsRow::Defaults
-            | SettingsRow::Tools
-            | SettingsRow::Presets
-            | SettingsRow::Skills
-            | SettingsRow::Mcp => {
+            SettingsRow::Presets => {
+                open_list_panel(app, api, ListKind::Presets).await;
+                SettingsAction::None
+            }
+            SettingsRow::Skills => {
+                open_list_panel(app, api, ListKind::Skills).await;
+                SettingsAction::None
+            }
+            SettingsRow::Defaults | SettingsRow::Tools | SettingsRow::Mcp => {
                 open_settings_info(app, &rows[index]);
                 SettingsAction::None
             }
@@ -2045,6 +2117,433 @@ fn handle_info_key(app: &mut App, key: KeyEvent) {
         KeyCode::PageUp => info.scroll = info.scroll.saturating_sub(10),
         KeyCode::PageDown => info.scroll = (info.scroll + 10).min(last),
         _ => {}
+    }
+}
+
+/// 打开可编辑清单（预设 / 技能），拉取最新数据。
+async fn open_list_panel(app: &mut App, api: &SessionApi, kind: ListKind) {
+    let (title, result) = match kind {
+        ListKind::Presets => ("预设", api.presets(&app.workspace).await),
+        ListKind::Skills => ("技能", api.skills(&app.workspace).await),
+    };
+    let raw_items = match result {
+        Ok(items) => items,
+        Err(e) => {
+            app.push_notice(
+                format!("读取{title}清单失败: {e}"),
+                Style::default().fg(app.theme.error),
+            );
+            return;
+        }
+    };
+    let items: Vec<ListEntry> = raw_items
+        .iter()
+        .map(|item| {
+            let scope = json_field(item, "scope");
+            let name = json_field(item, "name");
+            ListEntry {
+                id: json_field(item, "id"),
+                label: if name.is_empty() { json_field(item, "id") } else { name },
+                detail: json_field(item, "description"),
+                readonly: scope == "bundled",
+                scope,
+                raw: item.clone(),
+            }
+        })
+        .collect();
+    app.list_panel = Some(ListPanel {
+        title: title.to_string(),
+        kind,
+        items,
+        index: 0,
+    });
+}
+
+/// 可编辑清单按键：上下选择，Enter 编辑、a 新增、d 删除、Esc 关闭。
+async fn handle_list_panel_key(app: &mut App, api: &SessionApi, key: KeyEvent) -> Result<()> {
+    let Some(list) = app.list_panel.as_ref() else {
+        return Ok(());
+    };
+    let kind = list.kind;
+    let index = list.index;
+    let last = list.items.len().saturating_sub(1);
+    match key.code {
+        KeyCode::Esc => app.list_panel = None,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(list) = app.list_panel.as_mut() {
+                list.index = index.saturating_sub(1);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(list) = app.list_panel.as_mut() {
+                list.index = (index + 1).min(last);
+            }
+        }
+        KeyCode::Char('a') => open_form(app, kind, None),
+        KeyCode::Enter => {
+            if let Some(list) = app.list_panel.as_ref() {
+                if let Some(entry) = list.items.get(index) {
+                    if entry.readonly {
+                        app.push_notice("内置条目只读，可另存为新条目", Style::default().fg(app.theme.muted));
+                    } else {
+                        let raw = entry.raw.clone();
+                        open_form(app, kind, Some(&raw));
+                    }
+                }
+            }
+        }
+        KeyCode::Char('d') => {
+            let target = app
+                .list_panel
+                .as_ref()
+                .and_then(|list| list.items.get(index))
+                .map(|entry| (entry.id.clone(), entry.scope.clone(), entry.readonly));
+            if let Some((id, scope, readonly)) = target {
+                if readonly {
+                    app.push_notice("内置条目不可删除", Style::default().fg(app.theme.error));
+                } else {
+                    let result = match kind {
+                        ListKind::Presets => api.delete_preset(&id, &scope, &app.workspace).await,
+                        ListKind::Skills => api.delete_skill(&id, &scope, &app.workspace).await,
+                    };
+                    match result {
+                        Ok(()) => {
+                            app.push_notice("已删除", Style::default().fg(app.theme.muted));
+                            open_list_panel(app, api, kind).await;
+                            reload_settings_lists(app, api).await;
+                        }
+                        Err(e) => app.push_notice(format!("删除失败: {e}"), Style::default().fg(app.theme.error)),
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// 建表单：`raw` 为 None 表示新增，否则回填既有条目。
+fn open_form(app: &mut App, kind: ListKind, raw: Option<&serde_json::Value>) {
+    let text = |key: &str| raw.map(|value| json_field(value, key)).unwrap_or_default();
+    let (form_kind, title, fields) = match kind {
+        ListKind::Presets => (
+            FormKind::Preset,
+            "预设",
+            vec![
+                FormField {
+                    label:     "id".into(),
+                    value:     text("id"),
+                    multiline: false,
+                    locked:    raw.is_some(),
+                },
+                FormField {
+                    label:     "名称".into(),
+                    value:     text("name"),
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "描述".into(),
+                    value:     text("description"),
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "作用域".into(),
+                    value:     scope_or_default(&text("scope")),
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "工具".into(),
+                    value:     raw
+                        .and_then(|value| value.get("tools"))
+                        .and_then(|tools| tools.as_array())
+                        .map(|tools| {
+                            tools
+                                .iter()
+                                .filter_map(|tool| tool.as_str())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                        .unwrap_or_default(),
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "正文".into(),
+                    value:     text("body"),
+                    multiline: true,
+                    locked:    false,
+                },
+            ],
+        ),
+        ListKind::Skills => (
+            FormKind::Skill,
+            "技能",
+            vec![
+                FormField {
+                    label:     "id".into(),
+                    value:     text("id"),
+                    multiline: false,
+                    locked:    raw.is_some(),
+                },
+                FormField {
+                    label:     "名称".into(),
+                    value:     text("name"),
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "描述".into(),
+                    value:     text("description"),
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "作用域".into(),
+                    value:     scope_or_default(&text("scope")),
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "正文".into(),
+                    value:     text("body"),
+                    multiline: true,
+                    locked:    false,
+                },
+            ],
+        ),
+    };
+    app.form = Some(FormState {
+        title: title.to_string(),
+        kind: form_kind,
+        fields,
+        focus: 0,
+        cursor: 0,
+        error: None,
+    });
+}
+
+/// 作用域缺省为 project（新增时）。
+fn scope_or_default(scope: &str) -> String {
+    if scope.trim().is_empty() {
+        "project".to_string()
+    } else {
+        scope.to_string()
+    }
+}
+
+/// 表单按键：Tab 换字段、Enter 换行/换字段、Ctrl+S 保存、Esc 取消。
+async fn handle_form_key(app: &mut App, api: &SessionApi, key: KeyEvent) -> Result<()> {
+    if app.form.is_none() {
+        return Ok(());
+    }
+    if key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return save_form(app, api).await;
+    }
+    match key.code {
+        KeyCode::Esc => app.form = None,
+        KeyCode::Tab => form_focus(app, 1),
+        KeyCode::BackTab => form_focus(app, -1),
+        KeyCode::Enter => {
+            let multiline = app
+                .form
+                .as_ref()
+                .and_then(|form| form.fields.get(form.focus))
+                .is_some_and(|field| field.multiline);
+            if multiline {
+                form_insert(app, '\n');
+            } else {
+                form_focus(app, 1);
+            }
+        }
+        KeyCode::Backspace => form_backspace(app),
+        KeyCode::Left => form_move_cursor(app, -1),
+        KeyCode::Right => form_move_cursor(app, 1),
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => form_insert(app, c),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// 切换焦点字段（跳过只读的 id 也可停留，只是字符不生效）。
+fn form_focus(app: &mut App, delta: isize) {
+    if let Some(form) = app.form.as_mut() {
+        let len = form.fields.len();
+        if len == 0 {
+            return;
+        }
+        form.focus = if delta < 0 {
+            (form.focus + len - 1) % len
+        } else {
+            (form.focus + 1) % len
+        };
+        form.cursor = form.fields[form.focus].value.chars().count();
+    }
+}
+
+fn form_insert(app: &mut App, c: char) {
+    if let Some(form) = app.form.as_mut() {
+        let Some(field) = form.fields.get_mut(form.focus) else {
+            return;
+        };
+        if field.locked {
+            return;
+        }
+        let cursor = form.cursor.min(field.value.chars().count());
+        let byte = field
+            .value
+            .char_indices()
+            .nth(cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(field.value.len());
+        field.value.insert(byte, c);
+        form.cursor = cursor + 1;
+    }
+}
+
+fn form_backspace(app: &mut App) {
+    if let Some(form) = app.form.as_mut() {
+        let Some(field) = form.fields.get_mut(form.focus) else {
+            return;
+        };
+        if field.locked || form.cursor == 0 {
+            return;
+        }
+        let cursor = form.cursor.min(field.value.chars().count());
+        let byte = field
+            .value
+            .char_indices()
+            .nth(cursor - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        field.value.remove(byte);
+        form.cursor = cursor - 1;
+    }
+}
+
+fn form_move_cursor(app: &mut App, delta: isize) {
+    if let Some(form) = app.form.as_mut() {
+        let len = form
+            .fields
+            .get(form.focus)
+            .map(|f| f.value.chars().count())
+            .unwrap_or(0);
+        form.cursor = if delta < 0 {
+            form.cursor.saturating_sub(1)
+        } else {
+            (form.cursor + 1).min(len)
+        };
+    }
+}
+
+/// 保存表单：校验 id/名称，按种类组装请求体并写回服务端。
+async fn save_form(app: &mut App, api: &SessionApi) -> Result<()> {
+    let Some(form) = app.form.as_ref() else {
+        return Ok(());
+    };
+    let value = |label: &str| {
+        form.fields
+            .iter()
+            .find(|field| field.label == label)
+            .map(|field| field.value.clone())
+            .unwrap_or_default()
+    };
+    let id = value("id").trim().to_string();
+    let name = value("名称").trim().to_string();
+    let (description, scope, body) = (value("描述"), value("作用域"), value("正文"));
+    let scope = scope_or_default(&scope);
+    if id.is_empty() || name.is_empty() {
+        if let Some(form) = app.form.as_mut() {
+            form.error = Some("id 与名称不能为空".into());
+        }
+        return Ok(());
+    }
+
+    let result = match form.kind {
+        FormKind::Preset => {
+            let tools: Vec<String> = value("工具")
+                .split(',')
+                .map(|tool| tool.trim().to_string())
+                .filter(|tool| !tool.is_empty())
+                .collect();
+            let payload = serde_json::json!({
+                "name": name,
+                "description": description,
+                "tools": tools,
+                "content": body,
+                "scope": scope,
+            });
+            api.put_preset(&id, &payload, &app.workspace).await
+        }
+        FormKind::Skill => {
+            let payload = serde_json::json!({
+                "name": name,
+                "description": description,
+                "content": body,
+                "scope": scope,
+            });
+            api.put_skill(&id, &payload, &app.workspace).await
+        }
+    };
+    let kind = match form.kind {
+        FormKind::Preset => ListKind::Presets,
+        FormKind::Skill => ListKind::Skills,
+    };
+    match result {
+        Ok(()) => {
+            app.form = None;
+            app.push_notice("已保存", Style::default().fg(app.theme.muted));
+            reload_settings_lists(app, api).await;
+            if app.list_panel.is_some() {
+                open_list_panel(app, api, kind).await;
+            }
+        }
+        Err(e) => {
+            if let Some(form) = app.form.as_mut() {
+                form.error = Some(format!("保存失败: {e}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 重新拉取设置页里的清单（预设/技能），保持设置页数据最新。
+async fn reload_settings_lists(app: &mut App, api: &SessionApi) {
+    let presets = api
+        .presets(&app.workspace)
+        .await
+        .map(|list| {
+            list.iter()
+                .map(|item| {
+                    (
+                        json_field(item, "id"),
+                        json_field(item, "name"),
+                        json_field(item, "scope"),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let skills = api
+        .skills(&app.workspace)
+        .await
+        .map(|list| {
+            list.iter()
+                .map(|item| {
+                    (
+                        json_field(item, "id"),
+                        json_field(item, "name"),
+                        json_field(item, "scope"),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(settings) = app.settings.as_mut() {
+        settings.presets = presets;
+        settings.skills = skills;
     }
 }
 
@@ -3452,6 +3951,120 @@ fn draw(frame: &mut Frame, app: &App) {
     if let Some(info) = &app.info {
         draw_info(frame, info, area, theme);
     }
+    if let Some(list) = &app.list_panel {
+        draw_list_panel(frame, list, area, theme);
+    }
+    if let Some(form) = &app.form {
+        draw_form(frame, form, area, theme);
+    }
+}
+
+/// 可编辑清单：预设 / 技能。
+fn draw_list_panel(frame: &mut Frame, list: &ListPanel, area: Rect, theme: TuiTheme) {
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            format!(" {} · ↑/↓ 选择 · Enter 编辑 · a 新增 · d 删除 · Esc 关闭 ", list.title),
+            Style::default().fg(theme.muted),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let visible = inner.height as usize;
+    let window = picker_window(list.items.len(), list.index, visible.max(1));
+    let start = window.start;
+    let lines: Vec<Line<'static>> = list.items[window]
+        .iter()
+        .enumerate()
+        .map(|(offset, item)| {
+            let selected = start + offset == list.index;
+            let mut text = format!("{}  [{}]", item.label, item.scope);
+            if item.readonly {
+                text.push_str(" · 内置");
+            }
+            if !item.detail.is_empty() {
+                text.push_str("  ");
+                text.push_str(&item.detail);
+            }
+            let style = if selected {
+                Style::default().fg(theme.base).bg(theme.accent)
+            } else if item.readonly {
+                Style::default().fg(theme.muted)
+            } else {
+                Style::default().fg(theme.subtext)
+            };
+            let text = if selected {
+                pad_to_width(&text, inner.width as usize)
+            } else {
+                text
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+/// 通用编辑表单：字段标签 + 值（聚焦字段高亮并显示光标）。
+fn draw_form(frame: &mut Frame, form: &FormState, area: Rect, theme: TuiTheme) {
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            format!(" {} · Tab 换字段 · Ctrl+S 保存 · Esc 取消 ", form.title),
+            Style::default().fg(theme.muted),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if let Some(error) = &form.error {
+        lines.push(Line::from(Span::styled(
+            error.clone(),
+            Style::default().fg(theme.error),
+        )));
+    }
+    for (i, field) in form.fields.iter().enumerate() {
+        let focused = i == form.focus;
+        let label = if field.locked {
+            format!("{}（不可改）", field.label)
+        } else {
+            field.label.clone()
+        };
+        let label_style = if focused {
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+        lines.push(Line::from(Span::styled(label, label_style)));
+        let display = if focused {
+            field_display(field, form.cursor)
+        } else {
+            field.value.clone()
+        };
+        let style = Style::default().fg(theme.text);
+        for chunk in wrap_text(&display, inner.width.max(8) as usize) {
+            lines.push(Line::from(Span::styled(chunk, style)));
+        }
+        lines.push(Line::from(""));
+    }
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+/// 聚焦字段的显示值：在光标处插入一个竖线标记。
+fn field_display(field: &FormField, cursor: usize) -> String {
+    let chars: Vec<char> = field.value.chars().collect();
+    let pos = cursor.min(chars.len());
+    let mut out: String = chars[..pos].iter().collect();
+    out.push('▏');
+    out.extend(chars[pos..].iter());
+    out
 }
 
 /// 只读信息面板：整屏标题 + 可滚动的清单行。
@@ -4346,7 +4959,7 @@ mod tests {
         assert_eq!(settings_rows(&app).len(), 2 + 9, "两条连接 + 九项设置");
 
         // Enter 在连接行返回切换目标
-        match handle_settings_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+        match handle_settings_key(&mut app, &api, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await {
             SettingsAction::Switch { addr, name, .. } => {
                 assert_eq!(addr, "http://b");
                 assert_eq!(name, "b");
@@ -4354,9 +4967,62 @@ mod tests {
             _ => panic!("连接行 Enter 应请求切换"),
         }
         assert!(matches!(
-            handle_settings_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            handle_settings_key(&mut app, &api, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await,
             SettingsAction::Close
         ));
+    }
+
+    /// 表单：回填既有条目、字段光标编辑、锁定字段不接受输入。
+    #[test]
+    fn test_form_editing_and_fields() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        let raw = serde_json::json!({
+            "id": "my",
+            "name": "我的",
+            "description": "说明",
+            "scope": "global",
+            "tools": ["read", "shell"],
+            "body": "正文",
+        });
+        open_form(&mut app, ListKind::Presets, Some(&raw));
+        let form = app.form.as_ref().unwrap();
+        assert_eq!(form.fields.len(), 6, "预设：id/名称/描述/作用域/工具/正文");
+        let value = |label: &str| {
+            form.fields
+                .iter()
+                .find(|field| field.label == label)
+                .unwrap()
+                .value
+                .clone()
+        };
+        assert_eq!(value("id"), "my");
+        assert_eq!(value("工具"), "read,shell");
+        assert_eq!(value("正文"), "正文");
+        assert!(form.fields[0].locked, "编辑时 id 不可改");
+
+        // 切到「名称」字段并在末尾插入/退格
+        form_focus(&mut app, 1);
+        form_insert(&mut app, 'X');
+        assert_eq!(app.form.as_ref().unwrap().fields[1].value, "我的X");
+        form_backspace(&mut app);
+        assert_eq!(app.form.as_ref().unwrap().fields[1].value, "我的");
+
+        // 锁定字段不接受输入
+        form_focus(&mut app, -1);
+        assert!(app.form.as_ref().unwrap().fields[0].locked);
+        form_insert(&mut app, 'Z');
+        assert_eq!(app.form.as_ref().unwrap().fields[0].value, "my");
+    }
+
+    /// 新建表单：id 可填、作用域缺省 project、正文是多行字段。
+    #[test]
+    fn test_form_new_defaults() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        open_form(&mut app, ListKind::Skills, None);
+        let form = app.form.as_ref().unwrap();
+        assert!(!form.fields[0].locked, "新增时 id 可填");
+        assert_eq!(form.fields[3].value, "project", "作用域缺省 project");
+        assert!(form.fields.last().unwrap().multiline, "正文是多行字段");
     }
 
     /// 设置里的只读信息面板：默认项/工具/预设/技能/MCP 各自成清单，Esc 关闭。

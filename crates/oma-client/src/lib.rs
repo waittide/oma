@@ -298,6 +298,73 @@ impl SessionApi {
             .await
     }
 
+    /// 写入 Agent 预设（`scope` = global | project，随请求体下发）。
+    pub async fn put_preset(&self, id: &str, body: &serde_json::Value, workspace: &str) -> Result<()> {
+        self.put_json(
+            &format!("/api/presets/{}?workspace={}", urlencode(id), urlencode(workspace)),
+            body,
+        )
+        .await
+    }
+
+    /// 删除 Agent 预设（内置只读，服务端拒绝）。
+    pub async fn delete_preset(&self, id: &str, scope: &str, workspace: &str) -> Result<()> {
+        self.delete_with_query(&format!(
+            "/api/presets/{}?scope={}&workspace={}",
+            urlencode(id),
+            urlencode(scope),
+            urlencode(workspace)
+        ))
+        .await
+    }
+
+    /// 写入技能。
+    pub async fn put_skill(&self, id: &str, body: &serde_json::Value, workspace: &str) -> Result<()> {
+        self.put_json(
+            &format!("/api/skills/{}?workspace={}", urlencode(id), urlencode(workspace)),
+            body,
+        )
+        .await
+    }
+
+    /// 删除技能。
+    pub async fn delete_skill(&self, id: &str, scope: &str, workspace: &str) -> Result<()> {
+        self.delete_with_query(&format!(
+            "/api/skills/{}?scope={}&workspace={}",
+            urlencode(id),
+            urlencode(scope),
+            urlencode(workspace)
+        ))
+        .await
+    }
+
+    /// `PUT` 一个 JSON 请求体，忽略响应体。
+    async fn put_json(&self, path: &str, body: &serde_json::Value) -> Result<()> {
+        let resp = self
+            .http
+            .put(format!("{}{}", self.base, path))
+            .bearer_auth(&self.token)
+            .json(body)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        Self::ensure_ok(resp).await?;
+        Ok(())
+    }
+
+    /// `DELETE` 一个带查询串的路径。
+    async fn delete_with_query(&self, path: &str) -> Result<()> {
+        let resp = self
+            .http
+            .delete(format!("{}{}", self.base, path))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        Self::ensure_ok(resp).await?;
+        Ok(())
+    }
+
     /// `GET` 一个返回 JSON 数组的接口。
     async fn list_json(&self, path: &str) -> Result<Vec<serde_json::Value>> {
         let resp = self
