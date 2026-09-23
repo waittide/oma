@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use oma_client::{ConnectOptions, OmaClient, SessionApi, SessionRecord};
 use oma_contract::{
     AgentCommand, AgentEvent, AgentSummary, ChatMessage, ClientType, ModelInfo, Palette, REASONING_LEVELS,
-    ResolvedTheme, Role, StopReason, ThemeMode,
+    ResolvedTheme, Role, StopReason, ThemeMode, ToolCallStartedData,
 };
 use ratatui::{
     Frame,
@@ -288,55 +288,102 @@ fn parse_hex_color(value: &str) -> Option<Color> {
     }
 }
 
-/// 一条已渲染的内容行
+/// 记录块类型：决定前缀、是否可折叠，以及背景/配色的归属。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryKind {
+    User,
+    Assistant,
+    Thinking,
+    Tool,
+    Notice,
+}
+
+/// 工具调用状态：`ToolCallStarted` 建块，`ToolCallFinished` 原地补齐输出与耗时。
+#[derive(Debug, Clone)]
+struct ToolState {
+    call_id:     String,
+    name:        String,
+    /// 入参压成的单行摘要
+    input:       String,
+    output:      String,
+    is_error:    bool,
+    /// 是否已收到结束事件：进行中的调用即使全局折叠也保持展开
+    done:        bool,
+    duration_ms: Option<u64>,
+}
+
+/// 一条记录块
 struct Entry {
-    prefix: &'static str,
-    text:   String,
-    style:  Style,
+    kind:        EntryKind,
+    text:        String,
+    /// 仅 [`EntryKind::Tool`] 使用
+    tool:        Option<ToolState>,
+    style:       Style,
+    /// 思考段耗时（毫秒）；不可测时为 None
+    duration_ms: Option<u64>,
+    /// 是否仍在进行：进行中的思考/工具调用不参与折叠
+    open:        bool,
+}
+
+impl Entry {
+    fn text(kind: EntryKind, text: impl Into<String>, style: Style) -> Self {
+        Self {
+            kind,
+            text: text.into(),
+            tool: None,
+            style,
+            duration_ms: None,
+            open: false,
+        }
+    }
 }
 
 struct App {
-    workspace:       String,
-    model:           String,
-    agent:           String,
+    workspace:          String,
+    model:              String,
+    agent:              String,
     /// 当前会话 id；弹窗里据此标记「就是它」
-    session_id:      String,
+    session_id:         String,
     /// 当前工作区的会话列表：连接时取一次快照，供切换弹窗使用
-    sessions:        Vec<SessionRecord>,
+    sessions:           Vec<SessionRecord>,
     /// 可选模型清单（provider → 模型），握手下发
-    model_catalog:   BTreeMap<String, Vec<ModelInfo>>,
+    model_catalog:      BTreeMap<String, Vec<ModelInfo>>,
     /// 可选 Agent 预设，握手下发
-    agents:          Vec<AgentSummary>,
+    agents:             Vec<AgentSummary>,
     /// 当前推理等级；空串表示未设置
-    reasoning_level: String,
+    reasoning_level:    String,
     /// 当前分支的叶子消息；分支弹窗据此标记「就是这条」
-    current_leaf:    Option<String>,
-    connected:       bool,
-    busy:            bool,
-    queue:           usize,
-    status:          String,
-    entries:         Vec<Entry>,
-    input:           String,
+    current_leaf:       Option<String>,
+    connected:          bool,
+    busy:               bool,
+    queue:              usize,
+    status:             String,
+    entries:            Vec<Entry>,
+    input:              String,
     /// 编辑重发的分叉点：`Some(parent_id)` 表示下一次发送要从该节点长出分支
-    fork_from:       Option<String>,
+    fork_from:          Option<String>,
+    /// 是否折叠思考块（进行中的思考段不受影响）
+    thinking_collapsed: bool,
+    /// 是否折叠工具调用块（进行中的调用不受影响）
+    tool_collapsed:     bool,
     /// 分叉点的展示文案（来源用户消息的摘要），发送时写进分隔行
-    fork_label:      String,
-    scroll:          u16,
-    stick:           bool,
+    fork_label:         String,
+    scroll:             u16,
+    stick:              bool,
     /// 最近一次请求的上下文占用（tokens, context_len）
-    context:         Option<(usize, usize)>,
+    context:            Option<(usize, usize)>,
     /// 可切换的已保存连接
-    connections:     Vec<TuiConnection>,
+    connections:        Vec<TuiConnection>,
     /// 当前活动连接名
-    active_conn:     Option<String>,
+    active_conn:        Option<String>,
     /// 弹窗选择器；None = 未打开
-    picker:          Option<Picker>,
+    picker:             Option<Picker>,
     /// 文本输入弹窗；None = 未打开
-    prompt:          Option<TextPrompt>,
+    prompt:             Option<TextPrompt>,
     /// 终端是否处于聚焦状态；仅失焦时才发系统通知
-    focused:         bool,
+    focused:            bool,
     /// 由握手下发主题导出的语义配色
-    theme:           TuiTheme,
+    theme:              TuiTheme,
 }
 
 impl App {
@@ -358,6 +405,8 @@ impl App {
             entries: Vec::new(),
             input: String::new(),
             fork_from: None,
+            thinking_collapsed: false,
+            tool_collapsed: false,
             fork_label: String::new(),
             scroll: 0,
             stick: true,
@@ -384,44 +433,205 @@ impl App {
         notify_terminal("Oma", &body);
     }
 
-    fn push(&mut self, prefix: &'static str, text: impl Into<String>, style: Style) {
-        self.entries.push(Entry {
-            prefix,
-            text: text.into(),
-            style,
-        });
+    fn push_entry(&mut self, entry: Entry) {
+        self.entries.push(entry);
         if self.entries.len() > MAX_LINES {
             let drop = self.entries.len() - MAX_LINES;
             self.entries.drain(..drop);
         }
     }
 
-    /// 追加流式增量：与最后一行同类型则续写，否则新起一行
-    fn append_stream(&mut self, prefix: &'static str, delta: &str, style: Style) {
+    /// 一条提示/状态记录（不进正文流）。
+    fn push_notice(&mut self, text: impl Into<String>, style: Style) {
+        self.push_entry(Entry::text(EntryKind::Notice, text, style));
+    }
+
+    /// 用户消息：单独成块（后续据类型加背景、去标签）。
+    fn push_user(&mut self, text: impl Into<String>, style: Style) {
+        self.push_entry(Entry::text(EntryKind::User, text, style));
+    }
+
+    /// 追加助手正文增量。
+    fn append_assistant(&mut self, delta: &str, style: Style) {
+        self.append_stream(EntryKind::Assistant, delta, style);
+    }
+
+    /// 追加思考增量：最后一段思考未收尾时续写，否则新起一段。
+    fn append_thinking(&mut self, delta: &str, style: Style) {
+        self.append_stream(EntryKind::Thinking, delta, style);
+    }
+
+    /// 追加流式增量：与最后一块同类且仍在进行时续写，否则新起一块；
+    /// 新块开始即把未收尾的思考段标记为结束（服务端没给 `ThinkingFinished` 时也不悬着）。
+    fn append_stream(&mut self, kind: EntryKind, delta: &str, style: Style) {
         if let Some(last) = self.entries.last_mut() {
-            if last.prefix == prefix && style == last.style {
+            if last.kind == kind && last.open {
                 last.text.push_str(delta);
                 return;
             }
         }
-        self.push(prefix, delta, style);
+        self.finish_thinking(None);
+        let mut entry = Entry::text(kind, delta, style);
+        entry.open = true;
+        self.push_entry(entry);
     }
 
-    /// 按可用宽度把内容行折成渲染行
+    /// 收尾最近一段未结束的思考（`duration_ms` 为 None 表示不可测）。
+    fn finish_thinking(&mut self, duration_ms: Option<u64>) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.kind == EntryKind::Thinking && entry.open)
+        {
+            entry.open = false;
+            entry.duration_ms = duration_ms;
+        }
+    }
+
+    /// 工具调用开始：建一条进行中的工具块。
+    fn tool_started(&mut self, data: ToolCallStartedData) {
+        self.finish_thinking(None);
+        let mut entry = Entry::text(EntryKind::Tool, String::new(), Style::default());
+        entry.open = true;
+        entry.tool = Some(ToolState {
+            call_id:     data.call_id,
+            name:        data.tool_name,
+            input:       summarize_tool_input(&data.input),
+            output:      String::new(),
+            is_error:    false,
+            done:        false,
+            duration_ms: None,
+        });
+        self.push_entry(entry);
+    }
+
+    /// 工具调用结束：按 `call_id` 找到开始块原地补齐；找不到（中途接入）就补一条完整的。
+    fn tool_finished(&mut self, call_id: &str, tool_name: &str, output: String, is_error: bool, duration_ms: u64) {
+        if let Some(entry) = self.entries.iter_mut().rev().find(|entry| {
+            entry
+                .tool
+                .as_ref()
+                .is_some_and(|tool| tool.call_id == call_id && !tool.done)
+        }) {
+            if let Some(tool) = entry.tool.as_mut() {
+                tool.output = output;
+                tool.is_error = is_error;
+                tool.done = true;
+                tool.duration_ms = Some(duration_ms);
+            }
+            entry.open = false;
+            return;
+        }
+        let mut entry = Entry::text(EntryKind::Tool, String::new(), Style::default());
+        entry.tool = Some(ToolState {
+            call_id: call_id.to_string(),
+            name: tool_name.to_string(),
+            input: String::new(),
+            output,
+            is_error,
+            done: true,
+            duration_ms: Some(duration_ms),
+        });
+        self.push_entry(entry);
+    }
+
+    /// 按可用宽度把内容块折成渲染行。
     fn wrapped_lines(&self, width: usize) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         for entry in &self.entries {
-            let prefix = format!("{} ", entry.prefix);
-            let pad = prefix.len();
-            for (i, chunk) in wrap_text(&entry.text, width.saturating_sub(pad).max(8))
-                .into_iter()
-                .enumerate()
-            {
-                let head = if i == 0 { prefix.clone() } else { " ".repeat(pad) };
-                lines.push(Line::from(vec![Span::styled(head, entry.style), Span::raw(chunk)]));
+            match entry.kind {
+                EntryKind::Tool => self.push_tool_lines(&mut lines, entry, width),
+                // 折叠只作用于已结束的思考段：进行中的永远展开
+                EntryKind::Thinking if self.thinking_collapsed && !entry.open => {
+                    lines.push(Line::from(Span::styled(
+                        collapsed_label("思", entry.duration_ms),
+                        Style::default().fg(self.theme.muted),
+                    )));
+                }
+                _ => push_wrapped(&mut lines, entry_prefix(entry.kind), &entry.text, entry.style, width),
             }
         }
         lines
+    }
+
+    /// 工具块：折叠（已结束）时只留一行头，展开时头 + 输出前几行。
+    fn push_tool_lines(&self, lines: &mut Vec<Line<'static>>, entry: &Entry, width: usize) {
+        let Some(tool) = entry.tool.as_ref() else {
+            return;
+        };
+        let collapsed = self.tool_collapsed && tool.done && !entry.open;
+        let marker = if collapsed { "▸" } else { "⚙" };
+        let duration = tool
+            .duration_ms
+            .map(|ms| format!(" · {}", format_duration(ms)))
+            .unwrap_or_default();
+        let head_color = if tool.is_error {
+            self.theme.error
+        } else {
+            self.theme.warning
+        };
+        let head = format!("{marker} {} {}{}", tool.name, tool.input, duration);
+        lines.push(Line::from(Span::styled(
+            head.trim_end().to_string(),
+            Style::default().fg(head_color),
+        )));
+
+        if collapsed || tool.output.is_empty() {
+            return;
+        }
+        let body_color = if tool.is_error {
+            self.theme.error
+        } else {
+            self.theme.muted
+        };
+        let head_lines: Vec<&str> = tool.output.lines().take(6).collect();
+        let suffix = if tool.output.lines().count() > 6 { "\n…" } else { "" };
+        let body = format!("{}{}", head_lines.join("\n"), suffix);
+        push_wrapped(lines, "  ", &body, Style::default().fg(body_color), width);
+    }
+}
+
+/// 记录块前缀（标签）。
+fn entry_prefix(kind: EntryKind) -> &'static str {
+    match kind {
+        EntryKind::User => "你",
+        EntryKind::Assistant => "AI",
+        EntryKind::Thinking => "思",
+        EntryKind::Tool => "⚙",
+        EntryKind::Notice => "·",
+    }
+}
+
+/// 折行并写入渲染行：首行带前缀，续行按前缀宽度缩进。
+fn push_wrapped(lines: &mut Vec<Line<'static>>, prefix: &str, text: &str, style: Style, width: usize) {
+    let pad = display_width(prefix) + 1;
+    for (i, chunk) in wrap_text(text, width.saturating_sub(pad).max(8))
+        .into_iter()
+        .enumerate()
+    {
+        let head = if i == 0 { format!("{prefix} ") } else { " ".repeat(pad) };
+        lines.push(Line::from(vec![Span::styled(head, style), Span::raw(chunk)]));
+    }
+}
+
+/// 折叠块的标签：`▸ 思 1.2s`（无耗时时只有图标）。
+fn collapsed_label(icon: &str, duration_ms: Option<u64>) -> String {
+    match duration_ms {
+        Some(ms) => format!("▸ {icon} {}", format_duration(ms)),
+        None => format!("▸ {icon}"),
+    }
+}
+
+/// 耗时文案：不足 1 秒按毫秒（不四舍五入成 0s），1 秒以上保留一位小数，超过 1 分钟按分秒。
+fn format_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        let total = ms / 1000;
+        format!("{}m{:02}s", total / 60, total % 60)
     }
 }
 
@@ -533,8 +743,7 @@ async fn resolve_attachments(app: &mut App, api: &SessionApi, paths: &[String]) 
     for raw in paths {
         let rel = raw.strip_prefix("./").unwrap_or(raw);
         if !is_workspace_relative(rel) {
-            app.push(
-                "!",
+            app.push_notice(
                 format!("附件必须是工作区内的相对路径: {raw}"),
                 Style::default().fg(app.theme.error),
             );
@@ -545,8 +754,7 @@ async fn resolve_attachments(app: &mut App, api: &SessionApi, paths: &[String]) 
         let bytes = match tokio::fs::read(&full).await {
             Ok(bytes) => bytes,
             Err(e) => {
-                app.push(
-                    "!",
+                app.push_notice(
                     format!("读取附件 {raw} 失败: {e}"),
                     Style::default().fg(app.theme.error),
                 );
@@ -557,8 +765,7 @@ async fn resolve_attachments(app: &mut App, api: &SessionApi, paths: &[String]) 
         match api.upload_attachment(&app.session_id, name, bytes).await {
             Ok(uploaded) => refs.extend(uploaded),
             Err(e) => {
-                app.push(
-                    "!",
+                app.push_notice(
                     format!("上传附件 {raw} 失败: {e}"),
                     Style::default().fg(app.theme.error),
                 );
@@ -717,14 +924,12 @@ async fn run_session(
         app.model_catalog = ready.model_catalog.clone();
         app.agents = ready.agents.clone();
         app.reasoning_level = ready.reasoning_level.clone();
-        app.push(
-            "·",
+        app.push_notice(
             format!("会话 {} 已连接", short_id(&ready.session_id)),
             Style::default().fg(theme.muted),
         );
         if let Some(leaf) = &ready.current_leaf_id {
-            app.push(
-                "·",
+            app.push_notice(
                 format!("当前分支叶子 {}", short_id(leaf)),
                 Style::default().fg(theme.muted),
             );
@@ -880,7 +1085,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
     if key.code == KeyCode::Esc && app.fork_from.is_some() {
         app.fork_from = None;
         app.fork_label.clear();
-        app.push("·", "已取消编辑重发", Style::default().fg(app.theme.muted));
+        app.push_notice("已取消编辑重发", Style::default().fg(app.theme.muted));
         return Ok(None);
     }
     if is_quit_key(key) {
@@ -896,6 +1101,13 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => open_branch_picker(app, api).await,
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => open_fork_picker(app, api).await,
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => open_rename_prompt(app),
+        // 折叠开关：分别控制思考段与工具调用；进行中的块不受影响（见 wrapped_lines）
+        KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.thinking_collapsed = !app.thinking_collapsed;
+        }
+        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.tool_collapsed = !app.tool_collapsed;
+        }
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
             app.stick = false;
@@ -910,7 +1122,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => app.input.clear(),
         KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             client.cancel().await?;
-            app.push("·", "已请求中止", Style::default().fg(app.theme.warning));
+            app.push_notice("已请求中止", Style::default().fg(app.theme.warning));
         }
         KeyCode::Enter => {
             let raw = app.input.trim().to_string();
@@ -930,8 +1142,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
             if fork.is_some() && !attachments.is_empty() {
                 // ForkAndRun 没有附件位（协议如此），与 Web 一致直接拒绝，别把附件丢掉
                 app.fork_from = fork;
-                app.push(
-                    "!",
+                app.push_notice(
                     "编辑重发不支持附件：先取消分叉或去掉 @路径",
                     Style::default().fg(app.theme.error),
                 );
@@ -942,17 +1153,15 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
             // 分叉处插一条分隔行：TUI 的记录是只追加的日志，旧分支的尾巴还留在上方，
             // 不标出边界就看不出新回答是从哪里长出来的
             if fork.is_some() {
-                app.push(
-                    "·",
+                app.push_notice(
                     format!("── 从「{label}」处重新开始 ──"),
                     Style::default().fg(app.theme.muted),
                 );
             }
             // 记录里仍显示用户原样敲的那行（含 @路径），发出去的内容才是摘掉标记的正文
-            app.push("你", raw, Style::default().fg(app.theme.accent));
+            app.push_user(raw, Style::default().fg(app.theme.accent));
             if !attachments.is_empty() {
-                app.push(
-                    "·",
+                app.push_notice(
                     format!("附件 {} 个：{}", attachments.len(), paths.join("、")),
                     Style::default().fg(app.theme.muted),
                 );
@@ -970,7 +1179,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
                 },
             };
             if let Err(e) = client.send_command(command).await {
-                app.push("!", format!("发送失败: {}", e), Style::default().fg(app.theme.error));
+                app.push_notice(format!("发送失败: {}", e), Style::default().fg(app.theme.error));
             }
         }
         // 未定义的 Ctrl+字母不落进输入框：`Ctrl-D` 之类只该被忽略，
@@ -984,8 +1193,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
 /// 打开连接切换弹窗；无已保存连接时仅提示，不进入空列表。
 fn open_picker(app: &mut App) {
     if app.connections.is_empty() {
-        app.push(
-            "·",
+        app.push_notice(
             "没有已保存的连接（可在设置页或 client.json 中添加）",
             Style::default().fg(app.theme.muted),
         );
@@ -1022,8 +1230,7 @@ fn open_picker(app: &mut App) {
 async fn open_session_picker(app: &mut App, api: &SessionApi) {
     match api.list_sessions(Some(&app.workspace)).await {
         Ok(list) => app.sessions = list,
-        Err(e) => app.push(
-            "!",
+        Err(e) => app.push_notice(
             format!("刷新会话列表失败，沿用连接时的快照: {e}"),
             Style::default().fg(app.theme.warning),
         ),
@@ -1108,8 +1315,7 @@ fn open_model_picker(app: &mut App) {
         }
     }
     if items.is_empty() {
-        app.push(
-            "·",
+        app.push_notice(
             "没有可用模型（可在 Web 设置页添加提供商与模型）",
             Style::default().fg(app.theme.muted),
         );
@@ -1128,8 +1334,7 @@ fn open_model_picker(app: &mut App) {
 /// 条目值是预设 id（`SetAgent` 收的就是它），说明用预设自己的描述。
 fn open_agent_picker(app: &mut App) {
     if app.agents.is_empty() {
-        app.push(
-            "·",
+        app.push_notice(
             "没有可用预设（可在 Web 设置页添加）",
             Style::default().fg(app.theme.muted),
         );
@@ -1184,14 +1389,13 @@ async fn open_branch_picker(app: &mut App, api: &SessionApi) {
     let tree = match api.message_tree(&app.session_id).await {
         Ok(tree) => tree,
         Err(e) => {
-            app.push("!", format!("读取分支失败: {e}"), Style::default().fg(app.theme.error));
+            app.push_notice(format!("读取分支失败: {e}"), Style::default().fg(app.theme.error));
             return;
         }
     };
     let tips = branch_tips(&tree);
     if tips.len() < 2 {
-        app.push(
-            "·",
+        app.push_notice(
             "当前会话只有一条分支（从历史消息分叉后才会出现第二条）",
             Style::default().fg(app.theme.muted),
         );
@@ -1228,7 +1432,7 @@ async fn open_fork_picker(app: &mut App, api: &SessionApi) {
     let tree = match api.message_tree(&app.session_id).await {
         Ok(tree) => tree,
         Err(e) => {
-            app.push("!", format!("读取历史失败: {e}"), Style::default().fg(app.theme.error));
+            app.push_notice(format!("读取历史失败: {e}"), Style::default().fg(app.theme.error));
             return;
         }
     };
@@ -1237,11 +1441,7 @@ async fn open_fork_picker(app: &mut App, api: &SessionApi) {
     app.current_leaf = leaf.map(|message| message.id.clone());
     let items = fork_items(&tree, leaf);
     if items.is_empty() {
-        app.push(
-            "·",
-            "当前分支还没有可重发的用户消息",
-            Style::default().fg(app.theme.muted),
-        );
+        app.push_notice("当前分支还没有可重发的用户消息", Style::default().fg(app.theme.muted));
         return;
     }
     app.picker = Some(Picker {
@@ -1453,7 +1653,7 @@ async fn apply_prompt(
         PromptKind::RenameSession => {
             let title = input.trim().to_string();
             if title.is_empty() {
-                app.push("!", "会话标题不能为空", Style::default().fg(app.theme.error));
+                app.push_notice("会话标题不能为空", Style::default().fg(app.theme.error));
                 return Ok(None);
             }
             match api.rename_session(&app.session_id, &title).await {
@@ -1467,7 +1667,7 @@ async fn apply_prompt(
                         record.title = title;
                     }
                 }
-                Err(e) => app.push("!", format!("重命名失败: {e}"), Style::default().fg(app.theme.error)),
+                Err(e) => app.push_notice(format!("重命名失败: {e}"), Style::default().fg(app.theme.error)),
             }
             Ok(None)
         }
@@ -1551,7 +1751,7 @@ async fn apply_picker_action(
                 Some(_) => format!("编辑重发：Enter 从「{}」处重新开始 · Esc 取消", app.fork_label),
                 None => "这是会话首条消息，无处可分叉，将作为普通消息发送".into(),
             };
-            app.push("·", hint, Style::default().fg(app.theme.muted));
+            app.push_notice(hint, Style::default().fg(app.theme.muted));
             Ok(None)
         }
         PickerAction::NewSession => {
@@ -1562,7 +1762,7 @@ async fn apply_picker_action(
                     session_id: record.session_id,
                 })),
                 Err(e) => {
-                    app.push("!", format!("新建会话失败: {e}"), Style::default().fg(app.theme.error));
+                    app.push_notice(format!("新建会话失败: {e}"), Style::default().fg(app.theme.error));
                     Ok(None)
                 }
             }
@@ -1576,7 +1776,7 @@ async fn apply_picker_action(
 /// 见 [`PickerAction`]）。成功时什么都不写：界面等 `ModelChanged` 之类的回执。
 async fn send_setting(app: &mut App, client: &OmaClient, command: AgentCommand, what: &str) {
     if let Err(e) = client.send_command(command).await {
-        app.push("!", format!("{what}失败: {e}"), Style::default().fg(app.theme.error));
+        app.push_notice(format!("{what}失败: {e}"), Style::default().fg(app.theme.error));
     }
 }
 
@@ -1594,8 +1794,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             } else {
                 Style::default().fg(app.theme.muted)
             };
-            app.push(
-                "·",
+            app.push_notice(
                 format!(
                     "轮次{} · ↑{} ↓{}",
                     stop_reason_label(stop_reason),
@@ -1617,8 +1816,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             ..
         } => {
             if queued {
-                app.push(
-                    "·",
+                app.push_notice(
                     format!("{} 的消息已排队: {}", client_name, truncate(&content, 60)),
                     Style::default().fg(app.theme.muted),
                 );
@@ -1629,75 +1827,76 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::SessionRunning { .. } => {}
         AgentEvent::QueueCleared {} => app.queue = 0,
         AgentEvent::ThinkingDelta { delta } => {
-            app.append_stream("思", &delta, Style::default().fg(app.theme.thinking));
+            app.append_thinking(&delta, Style::default().fg(app.theme.thinking));
         }
-        // 思考段耗时只在 Web 端的折叠头上展示；TUI 的思考是顺序流式输出，不另挂耗时
-        AgentEvent::ThinkingFinished { .. } => {}
+        // 一段思考结束：收尾这一段（耗时见下一提交接入）
+        AgentEvent::ThinkingFinished { .. } => app.finish_thinking(None),
         AgentEvent::TextDelta { delta } => {
-            app.append_stream("AI", &delta, Style::default().fg(app.theme.success));
+            app.append_assistant(&delta, Style::default().fg(app.theme.success));
         }
-        AgentEvent::ToolCallStarted(data) => app.push(
-            "⚙",
-            format!("{} {}", data.tool_name, summarize_tool_input(&data.input)),
-            Style::default().fg(app.theme.warning),
-        ),
+        AgentEvent::ToolCallStarted(data) => app.tool_started(data),
         AgentEvent::ToolCallFinished {
+            call_id,
             tool_name,
             output,
             is_error,
-            ..
-        } => {
-            let style = if is_error {
-                Style::default().fg(app.theme.error)
-            } else {
-                Style::default().fg(app.theme.muted)
-            };
-            let head: String = output.lines().take(6).collect::<Vec<_>>().join("\n");
-            let suffix = if output.lines().count() > 6 { "\n…" } else { "" };
-            app.push("  ", format!("{}: {}{}", tool_name, head, suffix), style);
-        }
+            duration_ms,
+        } => app.tool_finished(&call_id, &tool_name, output, is_error, duration_ms),
         AgentEvent::ModelChanged { active_model } => app.model = active_model,
         AgentEvent::AgentChanged { active_agent } => app.agent = active_agent,
         AgentEvent::ActiveTurnCatchUp(snapshot) => {
             if !snapshot.accumulated_thinking.is_empty() {
-                app.push(
-                    "思",
-                    snapshot.accumulated_thinking,
+                let mut entry = Entry::text(
+                    EntryKind::Thinking,
+                    snapshot.accumulated_thinking.clone(),
                     Style::default().fg(app.theme.thinking),
                 );
+                entry.duration_ms = snapshot.thinking_duration_ms;
+                // 没有工具在跑且还没有正文，说明思考仍在继续：保持展开
+                entry.open = snapshot.active_tool_call.is_none() && snapshot.accumulated_text.is_empty();
+                app.push_entry(entry);
             }
             if !snapshot.accumulated_text.is_empty() {
-                app.push("AI", snapshot.accumulated_text, Style::default().fg(app.theme.success));
+                let mut entry = Entry::text(
+                    EntryKind::Assistant,
+                    snapshot.accumulated_text,
+                    Style::default().fg(app.theme.success),
+                );
+                entry.open = true;
+                app.push_entry(entry);
             }
             if let Some(call) = snapshot.active_tool_call {
-                app.push(
-                    "⚙",
-                    format!("{} {}", call.tool_name, summarize_tool_input(&call.input)),
-                    Style::default().fg(app.theme.warning),
-                );
+                // 中途接入的调用仍在进行：建成 open 的进行中工具块
+                let mut entry = Entry::text(EntryKind::Tool, String::new(), Style::default());
+                entry.open = true;
+                entry.tool = Some(ToolState {
+                    call_id:     call.call_id,
+                    name:        call.tool_name,
+                    input:       summarize_tool_input(&call.input),
+                    output:      String::new(),
+                    is_error:    false,
+                    done:        false,
+                    duration_ms: None,
+                });
+                app.push_entry(entry);
             }
             app.busy = true;
         }
-        AgentEvent::SyncRequired {} => app.push(
-            "·",
-            "事件流出现缺口，状态可能不完整",
-            Style::default().fg(app.theme.warning),
-        ),
-        AgentEvent::Error { message } => app.push("!", message, Style::default().fg(app.theme.error)),
-        AgentEvent::SessionRenamed { title, .. } => app.push(
-            "·",
+        AgentEvent::SyncRequired {} => {
+            app.push_notice("事件流出现缺口，状态可能不完整", Style::default().fg(app.theme.warning))
+        }
+        AgentEvent::Error { message } => app.push_notice(message, Style::default().fg(app.theme.error)),
+        AgentEvent::SessionRenamed { title, .. } => app.push_notice(
             format!("会话已重命名为 {}", title),
             Style::default().fg(app.theme.muted),
         ),
-        AgentEvent::MessagesDeleted { deleted_ids, .. } => app.push(
-            "·",
+        AgentEvent::MessagesDeleted { deleted_ids, .. } => app.push_notice(
             format!("已删除 {} 条消息", deleted_ids.len()),
             Style::default().fg(app.theme.muted),
         ),
         AgentEvent::ActiveBranchChanged { current_leaf_id } => {
             app.current_leaf = Some(current_leaf_id.clone());
-            app.push(
-                "·",
+            app.push_notice(
                 format!("切换到分支 {}", short_id(&current_leaf_id)),
                 Style::default().fg(app.theme.muted),
             );
@@ -1711,8 +1910,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::WorkspacesChanged { .. } => {}
         AgentEvent::ReasoningLevelChanged { level } => {
             app.reasoning_level = level.clone();
-            app.push(
-                "·",
+            app.push_notice(
                 if level.is_empty() {
                     "推理等级 → 模型默认".to_string()
                 } else {
@@ -1925,8 +2123,8 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     } else if app.fork_from.is_some() {
         " 编辑重发：Enter 从历史处重新发送 · Esc 取消分叉 "
     } else {
-        " Enter 发送（@路径 附件）· Ctrl+X 中止 · Ctrl+O 连接 N 会话 B 分支 · Ctrl+L 模型 A 预设 R 推理 E \
-         重发 T 改名 · Ctrl+U 清空 · Esc 退出 "
+        " Enter 发送（@路径 附件）· Ctrl+X 中止 · Ctrl+G/Y 折叠思考/工具 · Ctrl+O 连接 N 会话 B 分支 · \
+         Ctrl+L 模型 A 预设 R 推理 E 重发 T 改名 · Ctrl+U 清空 · Esc 退出 "
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1997,11 +2195,81 @@ mod tests {
     #[test]
     fn test_append_stream_groups_same_kind() {
         let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
-        app.append_stream("AI", "hello ", Style::default().fg(Color::Green));
-        app.append_stream("AI", "world", Style::default().fg(Color::Green));
-        app.append_stream("思", "thinking", Style::default().fg(Color::Magenta));
+        app.append_assistant("hello ", Style::default().fg(Color::Green));
+        app.append_assistant("world", Style::default().fg(Color::Green));
+        app.append_thinking("thinking", Style::default().fg(Color::Magenta));
         assert_eq!(app.entries.len(), 2);
+        assert_eq!(app.entries[0].kind, EntryKind::Assistant);
         assert_eq!(app.entries[0].text, "hello world");
+        assert_eq!(app.entries[1].kind, EntryKind::Thinking);
+    }
+
+    /// 折叠只作用于已结束的块：进行中的思考/工具即使全局折叠也保持展开。
+    #[test]
+    fn test_fold_hides_only_finished_blocks() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        app.thinking_collapsed = true;
+        app.tool_collapsed = true;
+
+        // 进行中的思考：折叠也不隐藏正文
+        app.append_thinking("正在想", Style::default());
+        assert!(plain_lines(&app).contains("正在想"), "{}", plain_lines(&app));
+
+        // 收到结束事件后即可折叠成一行「▸ 思 …」
+        app.finish_thinking(None);
+        let folded = plain_lines(&app);
+        assert!(folded.contains("▸ 思"), "{folded}");
+        assert!(!folded.contains("正在想"), "{folded}");
+
+        // 进行中的工具调用输出照常展示
+        app.tool_started(tool_call("c1", "shell"));
+        app.tool_finished("c1", "shell", "输出内容".into(), false, 30);
+        let folded = plain_lines(&app);
+        assert!(folded.contains("shell"), "{folded}");
+        assert!(!folded.contains("输出内容"), "已结束的调用在折叠时应隐藏输出：{folded}");
+        // 展开态：输出回来
+        app.tool_collapsed = false;
+        assert!(plain_lines(&app).contains("输出内容"));
+    }
+
+    /// 工具结束事件按 call_id 找回开始块；没有开始事件（中途接入）时补一条完整的。
+    #[test]
+    fn test_tool_finished_matches_call_id_or_appends() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        app.tool_started(tool_call("c1", "read"));
+        app.tool_finished("c2", "shell", "别的输出".into(), false, 10);
+        // c2 没有开始事件：另补一块，c1 仍在进行
+        assert_eq!(app.entries.len(), 2);
+        assert!(app.entries[0].tool.as_ref().is_some_and(|t| !t.done));
+
+        app.tool_finished("c1", "read", "读到的内容".into(), false, 12);
+        assert_eq!(app.entries.len(), 2, "c1 应原地补齐而不是新增");
+        let tool = app.entries[0].tool.as_ref().unwrap();
+        assert!(tool.done);
+        assert_eq!(tool.duration_ms, Some(12));
+        assert_eq!(tool.output, "读到的内容");
+    }
+
+    /// 记录块渲染成纯文本（前缀 + 正文），供折叠断言使用。
+    fn plain_lines(app: &App) -> String {
+        app.wrapped_lines(80)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn tool_call(call_id: &str, name: &str) -> ToolCallStartedData {
+        ToolCallStartedData {
+            call_id:   call_id.into(),
+            tool_name: name.into(),
+            input:     serde_json::json!({ "command": "echo hi" }),
+        }
     }
 
     #[test]
