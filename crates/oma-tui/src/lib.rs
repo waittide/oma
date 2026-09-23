@@ -177,6 +177,10 @@ enum PickerAction {
         /// 分叉点的展示文案，写进发送时的分隔行
         label:     String,
     },
+    /// 删除该用户消息及其整棵子树
+    DeleteMessage {
+        message_id: String,
+    },
     /// 为当前工作区新建一个会话，并切过去
     NewSession,
 }
@@ -1593,6 +1597,10 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
             open_tree(app, api).await;
             Ok(None)
         }
+        "delete" => {
+            open_delete_picker(app, api).await;
+            Ok(None)
+        }
         "settings" => {
             open_settings(app);
             Ok(None)
@@ -1649,7 +1657,7 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
 /// `/help` 的命令清单。
 const SLASH_HELP: &str = "/help 帮助 · /model 模型 · /agent 预设 · /reasoning 推理等级\n\
      /session 切换会话 · /new 新建会话 · /rename [标题] 重命名 · /tree 历史树\n\
-     /settings 设置 · /clear 清空记录显示 · /quit 退出";
+     /delete 删除消息（含子树）· /settings 设置 · /clear 清空记录显示 · /quit 退出";
 
 /// 打开设置界面；高亮落在当前活动连接那一行。
 fn open_settings(app: &mut App) {
@@ -2103,6 +2111,39 @@ async fn open_branch_picker(app: &mut App, api: &SessionApi) {
         title: " 切换分支 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ".into(),
         items,
         index,
+    });
+}
+
+/// 打开「删除消息」弹窗：列出当前分支上的用户消息（新的在前），选中即删其子树。
+async fn open_delete_picker(app: &mut App, api: &SessionApi) {
+    let tree = match api.message_tree(&app.session_id).await {
+        Ok(tree) => tree,
+        Err(e) => {
+            app.push_notice(format!("读取历史失败: {e}"), Style::default().fg(app.theme.error));
+            return;
+        }
+    };
+    let leaf = branch_leaf(&tree, app.current_leaf.as_deref());
+    app.current_leaf = leaf.map(|message| message.id.clone());
+    let items: Vec<PickerItem> = user_messages_on_branch(&tree, leaf)
+        .into_iter()
+        .map(|message| PickerItem {
+            label:   leaf_snippet(message),
+            detail:  format!("{} · 删除该消息及其后续", short_id(&message.id)),
+            current: false,
+            action:  PickerAction::DeleteMessage {
+                message_id: message.id.clone(),
+            },
+        })
+        .collect();
+    if items.is_empty() {
+        app.push_notice("当前分支还没有可删除的用户消息", Style::default().fg(app.theme.muted));
+        return;
+    }
+    app.picker = Some(Picker {
+        title: " 删除消息（含子树）· ↑/↓ 选择 · Enter 确认 · Esc 取消 ".into(),
+        items,
+        index: 0,
     });
 }
 
@@ -2589,6 +2630,24 @@ async fn apply_picker_action(
             };
             app.push_notice(hint, Style::default().fg(app.theme.muted));
             Ok(None)
+        }
+        PickerAction::DeleteMessage { message_id } => {
+            // 服务端会连带删掉整棵子树并回退当前叶子；删完重连重读历史
+            match api.delete_message(&app.session_id, &message_id).await {
+                Ok((deleted, _leaf)) => {
+                    app.push_notice(
+                        format!("已删除 {} 条消息（含子树）", deleted.len()),
+                        Style::default().fg(app.theme.muted),
+                    );
+                    Ok(Some(Outcome::Reload {
+                        session_id: app.session_id.clone(),
+                    }))
+                }
+                Err(e) => {
+                    app.push_notice(format!("删除消息失败: {e}"), Style::default().fg(app.theme.error));
+                    Ok(None)
+                }
+            }
         }
         PickerAction::NewSession => {
             let workspace = app.workspace.clone();
