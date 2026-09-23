@@ -36,6 +36,13 @@ const INPUT_HEIGHT: u16 = 3;
 const MAX_LINES: usize = 4000;
 /// 无事件时的重绘间隔（保持状态栏与光标响应）
 const TICK: Duration = Duration::from_millis(80);
+/// 活动动画：8 点盲文旋转帧，节奏与重绘间隔一致
+const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// 空闲/完成态：实心的 8 点盲文
+const SPINNER_DONE: &str = "⣿";
+const SPINNER_ADVANCE_MS: u128 = 80;
+/// 状态带里工作区路径的最大显示宽度
+const STATUS_PATH_MAX: usize = 40;
 /// 断线后两次重连之间的间隔
 const RECONNECT_DELAY: Duration = Duration::from_millis(1500);
 /// 断线后持续重试的上限：超过它就把最后一次错误交出去，不让界面无声地卡住
@@ -363,7 +370,6 @@ struct App {
     /// 本轮开始的墙钟时刻：整轮耗时由此计（`TurnFinished` 时取差）
     turn_started_at:    Option<Instant>,
     queue:              usize,
-    status:             String,
     entries:            Vec<Entry>,
     input:              String,
     /// 编辑重发的分叉点：`Some(parent_id)` 表示下一次发送要从该节点长出分支
@@ -390,6 +396,8 @@ struct App {
     focused:            bool,
     /// 由握手下发主题导出的语义配色
     theme:              TuiTheme,
+    /// 进程启动时刻：活动动画的相位由此推进
+    started_at:         Instant,
 }
 
 impl App {
@@ -408,7 +416,6 @@ impl App {
             busy: false,
             turn_started_at: None,
             queue: 0,
-            status: "就绪".into(),
             entries: Vec::new(),
             input: String::new(),
             fork_from: None,
@@ -425,6 +432,7 @@ impl App {
             // 终端未上报焦点事件时按聚焦处理：宁可不打扰，也不在用户正看着时弹通知
             focused: true,
             theme,
+            started_at: Instant::now(),
         }
     }
 
@@ -1072,7 +1080,6 @@ async fn event_loop(
                 }
                 None => {
                     app.connected = false;
-                    app.status = "连接已断开，正在重连…".into();
                     terminal.draw(|frame| draw(frame, app))?;
                     return Ok(Outcome::Reconnect {
                         session_id: app.session_id.clone(),
@@ -1854,11 +1861,10 @@ async fn send_setting(app: &mut App, client: &OmaClient, command: AgentCommand, 
 
 fn apply_event(app: &mut App, event: AgentEvent) {
     match event {
-        AgentEvent::TurnStarted { turn_id, .. } => {
+        AgentEvent::TurnStarted { .. } => {
             app.busy = true;
             app.stick = true;
             app.turn_started_at = Some(Instant::now());
-            app.status = format!("运行中 · {}", short_id(&turn_id));
         }
         AgentEvent::TurnFinished { stop_reason, usage, .. } => {
             app.busy = false;
@@ -1885,7 +1891,6 @@ fn apply_event(app: &mut App, event: AgentEvent) {
                 ),
                 style,
             );
-            app.status = "就绪".into();
             // 出错已单独报错，不再发系统通知
             if !matches!(stop_reason, StopReason::Error) {
                 app.notify(format!("任务完成（{}）", stop_reason_label(stop_reason)));
@@ -2016,17 +2021,17 @@ fn stop_reason_label(reason: StopReason) -> &'static str {
 
 fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let [header, body, input] = Layout::vertical([
-        Constraint::Length(1),
+    let [body, band, input] = Layout::vertical([
         Constraint::Min(3),
+        Constraint::Length(1),
         Constraint::Length(INPUT_HEIGHT),
     ])
     .areas(area);
 
     // 配色按值拷入各绘制函数：TuiTheme 全为 Copy 字段，且 Draw 内 app 已不可变借用
     let theme = app.theme;
-    draw_header(frame, app, header, theme);
     draw_transcript(frame, app, body, theme);
+    draw_status_band(frame, app, band, theme);
     draw_input(frame, app, input, theme);
 
     if let Some(picker) = &app.picker {
@@ -2140,35 +2145,80 @@ fn context_gauge(tokens: usize, window: usize) -> String {
     )
 }
 
-fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
-    let dot = if app.connected { "●" } else { "○" };
-    let state = if app.busy { "运行中" } else { app.status.as_str() };
-    let queue = if app.queue > 0 {
-        format!(" · 队列 {}", app.queue)
+/// 输入框上方的一行状态带：活动动画 + 模型名 + 工作路径（限宽左截断）+ 上下文占比。
+fn draw_status_band(frame: &mut Frame, app: &App, area: Rect, _theme: TuiTheme) {
+    frame.render_widget(Paragraph::new(status_band_line(app, area.width)), area);
+}
+
+/// 组装状态带内容；抽成纯函数以便断言顺序与截断行为。
+fn status_band_line(app: &App, width: u16) -> Line<'static> {
+    let theme = app.theme;
+    if !app.connected {
+        return Line::from(Span::styled(
+            "○ 连接已断开，正在重连…",
+            Style::default().fg(theme.error),
+        ));
+    }
+
+    let (glyph, glyph_style) = if app.busy {
+        (
+            spinner_frame(app.started_at.elapsed()),
+            Style::default().fg(theme.accent),
+        )
     } else {
-        String::new()
+        (SPINNER_DONE, Style::default().fg(theme.success))
     };
     let ctx = app
         .context
-        .map(|(tokens, window)| format!("  {}", context_gauge(tokens, window)))
+        .map(|(tokens, window)| context_gauge(tokens, window))
         .unwrap_or_default();
-    let line = Line::from(vec![
+
+    // 路径按剩余宽度左截断：模型名/动画/上下文占比先占位，其余给路径
+    let reserved = display_width(glyph) + 1 + display_width(&app.model) + 3 + 3 + display_width(&ctx);
+    let path_max = (width as usize)
+        .saturating_sub(reserved)
+        .clamp(8, STATUS_PATH_MAX);
+    let path = truncate_path(&app.workspace, path_max);
+
+    let mut spans = vec![
+        Span::styled(glyph.to_string(), glyph_style),
         Span::styled(
-            format!("{} ", dot),
-            Style::default().fg(if app.connected { theme.success } else { theme.error }),
-        ),
-        Span::styled(
-            app.workspace.clone(),
-            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("{} · {}{}", state, app.model, queue),
+            format!(" {} · {} · {}", app.model, path, ctx),
             Style::default().fg(theme.muted),
         ),
-        Span::styled(ctx, Style::default().fg(theme.muted)),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    ];
+    if app.queue > 0 {
+        spans.push(Span::styled(
+            format!(" · 队列 {}", app.queue),
+            Style::default().fg(theme.warning),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// 活动动画当前帧：按 80ms 步进在 8 点盲文帧之间轮转。
+fn spinner_frame(elapsed: Duration) -> &'static str {
+    SPINNER_FRAMES[(elapsed.as_millis() / SPINNER_ADVANCE_MS) as usize % SPINNER_FRAMES.len()]
+}
+
+/// 左截断路径：保留尾部（真正的项目名），超出时前置一个省略号。
+fn truncate_path(path: &str, max: usize) -> String {
+    if display_width(path) <= max {
+        return path.to_string();
+    }
+    let mut tail: Vec<char> = Vec::new();
+    let mut used = 2; // 省略号本身占两个显示列
+    for ch in path.chars().rev() {
+        let w = if ch.is_ascii() { 1 } else { 2 };
+        if used + w > max {
+            break;
+        }
+        used += w;
+        tail.push(ch);
+    }
+    let mut out = String::from("…");
+    out.extend(tail.iter().rev());
+    out
 }
 
 fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
@@ -2410,6 +2460,56 @@ mod tests {
             }
         }
         panic!("渲染结果里找不到 {needle:?}");
+    }
+
+    /// 状态带顺序：动画 + 模型名 + 工作路径 + 上下文占比；空闲显示实心盲文。
+    #[test]
+    fn test_status_band_order_and_spinner_state() {
+        let mut app = App::new(
+            "/home/me/projects/oma".into(),
+            "p/m".into(),
+            "build".into(),
+            TuiTheme::test(),
+        );
+
+        let text = band_text(&app);
+        assert!(text.starts_with(SPINNER_DONE), "空闲应显示实心盲文：{text}");
+        let model = text.find("p/m").unwrap();
+        let path = text.find("oma").unwrap();
+        assert!(model < path, "模型名应在路径之前：{text}");
+
+        // 工作中换成旋转帧之一
+        app.busy = true;
+        let busy = band_text(&app);
+        assert!(SPINNER_FRAMES.iter().any(|f| busy.starts_with(f)), "{busy}");
+
+        // 上下文占比排在路径之后
+        app.context = Some((500, 1000));
+        let with_ctx = band_text(&app);
+        assert!(with_ctx.contains("50%"), "{with_ctx}");
+        assert!(
+            with_ctx.find("oma").unwrap() < with_ctx.find("50%").unwrap(),
+            "{with_ctx}"
+        );
+    }
+
+    /// 路径超出限宽时左截断，保留尾部（项目名）。
+    #[test]
+    fn test_path_truncation_keeps_tail() {
+        assert_eq!(truncate_path("/a/b/oma", 40), "/a/b/oma");
+        let short = truncate_path("/home/me/projects/oma", 8);
+        assert!(short.starts_with('…'), "{short}");
+        assert!(short.ends_with("oma"), "{short}");
+        assert!(display_width(&short) <= 8, "{short}");
+    }
+
+    /// 状态带渲染成纯文本。
+    fn band_text(app: &App) -> String {
+        status_band_line(app, 80)
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 
     /// 思考段耗时：展开态挂在首行前缀，折叠态挂在折叠标签。
