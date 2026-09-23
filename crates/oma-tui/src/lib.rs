@@ -222,6 +222,7 @@ enum SettingsRow {
     Presets,
     Skills,
     Mcp,
+    Providers,
 }
 
 /// 连接编辑表单：名称/地址/凭证三段，Tab 切换字段、Enter 保存、Esc 取消。
@@ -237,18 +238,20 @@ struct ConnForm {
 
 /// 设置界面状态。
 struct SettingsState {
-    index:    usize,
-    form:     Option<ConnForm>,
+    index:     usize,
+    form:      Option<ConnForm>,
     /// 默认模型 / 默认预设 / 默认推理等级（来自 `GET /api/config`）
-    defaults: Option<(String, String, String)>,
+    defaults:  Option<(String, String, String)>,
     /// 工具清单：(名称, 描述)
-    tools:    Vec<(String, String)>,
+    tools:     Vec<(String, String)>,
     /// 预设清单：(id, 名称, 作用域)
-    presets:  Vec<(String, String, String)>,
+    presets:   Vec<(String, String, String)>,
     /// 技能清单：(id, 名称, 作用域)
-    skills:   Vec<(String, String, String)>,
+    skills:    Vec<(String, String, String)>,
     /// MCP 服务器：(名称, 命令/地址)
-    mcp:      Vec<(String, String)>,
+    mcp:       Vec<(String, String)>,
+    /// 提供商：(名称, api_type, base_url)
+    providers: Vec<(String, String, String)>,
 }
 
 /// 只读信息面板（设置里的默认项 / 工具 / 预设 / 技能 / MCP 清单）。
@@ -263,6 +266,10 @@ struct InfoPanel {
 enum ListKind {
     Presets,
     Skills,
+    /// MCP 服务器（写回 `/api/config` 的 `mcp_servers`）
+    Mcp,
+    /// 提供商（写回 `/api/config` 的 `providers`）
+    Providers,
 }
 
 /// 可编辑清单的一条。
@@ -299,6 +306,8 @@ struct FormField {
 enum FormKind {
     Preset,
     Skill,
+    Mcp,
+    Provider,
 }
 
 /// 通用编辑表单（预设 / 技能）。
@@ -310,6 +319,8 @@ struct FormState {
     /// 光标在 focus 字段内的字符偏移
     cursor: usize,
     error:  Option<String>,
+    /// 编辑既有条目时的原始 JSON（提供商用来保住模型的 reasoning_map 等字段）
+    raw:    Option<serde_json::Value>,
 }
 
 /// 设置界面按键的结果。
@@ -1852,6 +1863,7 @@ async fn open_settings(app: &mut App, api: &SessionApi) {
         presets: Vec::new(),
         skills: Vec::new(),
         mcp: Vec::new(),
+        providers: Vec::new(),
     };
     // 清单拉取失败不阻塞打开设置：对应行显示 0 项
     if let Ok(config) = api.config().await {
@@ -1873,6 +1885,18 @@ async fn open_settings(app: &mut App, api: &SessionApi) {
                         _ => String::new(),
                     };
                     (name.clone(), detail)
+                })
+                .collect();
+        }
+        if let Some(providers) = config.get("providers").and_then(|value| value.as_object()) {
+            settings.providers = providers
+                .iter()
+                .map(|(name, provider)| {
+                    (
+                        name.clone(),
+                        json_field(provider, "api_type"),
+                        json_field(provider, "base_url"),
+                    )
                 })
                 .collect();
         }
@@ -1933,6 +1957,7 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::Presets);
     rows.push(SettingsRow::Skills);
     rows.push(SettingsRow::Mcp);
+    rows.push(SettingsRow::Providers);
     rows
 }
 
@@ -2032,7 +2057,15 @@ async fn handle_settings_key(app: &mut App, api: &SessionApi, key: KeyEvent) -> 
                 open_list_panel(app, api, ListKind::Skills).await;
                 SettingsAction::None
             }
-            SettingsRow::Defaults | SettingsRow::Tools | SettingsRow::Mcp => {
+            SettingsRow::Mcp => {
+                open_list_panel(app, api, ListKind::Mcp).await;
+                SettingsAction::None
+            }
+            SettingsRow::Providers => {
+                open_list_panel(app, api, ListKind::Providers).await;
+                SettingsAction::None
+            }
+            SettingsRow::Defaults | SettingsRow::Tools => {
                 open_settings_info(app, &rows[index]);
                 SettingsAction::None
             }
@@ -2122,41 +2155,100 @@ fn handle_info_key(app: &mut App, key: KeyEvent) {
 
 /// 打开可编辑清单（预设 / 技能），拉取最新数据。
 async fn open_list_panel(app: &mut App, api: &SessionApi, kind: ListKind) {
-    let (title, result) = match kind {
-        ListKind::Presets => ("预设", api.presets(&app.workspace).await),
-        ListKind::Skills => ("技能", api.skills(&app.workspace).await),
-    };
-    let raw_items = match result {
-        Ok(items) => items,
-        Err(e) => {
-            app.push_notice(
-                format!("读取{title}清单失败: {e}"),
-                Style::default().fg(app.theme.error),
-            );
-            return;
+    let title = list_kind_title(kind);
+    let items: Vec<ListEntry> = match kind {
+        ListKind::Presets | ListKind::Skills => {
+            let result = if kind == ListKind::Presets {
+                api.presets(&app.workspace).await
+            } else {
+                api.skills(&app.workspace).await
+            };
+            let raw_items = match result {
+                Ok(items) => items,
+                Err(e) => {
+                    app.push_notice(
+                        format!("读取{title}清单失败: {e}"),
+                        Style::default().fg(app.theme.error),
+                    );
+                    return;
+                }
+            };
+            raw_items
+                .iter()
+                .map(|item| {
+                    let scope = json_field(item, "scope");
+                    let name = json_field(item, "name");
+                    ListEntry {
+                        id: json_field(item, "id"),
+                        label: if name.is_empty() { json_field(item, "id") } else { name },
+                        detail: json_field(item, "description"),
+                        readonly: scope == "bundled",
+                        scope,
+                        raw: item.clone(),
+                    }
+                })
+                .collect()
+        }
+        ListKind::Mcp | ListKind::Providers => {
+            let config = match api.config().await {
+                Ok(config) => config,
+                Err(e) => {
+                    app.push_notice(format!("读取配置失败: {e}"), Style::default().fg(app.theme.error));
+                    return;
+                }
+            };
+            let section = if kind == ListKind::Mcp {
+                "mcp_servers"
+            } else {
+                "providers"
+            };
+            config
+                .get(section)
+                .and_then(|value| value.as_object())
+                .map(|map| {
+                    map.iter()
+                        .map(|(name, item)| {
+                            let (scope, detail) = if kind == ListKind::Mcp {
+                                let kind_name = json_field(item, "type");
+                                let detail = if kind_name == "remote" {
+                                    json_field(item, "url")
+                                } else {
+                                    json_field(item, "command")
+                                };
+                                (kind_name, detail)
+                            } else {
+                                (json_field(item, "api_type"), json_field(item, "base_url"))
+                            };
+                            ListEntry {
+                                id: name.clone(),
+                                label: name.clone(),
+                                detail,
+                                scope,
+                                readonly: false,
+                                raw: item.clone(),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
         }
     };
-    let items: Vec<ListEntry> = raw_items
-        .iter()
-        .map(|item| {
-            let scope = json_field(item, "scope");
-            let name = json_field(item, "name");
-            ListEntry {
-                id: json_field(item, "id"),
-                label: if name.is_empty() { json_field(item, "id") } else { name },
-                detail: json_field(item, "description"),
-                readonly: scope == "bundled",
-                scope,
-                raw: item.clone(),
-            }
-        })
-        .collect();
     app.list_panel = Some(ListPanel {
         title: title.to_string(),
         kind,
         items,
         index: 0,
     });
+}
+
+/// 清单标题。
+fn list_kind_title(kind: ListKind) -> &'static str {
+    match kind {
+        ListKind::Presets => "预设",
+        ListKind::Skills => "技能",
+        ListKind::Mcp => "MCP",
+        ListKind::Providers => "提供商",
+    }
 }
 
 /// 可编辑清单按键：上下选择，Enter 编辑、a 新增、d 删除、Esc 关闭。
@@ -2179,15 +2271,15 @@ async fn handle_list_panel_key(app: &mut App, api: &SessionApi, key: KeyEvent) -
                 list.index = (index + 1).min(last);
             }
         }
-        KeyCode::Char('a') => open_form(app, kind, None),
+        KeyCode::Char('a') => open_form(app, kind, "", None),
         KeyCode::Enter => {
             if let Some(list) = app.list_panel.as_ref() {
                 if let Some(entry) = list.items.get(index) {
                     if entry.readonly {
                         app.push_notice("内置条目只读，可另存为新条目", Style::default().fg(app.theme.muted));
                     } else {
-                        let raw = entry.raw.clone();
-                        open_form(app, kind, Some(&raw));
+                        let (id, raw) = (entry.id.clone(), entry.raw.clone());
+                        open_form(app, kind, &id, Some(&raw));
                     }
                 }
             }
@@ -2205,12 +2297,18 @@ async fn handle_list_panel_key(app: &mut App, api: &SessionApi, key: KeyEvent) -
                     let result = match kind {
                         ListKind::Presets => api.delete_preset(&id, &scope, &app.workspace).await,
                         ListKind::Skills => api.delete_skill(&id, &scope, &app.workspace).await,
+                        ListKind::Mcp => delete_config_entry(api, "mcp_servers", &id).await,
+                        ListKind::Providers => delete_config_entry(api, "providers", &id).await,
                     };
                     match result {
                         Ok(()) => {
                             app.push_notice("已删除", Style::default().fg(app.theme.muted));
                             open_list_panel(app, api, kind).await;
-                            reload_settings_lists(app, api).await;
+                            if matches!(kind, ListKind::Presets | ListKind::Skills) {
+                                reload_settings_lists(app, api).await;
+                            } else {
+                                reload_settings_config(app, api).await;
+                            }
                         }
                         Err(e) => app.push_notice(format!("删除失败: {e}"), Style::default().fg(app.theme.error)),
                     }
@@ -2223,7 +2321,7 @@ async fn handle_list_panel_key(app: &mut App, api: &SessionApi, key: KeyEvent) -
 }
 
 /// 建表单：`raw` 为 None 表示新增，否则回填既有条目。
-fn open_form(app: &mut App, kind: ListKind, raw: Option<&serde_json::Value>) {
+fn open_form(app: &mut App, kind: ListKind, id: &str, raw: Option<&serde_json::Value>) {
     let text = |key: &str| raw.map(|value| json_field(value, key)).unwrap_or_default();
     let (form_kind, title, fields) = match kind {
         ListKind::Presets => (
@@ -2314,6 +2412,94 @@ fn open_form(app: &mut App, kind: ListKind, raw: Option<&serde_json::Value>) {
                 },
             ],
         ),
+        ListKind::Mcp => {
+            let server_type = {
+                let kind_name = text("type");
+                if kind_name.is_empty() {
+                    "local".to_string()
+                } else {
+                    kind_name
+                }
+            };
+            let remote = server_type == "remote";
+            (
+                FormKind::Mcp,
+                "MCP 服务器",
+                vec![
+                    FormField {
+                        label:     "名称".into(),
+                        value:     id.to_string(),
+                        multiline: false,
+                        locked:    raw.is_some(),
+                    },
+                    FormField {
+                        label:     "类型".into(),
+                        value:     server_type,
+                        multiline: false,
+                        locked:    false,
+                    },
+                    FormField {
+                        label:     "命令/地址".into(),
+                        value:     if remote { text("url") } else { text("command") },
+                        multiline: false,
+                        locked:    false,
+                    },
+                    FormField {
+                        label:     if remote { "请求头".into() } else { "参数".into() },
+                        value:     if remote {
+                            kv_to_text(raw, "headers")
+                        } else {
+                            args_to_text(raw)
+                        },
+                        multiline: false,
+                        locked:    false,
+                    },
+                    FormField {
+                        label:     "环境变量".into(),
+                        value:     if remote { String::new() } else { kv_to_text(raw, "env") },
+                        multiline: false,
+                        locked:    false,
+                    },
+                ],
+            )
+        }
+        ListKind::Providers => (
+            FormKind::Provider,
+            "提供商",
+            vec![
+                FormField {
+                    label:     "名称".into(),
+                    value:     id.to_string(),
+                    multiline: false,
+                    locked:    raw.is_some(),
+                },
+                FormField {
+                    label:     "api_type".into(),
+                    value:     text("api_type"),
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "base_url".into(),
+                    value:     text("base_url"),
+                    multiline: false,
+                    locked:    false,
+                },
+                // 脱敏占位 *** 由服务端沿用旧值；留空则清空
+                FormField {
+                    label:     "api_key".into(),
+                    value:     text("api_key"),
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "模型".into(),
+                    value:     models_to_text(raw),
+                    multiline: true,
+                    locked:    false,
+                },
+            ],
+        ),
     };
     app.form = Some(FormState {
         title: title.to_string(),
@@ -2322,6 +2508,7 @@ fn open_form(app: &mut App, kind: ListKind, raw: Option<&serde_json::Value>) {
         focus: 0,
         cursor: 0,
         error: None,
+        raw: raw.cloned(),
     });
 }
 
@@ -2332,6 +2519,164 @@ fn scope_or_default(scope: &str) -> String {
     } else {
         scope.to_string()
     }
+}
+
+/// 把 `{"k": "v"}` 形式的对象拍成 `k=v,k=v` 单行文本。
+fn kv_to_text(raw: Option<&serde_json::Value>, key: &str) -> String {
+    raw.and_then(|value| value.get(key))
+        .and_then(|value| value.as_object())
+        .map(|map| {
+            map.iter()
+                .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or("")))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default()
+}
+
+/// 把 `args` 数组拍成空格分隔的单行文本。
+fn args_to_text(raw: Option<&serde_json::Value>) -> String {
+    raw.and_then(|value| value.get("args"))
+        .and_then(|value| value.as_array())
+        .map(|args| {
+            args.iter()
+                .filter_map(|arg| arg.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
+}
+
+/// 把 provider 的 models 拍成「每行 `id | name | context_len | capabilities`」。
+fn models_to_text(raw: Option<&serde_json::Value>) -> String {
+    raw.and_then(|value| value.get("models"))
+        .and_then(|value| value.as_array())
+        .map(|models| {
+            models
+                .iter()
+                .map(|model| {
+                    let capabilities = model
+                        .get("capabilities")
+                        .and_then(|value| value.as_array())
+                        .map(|caps| {
+                            caps.iter()
+                                .filter_map(|cap| cap.as_str())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                        .unwrap_or_default();
+                    format!(
+                        "{} | {} | {} | {}",
+                        json_field(model, "id"),
+                        json_field(model, "name"),
+                        model
+                            .get("context_len")
+                            .and_then(|value| value.as_u64())
+                            .unwrap_or(0),
+                        capabilities
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// 解析 `k=v,k=v` 文本为 `{"k":"v"}`；畸形片段（没有 `=`）跳过。
+fn parse_kv_json(text: &str) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for pair in text
+        .split([',', '\n'])
+        .map(str::trim)
+        .filter(|pair| !pair.is_empty())
+    {
+        if let Some((key, value)) = pair.split_once('=') {
+            map.insert(
+                key.trim().to_string(),
+                serde_json::Value::String(value.trim().to_string()),
+            );
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
+/// 解析空格分隔的参数为 JSON 数组。
+fn parse_args_json(text: &str) -> serde_json::Value {
+    serde_json::Value::Array(
+        text.split_whitespace()
+            .map(|arg| serde_json::Value::String(arg.to_string()))
+            .collect(),
+    )
+}
+
+/// 解析「每行 `id | name | context_len | capabilities`」的模型列表；
+/// 同 id 的既有模型保留其 `reasoning_map` / `max_output`，避免编辑时丢字段。
+fn parse_models(text: &str, raw_provider: Option<&serde_json::Value>) -> Vec<serde_json::Value> {
+    let previous = |id: &str| {
+        raw_provider
+            .and_then(|provider| provider.get("models"))
+            .and_then(|models| models.as_array())
+            .and_then(|models| models.iter().find(|model| json_field(model, "id") == id))
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let mut parts = line.split('|').map(str::trim);
+            let id = parts.next().unwrap_or_default().to_string();
+            let name = parts.next().unwrap_or_default().to_string();
+            let context_len = parts.next().unwrap_or_default().parse::<u64>().unwrap_or(0);
+            let capabilities: Vec<String> = parts
+                .next()
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|cap| !cap.is_empty())
+                .map(str::to_string)
+                .collect();
+            let mut model = serde_json::json!({
+                "id": id,
+                "name": if name.is_empty() { id.clone() } else { name },
+                "context_len": context_len,
+                "capabilities": capabilities,
+            });
+            if let Some(prev) = previous(&id) {
+                if let Some(reasoning) = prev.get("reasoning_map") {
+                    model["reasoning_map"] = reasoning.clone();
+                }
+                if let Some(max_output) = prev.get("max_output") {
+                    model["max_output"] = max_output.clone();
+                }
+            }
+            model
+        })
+        .collect()
+}
+
+/// 写回配置里某个 section 的一条：取回整份配置 → 改一个键 → 整体 PUT。
+async fn save_config_entry(api: &SessionApi, section: &str, key: &str, value: serde_json::Value) -> anyhow::Result<()> {
+    let mut config = api.config().await?;
+    if config
+        .get(section)
+        .and_then(|value| value.as_object())
+        .is_none()
+    {
+        config[section] = serde_json::json!({});
+    }
+    config[section][key] = value;
+    api.put_config(&config).await
+}
+
+/// 从配置里删除某个 section 的一条。
+async fn delete_config_entry(api: &SessionApi, section: &str, key: &str) -> anyhow::Result<()> {
+    let mut config = api.config().await?;
+    if let Some(map) = config
+        .get_mut(section)
+        .and_then(|value| value.as_object_mut())
+    {
+        map.remove(key);
+    }
+    api.put_config(&config).await
 }
 
 /// 表单按键：Tab 换字段、Enter 换行/换字段、Ctrl+S 保存、Esc 取消。
@@ -2454,11 +2799,20 @@ async fn save_form(app: &mut App, api: &SessionApi) -> Result<()> {
     let name = value("名称").trim().to_string();
     let (description, scope, body) = (value("描述"), value("作用域"), value("正文"));
     let scope = scope_or_default(&scope);
-    if id.is_empty() || name.is_empty() {
-        if let Some(form) = app.form.as_mut() {
-            form.error = Some("id 与名称不能为空".into());
+    // MCP / 提供商用「名称」作配置键，只有预设/技能要求 id
+    {
+        let needs_id = matches!(form.kind, FormKind::Preset | FormKind::Skill);
+        if name.is_empty() || (needs_id && id.is_empty()) {
+            let message = if needs_id {
+                "id 与名称不能为空"
+            } else {
+                "名称不能为空"
+            };
+            if let Some(form) = app.form.as_mut() {
+                form.error = Some(message.into());
+            }
+            return Ok(());
         }
-        return Ok(());
     }
 
     let result = match form.kind {
@@ -2486,16 +2840,50 @@ async fn save_form(app: &mut App, api: &SessionApi) -> Result<()> {
             });
             api.put_skill(&id, &payload, &app.workspace).await
         }
+        FormKind::Mcp => {
+            let remote = value("类型").trim().eq_ignore_ascii_case("remote");
+            let target = value("命令/地址").trim().to_string();
+            let server = if remote {
+                serde_json::json!({
+                    "type": "remote",
+                    "url": target,
+                    "headers": parse_kv_json(&value("请求头")),
+                })
+            } else {
+                serde_json::json!({
+                    "type": "local",
+                    "command": target,
+                    "args": parse_args_json(&value("参数")),
+                    "env": parse_kv_json(&value("环境变量")),
+                })
+            };
+            save_config_entry(api, "mcp_servers", &name, server).await
+        }
+        FormKind::Provider => {
+            let provider_raw = form.raw.as_ref();
+            let provider = serde_json::json!({
+                "api_type": value("api_type").trim(),
+                "base_url": value("base_url").trim(),
+                "api_key": value("api_key"),
+                "models": parse_models(&value("模型"), provider_raw),
+            });
+            save_config_entry(api, "providers", &name, provider).await
+        }
     };
     let kind = match form.kind {
         FormKind::Preset => ListKind::Presets,
         FormKind::Skill => ListKind::Skills,
+        FormKind::Mcp => ListKind::Mcp,
+        FormKind::Provider => ListKind::Providers,
     };
     match result {
         Ok(()) => {
             app.form = None;
             app.push_notice("已保存", Style::default().fg(app.theme.muted));
-            reload_settings_lists(app, api).await;
+            match kind {
+                ListKind::Presets | ListKind::Skills => reload_settings_lists(app, api).await,
+                ListKind::Mcp | ListKind::Providers => reload_settings_config(app, api).await,
+            }
             if app.list_panel.is_some() {
                 open_list_panel(app, api, kind).await;
             }
@@ -2507,6 +2895,48 @@ async fn save_form(app: &mut App, api: &SessionApi) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 重新拉取配置类清单（MCP / 提供商 / 默认项），保持设置页数据最新。
+async fn reload_settings_config(app: &mut App, api: &SessionApi) {
+    let Ok(config) = api.config().await else {
+        return;
+    };
+    let mcp = config
+        .get("mcp_servers")
+        .and_then(|value| value.as_object())
+        .map(|map| {
+            map.iter()
+                .map(|(name, server)| {
+                    let detail = if json_field(server, "type") == "remote" {
+                        json_field(server, "url")
+                    } else {
+                        json_field(server, "command")
+                    };
+                    (name.clone(), detail)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let providers = config
+        .get("providers")
+        .and_then(|value| value.as_object())
+        .map(|map| {
+            map.iter()
+                .map(|(name, provider)| {
+                    (
+                        name.clone(),
+                        json_field(provider, "api_type"),
+                        json_field(provider, "base_url"),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(settings) = app.settings.as_mut() {
+        settings.mcp = mcp;
+        settings.providers = providers;
+    }
 }
 
 /// 重新拉取设置页里的清单（预设/技能），保持设置页数据最新。
@@ -4279,6 +4709,13 @@ fn settings_row_text(app: &App, row: &SettingsRow) -> String {
             "MCP         {} 个",
             app.settings.as_ref().map(|s| s.mcp.len()).unwrap_or(0)
         ),
+        SettingsRow::Providers => format!(
+            "提供商      {} 个",
+            app.settings
+                .as_ref()
+                .map(|s| s.providers.len())
+                .unwrap_or(0)
+        ),
     }
 }
 
@@ -4956,7 +5393,7 @@ mod tests {
         let api = SessionApi::new("127.0.0.1:1", "t");
         open_settings(&mut app, &api).await;
         assert_eq!(app.settings.as_ref().unwrap().index, 1);
-        assert_eq!(settings_rows(&app).len(), 2 + 9, "两条连接 + 九项设置");
+        assert_eq!(settings_rows(&app).len(), 2 + 10, "两条连接 + 十项设置");
 
         // Enter 在连接行返回切换目标
         match handle_settings_key(&mut app, &api, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).await {
@@ -4972,6 +5409,42 @@ mod tests {
         ));
     }
 
+    /// MCP/提供商的文本↔JSON 转换：环境变量/请求头、参数、模型列表（保留隐藏字段）。
+    #[test]
+    fn test_mcp_and_provider_helpers() {
+        let env = parse_kv_json("A=1, B=2\nC=3, 没有等号");
+        assert_eq!(env["A"], "1");
+        assert_eq!(env["C"], "3");
+        assert!(env.get("没有等号").is_none(), "没有 '=' 的片段跳过");
+
+        assert_eq!(parse_args_json("a b  c"), serde_json::json!(["a", "b", "c"]));
+
+        // 模型列表：同 id 保留既有 reasoning_map / max_output
+        let provider = serde_json::json!({
+            "models": [{ "id": "m", "reasoning_map": { "low": "l" }, "max_output": 100 }]
+        });
+        let models = parse_models("m | M | 1000 | text_input,text_output", Some(&provider));
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["id"], "m");
+        assert_eq!(models[0]["context_len"], 1000);
+        assert_eq!(
+            models[0]["capabilities"],
+            serde_json::json!(["text_input", "text_output"])
+        );
+        assert_eq!(models[0]["reasoning_map"]["low"], "l", "隐藏字段要保住");
+        assert_eq!(models[0]["max_output"], 100);
+
+        // 展示回文本：本地命令 + 参数 + 环境变量
+        let server = serde_json::json!({
+            "type": "local",
+            "command": "npx",
+            "args": ["-y", "srv"],
+            "env": { "K": "V" }
+        });
+        assert_eq!(args_to_text(Some(&server)), "-y srv");
+        assert_eq!(kv_to_text(Some(&server), "env"), "K=V");
+    }
+
     /// 表单：回填既有条目、字段光标编辑、锁定字段不接受输入。
     #[test]
     fn test_form_editing_and_fields() {
@@ -4984,7 +5457,7 @@ mod tests {
             "tools": ["read", "shell"],
             "body": "正文",
         });
-        open_form(&mut app, ListKind::Presets, Some(&raw));
+        open_form(&mut app, ListKind::Presets, "my", Some(&raw));
         let form = app.form.as_ref().unwrap();
         assert_eq!(form.fields.len(), 6, "预设：id/名称/描述/作用域/工具/正文");
         let value = |label: &str| {
@@ -5018,7 +5491,7 @@ mod tests {
     #[test]
     fn test_form_new_defaults() {
         let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
-        open_form(&mut app, ListKind::Skills, None);
+        open_form(&mut app, ListKind::Skills, "", None);
         let form = app.form.as_ref().unwrap();
         assert!(!form.fields[0].locked, "新增时 id 可填");
         assert_eq!(form.fields[3].value, "project", "作用域缺省 project");

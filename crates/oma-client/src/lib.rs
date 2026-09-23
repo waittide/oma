@@ -273,6 +273,11 @@ impl SessionApi {
         Self::ensure_ok(resp).await
     }
 
+    /// 写回整份服务端配置（`***` 占位的 api_key 由服务端沿用旧值）。
+    pub async fn put_config(&self, config: &serde_json::Value) -> Result<()> {
+        self.put_json("/api/config", config).await
+    }
+
     /// 可用工具（内置 + 已发现的 MCP），每项含 `name`/`description`/`kind`。
     pub async fn tools(&self) -> Result<Vec<serde_json::Value>> {
         let resp = self
