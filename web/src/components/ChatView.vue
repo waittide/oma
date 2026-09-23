@@ -25,6 +25,7 @@ import MessageRail from './MessageRail.vue';
 import type { Block, ChatMessage, TokenUsage } from '../types';
 import { modelSelectorLabel, toModelSelectGroups } from '../lib/modelSelect';
 import { copyText } from '../lib/clipboard';
+import { pastedFiles } from '../lib/paste';
 import { ensureNotificationPermission } from '../lib/notify';
 import { formatDuration } from '../lib/format';
 import { sessionUsage } from '../lib/sessionUsage';
@@ -258,6 +259,20 @@ async function onDrop(ev: DragEvent) {
   ev.preventDefault();
   const files = Array.from(ev.dataTransfer?.files ?? []);
   if (files.length > 0) await uploadFiles(files);
+}
+
+/**
+ * 粘贴上传：剪贴板里的截图没有文本形态，得自己从 `items` 里取出来。
+ *
+ * 纯文本粘贴不拦截，照常落进输入框；有文件时拦掉默认行为，避免把文件名之类的
+ * 占位文本也塞进草稿（与拖拽上传走同一条 uploadFiles）。
+ */
+async function onPaste(ev: ClipboardEvent) {
+  if (!ready.value) return;
+  const files = pastedFiles(ev.clipboardData);
+  if (files.length === 0) return;
+  ev.preventDefault();
+  await uploadFiles(files);
 }
 
 /** 仅接受携带文件的拖拽（拖动选中文字不应触发落点提示）。 */
@@ -734,6 +749,7 @@ const hasProviders = computed(() => Object.keys(chat.modelCatalog.value).length 
         @dragover="onDragOver"
         @dragleave="onDragLeave"
         @drop="onDrop"
+        @paste="onPaste"
       >
         <!-- 拖拽落点提示：自实现浮层，不依赖浏览器默认高亮 -->
         <div v-if="dragging" class="drop-hint" aria-hidden="true">
