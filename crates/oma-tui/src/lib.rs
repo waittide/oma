@@ -113,26 +113,25 @@ pub struct TuiOptions {
 
 /// 会话循环的出口：退出，或换一条连接 / 一个会话后重建。
 enum Outcome {
-    Quit,
+    Quit {
+        /// 设置里改过的连接清单；未改动为 None
+        connections: Option<Vec<TuiConnection>>,
+    },
     /// 换连接：地址与 token 一并更换，会话要重新挑
     Switch {
-        addr:  String,
-        token: String,
-        name:  String,
+        addr:        String,
+        token:       String,
+        name:        String,
+        /// 设置里改过的连接清单；未改动为 None
+        connections: Option<Vec<TuiConnection>>,
     },
     /// 换会话：连接不动，只换 session_id（标题已在弹窗里提示过，这里不再带）
-    SwitchSession {
-        session_id: String,
-    },
+    SwitchSession { session_id: String },
     /// 重连指定会话：分支切换后需要重新读一遍历史。
     /// 必须带上 id —— 会话是「列表首个」自动挑的，不带 id 重连可能挑到别的会话。
-    Reload {
-        session_id: String,
-    },
+    Reload { session_id: String },
     /// 连接断了：退避后重连同一个会话，而不是把用户踢出界面
-    Reconnect {
-        session_id: String,
-    },
+    Reconnect { session_id: String },
 }
 
 /// 弹窗里的一条：显示文本 + 选中后要执行的动作。
@@ -206,6 +205,51 @@ struct TreeItem {
 struct TreeSelector {
     items: Vec<TreeItem>,
     index: usize,
+}
+
+/// 退出时回传的结果：最终活动连接与（若有改动）连接清单。
+pub struct TuiExit {
+    pub active:      Option<String>,
+    /// 设置里增删改过连接时才为 Some，交由调用方写回 client.json
+    pub connections: Option<Vec<TuiConnection>>,
+}
+
+/// 设置界面里的一行。
+enum SettingsRow {
+    /// 指向 `App::connections` 的下标
+    Connection(usize),
+    Model,
+    Agent,
+    Reasoning,
+    Theme,
+}
+
+/// 连接编辑表单：名称/地址/凭证三段，Tab 切换字段、Enter 保存、Esc 取消。
+#[derive(Clone)]
+struct ConnForm {
+    name:    String,
+    url:     String,
+    token:   String,
+    field:   usize,
+    /// Some(i) 表示编辑既有连接；None 表示新增
+    editing: Option<usize>,
+}
+
+/// 设置界面状态。
+struct SettingsState {
+    index: usize,
+    form:  Option<ConnForm>,
+}
+
+/// 设置界面按键的结果。
+enum SettingsAction {
+    None,
+    Close,
+    Switch {
+        addr:  String,
+        token: String,
+        name:  String,
+    },
 }
 
 /// 文本输入弹窗：标题 + 一行可编辑文本。
@@ -414,12 +458,20 @@ struct App {
     picker:             Option<Picker>,
     /// 全屏历史树选择器；None = 未打开
     tree_view:          Option<TreeSelector>,
+    /// 设置界面；None = 未打开
+    settings:           Option<SettingsState>,
+    /// 连接清单是否被设置界面改过（决定退出时是否回传写盘）
+    connections_dirty:  bool,
     /// 文本输入弹窗；None = 未打开
     prompt:             Option<TextPrompt>,
     /// 终端是否处于聚焦状态；仅失焦时才发系统通知
     focused:            bool,
     /// 由握手下发主题导出的语义配色
     theme:              TuiTheme,
+    /// 主题模式名（light/dark/system），设置页只读展示
+    theme_mode:         String,
+    /// 当前强调色令牌名，设置页只读展示
+    theme_accent:       String,
     /// 进程启动时刻：活动动画的相位由此推进
     started_at:         Instant,
 }
@@ -453,10 +505,14 @@ impl App {
             active_conn: None,
             picker: None,
             tree_view: None,
+            settings: None,
+            connections_dirty: false,
             prompt: None,
             // 终端未上报焦点事件时按聚焦处理：宁可不打扰，也不在用户正看着时弹通知
             focused: true,
             theme,
+            theme_mode: String::new(),
+            theme_accent: String::new(),
             started_at: Instant::now(),
         }
     }
@@ -479,6 +535,11 @@ impl App {
             let drop = self.entries.len() - MAX_LINES;
             self.entries.drain(..drop);
         }
+    }
+
+    /// 设置里改过连接时回传当前清单（用于写回 client.json）。
+    fn dirty_connections(&self) -> Option<Vec<TuiConnection>> {
+        self.connections_dirty.then(|| self.connections.clone())
     }
 
     /// 一条提示/状态记录（不进正文流）。
@@ -889,8 +950,8 @@ fn is_workspace_relative(rel: &str) -> bool {
 /// 启动 TUI 客户端：复用当前工作区最近的会话，没有则新建。
 ///
 /// 支持在界面内切换到 client.json 里保存的其他连接：切换时重建会话与事件流。
-/// 返回最终使用的连接名（未使用已保存连接时为 None），供调用方回写 active。
-pub async fn run(options: TuiOptions) -> Result<Option<String>> {
+/// 退出时回传最终活动连接与改动过的连接清单，供调用方回写 client.json。
+pub async fn run(options: TuiOptions) -> Result<TuiExit> {
     // crossterm 的阻塞读放在独立线程；切换连接只是重建会话，
     // 不重新开线程，避免多个 reader 竞争同一 tty。
     let (key_tx, mut key_rx) = mpsc::channel::<InputEvent>(64);
@@ -912,6 +973,9 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
     let mut addr = options.addr.clone();
     let mut token = options.token.clone();
     let mut active = options.active.clone();
+    // 工作连接清单：设置界面里的增删改都在它上面生效，切换连接后继续沿用
+    let mut connections = options.connections.clone();
+    let mut edited_connections: Option<Vec<TuiConnection>> = None;
     // 用户显式挑过的会话：换连接后作废，重新按工作区挑
     let mut session: Option<String> = None;
     // 断线后进入重试窗口；只有「连上过又断开」才会设置它
@@ -925,23 +989,34 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
     // 否则粘多行文本里的换行会被当成回车，一粘就把消息发出去了。
     let _ = execute!(std::io::stdout(), EnableFocusChange, EnableBracketedPaste);
     let result = loop {
-        let outcome = run_session(
-            &mut terminal,
-            &addr,
-            &token,
-            &options,
-            active.clone(),
-            session.clone(),
-            &mut key_rx,
-        )
-        .await;
+        let setup = SessionSetup {
+            addr:        &addr,
+            token:       &token,
+            workspace:   &options.workspace,
+            connections: &connections,
+            active:      active.clone(),
+        };
+        let outcome = run_session(&mut terminal, &setup, session.clone(), &mut key_rx).await;
         match outcome {
-            Ok(Outcome::Quit) => break Ok(active),
+            Ok(Outcome::Quit { connections: edited }) => {
+                if edited.is_some() {
+                    edited_connections = edited;
+                }
+                break Ok(TuiExit {
+                    active,
+                    connections: edited_connections,
+                });
+            }
             Ok(Outcome::Switch {
                 addr: next_addr,
                 token: next_token,
                 name,
+                connections: edited,
             }) => {
+                if let Some(updated) = edited {
+                    connections = updated.clone();
+                    edited_connections = Some(updated);
+                }
                 addr = next_addr;
                 token = next_token;
                 active = Some(name);
@@ -953,7 +1028,10 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
                 session = Some(session_id);
                 retry_deadline = Some(Instant::now() + RECONNECT_WINDOW);
                 if !wait_before_retry(&mut key_rx).await {
-                    break Ok(active);
+                    break Ok(TuiExit {
+                        active,
+                        connections: edited_connections,
+                    });
                 }
             }
             Err(e) => {
@@ -961,7 +1039,10 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
                 match retry_deadline {
                     Some(deadline) if Instant::now() < deadline => {
                         if !wait_before_retry(&mut key_rx).await {
-                            break Ok(active);
+                            break Ok(TuiExit {
+                                active,
+                                connections: edited_connections,
+                            });
                         }
                     }
                     _ => break Err(e),
@@ -975,18 +1056,24 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
     result
 }
 
+/// 一次会话循环所需的连接参数（地址/凭证/工作区/可切换连接/活动连接）。
+struct SessionSetup<'a> {
+    addr:        &'a str,
+    token:       &'a str,
+    workspace:   &'a str,
+    connections: &'a [TuiConnection],
+    active:      Option<String>,
+}
+
 /// 连接一次、跑一个会话，直到退出或要求切换。
 async fn run_session(
     terminal: &mut ratatui::DefaultTerminal,
-    addr: &str,
-    token: &str,
-    options: &TuiOptions,
-    active: Option<String>,
+    setup: &SessionSetup<'_>,
     wanted_session: Option<String>,
     key_rx: &mut mpsc::Receiver<InputEvent>,
 ) -> Result<Outcome> {
-    let workspace = options.workspace.as_str();
-    let api = SessionApi::new(addr, token);
+    let workspace = setup.workspace;
+    let api = SessionApi::new(setup.addr, setup.token);
     // 会话列表既用于挑选连接目标，也供切换弹窗使用：连接时取一次快照
     let sessions = api.list_sessions(Some(workspace)).await?;
     let record = match pick_session(&sessions, wanted_session.as_deref()) {
@@ -998,8 +1085,8 @@ async fn run_session(
     };
 
     let mut client = OmaClient::connect(ConnectOptions {
-        addr:        addr.to_string(),
-        token:       token.to_string(),
+        addr:        setup.addr.to_string(),
+        token:       setup.token.to_string(),
         workspace:   workspace.to_string(),
         session_id:  record.session_id.clone(),
         client_type: ClientType::Tui,
@@ -1010,18 +1097,22 @@ async fn run_session(
     let mut app = {
         let ready = client.ready();
         let theme = TuiTheme::new(&ready.active_theme);
+        let theme_mode = ready.active_theme.mode.as_str().to_string();
+        let theme_accent = ready.active_theme.accent.clone();
         let mut app = App::new(
             ready.workspace.clone(),
             ready.active_model.clone(),
             ready.active_agent.clone(),
             theme,
         );
-        app.connections = options.connections.clone();
+        app.theme_mode = theme_mode;
+        app.theme_accent = theme_accent;
+        app.connections = setup.connections.to_vec();
         // 活动连接：优先调用方给出的名字，否则按地址匹配已保存的条目
-        app.active_conn = active.or_else(|| {
+        app.active_conn = setup.active.clone().or_else(|| {
             app.connections
                 .iter()
-                .find(|c| c.url == addr)
+                .find(|c| c.url == setup.addr)
                 .map(|c| c.name.clone())
         });
         app.session_id = record.session_id.clone();
@@ -1112,7 +1203,11 @@ async fn event_loop(
                 }
             },
             input = key_rx.recv() => {
-                let Some(input) = input else { return Ok(Outcome::Quit) };
+                let Some(input) = input else {
+                    return Ok(Outcome::Quit {
+                        connections: app.dirty_connections(),
+                    });
+                };
                 // 焦点事件只更新状态，不进按键处理
                 let Some(key) = classify_input(app, input) else {
                     terminal.draw(|frame| draw(frame, app))?;
@@ -1176,6 +1271,13 @@ fn clean_paste(text: &str) -> String {
 
 /// 处理按键；返回 Some 表示离开当前会话（退出或切换连接）。
 async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key: KeyEvent) -> Result<Option<Outcome>> {
+    // Ctrl-C 是全局退出键：无论弹窗/设置是否打开都要生效，
+    // 否则在设置页里按 Ctrl-C 只会被当成普通字符消费掉，退不出去。
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Ok(Some(Outcome::Quit {
+            connections: app.dirty_connections(),
+        }));
+    }
     // 弹窗：先于普通输入消费按键
     if app.picker.is_some() {
         let action = handle_picker_key(app, key);
@@ -1198,6 +1300,21 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         }
         return Ok(None);
     }
+    if app.settings.is_some() {
+        match handle_settings_key(app, key) {
+            SettingsAction::Close => app.settings = None,
+            SettingsAction::Switch { addr, token, name } => {
+                return Ok(Some(Outcome::Switch {
+                    addr,
+                    token,
+                    name,
+                    connections: app.dirty_connections(),
+                }));
+            }
+            SettingsAction::None => {}
+        }
+        return Ok(None);
+    }
     // 编辑重发中的 Esc 先取消分叉，再按一次才退出：直接退出会让用户丢掉正在编辑的内容
     if key.code == KeyCode::Esc && app.fork_from.is_some() {
         app.fork_from = None;
@@ -1206,7 +1323,9 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         return Ok(None);
     }
     if is_quit_key(key) {
-        return Ok(Some(Outcome::Quit));
+        return Ok(Some(Outcome::Quit {
+            connections: app.dirty_connections(),
+        }));
     }
 
     match key.code {
@@ -1353,6 +1472,10 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
             open_tree(app, api).await;
             Ok(None)
         }
+        "settings" => {
+            open_settings(app);
+            Ok(None)
+        }
         "new" => match api.create_session(&app.workspace, None).await {
             Ok(record) => Ok(Some(Outcome::SwitchSession {
                 session_id: record.session_id,
@@ -1389,7 +1512,9 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
             app.stick = true;
             Ok(None)
         }
-        "quit" => Ok(Some(Outcome::Quit)),
+        "quit" => Ok(Some(Outcome::Quit {
+            connections: app.dirty_connections(),
+        })),
         _ => {
             app.push_notice(
                 format!("未知命令 /{cmd}（/help 查看可用命令）"),
@@ -1403,7 +1528,228 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
 /// `/help` 的命令清单。
 const SLASH_HELP: &str = "/help 帮助 · /model 模型 · /agent 预设 · /reasoning 推理等级\n\
      /session 切换会话 · /new 新建会话 · /rename [标题] 重命名 · /tree 历史树\n\
-     /clear 清空记录显示 · /quit 退出";
+     /settings 设置 · /clear 清空记录显示 · /quit 退出";
+
+/// 打开设置界面；高亮落在当前活动连接那一行。
+fn open_settings(app: &mut App) {
+    let index = app
+        .connections
+        .iter()
+        .position(|conn| app.active_conn.as_deref() == Some(conn.name.as_str()))
+        .unwrap_or(0);
+    app.settings = Some(SettingsState { index, form: None });
+}
+
+/// 设置界面的行：先列连接，再是模型/预设/推理等级/主题。
+fn settings_rows(app: &App) -> Vec<SettingsRow> {
+    let mut rows: Vec<SettingsRow> = (0..app.connections.len())
+        .map(SettingsRow::Connection)
+        .collect();
+    rows.push(SettingsRow::Model);
+    rows.push(SettingsRow::Agent);
+    rows.push(SettingsRow::Reasoning);
+    rows.push(SettingsRow::Theme);
+    rows
+}
+
+/// 设置界面按键：移动、打开子项、增删改连接；Esc 关闭。
+fn handle_settings_key(app: &mut App, key: KeyEvent) -> SettingsAction {
+    // 表单打开时先给它消费按键
+    if app
+        .settings
+        .as_ref()
+        .and_then(|state| state.form.as_ref())
+        .is_some()
+    {
+        return handle_conn_form(app, key);
+    }
+    if app.settings.is_none() {
+        return SettingsAction::None;
+    }
+    let rows = settings_rows(app);
+    let last = rows.len().saturating_sub(1);
+    let index = app
+        .settings
+        .as_ref()
+        .map(|state| state.index)
+        .unwrap_or(0)
+        .min(last);
+    match key.code {
+        KeyCode::Esc => SettingsAction::Close,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(state) = app.settings.as_mut() {
+                state.index = index.saturating_sub(1);
+            }
+            SettingsAction::None
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(state) = app.settings.as_mut() {
+                state.index = (index + 1).min(last);
+            }
+            SettingsAction::None
+        }
+        KeyCode::Char('a') => {
+            open_conn_form(app, None);
+            SettingsAction::None
+        }
+        KeyCode::Char('e') => {
+            if let SettingsRow::Connection(i) = &rows[index] {
+                open_conn_form(app, Some(*i));
+            }
+            SettingsAction::None
+        }
+        KeyCode::Char('d') => {
+            if let SettingsRow::Connection(i) = &rows[index] {
+                let removed = app.connections.remove(*i);
+                if app.active_conn.as_deref() == Some(removed.name.as_str()) {
+                    app.active_conn = None;
+                }
+                app.connections_dirty = true;
+                let new_last = settings_rows(app).len().saturating_sub(1);
+                if let Some(state) = app.settings.as_mut() {
+                    state.index = state.index.min(new_last);
+                }
+            }
+            SettingsAction::None
+        }
+        KeyCode::Enter => match &rows[index] {
+            SettingsRow::Connection(i) => {
+                let conn = &app.connections[*i];
+                SettingsAction::Switch {
+                    addr:  conn.url.clone(),
+                    token: conn.token.clone(),
+                    name:  conn.name.clone(),
+                }
+            }
+            SettingsRow::Model => {
+                open_model_picker(app);
+                SettingsAction::None
+            }
+            SettingsRow::Agent => {
+                open_agent_picker(app);
+                SettingsAction::None
+            }
+            SettingsRow::Reasoning => {
+                open_reasoning_picker(app);
+                SettingsAction::None
+            }
+            SettingsRow::Theme => {
+                app.push_notice(
+                    "主题由服务端配置决定（可在 Web 设置里修改）",
+                    Style::default().fg(app.theme.muted),
+                );
+                SettingsAction::None
+            }
+        },
+        _ => SettingsAction::None,
+    }
+}
+
+/// 打开连接编辑表单；`editing` 为 None 表示新增。
+fn open_conn_form(app: &mut App, editing: Option<usize>) {
+    let form = match editing.and_then(|i| app.connections.get(i)) {
+        Some(conn) => ConnForm {
+            name: conn.name.clone(),
+            url: conn.url.clone(),
+            token: conn.token.clone(),
+            field: 0,
+            editing,
+        },
+        None => ConnForm {
+            name:    String::new(),
+            url:     String::new(),
+            token:   String::new(),
+            field:   0,
+            editing: None,
+        },
+    };
+    if let Some(state) = app.settings.as_mut() {
+        state.form = Some(form);
+    }
+}
+
+/// 连接表单按键：Tab 切换字段、Enter 校验保存、Esc 取消。
+fn handle_conn_form(app: &mut App, key: KeyEvent) -> SettingsAction {
+    let Some(mut form) = app.settings.as_ref().and_then(|state| state.form.clone()) else {
+        return SettingsAction::None;
+    };
+    match key.code {
+        KeyCode::Esc => {
+            if let Some(state) = app.settings.as_mut() {
+                state.form = None;
+            }
+            return SettingsAction::None;
+        }
+        KeyCode::Tab => form.field = (form.field + 1) % 3,
+        KeyCode::BackTab => form.field = (form.field + 2) % 3,
+        KeyCode::Backspace => {
+            let target = match form.field {
+                0 => &mut form.name,
+                1 => &mut form.url,
+                _ => &mut form.token,
+            };
+            target.pop();
+        }
+        KeyCode::Enter => {
+            if commit_conn_form(app, &form) {
+                if let Some(state) = app.settings.as_mut() {
+                    state.form = None;
+                }
+                return SettingsAction::None;
+            }
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => match form.field {
+            0 => form.name.push(c),
+            1 => form.url.push(c),
+            _ => form.token.push(c),
+        },
+        _ => {}
+    }
+    if let Some(state) = app.settings.as_mut() {
+        state.form = Some(form);
+    }
+    SettingsAction::None
+}
+
+/// 校验并写入连接表单：名称/地址非空、名称不与他人重复。
+fn commit_conn_form(app: &mut App, form: &ConnForm) -> bool {
+    let name = form.name.trim();
+    let url = form.url.trim();
+    if name.is_empty() || url.is_empty() {
+        app.push_notice("连接名称与地址都不能为空", Style::default().fg(app.theme.error));
+        return false;
+    }
+    if app
+        .connections
+        .iter()
+        .enumerate()
+        .any(|(i, conn)| Some(i) != form.editing && conn.name == name)
+    {
+        app.push_notice(
+            format!("已存在名为「{name}」的连接"),
+            Style::default().fg(app.theme.error),
+        );
+        return false;
+    }
+
+    let conn = TuiConnection {
+        name:  name.to_string(),
+        url:   url.to_string(),
+        token: form.token.trim().to_string(),
+    };
+    match form.editing {
+        Some(i) if i < app.connections.len() => {
+            let old_name = app.connections[i].name.clone();
+            app.connections[i] = conn;
+            if app.active_conn.as_deref() == Some(old_name.as_str()) {
+                app.active_conn = Some(name.to_string());
+            }
+        }
+        _ => app.connections.push(conn),
+    }
+    app.connections_dirty = true;
+    true
+}
 
 /// 打开连接切换弹窗；无已保存连接时仅提示，不进入空列表。
 fn open_picker(app: &mut App) {
@@ -2085,7 +2431,12 @@ async fn apply_picker_action(
         return Ok(None);
     };
     match action {
-        PickerAction::SwitchConnection { addr, token, name } => Ok(Some(Outcome::Switch { addr, token, name })),
+        PickerAction::SwitchConnection { addr, token, name } => Ok(Some(Outcome::Switch {
+            addr,
+            token,
+            name,
+            connections: app.dirty_connections(),
+        })),
         PickerAction::SwitchSession { session_id } => Ok(Some(Outcome::SwitchSession { session_id })),
         PickerAction::SetModel(model) => {
             send_setting(app, client, AgentCommand::SetModel { model }, "切换模型").await;
@@ -2328,6 +2679,136 @@ fn draw(frame: &mut Frame, app: &App) {
     if let Some(tree) = &app.tree_view {
         draw_tree(frame, tree, area, theme);
     }
+    if let Some(settings) = &app.settings {
+        draw_settings(frame, app, settings, area, theme);
+    }
+}
+
+/// 设置界面：连接列表 + 模型/预设/推理等级/主题；连接可增删改与切换。
+fn draw_settings(frame: &mut Frame, app: &App, settings: &SettingsState, area: Rect, theme: TuiTheme) {
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " 设置 · ↑/↓ 选择 · Enter 打开/切换 · A 新增连接 E 编辑 D 删除 · Esc 关闭 ",
+            Style::default().fg(theme.muted),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = settings_rows(app);
+    let visible = inner.height as usize;
+    let window = picker_window(rows.len(), settings.index, visible.max(1));
+    let start = window.start;
+    let lines: Vec<Line<'static>> = rows[window.clone()]
+        .iter()
+        .enumerate()
+        .map(|(offset, row)| {
+            let selected = start + offset == settings.index;
+            let text = settings_row_text(app, row);
+            let style = if selected {
+                Style::default().fg(theme.base).bg(theme.accent)
+            } else if settings_row_is_active(app, row) {
+                Style::default().fg(theme.accent)
+            } else {
+                Style::default().fg(theme.subtext)
+            };
+            let text = if selected {
+                pad_to_width(&text, inner.width as usize)
+            } else {
+                text
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+
+    if let Some(form) = &settings.form {
+        draw_conn_form(frame, form, area, theme);
+    }
+}
+
+/// 设置一行的文本：连接显示「● 名称  地址」，其余显示「标签  当前值」。
+fn settings_row_text(app: &App, row: &SettingsRow) -> String {
+    match row {
+        SettingsRow::Connection(i) => match app.connections.get(*i) {
+            Some(conn) => {
+                let marker = if app.active_conn.as_deref() == Some(conn.name.as_str()) {
+                    "●"
+                } else {
+                    "○"
+                };
+                format!("{marker} {}   {}", conn.name, conn.url)
+            }
+            None => String::new(),
+        },
+        SettingsRow::Model => format!("模型        {}", app.model),
+        SettingsRow::Agent => format!("预设        {}", app.agent),
+        SettingsRow::Reasoning => {
+            let level = if app.reasoning_level.is_empty() {
+                "模型默认"
+            } else {
+                app.reasoning_level.as_str()
+            };
+            format!("推理等级    {level}")
+        }
+        SettingsRow::Theme => format!("主题        {} · {}", app.theme_mode, app.theme_accent),
+    }
+}
+
+/// 该行是否代表当前生效的连接（用于强调色）。
+fn settings_row_is_active(app: &App, row: &SettingsRow) -> bool {
+    match row {
+        SettingsRow::Connection(i) => app
+            .connections
+            .get(*i)
+            .is_some_and(|conn| app.active_conn.as_deref() == Some(conn.name.as_str())),
+        _ => false,
+    }
+}
+
+/// 连接编辑表单弹窗：三段字段，当前字段高亮。
+fn draw_conn_form(frame: &mut Frame, form: &ConnForm, area: Rect, theme: TuiTheme) {
+    let width = area.width.saturating_sub(8).min(64);
+    let height = 6;
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let title = if form.editing.is_some() {
+        " 编辑连接 "
+    } else {
+        " 新增连接 "
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            format!("{title}· Tab 切换 · Enter 保存 · Esc 取消 "),
+            Style::default().fg(theme.muted),
+        ));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let fields = [("名称", &form.name), ("地址", &form.url), ("凭证", &form.token)];
+    let lines: Vec<Line<'static>> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let mut style = Style::default().fg(theme.subtext);
+            if i == form.field {
+                style = style.add_modifier(Modifier::BOLD).fg(theme.accent);
+            }
+            Line::from(Span::styled(format!("{label}  {value}"), style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
 /// 全屏历史树：整棵树带连接线平铺，选中态用主题强调色实底 + base 文字。
@@ -2875,6 +3356,114 @@ mod tests {
 
         handle_slash(&mut app, &api, "help", "").await.unwrap();
         assert!(app.entries.last().unwrap().text.contains("/model"));
+    }
+
+    fn conn(name: &str, url: &str, token: &str) -> TuiConnection {
+        TuiConnection {
+            name:  name.into(),
+            url:   url.into(),
+            token: token.into(),
+        }
+    }
+
+    /// 设置界面行：连接若干 + 模型/预设/推理等级/主题；Enter 连接行请求切换。
+    #[test]
+    fn test_settings_rows_and_switch() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        app.connections = vec![conn("a", "http://a", "ta"), conn("b", "http://b", "tb")];
+        app.active_conn = Some("b".into());
+
+        // 高亮落在活动连接上
+        open_settings(&mut app);
+        assert_eq!(app.settings.as_ref().unwrap().index, 1);
+        assert_eq!(settings_rows(&app).len(), 2 + 4, "两条连接 + 四项设置");
+
+        // Enter 在连接行返回切换目标
+        match handle_settings_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+            SettingsAction::Switch { addr, name, .. } => {
+                assert_eq!(addr, "http://b");
+                assert_eq!(name, "b");
+            }
+            _ => panic!("连接行 Enter 应请求切换"),
+        }
+        assert!(matches!(
+            handle_settings_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            SettingsAction::Close
+        ));
+    }
+
+    /// 连接表单：新增/编辑写回、重名与空值拒绝、编辑改名时活动连接跟随。
+    #[test]
+    fn test_connection_form_validation_and_edits() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        app.connections = vec![conn("a", "http://a", "ta")];
+        open_settings(&mut app);
+
+        // 新增
+        let add = ConnForm {
+            name:    "c".into(),
+            url:     "http://c".into(),
+            token:   "tc".into(),
+            field:   0,
+            editing: None,
+        };
+        assert!(commit_conn_form(&mut app, &add));
+        assert_eq!(app.connections.len(), 2);
+        assert!(app.connections_dirty, "改动过就要回传写盘");
+
+        // 重名拒绝（新增）
+        let dup = ConnForm {
+            name:    "a".into(),
+            url:     "http://x".into(),
+            token:   String::new(),
+            field:   0,
+            editing: None,
+        };
+        assert!(!commit_conn_form(&mut app, &dup));
+        assert_eq!(app.connections.len(), 2);
+
+        // 空名称拒绝
+        let empty = ConnForm {
+            name:    "   ".into(),
+            url:     "http://x".into(),
+            token:   String::new(),
+            field:   0,
+            editing: None,
+        };
+        assert!(!commit_conn_form(&mut app, &empty));
+
+        // 编辑第 0 条并改名：活动连接跟随
+        app.active_conn = Some("a".into());
+        let edit = ConnForm {
+            name:    "a2".into(),
+            url:     "http://a2".into(),
+            token:   "t".into(),
+            field:   0,
+            editing: Some(0),
+        };
+        assert!(commit_conn_form(&mut app, &edit));
+        assert_eq!(app.connections[0].name, "a2");
+        assert_eq!(app.active_conn.as_deref(), Some("a2"));
+    }
+
+    /// 连接表单按键：Tab 切换字段、输入落到当前字段、Esc 取消。
+    #[test]
+    fn test_connection_form_keys() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        open_settings(&mut app);
+        open_conn_form(&mut app, None);
+
+        handle_conn_form(&mut app, KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert_eq!(app.settings.as_ref().unwrap().form.as_ref().unwrap().name, "h");
+        handle_conn_form(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.settings.as_ref().unwrap().form.as_ref().unwrap().field, 1);
+        handle_conn_form(&mut app, KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        let form = app.settings.as_ref().unwrap().form.as_ref().unwrap();
+        assert_eq!(form.url, "u");
+        assert_eq!(form.name, "h", "输入应落在切换后的字段");
+
+        handle_conn_form(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.settings.as_ref().unwrap().form.is_none(), "Esc 关闭表单");
     }
 
     /// 历史树平铺：先序 DFS、带连接线，当前分支与叶子标记正确。

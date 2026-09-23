@@ -489,13 +489,30 @@ async fn run_tui(
         active,
     };
 
-    if let Some(name) = oma_tui::run(options).await? {
+    // TUI 退出时回传最终活动连接与（若在设置里改过）连接清单，一并写回
+    let exit = oma_tui::run(options).await?;
+    let mut changed = false;
+    if let Some(connections) = exit.connections {
+        client.connections = connections
+            .into_iter()
+            .map(|conn| oma_config::Connection {
+                name:  conn.name,
+                url:   conn.url,
+                token: conn.token,
+            })
+            .collect();
+        changed = true;
+    }
+    if let Some(name) = exit.active {
         if client.active != name {
             client.active = name;
-            client
-                .save_to_file_atomic(&path)
-                .with_context(|| format!("无法把活动连接写入 {}", path.display()))?;
+            changed = true;
         }
+    }
+    if changed {
+        client
+            .save_to_file_atomic(&path)
+            .with_context(|| format!("无法把连接配置写入 {}", path.display()))?;
     }
     Ok(())
 }
