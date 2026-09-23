@@ -555,7 +555,9 @@ impl App {
                 EntryKind::Thinking if self.thinking_collapsed && !entry.open => {
                     lines.push(Line::from(Span::styled(
                         collapsed_label("思", entry.duration_ms),
-                        Style::default().fg(self.theme.muted),
+                        Style::default()
+                            .fg(self.theme.muted)
+                            .add_modifier(Modifier::DIM),
                     )));
                 }
                 // 展开的思考段把耗时放在首行前缀里（折叠态见上）
@@ -564,12 +566,28 @@ impl App {
                         Some(ms) => format!("思 · {}", format_duration(ms)),
                         None => "思".to_string(),
                     };
-                    push_wrapped(&mut lines, &prefix, &entry.text, entry.style, width);
+                    push_wrapped(&mut lines, &prefix, &entry.text, self.dim_style(entry), width);
                 }
-                _ => push_wrapped(&mut lines, entry_prefix(entry.kind), &entry.text, entry.style, width),
+                _ => push_wrapped(
+                    &mut lines,
+                    entry_prefix(entry.kind),
+                    &entry.text,
+                    self.dim_style(entry),
+                    width,
+                ),
             }
         }
         lines
+    }
+
+    /// 内容文本统一降一档亮度：模型回答、思考、工具调用与提示信息都用 DIM；
+    /// 用户消息与报错保持醒目（后者是故障信号，淡化会让人错过）。
+    fn dim_style(&self, entry: &Entry) -> Style {
+        match entry.kind {
+            EntryKind::User => entry.style,
+            EntryKind::Notice if entry.style.fg == Some(self.theme.error) => entry.style,
+            _ => entry.style.add_modifier(Modifier::DIM),
+        }
     }
 
     /// 用户块：整行铺满背景色（右侧补空格），首行不再带「你」标签。
@@ -597,10 +615,14 @@ impl App {
             self.theme.warning
         };
         let head = format!("{marker} {} {}{}", tool.name, tool.input, duration);
-        lines.push(Line::from(Span::styled(
-            head.trim_end().to_string(),
-            Style::default().fg(head_color),
-        )));
+        // 报错保持醒目，其余工具内容降一档亮度
+        let head_style = Style::default().fg(head_color);
+        let head_style = if tool.is_error {
+            head_style
+        } else {
+            head_style.add_modifier(Modifier::DIM)
+        };
+        lines.push(Line::from(Span::styled(head.trim_end().to_string(), head_style)));
 
         if collapsed || tool.output.is_empty() {
             return;
@@ -613,7 +635,13 @@ impl App {
         let head_lines: Vec<&str> = tool.output.lines().take(6).collect();
         let suffix = if tool.output.lines().count() > 6 { "\n…" } else { "" };
         let body = format!("{}{}", head_lines.join("\n"), suffix);
-        push_wrapped(lines, "  ", &body, Style::default().fg(body_color), width);
+        let body_style = Style::default().fg(body_color);
+        let body_style = if tool.is_error {
+            body_style
+        } else {
+            body_style.add_modifier(Modifier::DIM)
+        };
+        push_wrapped(lines, "  ", &body, body_style, width);
     }
 }
 
@@ -644,7 +672,8 @@ fn push_wrapped(lines: &mut Vec<Line<'static>>, prefix: &str, text: &str, style:
         } else {
             " ".repeat(pad)
         };
-        lines.push(Line::from(vec![Span::styled(head, style), Span::raw(chunk)]));
+        // 正文与前缀同一样式：此前正文用 Span::raw，颜色只落在前缀上（淡色块看不出效果）
+        lines.push(Line::from(Span::styled(format!("{head}{chunk}"), style)));
     }
 }
 
@@ -2350,6 +2379,37 @@ mod tests {
         assert_eq!(format_duration(320), "320ms");
         assert_eq!(format_duration(1500), "1.5s");
         assert_eq!(format_duration(65_000), "1m05s");
+    }
+
+    /// 内容文本降一档亮度：模型回答/思考/提示用 DIM，用户与报错保持醒目。
+    #[test]
+    fn test_content_dimmed_but_user_and_error_stay_bright() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        app.push_user("hi", Style::default());
+        app.append_assistant("answer", Style::default());
+        app.append_thinking("think", Style::default());
+        app.finish_thinking(None);
+        app.push_notice("info", Style::default());
+        app.push_notice("boom", Style::default().fg(app.theme.error));
+
+        let dimmed = |needle: &str| style_of(&app, needle).add_modifier.contains(Modifier::DIM);
+        assert!(dimmed("answer"), "模型回答应降亮度");
+        assert!(dimmed("think"), "思考应降亮度");
+        assert!(dimmed("info"), "提示信息应降亮度");
+        assert!(!dimmed("hi"), "用户消息保持醒目");
+        assert!(!dimmed("boom"), "报错保持醒目");
+    }
+
+    /// 找到包含指定文本的渲染片段的样式。
+    fn style_of(app: &App, needle: &str) -> Style {
+        for line in app.wrapped_lines(80) {
+            for span in &line.spans {
+                if span.content.contains(needle) {
+                    return span.style;
+                }
+            }
+        }
+        panic!("渲染结果里找不到 {needle:?}");
     }
 
     /// 思考段耗时：展开态挂在首行前缀，折叠态挂在折叠标签。
