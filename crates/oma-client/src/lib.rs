@@ -167,6 +167,51 @@ impl SessionApi {
         serde_json::from_value(value).context("Unexpected message tree payload")
     }
 
+    /// 删除消息及其整棵子树；返回（被删消息 id, 删除后的当前叶子）。
+    pub async fn delete_message(&self, session_id: &str, message_id: &str) -> Result<(Vec<String>, Option<String>)> {
+        let resp = self
+            .http
+            .delete(format!(
+                "{}/api/sessions/{}/messages/{}",
+                self.base, session_id, message_id
+            ))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        let value = Self::ensure_ok(resp).await?;
+        let deleted = value["deleted"]
+            .as_array()
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let leaf = value["current_leaf_id"].as_str().map(str::to_string);
+        Ok((deleted, leaf))
+    }
+
+    /// 真正下发的系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录）。
+    pub async fn system_prompt(&self, workspace: &str, model: &str, agent: &str) -> Result<String> {
+        let mut url = format!("{}/api/system-prompt?workspace={}", self.base, urlencode(workspace));
+        if !model.is_empty() {
+            url.push_str(&format!("&model={}", urlencode(model)));
+        }
+        if !agent.is_empty() {
+            url.push_str(&format!("&agent={}", urlencode(agent)));
+        }
+        let resp = self
+            .http
+            .get(url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        let value = Self::ensure_ok(resp).await?;
+        Ok(value["prompt"].as_str().unwrap_or_default().to_string())
+    }
+
     /// 创建工作区会话
     pub async fn create_session(&self, workspace: &str, title: Option<&str>) -> Result<SessionRecord> {
         let mut payload = serde_json::json!({ "workspace": workspace });

@@ -416,66 +416,72 @@ impl Entry {
 }
 
 struct App {
-    workspace:          String,
-    model:              String,
-    agent:              String,
+    workspace:               String,
+    model:                   String,
+    agent:                   String,
     /// 当前会话 id；弹窗里据此标记「就是它」
-    session_id:         String,
+    session_id:              String,
     /// 当前工作区的会话列表：连接时取一次快照，供切换弹窗使用
-    sessions:           Vec<SessionRecord>,
+    sessions:                Vec<SessionRecord>,
     /// 可选模型清单（provider → 模型），握手下发
-    model_catalog:      BTreeMap<String, Vec<ModelInfo>>,
+    model_catalog:           BTreeMap<String, Vec<ModelInfo>>,
     /// 可选 Agent 预设，握手下发
-    agents:             Vec<AgentSummary>,
+    agents:                  Vec<AgentSummary>,
     /// 当前推理等级；空串表示未设置
-    reasoning_level:    String,
+    reasoning_level:         String,
     /// 当前分支的叶子消息；分支弹窗据此标记「就是这条」
-    current_leaf:       Option<String>,
-    connected:          bool,
-    busy:               bool,
+    current_leaf:            Option<String>,
+    connected:               bool,
+    busy:                    bool,
     /// 本轮开始的墙钟时刻：整轮耗时由此计（`TurnFinished` 时取差）
-    turn_started_at:    Option<Instant>,
-    queue:              usize,
-    entries:            Vec<Entry>,
-    input:              String,
+    turn_started_at:         Option<Instant>,
+    queue:                   usize,
+    entries:                 Vec<Entry>,
+    input:                   String,
     /// 编辑重发的分叉点：`Some(parent_id)` 表示下一次发送要从该节点长出分支
-    fork_from:          Option<String>,
+    fork_from:               Option<String>,
     /// 是否折叠思考块（进行中的思考段不受影响）
-    thinking_collapsed: bool,
+    thinking_collapsed:      bool,
     /// 是否折叠工具调用块（进行中的调用不受影响）
-    tool_collapsed:     bool,
+    tool_collapsed:          bool,
     /// 分叉点的展示文案（来源用户消息的摘要），发送时写进分隔行
-    fork_label:         String,
-    scroll:             u16,
-    stick:              bool,
+    fork_label:              String,
+    scroll:                  u16,
+    stick:                   bool,
     /// 最近一次请求的上下文占用（tokens, context_len）
-    context:            Option<(usize, usize)>,
+    context:                 Option<(usize, usize)>,
     /// 可切换的已保存连接
-    connections:        Vec<TuiConnection>,
+    connections:             Vec<TuiConnection>,
     /// 当前活动连接名
-    active_conn:        Option<String>,
+    active_conn:             Option<String>,
     /// 弹窗选择器；None = 未打开
-    picker:             Option<Picker>,
+    picker:                  Option<Picker>,
     /// 全屏历史树选择器；None = 未打开
-    tree_view:          Option<TreeSelector>,
+    tree_view:               Option<TreeSelector>,
     /// 设置界面；None = 未打开
-    settings:           Option<SettingsState>,
+    settings:                Option<SettingsState>,
     /// 连接清单是否被设置界面改过（决定退出时是否回传写盘）
-    connections_dirty:  bool,
+    connections_dirty:       bool,
     /// 已上传、待随下一条消息发送的剪贴板图片附件（session_attachment:// 引用）
-    pending_images:     Vec<String>,
+    pending_images:          Vec<String>,
+    /// 真正下发的系统提示词（`GET /api/system-prompt`）；未取到时为 None
+    system_prompt:           Option<String>,
+    /// 系统提示词折叠块是否收起
+    system_prompt_collapsed: bool,
+    /// 模型/预设变化后需要重取系统提示词
+    system_prompt_dirty:     bool,
     /// 文本输入弹窗；None = 未打开
-    prompt:             Option<TextPrompt>,
+    prompt:                  Option<TextPrompt>,
     /// 终端是否处于聚焦状态；仅失焦时才发系统通知
-    focused:            bool,
+    focused:                 bool,
     /// 由握手下发主题导出的语义配色
-    theme:              TuiTheme,
+    theme:                   TuiTheme,
     /// 主题模式名（light/dark/system），设置页只读展示
-    theme_mode:         String,
+    theme_mode:              String,
     /// 当前强调色令牌名，设置页只读展示
-    theme_accent:       String,
+    theme_accent:            String,
     /// 进程启动时刻：活动动画的相位由此推进
-    started_at:         Instant,
+    started_at:              Instant,
 }
 
 impl App {
@@ -510,6 +516,9 @@ impl App {
             settings: None,
             connections_dirty: false,
             pending_images: Vec::new(),
+            system_prompt: None,
+            system_prompt_collapsed: true,
+            system_prompt_dirty: false,
             prompt: None,
             // 终端未上报焦点事件时按聚焦处理：宁可不打扰，也不在用户正看着时弹通知
             focused: true,
@@ -739,6 +748,32 @@ impl App {
             body_style.add_modifier(Modifier::DIM)
         };
         push_wrapped(lines, "  ", &body, body_style, width);
+    }
+
+    /// 系统提示词折叠块：收起时只占一行，展开时按宽度折行（降一档亮度）。
+    fn system_prompt_lines(&self, width: usize) -> Vec<Line<'static>> {
+        let Some(prompt) = &self.system_prompt else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        if self.system_prompt_collapsed {
+            lines.push(Line::from(Span::styled(
+                format!("▶ 系统提示词 · {} 行（Ctrl+P 展开）", prompt.lines().count()),
+                Style::default().fg(self.theme.muted),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "▼ 系统提示词（Ctrl+P 收起）",
+                Style::default().fg(self.theme.muted),
+            )));
+            let style = Style::default()
+                .fg(self.theme.subtext)
+                .add_modifier(Modifier::DIM);
+            for chunk in wrap_text(prompt, width.max(8)) {
+                lines.push(Line::from(Span::styled(chunk, style)));
+            }
+        }
+        lines
     }
 }
 
@@ -998,6 +1033,18 @@ async fn attach_clipboard_image(app: &mut App, api: &SessionApi) {
     }
 }
 
+/// 取一次真正下发的系统提示词（随工作区/模型/预设变化重取）。
+async fn refresh_system_prompt(app: &mut App, api: &SessionApi) {
+    app.system_prompt_dirty = false;
+    match api
+        .system_prompt(&app.workspace, &app.model, &app.agent)
+        .await
+    {
+        Ok(prompt) => app.system_prompt = Some(prompt),
+        Err(e) => app.push_notice(format!("读取系统提示词失败: {e}"), Style::default().fg(app.theme.error)),
+    }
+}
+
 /// 启动 TUI 客户端：复用当前工作区最近的会话，没有则新建。
 ///
 /// 支持在界面内切换到 client.json 里保存的其他连接：切换时重建会话与事件流。
@@ -1171,6 +1218,7 @@ async fn run_session(
         app.model_catalog = ready.model_catalog.clone();
         app.agents = ready.agents.clone();
         app.reasoning_level = ready.reasoning_level.clone();
+        refresh_system_prompt(&mut app, &api).await;
         app.push_notice(
             format!("会话 {} 已连接", short_id(&ready.session_id)),
             Style::default().fg(theme.muted),
@@ -1242,6 +1290,9 @@ async fn event_loop(
             event = client.next_event() => match event {
                 Some(event) => {
                     apply_event(app, event);
+                    if app.system_prompt_dirty {
+                        refresh_system_prompt(app, api).await;
+                    }
                     terminal.draw(|frame| draw(frame, app))?;
                     last_draw = Instant::now();
                 }
@@ -1394,6 +1445,10 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         }
         KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.tool_collapsed = !app.tool_collapsed;
+        }
+        // 系统提示词折叠块开合
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.system_prompt_collapsed = !app.system_prompt_collapsed;
         }
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
@@ -2631,8 +2686,14 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             is_error,
             duration_ms,
         } => app.tool_finished(&call_id, &tool_name, output, is_error, duration_ms),
-        AgentEvent::ModelChanged { active_model } => app.model = active_model,
-        AgentEvent::AgentChanged { active_agent } => app.agent = active_agent,
+        AgentEvent::ModelChanged { active_model } => {
+            app.model = active_model;
+            app.system_prompt_dirty = true;
+        }
+        AgentEvent::AgentChanged { active_agent } => {
+            app.agent = active_agent;
+            app.system_prompt_dirty = true;
+        }
         AgentEvent::ActiveTurnCatchUp(snapshot) => {
             if !snapshot.accumulated_thinking.is_empty() {
                 let mut entry = Entry::text(
@@ -3104,7 +3165,10 @@ fn truncate_path(path: &str, max: usize) -> String {
 }
 
 fn draw_transcript(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
-    let lines = app.wrapped_lines(area.width.saturating_sub(2) as usize);
+    let width = area.width.saturating_sub(2) as usize;
+    // 系统提示词固定在记录之上（它是「这一轮模型收到什么」的上下文）
+    let mut lines = app.system_prompt_lines(width);
+    lines.extend(app.wrapped_lines(width));
     let visible = area.height.saturating_sub(2) as usize;
     let total = lines.len();
     let max_offset = total.saturating_sub(visible);
@@ -3137,7 +3201,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     } else if app.fork_from.is_some() {
         " 编辑重发：Enter 从历史处重新发送 · Esc 取消分叉 "
     } else {
-        " Enter 发送（@路径 附件）· Ctrl+V 图片 · Ctrl+X 中止 · Ctrl+G/Y 折叠思考/工具 · \
+        " Enter 发送（@路径 附件）· Ctrl+V 图片 · Ctrl+P 提示词 · Ctrl+X 中止 · Ctrl+G/Y 折叠思考/工具 · \
          Ctrl+O 连接 N 会话 B 分支 · Ctrl+L 模型 A 预设 R 推理 E 重发 T 改名 · Ctrl+U 清空 · Esc 退出 "
     };
     let block = Block::default()
@@ -3342,6 +3406,37 @@ mod tests {
             }
         }
         panic!("渲染结果里找不到 {needle:?}");
+    }
+
+    /// 系统提示词折叠块：默认收起为一行，展开后可见正文。
+    #[test]
+    fn test_system_prompt_block_collapse() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        assert!(app.system_prompt_lines(80).is_empty(), "未取到时不占行");
+
+        app.system_prompt = Some("第一行\n第二行".into());
+        let folded = line_text(&app.system_prompt_lines(80));
+        assert!(folded.contains("▶ 系统提示词"), "{folded}");
+        assert!(folded.contains("2 行"), "{folded}");
+        assert!(!folded.contains("第一行"), "{folded}");
+
+        app.system_prompt_collapsed = false;
+        let open = line_text(&app.system_prompt_lines(80));
+        assert!(open.contains("第一行") && open.contains("第二行"), "{open}");
+    }
+
+    /// 把渲染行拼成纯文本。
+    fn line_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// 状态带顺序：动画 + 模型名 + 工作路径 + 上下文占比；空闲显示实心盲文。
