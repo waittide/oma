@@ -462,6 +462,8 @@ struct App {
     settings:           Option<SettingsState>,
     /// 连接清单是否被设置界面改过（决定退出时是否回传写盘）
     connections_dirty:  bool,
+    /// 已上传、待随下一条消息发送的剪贴板图片附件（session_attachment:// 引用）
+    pending_images:     Vec<String>,
     /// 文本输入弹窗；None = 未打开
     prompt:             Option<TextPrompt>,
     /// 终端是否处于聚焦状态；仅失焦时才发系统通知
@@ -507,6 +509,7 @@ impl App {
             tree_view: None,
             settings: None,
             connections_dirty: false,
+            pending_images: Vec::new(),
             prompt: None,
             // 终端未上报焦点事件时按聚焦处理：宁可不打扰，也不在用户正看着时弹通知
             focused: true,
@@ -947,6 +950,54 @@ fn is_workspace_relative(rel: &str) -> bool {
     !rel.is_empty() && !std::path::Path::new(rel).is_absolute() && !rel.split(['/', '\\']).any(|seg| seg == "..")
 }
 
+/// 从系统剪贴板读取图片字节。
+///
+/// 终端本身拿不到剪贴板图片（除非终端私有协议），这里借助系统工具：
+/// Wayland 用 `wl-paste`、X11 用 `xclip`、macOS 用 `pngpaste`。都不可用或
+/// 剪贴板里没有图片时返回 None（由调用方给出提示）。
+fn read_clipboard_image() -> Option<Vec<u8>> {
+    let candidates: [(&str, &[&str]); 3] = [
+        ("wl-paste", &["--type", "image/png"]),
+        ("xclip", &["-selection", "clipboard", "-t", "image/png", "-o"]),
+        ("pngpaste", &["-"]),
+    ];
+    for (program, args) in candidates {
+        match std::process::Command::new(program).args(args).output() {
+            Ok(output) if output.status.success() && !output.stdout.is_empty() => return Some(output.stdout),
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// 读取剪贴板图片并作为附件上传，成功则记入待发送清单。
+///
+/// 失败时只提示不改输入：`@路径` 附件仍在；图片上传的成本已付，不该静默丢弃。
+async fn attach_clipboard_image(app: &mut App, api: &SessionApi) {
+    let bytes = match tokio::task::spawn_blocking(read_clipboard_image).await {
+        Ok(Some(bytes)) => bytes,
+        _ => {
+            app.push_notice(
+                "剪贴板里没有图片（需要 wl-paste / xclip / pngpaste 之一）",
+                Style::default().fg(app.theme.warning),
+            );
+            return;
+        }
+    };
+    let name = format!("clipboard-{}.png", app.pending_images.len() + 1);
+    match api.upload_attachment(&app.session_id, &name, bytes).await {
+        Ok(refs) => {
+            let count = refs.len();
+            app.pending_images.extend(refs);
+            app.push_notice(
+                format!("已添加图片附件 {count} 张（随下一条消息发送）"),
+                Style::default().fg(app.theme.muted),
+            );
+        }
+        Err(e) => app.push_notice(format!("上传剪贴板图片失败: {e}"), Style::default().fg(app.theme.error)),
+    }
+}
+
 /// 启动 TUI 客户端：复用当前工作区最近的会话，没有则新建。
 ///
 /// 支持在界面内切换到 client.json 里保存的其他连接：切换时重建会话与事件流。
@@ -1360,9 +1411,14 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
             client.cancel().await?;
             app.push_notice("已请求中止", Style::default().fg(app.theme.warning));
         }
+        // 粘贴剪贴板图片：作为附件随下一条消息发送
+        KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            attach_clipboard_image(app, api).await;
+        }
         KeyCode::Enter => {
             let raw = app.input.trim().to_string();
-            if raw.is_empty() {
+            // 只有待发送的图片附件时也允许发送（正文可以为空）
+            if raw.is_empty() && app.pending_images.is_empty() {
                 return Ok(None);
             }
             // 斜杠命令：本地分发，不发给模型
@@ -1376,6 +1432,10 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
                 Ok(attachments) => attachments,
                 Err(_) => return Ok(None),
             };
+            // 剪贴板图片此前已上传：取出来与 @路径 附件合并后一起发送
+            let pending_images: Vec<String> = std::mem::take(&mut app.pending_images);
+            let mut attachments = attachments;
+            attachments.extend(pending_images.iter().cloned());
             if text.is_empty() && attachments.is_empty() {
                 return Ok(None);
             }
@@ -1383,6 +1443,8 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
             if fork.is_some() && !attachments.is_empty() {
                 // ForkAndRun 没有附件位（协议如此），与 Web 一致直接拒绝，别把附件丢掉
                 app.fork_from = fork;
+                // 图片还没发出去，放回待发送清单，用户取消分叉后仍能用
+                app.pending_images = pending_images;
                 app.push_notice(
                     "编辑重发不支持附件：先取消分叉或去掉 @路径",
                     Style::default().fg(app.theme.error),
@@ -1402,8 +1464,12 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
             // 记录里仍显示用户原样敲的那行（含 @路径），发出去的内容才是摘掉标记的正文
             app.push_user(raw, Style::default().fg(app.theme.accent));
             if !attachments.is_empty() {
+                let mut parts = paths.clone();
+                if !pending_images.is_empty() {
+                    parts.push(format!("剪贴板图片 {} 张", pending_images.len()));
+                }
                 app.push_notice(
-                    format!("附件 {} 个：{}", attachments.len(), paths.join("、")),
+                    format!("附件 {} 个：{}", attachments.len(), parts.join("、")),
                     Style::default().fg(app.theme.muted),
                 );
             }
@@ -3071,8 +3137,8 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     } else if app.fork_from.is_some() {
         " 编辑重发：Enter 从历史处重新发送 · Esc 取消分叉 "
     } else {
-        " Enter 发送（@路径 附件）· Ctrl+X 中止 · Ctrl+G/Y 折叠思考/工具 · Ctrl+O 连接 N 会话 B 分支 · \
-         Ctrl+L 模型 A 预设 R 推理 E 重发 T 改名 · Ctrl+U 清空 · Esc 退出 "
+        " Enter 发送（@路径 附件）· Ctrl+V 图片 · Ctrl+X 中止 · Ctrl+G/Y 折叠思考/工具 · \
+         Ctrl+O 连接 N 会话 B 分支 · Ctrl+L 模型 A 预设 R 推理 E 重发 T 改名 · Ctrl+U 清空 · Esc 退出 "
     };
     let block = Block::default()
         .borders(Borders::ALL)
