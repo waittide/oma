@@ -383,6 +383,88 @@ impl SessionApi {
         Ok(value.as_array().cloned().unwrap_or_default())
     }
 
+    /// 列工作区某一层目录（`path` 为空表示根）。
+    pub async fn workspace_tree(&self, workspace: &str, path: &str) -> Result<serde_json::Value> {
+        let mut url = format!("{}/api/workspace/tree?workspace={}", self.base, urlencode(workspace));
+        if !path.is_empty() {
+            url.push_str(&format!("&path={}", urlencode(path)));
+        }
+        let resp = self
+            .http
+            .get(url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        Self::ensure_ok(resp).await
+    }
+
+    /// 读取工作区文件内容（超出预览上限时带 `truncated` 标记）。
+    pub async fn workspace_file(&self, workspace: &str, path: &str) -> Result<serde_json::Value> {
+        let resp = self
+            .http
+            .get(format!(
+                "{}/api/workspace/file?workspace={}&path={}",
+                self.base,
+                urlencode(workspace),
+                urlencode(path)
+            ))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        Self::ensure_ok(resp).await
+    }
+
+    /// 工作区 git 变更（分支 + 文件清单）。
+    pub async fn git_status(&self, workspace: &str) -> Result<serde_json::Value> {
+        let resp = self
+            .http
+            .get(format!(
+                "{}/api/git/status?workspace={}",
+                self.base,
+                urlencode(workspace)
+            ))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        Self::ensure_ok(resp).await
+    }
+
+    /// 单个文件相对 HEAD 的 diff（未跟踪文件按整篇新增）。
+    pub async fn git_diff(&self, workspace: &str, path: &str) -> Result<String> {
+        let resp = self
+            .http
+            .get(format!(
+                "{}/api/git/diff?workspace={}&path={}",
+                self.base,
+                urlencode(workspace),
+                urlencode(path)
+            ))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        let value = Self::ensure_ok(resp).await?;
+        Ok(value["diff"].as_str().unwrap_or_default().to_string())
+    }
+
+    /// 全部调色板（含 `builtin` 标记）。
+    pub async fn palettes(&self) -> Result<Vec<serde_json::Value>> {
+        self.list_json("/api/palettes").await
+    }
+
+    /// 写入用户调色板（内置 id 会被服务端拒绝）。
+    pub async fn put_palette(&self, palette: &serde_json::Value) -> Result<()> {
+        let id = palette
+            .get("id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        self.put_json(&format!("/api/palettes/{}", urlencode(id)), palette)
+            .await
+    }
+
     /// 创建工作区会话
     pub async fn create_session(&self, workspace: &str, title: Option<&str>) -> Result<SessionRecord> {
         let mut payload = serde_json::json!({ "workspace": workspace });

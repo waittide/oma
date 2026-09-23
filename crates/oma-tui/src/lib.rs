@@ -323,6 +323,35 @@ struct FormState {
     raw:    Option<serde_json::Value>,
 }
 
+/// 文件树里的一条（一层）。
+#[derive(Clone)]
+struct FileEntry {
+    name:   String,
+    path:   String,
+    is_dir: bool,
+}
+
+/// 文件树里铺平后的一行。
+struct FileRow {
+    path:   String,
+    name:   String,
+    is_dir: bool,
+    depth:  usize,
+}
+
+/// 全屏文件面板：左侧目录树（按需下钻）+ 右侧文件预览。
+struct FilePanel {
+    /// 已拉取的一层子项：键为目录相对路径（"" = 工作区根）
+    dirs:              HashMap<String, Vec<FileEntry>>,
+    expanded:          HashSet<String>,
+    rows:              Vec<FileRow>,
+    index:             usize,
+    preview_path:      String,
+    preview:           Vec<String>,
+    preview_truncated: bool,
+    preview_scroll:    usize,
+}
+
 /// 设置界面按键的结果。
 enum SettingsAction {
     None,
@@ -604,6 +633,8 @@ struct App {
     list_panel:              Option<ListPanel>,
     /// 通用编辑表单；None = 未打开
     form:                    Option<FormState>,
+    /// 全屏文件面板；None = 未打开
+    files:                   Option<FilePanel>,
     /// 连接清单是否被设置界面改过（决定退出时是否回传写盘）
     connections_dirty:       bool,
     /// 已上传、待随下一条消息发送的剪贴板图片附件（session_attachment:// 引用）
@@ -662,6 +693,7 @@ impl App {
             info: None,
             list_panel: None,
             form: None,
+            files: None,
             connections_dirty: false,
             pending_images: Vec::new(),
             system_prompt: None,
@@ -1582,6 +1614,10 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         handle_list_panel_key(app, api, key).await?;
         return Ok(None);
     }
+    if app.files.is_some() {
+        handle_file_panel_key(app, api, key).await?;
+        return Ok(None);
+    }
     if app.tree_view.is_some() {
         match handle_tree_key(app, key) {
             TreeAction::Close => app.tree_view = None,
@@ -1642,6 +1678,10 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         // 系统提示词折叠块开合
         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.system_prompt_collapsed = !app.system_prompt_collapsed;
+        }
+        // 全屏文件面板（目录树 + 预览）
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            open_file_panel(app, api).await;
         }
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
@@ -1794,6 +1834,10 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
             open_settings(app, api).await;
             Ok(None)
         }
+        "files" => {
+            open_file_panel(app, api).await;
+            Ok(None)
+        }
         "new" => match api.create_session(&app.workspace, None).await {
             Ok(record) => Ok(Some(Outcome::SwitchSession {
                 session_id: record.session_id,
@@ -1846,7 +1890,7 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
 /// `/help` 的命令清单。
 const SLASH_HELP: &str = "/help 帮助 · /model 模型 · /agent 预设 · /reasoning 推理等级\n\
      /session 切换会话 · /new 新建会话 · /rename [标题] 重命名 · /tree 历史树\n\
-     /delete 删除消息（含子树）· /settings 设置 · /clear 清空记录显示 · /quit 退出";
+     /files 文件 · /delete 删除消息（含子树）· /settings 设置 · /clear 清空记录显示 · /quit 退出";
 
 /// 打开设置界面；高亮落在当前活动连接那一行，并拉取只读清单（默认项/工具/预设/技能/MCP）。
 async fn open_settings(app: &mut App, api: &SessionApi) {
@@ -2677,6 +2721,200 @@ async fn delete_config_entry(api: &SessionApi, section: &str, key: &str) -> anyh
         map.remove(key);
     }
     api.put_config(&config).await
+}
+
+/// 打开全屏文件面板：拉工作区根一层，其余目录按需下钻。
+async fn open_file_panel(app: &mut App, api: &SessionApi) {
+    let mut panel = FilePanel {
+        dirs:              HashMap::new(),
+        expanded:          HashSet::new(),
+        rows:              Vec::new(),
+        index:             0,
+        preview_path:      String::new(),
+        preview:           Vec::new(),
+        preview_truncated: false,
+        preview_scroll:    0,
+    };
+    match api.workspace_tree(&app.workspace, "").await {
+        Ok(value) => {
+            panel.dirs.insert(String::new(), file_entries_from(&value));
+        }
+        Err(e) => {
+            app.push_notice(format!("读取文件树失败: {e}"), Style::default().fg(app.theme.error));
+            return;
+        }
+    }
+    rebuild_file_rows(&mut panel);
+    app.files = Some(panel);
+}
+
+/// 从树响应里取出这一层的子项。
+fn file_entries_from(value: &serde_json::Value) -> Vec<FileEntry> {
+    value
+        .get("children")
+        .and_then(|children| children.as_array())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .map(|node| FileEntry {
+                    name:   json_field(node, "name"),
+                    path:   json_field(node, "path"),
+                    is_dir: node
+                        .get("is_dir")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 按展开状态把目录树铺平成行。
+fn rebuild_file_rows(panel: &mut FilePanel) {
+    fn walk(
+        dirs: &HashMap<String, Vec<FileEntry>>,
+        expanded: &HashSet<String>,
+        dir: &str,
+        depth: usize,
+        rows: &mut Vec<FileRow>,
+    ) {
+        let Some(entries) = dirs.get(dir) else {
+            return;
+        };
+        for entry in entries {
+            rows.push(FileRow {
+                path: entry.path.clone(),
+                name: entry.name.clone(),
+                is_dir: entry.is_dir,
+                depth,
+            });
+            if entry.is_dir && expanded.contains(&entry.path) {
+                walk(dirs, expanded, &entry.path, depth + 1, rows);
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    walk(&panel.dirs, &panel.expanded, "", 0, &mut rows);
+    panel.rows = rows;
+    panel.index = panel.index.min(panel.rows.len().saturating_sub(1));
+}
+
+/// 拉取某目录的一层子项。
+async fn load_dir(app: &mut App, api: &SessionApi, dir: &str) -> bool {
+    match api.workspace_tree(&app.workspace, dir).await {
+        Ok(value) => {
+            let entries = file_entries_from(&value);
+            if let Some(panel) = app.files.as_mut() {
+                panel.dirs.insert(dir.to_string(), entries);
+            }
+            true
+        }
+        Err(e) => {
+            app.push_notice(format!("读取目录失败: {e}"), Style::default().fg(app.theme.error));
+            false
+        }
+    }
+}
+
+/// 读取并展示文件预览。
+async fn open_file_preview(app: &mut App, api: &SessionApi, path: &str) {
+    match api.workspace_file(&app.workspace, path).await {
+        Ok(value) => {
+            let content = value
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let truncated = value
+                .get("truncated")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if let Some(panel) = app.files.as_mut() {
+                panel.preview_path = path.to_string();
+                panel.preview = content.lines().map(str::to_string).collect();
+                panel.preview_truncated = truncated;
+                panel.preview_scroll = 0;
+            }
+        }
+        Err(e) => app.push_notice(format!("读取文件失败: {e}"), Style::default().fg(app.theme.error)),
+    }
+}
+
+/// 文件面板按键：上下选择、Enter/→ 展开或预览、←/Backspace 折叠、r 刷新、Esc 关闭。
+async fn handle_file_panel_key(app: &mut App, api: &SessionApi, key: KeyEvent) -> Result<()> {
+    let Some(panel) = app.files.as_ref() else {
+        return Ok(());
+    };
+    let index = panel.index;
+    let last = panel.rows.len().saturating_sub(1);
+    let selected = panel
+        .rows
+        .get(index)
+        .map(|row| (row.path.clone(), row.is_dir, row.depth));
+    match key.code {
+        KeyCode::Esc => app.files = None,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(panel) = app.files.as_mut() {
+                panel.index = index.saturating_sub(1);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(panel) = app.files.as_mut() {
+                panel.index = (index + 1).min(last);
+            }
+        }
+        KeyCode::PageUp => {
+            if let Some(panel) = app.files.as_mut() {
+                panel.preview_scroll = panel.preview_scroll.saturating_sub(10);
+            }
+        }
+        KeyCode::PageDown => {
+            if let Some(panel) = app.files.as_mut() {
+                panel.preview_scroll += 10;
+            }
+        }
+        KeyCode::Right | KeyCode::Enter => {
+            if let Some((path, is_dir, _)) = selected {
+                if is_dir {
+                    let loaded = app
+                        .files
+                        .as_ref()
+                        .is_some_and(|p| p.dirs.contains_key(&path));
+                    if !loaded && !load_dir(app, api, &path).await {
+                        return Ok(());
+                    }
+                    if let Some(panel) = app.files.as_mut() {
+                        panel.expanded.insert(path);
+                        rebuild_file_rows(panel);
+                    }
+                } else {
+                    open_file_preview(app, api, &path).await;
+                }
+            }
+        }
+        KeyCode::Left | KeyCode::Backspace => {
+            if let Some((path, true, _)) = selected {
+                if let Some(panel) = app.files.as_mut() {
+                    panel.expanded.remove(&path);
+                    rebuild_file_rows(panel);
+                }
+            }
+        }
+        KeyCode::Char('r') => {
+            if let Some(panel) = app.files.as_mut() {
+                panel.dirs.clear();
+                panel.expanded.clear();
+                panel.preview.clear();
+                panel.preview_path.clear();
+            }
+            if load_dir(app, api, "").await {
+                if let Some(panel) = app.files.as_mut() {
+                    rebuild_file_rows(panel);
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// 表单按键：Tab 换字段、Enter 换行/换字段、Ctrl+S 保存、Esc 取消。
@@ -4387,6 +4625,96 @@ fn draw(frame: &mut Frame, app: &App) {
     if let Some(form) = &app.form {
         draw_form(frame, form, area, theme);
     }
+    if let Some(files) = &app.files {
+        draw_file_panel(frame, files, area, theme);
+    }
+}
+
+/// 文件面板：左侧目录树 + 右侧预览（带行号）。
+fn draw_file_panel(frame: &mut Frame, panel: &FilePanel, area: Rect, theme: TuiTheme) {
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " 文件 · ↑/↓ 选择 · Enter/→ 展开或预览 · ← 折叠 · r 刷新 · Esc 关闭 ",
+            Style::default().fg(theme.muted),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // 左树 40%，右预览 60%
+    let tree_width = (inner.width as f32 * 0.4).round().clamp(16.0, 48.0) as u16;
+    let [tree_area, preview_area] =
+        Layout::horizontal([Constraint::Length(tree_width), Constraint::Min(10)]).areas(inner);
+
+    // 目录树
+    let visible = tree_area.height as usize;
+    let window = picker_window(panel.rows.len(), panel.index, visible.max(1));
+    let start = window.start;
+    let lines: Vec<Line<'static>> = panel.rows[window]
+        .iter()
+        .enumerate()
+        .map(|(offset, row)| {
+            let selected = start + offset == panel.index;
+            let marker = if row.is_dir {
+                if panel.expanded.contains(&row.path) {
+                    "▾ "
+                } else {
+                    "▸ "
+                }
+            } else {
+                "  "
+            };
+            let text = format!("{}{}{}", "  ".repeat(row.depth), marker, row.name);
+            let style = if selected {
+                Style::default().fg(theme.base).bg(theme.accent)
+            } else if row.is_dir {
+                Style::default().fg(theme.subtext)
+            } else {
+                Style::default().fg(theme.muted)
+            };
+            let text = if selected {
+                pad_to_width(&text, tree_area.width as usize)
+            } else {
+                text
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), tree_area);
+
+    // 预览：行号 + 内容
+    let title = if panel.preview_path.is_empty() {
+        "（选中文件后 Enter 预览）".to_string()
+    } else if panel.preview_truncated {
+        format!(" {}（已截断）", panel.preview_path)
+    } else {
+        format!(" {}", panel.preview_path)
+    };
+    let preview_lines: Vec<Line<'static>> = panel
+        .preview
+        .iter()
+        .enumerate()
+        .skip(panel.preview_scroll)
+        .take(preview_area.height as usize)
+        .map(|(i, line)| {
+            Line::from(vec![
+                Span::styled(format!("{:>4} ", i + 1), Style::default().fg(theme.muted)),
+                Span::styled(line.clone(), Style::default().fg(theme.subtext)),
+            ])
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(Text::from(preview_lines)).block(
+            Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(theme.muted))
+                .title(Span::styled(title, Style::default().fg(theme.muted))),
+        ),
+        preview_area,
+    );
 }
 
 /// 可编辑清单：预设 / 技能。
@@ -5407,6 +5735,52 @@ mod tests {
             handle_settings_key(&mut app, &api, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await,
             SettingsAction::Close
         ));
+    }
+
+    /// 文件树：按展开状态铺平，子项缩进一级。
+    #[test]
+    fn test_file_panel_flatten() {
+        let mut panel = FilePanel {
+            dirs:              HashMap::new(),
+            expanded:          HashSet::new(),
+            rows:              Vec::new(),
+            index:             0,
+            preview_path:      String::new(),
+            preview:           Vec::new(),
+            preview_truncated: false,
+            preview_scroll:    0,
+        };
+        panel.dirs.insert(
+            String::new(),
+            vec![
+                FileEntry {
+                    name:   "src".into(),
+                    path:   "src".into(),
+                    is_dir: true,
+                },
+                FileEntry {
+                    name:   "README.md".into(),
+                    path:   "README.md".into(),
+                    is_dir: false,
+                },
+            ],
+        );
+        panel.dirs.insert(
+            "src".into(),
+            vec![FileEntry {
+                name:   "main.rs".into(),
+                path:   "src/main.rs".into(),
+                is_dir: false,
+            }],
+        );
+        rebuild_file_rows(&mut panel);
+        assert_eq!(panel.rows.len(), 2, "未展开时只有根层");
+
+        panel.expanded.insert("src".into());
+        rebuild_file_rows(&mut panel);
+        let names: Vec<&str> = panel.rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, vec!["src", "main.rs", "README.md"]);
+        assert_eq!(panel.rows[1].depth, 1, "子项缩进一级");
     }
 
     /// MCP/提供商的文本↔JSON 转换：环境变量/请求头、参数、模型列表（保留隐藏字段）。
