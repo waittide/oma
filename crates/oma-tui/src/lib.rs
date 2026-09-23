@@ -270,6 +270,8 @@ enum ListKind {
     Mcp,
     /// 提供商（写回 `/api/config` 的 `providers`）
     Providers,
+    /// 调色板（内置只读；用户调色板可增删改）
+    Palettes,
 }
 
 /// 可编辑清单的一条。
@@ -286,10 +288,12 @@ struct ListEntry {
 
 /// 可编辑清单面板（预设 / 技能）。
 struct ListPanel {
-    title: String,
-    kind:  ListKind,
-    items: Vec<ListEntry>,
-    index: usize,
+    title:   String,
+    kind:    ListKind,
+    items:   Vec<ListEntry>,
+    index:   usize,
+    /// 面板内提示（如「内置条目只读」）：浮层挡住记录区时用户才看得到反馈
+    message: Option<String>,
 }
 
 /// 表单字段：单行元信息或多行正文。
@@ -308,6 +312,7 @@ enum FormKind {
     Skill,
     Mcp,
     Provider,
+    Palette,
 }
 
 /// 通用编辑表单（预设 / 技能）。
@@ -2122,10 +2127,7 @@ async fn handle_settings_key(app: &mut App, api: &SessionApi, key: KeyEvent) -> 
                 SettingsAction::None
             }
             SettingsRow::Theme => {
-                app.push_notice(
-                    "主题由服务端配置决定（可在 Web 设置里修改）",
-                    Style::default().fg(app.theme.muted),
-                );
+                open_list_panel(app, api, ListKind::Palettes).await;
                 SettingsAction::None
             }
             SettingsRow::Presets => {
@@ -2268,6 +2270,31 @@ async fn open_list_panel(app: &mut App, api: &SessionApi, kind: ListKind) {
                 })
                 .collect()
         }
+        ListKind::Palettes => {
+            let raw = match api.palettes().await {
+                Ok(list) => list,
+                Err(e) => {
+                    app.push_notice(format!("读取调色板失败: {e}"), Style::default().fg(app.theme.error));
+                    return;
+                }
+            };
+            raw.iter()
+                .map(|item| ListEntry {
+                    id:       json_field(item, "id"),
+                    label:    {
+                        let name = json_field(item, "name");
+                        if name.is_empty() { json_field(item, "id") } else { name }
+                    },
+                    detail:   json_field(item, "mode"),
+                    scope:    json_field(item, "mode"),
+                    readonly: item
+                        .get("builtin")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    raw:      item.clone(),
+                })
+                .collect()
+        }
         ListKind::Mcp | ListKind::Providers => {
             let config = match api.config().await {
                 Ok(config) => config,
@@ -2317,6 +2344,7 @@ async fn open_list_panel(app: &mut App, api: &SessionApi, kind: ListKind) {
         kind,
         items,
         index: 0,
+        message: None,
     });
 }
 
@@ -2327,6 +2355,7 @@ fn list_kind_title(kind: ListKind) -> &'static str {
         ListKind::Skills => "技能",
         ListKind::Mcp => "MCP",
         ListKind::Providers => "提供商",
+        ListKind::Palettes => "调色板",
     }
 }
 
@@ -2355,7 +2384,7 @@ async fn handle_list_panel_key(app: &mut App, api: &SessionApi, key: KeyEvent) -
             if let Some(list) = app.list_panel.as_ref() {
                 if let Some(entry) = list.items.get(index) {
                     if entry.readonly {
-                        app.push_notice("内置条目只读，可另存为新条目", Style::default().fg(app.theme.muted));
+                        set_list_message(app, "内置条目只读，可另存为新条目");
                     } else {
                         let (id, raw) = (entry.id.clone(), entry.raw.clone());
                         open_form(app, kind, &id, Some(&raw));
@@ -2371,13 +2400,14 @@ async fn handle_list_panel_key(app: &mut App, api: &SessionApi, key: KeyEvent) -
                 .map(|entry| (entry.id.clone(), entry.scope.clone(), entry.readonly));
             if let Some((id, scope, readonly)) = target {
                 if readonly {
-                    app.push_notice("内置条目不可删除", Style::default().fg(app.theme.error));
+                    set_list_message(app, "内置条目不可删除");
                 } else {
                     let result = match kind {
                         ListKind::Presets => api.delete_preset(&id, &scope, &app.workspace).await,
                         ListKind::Skills => api.delete_skill(&id, &scope, &app.workspace).await,
                         ListKind::Mcp => delete_config_entry(api, "mcp_servers", &id).await,
                         ListKind::Providers => delete_config_entry(api, "providers", &id).await,
+                        ListKind::Palettes => api.delete_palette(&id).await,
                     };
                     match result {
                         Ok(()) => {
@@ -2542,6 +2572,39 @@ fn open_form(app: &mut App, kind: ListKind, id: &str, raw: Option<&serde_json::V
                 ],
             )
         }
+        ListKind::Palettes => (
+            FormKind::Palette,
+            "调色板",
+            vec![
+                FormField {
+                    label:     "id".into(),
+                    value:     id.to_string(),
+                    multiline: false,
+                    locked:    raw.is_some(),
+                },
+                FormField {
+                    label:     "名称".into(),
+                    value:     text("name"),
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "模式".into(),
+                    value:     {
+                        let mode = text("mode");
+                        if mode.is_empty() { "dark".into() } else { mode }
+                    },
+                    multiline: false,
+                    locked:    false,
+                },
+                FormField {
+                    label:     "颜色".into(),
+                    value:     palette_colors_to_text(raw),
+                    multiline: true,
+                    locked:    false,
+                },
+            ],
+        ),
         ListKind::Providers => (
             FormKind::Provider,
             "提供商",
@@ -2686,6 +2749,36 @@ fn parse_args_json(text: &str) -> serde_json::Value {
             .map(|arg| serde_json::Value::String(arg.to_string()))
             .collect(),
     )
+}
+
+/// 把调色板的 26 个令牌拍成 `token=#hex` 多行文本（按规范顺序）。
+fn palette_colors_to_text(raw: Option<&serde_json::Value>) -> String {
+    let Some(value) = raw else {
+        return oma_contract::PALETTE_TOKENS
+            .iter()
+            .map(|token| format!("{token}=#000000"))
+            .collect::<Vec<_>>()
+            .join("\n");
+    };
+    oma_contract::PALETTE_TOKENS
+        .iter()
+        .map(|token| format!("{token}={}", json_field(value, token)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 解析 `token=#hex` 多行文本；畸形行跳过。
+fn parse_palette_colors(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let (token, color) = line.split_once('=')?;
+            let (token, color) = (token.trim(), color.trim());
+            if token.is_empty() || color.is_empty() {
+                return None;
+            }
+            Some((token.to_string(), color.to_string()))
+        })
+        .collect()
 }
 
 /// 解析「每行 `id | name | context_len | capabilities`」的模型列表；
@@ -3241,6 +3334,20 @@ async fn save_form(app: &mut App, api: &SessionApi) -> Result<()> {
             };
             save_config_entry(api, "mcp_servers", &name, server).await
         }
+        FormKind::Palette => {
+            let mut palette = form.raw.clone().unwrap_or_else(|| serde_json::json!({}));
+            if let Some(object) = palette.as_object_mut() {
+                object.remove("builtin");
+            }
+            palette["id"] = serde_json::Value::String(id.clone());
+            palette["name"] = serde_json::Value::String(name.clone());
+            let mode = value("模式").trim().to_lowercase();
+            palette["mode"] = serde_json::Value::String(if mode == "light" { "light" } else { "dark" }.into());
+            for (token, color) in parse_palette_colors(&value("颜色")) {
+                palette[token] = serde_json::Value::String(color);
+            }
+            api.put_palette(&palette).await
+        }
         FormKind::Provider => {
             let provider_raw = form.raw.as_ref();
             let provider = serde_json::json!({
@@ -3257,6 +3364,7 @@ async fn save_form(app: &mut App, api: &SessionApi) -> Result<()> {
         FormKind::Skill => ListKind::Skills,
         FormKind::Mcp => ListKind::Mcp,
         FormKind::Provider => ListKind::Providers,
+        FormKind::Palette => ListKind::Palettes,
     };
     match result {
         Ok(()) => {
@@ -3265,6 +3373,7 @@ async fn save_form(app: &mut App, api: &SessionApi) -> Result<()> {
             match kind {
                 ListKind::Presets | ListKind::Skills => reload_settings_lists(app, api).await,
                 ListKind::Mcp | ListKind::Providers => reload_settings_config(app, api).await,
+                ListKind::Palettes => {}
             }
             if app.list_panel.is_some() {
                 open_list_panel(app, api, kind).await;
@@ -4967,38 +5076,48 @@ fn draw_list_panel(frame: &mut Frame, list: &ListPanel, area: Rect, theme: TuiTh
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if let Some(message) = &list.message {
+        lines.push(Line::from(Span::styled(
+            message.clone(),
+            Style::default().fg(theme.warning),
+        )));
+    }
     let visible = inner.height as usize;
-    let window = picker_window(list.items.len(), list.index, visible.max(1));
+    let window = picker_window(list.items.len(), list.index, visible.saturating_sub(lines.len()).max(1));
     let start = window.start;
-    let lines: Vec<Line<'static>> = list.items[window]
-        .iter()
-        .enumerate()
-        .map(|(offset, item)| {
-            let selected = start + offset == list.index;
-            let mut text = format!("{}  [{}]", item.label, item.scope);
-            if item.readonly {
-                text.push_str(" · 内置");
-            }
-            if !item.detail.is_empty() {
-                text.push_str("  ");
-                text.push_str(&item.detail);
-            }
-            let style = if selected {
-                Style::default().fg(theme.base).bg(theme.accent)
-            } else if item.readonly {
-                Style::default().fg(theme.muted)
-            } else {
-                Style::default().fg(theme.subtext)
-            };
-            let text = if selected {
-                pad_to_width(&text, inner.width as usize)
-            } else {
-                text
-            };
-            Line::from(Span::styled(text, style))
-        })
-        .collect();
+    lines.extend(list.items[window].iter().enumerate().map(|(offset, item)| {
+        let selected = start + offset == list.index;
+        let mut text = format!("{}  [{}]", item.label, item.scope);
+        if item.readonly {
+            text.push_str(" · 内置");
+        }
+        if !item.detail.is_empty() {
+            text.push_str("  ");
+            text.push_str(&item.detail);
+        }
+        let style = if selected {
+            Style::default().fg(theme.base).bg(theme.accent)
+        } else if item.readonly {
+            Style::default().fg(theme.muted)
+        } else {
+            Style::default().fg(theme.subtext)
+        };
+        let text = if selected {
+            pad_to_width(&text, inner.width as usize)
+        } else {
+            text
+        };
+        Line::from(Span::styled(text, style))
+    }));
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+}
+
+/// 在清单面板内显示一条提示（浮层挡住记录区时的可见反馈）。
+fn set_list_message(app: &mut App, message: &str) {
+    if let Some(list) = app.list_panel.as_mut() {
+        list.message = Some(message.to_string());
+    }
 }
 
 /// 通用编辑表单：字段标签 + 值（聚焦字段高亮并显示光标）。
@@ -5971,6 +6090,30 @@ mod tests {
             handle_settings_key(&mut app, &api, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await,
             SettingsAction::Close
         ));
+    }
+
+    /// 调色板颜色文本 ↔ JSON：按规范令牌顺序拍平/解析。
+    #[test]
+    fn test_palette_color_text_roundtrip() {
+        let raw = serde_json::json!({ "id": "x", "base": "#111111", "text": "#eeeeee" });
+        let text = palette_colors_to_text(Some(&raw));
+        assert_eq!(text.lines().count(), oma_contract::PALETTE_TOKENS.len());
+        assert!(text.contains("base=#111111"));
+
+        let parsed = parse_palette_colors("base=#abc\ntext = #def\n坏的\n");
+        assert_eq!(
+            parsed,
+            vec![
+                ("base".to_string(), "#abc".to_string()),
+                ("text".to_string(), "#def".to_string())
+            ]
+        );
+
+        // 新增时给 26 行占位，字段数量与服务端一致
+        assert_eq!(
+            palette_colors_to_text(None).lines().count(),
+            oma_contract::PALETTE_TOKENS.len()
+        );
     }
 
     /// Git status 解析：普通变更与未跟踪文件。

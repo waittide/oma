@@ -465,6 +465,12 @@ impl SessionApi {
             .await
     }
 
+    /// 删除用户调色板（内置不可删）。
+    pub async fn delete_palette(&self, id: &str) -> Result<()> {
+        self.delete_with_query(&format!("/api/palettes/{}", urlencode(id)))
+            .await
+    }
+
     /// 创建工作区会话
     pub async fn create_session(&self, workspace: &str, title: Option<&str>) -> Result<SessionRecord> {
         let mut payload = serde_json::json!({ "workspace": workspace });
