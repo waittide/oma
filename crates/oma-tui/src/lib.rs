@@ -352,6 +352,25 @@ struct FilePanel {
     preview_scroll:    usize,
 }
 
+/// Git 变更里的一条文件。
+#[derive(Clone)]
+struct GitFile {
+    path:      String,
+    index:     String,
+    worktree:  String,
+    untracked: bool,
+}
+
+/// 全屏 Git 面板：左侧变更清单 + 右侧单文件 diff。
+struct GitPanel {
+    branch:      String,
+    files:       Vec<GitFile>,
+    index:       usize,
+    diff_path:   String,
+    diff:        Vec<String>,
+    diff_scroll: usize,
+}
+
 /// 设置界面按键的结果。
 enum SettingsAction {
     None,
@@ -635,6 +654,8 @@ struct App {
     form:                    Option<FormState>,
     /// 全屏文件面板；None = 未打开
     files:                   Option<FilePanel>,
+    /// 全屏 Git 面板；None = 未打开
+    git:                     Option<GitPanel>,
     /// 连接清单是否被设置界面改过（决定退出时是否回传写盘）
     connections_dirty:       bool,
     /// 已上传、待随下一条消息发送的剪贴板图片附件（session_attachment:// 引用）
@@ -694,6 +715,7 @@ impl App {
             list_panel: None,
             form: None,
             files: None,
+            git: None,
             connections_dirty: false,
             pending_images: Vec::new(),
             system_prompt: None,
@@ -1618,6 +1640,10 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         handle_file_panel_key(app, api, key).await?;
         return Ok(None);
     }
+    if app.git.is_some() {
+        handle_git_panel_key(app, api, key).await?;
+        return Ok(None);
+    }
     if app.tree_view.is_some() {
         match handle_tree_key(app, key) {
             TreeAction::Close => app.tree_view = None,
@@ -1682,6 +1708,10 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         // 全屏文件面板（目录树 + 预览）
         KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             open_file_panel(app, api).await;
+        }
+        // 全屏 Git 面板（变更 + diff）
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            open_git_panel(app, api).await;
         }
         KeyCode::PageUp => {
             app.scroll = app.scroll.saturating_sub(10);
@@ -1838,6 +1868,10 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
             open_file_panel(app, api).await;
             Ok(None)
         }
+        "diff" => {
+            open_git_panel(app, api).await;
+            Ok(None)
+        }
         "new" => match api.create_session(&app.workspace, None).await {
             Ok(record) => Ok(Some(Outcome::SwitchSession {
                 session_id: record.session_id,
@@ -1890,7 +1924,8 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
 /// `/help` 的命令清单。
 const SLASH_HELP: &str = "/help 帮助 · /model 模型 · /agent 预设 · /reasoning 推理等级\n\
      /session 切换会话 · /new 新建会话 · /rename [标题] 重命名 · /tree 历史树\n\
-     /files 文件 · /delete 删除消息（含子树）· /settings 设置 · /clear 清空记录显示 · /quit 退出";
+     /files 文件 · /diff 变更 · /delete 删除消息（含子树）· /settings 设置 · /clear 清空记录显示\n\
+     /quit 退出";
 
 /// 打开设置界面；高亮落在当前活动连接那一行，并拉取只读清单（默认项/工具/预设/技能/MCP）。
 async fn open_settings(app: &mut App, api: &SessionApi) {
@@ -2837,6 +2872,115 @@ async fn open_file_preview(app: &mut App, api: &SessionApi, path: &str) {
         }
         Err(e) => app.push_notice(format!("读取文件失败: {e}"), Style::default().fg(app.theme.error)),
     }
+}
+
+/// 打开全屏 Git 面板：拉分支与变更清单，diff 按需加载。
+async fn open_git_panel(app: &mut App, api: &SessionApi) {
+    match api.git_status(&app.workspace).await {
+        Ok(value) => {
+            let files = parse_git_files(&value);
+            app.git = Some(GitPanel {
+                branch: json_field(&value, "branch"),
+                files,
+                index: 0,
+                diff_path: String::new(),
+                diff: Vec::new(),
+                diff_scroll: 0,
+            });
+        }
+        Err(e) => app.push_notice(format!("读取变更失败: {e}"), Style::default().fg(app.theme.error)),
+    }
+}
+
+/// 解析 git status 响应里的变更文件。
+fn parse_git_files(value: &serde_json::Value) -> Vec<GitFile> {
+    value
+        .get("files")
+        .and_then(|files| files.as_array())
+        .map(|files| {
+            files
+                .iter()
+                .map(|file| GitFile {
+                    path:      json_field(file, "path"),
+                    index:     json_field(file, "index"),
+                    worktree:  json_field(file, "worktree"),
+                    untracked: file
+                        .get("untracked")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 加载选中文件的 diff。
+async fn load_git_diff(app: &mut App, api: &SessionApi, path: &str) {
+    match api.git_diff(&app.workspace, path).await {
+        Ok(diff) => {
+            if let Some(panel) = app.git.as_mut() {
+                panel.diff_path = path.to_string();
+                panel.diff = diff.lines().map(str::to_string).collect();
+                panel.diff_scroll = 0;
+            }
+        }
+        Err(e) => app.push_notice(format!("读取 diff 失败: {e}"), Style::default().fg(app.theme.error)),
+    }
+}
+
+/// Git 面板按键：上下选择、Enter 看 diff、PgUp/PgDn 滚动、r 刷新、Esc 关闭。
+async fn handle_git_panel_key(app: &mut App, api: &SessionApi, key: KeyEvent) -> Result<()> {
+    let Some(panel) = app.git.as_ref() else {
+        return Ok(());
+    };
+    let index = panel.index;
+    let last = panel.files.len().saturating_sub(1);
+    let selected = panel.files.get(index).map(|file| file.path.clone());
+    match key.code {
+        KeyCode::Esc => app.git = None,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(panel) = app.git.as_mut() {
+                panel.index = index.saturating_sub(1);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(panel) = app.git.as_mut() {
+                panel.index = (index + 1).min(last);
+            }
+        }
+        KeyCode::PageUp => {
+            if let Some(panel) = app.git.as_mut() {
+                panel.diff_scroll = panel.diff_scroll.saturating_sub(10);
+            }
+        }
+        KeyCode::PageDown => {
+            if let Some(panel) = app.git.as_mut() {
+                panel.diff_scroll += 10;
+            }
+        }
+        KeyCode::Enter | KeyCode::Right => {
+            if let Some(path) = selected {
+                load_git_diff(app, api, &path).await;
+            }
+        }
+        KeyCode::Char('r') => {
+            let index = app.git.as_ref().map(|panel| panel.index).unwrap_or(0);
+            let diff_path = app
+                .git
+                .as_ref()
+                .map(|panel| panel.diff_path.clone())
+                .unwrap_or_default();
+            open_git_panel(app, api).await;
+            if let Some(panel) = app.git.as_mut() {
+                panel.index = index.min(panel.files.len().saturating_sub(1));
+            }
+            if !diff_path.is_empty() {
+                load_git_diff(app, api, &diff_path).await;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// 文件面板按键：上下选择、Enter/→ 展开或预览、←/Backspace 折叠、r 刷新、Esc 关闭。
@@ -4628,6 +4772,98 @@ fn draw(frame: &mut Frame, app: &App) {
     if let Some(files) = &app.files {
         draw_file_panel(frame, files, area, theme);
     }
+    if let Some(git) = &app.git {
+        draw_git_panel(frame, git, area, theme);
+    }
+}
+
+/// Git 面板：左侧变更清单（分支 + 状态位）+ 右侧 diff。
+fn draw_git_panel(frame: &mut Frame, panel: &GitPanel, area: Rect, theme: TuiTheme) {
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            format!(
+                " 变更 · {} · ↑/↓ 选择 · Enter 看 diff · PgUp/PgDn 滚动 · r 刷新 · Esc 关闭 ",
+                panel.branch
+            ),
+            Style::default().fg(theme.muted),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let list_width = (inner.width as f32 * 0.4).round().clamp(16.0, 48.0) as u16;
+    let [list_area, diff_area] = Layout::horizontal([Constraint::Length(list_width), Constraint::Min(10)]).areas(inner);
+
+    // 变更清单
+    let visible = list_area.height as usize;
+    let window = picker_window(panel.files.len(), panel.index, visible.max(1));
+    let start = window.start;
+    let lines: Vec<Line<'static>> = panel.files[window]
+        .iter()
+        .enumerate()
+        .map(|(offset, file)| {
+            let selected = start + offset == panel.index;
+            let status = if file.untracked {
+                "??".to_string()
+            } else {
+                format!("{}{}", file.index, file.worktree)
+            };
+            let text = format!("{status} {}", file.path);
+            let style = if selected {
+                Style::default().fg(theme.base).bg(theme.accent)
+            } else if file.untracked {
+                Style::default().fg(theme.success)
+            } else {
+                Style::default().fg(theme.subtext)
+            };
+            let text = if selected {
+                pad_to_width(&text, list_area.width as usize)
+            } else {
+                text
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), list_area);
+
+    // diff：按行首着色
+    let title = if panel.diff_path.is_empty() {
+        "（选中变更后 Enter 查看 diff）".to_string()
+    } else {
+        format!(" {}", panel.diff_path)
+    };
+    let diff_lines: Vec<Line<'static>> = panel
+        .diff
+        .iter()
+        .skip(panel.diff_scroll)
+        .take(diff_area.height as usize)
+        .map(|line| {
+            let color = if line.starts_with("+++") || line.starts_with("---") {
+                theme.muted
+            } else if line.starts_with("@@") {
+                theme.accent
+            } else if line.starts_with('+') {
+                theme.success
+            } else if line.starts_with('-') {
+                theme.error
+            } else {
+                theme.subtext
+            };
+            Line::from(Span::styled(line.clone(), Style::default().fg(color)))
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(Text::from(diff_lines)).block(
+            Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(theme.muted))
+                .title(Span::styled(title, Style::default().fg(theme.muted))),
+        ),
+        diff_area,
+    );
 }
 
 /// 文件面板：左侧目录树 + 右侧预览（带行号）。
@@ -5735,6 +5971,23 @@ mod tests {
             handle_settings_key(&mut app, &api, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).await,
             SettingsAction::Close
         ));
+    }
+
+    /// Git status 解析：普通变更与未跟踪文件。
+    #[test]
+    fn test_parse_git_files() {
+        let value = serde_json::json!({
+            "branch": "main",
+            "files": [
+                { "path": "a.rs", "index": " ", "worktree": "M", "untracked": false },
+                { "path": "new.txt", "index": "?", "worktree": "?", "untracked": true },
+            ],
+        });
+        let files = parse_git_files(&value);
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "a.rs");
+        assert_eq!(files[0].worktree, "M");
+        assert!(files[1].untracked);
     }
 
     /// 文件树：按展开状态铺平，子项缩进一级。
