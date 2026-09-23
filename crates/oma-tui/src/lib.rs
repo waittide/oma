@@ -356,6 +356,8 @@ struct App {
     current_leaf:       Option<String>,
     connected:          bool,
     busy:               bool,
+    /// 本轮开始的墙钟时刻：整轮耗时由此计（`TurnFinished` 时取差）
+    turn_started_at:    Option<Instant>,
     queue:              usize,
     status:             String,
     entries:            Vec<Entry>,
@@ -400,6 +402,7 @@ impl App {
             current_leaf: None,
             connected: true,
             busy: false,
+            turn_started_at: None,
             queue: 0,
             status: "就绪".into(),
             entries: Vec::new(),
@@ -548,6 +551,14 @@ impl App {
                         collapsed_label("思", entry.duration_ms),
                         Style::default().fg(self.theme.muted),
                     )));
+                }
+                // 展开的思考段把耗时放在首行前缀里（折叠态见上）
+                EntryKind::Thinking => {
+                    let prefix = match entry.duration_ms {
+                        Some(ms) => format!("思 · {}", format_duration(ms)),
+                        None => "思".to_string(),
+                    };
+                    push_wrapped(&mut lines, &prefix, &entry.text, entry.style, width);
                 }
                 _ => push_wrapped(&mut lines, entry_prefix(entry.kind), &entry.text, entry.style, width),
             }
@@ -1785,6 +1796,7 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::TurnStarted { turn_id, .. } => {
             app.busy = true;
             app.stick = true;
+            app.turn_started_at = Some(Instant::now());
             app.status = format!("运行中 · {}", short_id(&turn_id));
         }
         AgentEvent::TurnFinished { stop_reason, usage, .. } => {
@@ -1794,12 +1806,21 @@ fn apply_event(app: &mut App, event: AgentEvent) {
             } else {
                 Style::default().fg(app.theme.muted)
             };
+            // 整轮耗时由服务端回执时刻减去 TurnStarted 的墙钟（中途接入时无起点则省略）
+            let elapsed = app
+                .turn_started_at
+                .take()
+                .map(|start| format!("耗时 {} · ", format_duration(start.elapsed().as_millis() as u64)))
+                .unwrap_or_default();
             app.push_notice(
                 format!(
-                    "轮次{} · ↑{} ↓{}",
+                    "轮次{} · {}↑{} ↓{} · 缓存读 {} · 缓存写 {}",
                     stop_reason_label(stop_reason),
+                    elapsed,
                     usage.input_tokens,
-                    usage.output_tokens
+                    usage.output_tokens,
+                    usage.cache_read_tokens,
+                    usage.cache_write_tokens,
                 ),
                 style,
             );
@@ -1829,8 +1850,8 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::ThinkingDelta { delta } => {
             app.append_thinking(&delta, Style::default().fg(app.theme.thinking));
         }
-        // 一段思考结束：收尾这一段（耗时见下一提交接入）
-        AgentEvent::ThinkingFinished { .. } => app.finish_thinking(None),
+        // 一段思考结束：收尾这一段并记下它的墙钟耗时
+        AgentEvent::ThinkingFinished { duration_ms } => app.finish_thinking(Some(duration_ms)),
         AgentEvent::TextDelta { delta } => {
             app.append_assistant(&delta, Style::default().fg(app.theme.success));
         }
@@ -2142,7 +2163,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
 #[cfg(test)]
 mod tests {
     // 测试里 `Block` 一律指消息块：ratatui 的同名控件在这些用例里用不到
-    use oma_contract::{Block as MsgBlock, Role};
+    use oma_contract::{Block as MsgBlock, Role, TokenUsage};
 
     use super::*;
 
@@ -2270,6 +2291,56 @@ mod tests {
             tool_name: name.into(),
             input:     serde_json::json!({ "command": "echo hi" }),
         }
+    }
+
+    /// 耗时文案的单位与边界：不足 1 秒按毫秒，1 秒以上一位小数，超过 1 分钟按分秒。
+    #[test]
+    fn test_format_duration_units() {
+        assert_eq!(format_duration(0), "0ms");
+        assert_eq!(format_duration(320), "320ms");
+        assert_eq!(format_duration(1500), "1.5s");
+        assert_eq!(format_duration(65_000), "1m05s");
+    }
+
+    /// 思考段耗时：展开态挂在首行前缀，折叠态挂在折叠标签。
+    #[test]
+    fn test_thinking_duration_shown_expanded_and_collapsed() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        app.append_thinking("想了很久", Style::default());
+        app.finish_thinking(Some(1500));
+        assert!(plain_lines(&app).contains("思 · 1.5s"), "{}", plain_lines(&app));
+
+        app.thinking_collapsed = true;
+        let folded = plain_lines(&app);
+        assert!(folded.contains("▸ 思 1.5s"), "{folded}");
+        assert!(!folded.contains("想了很久"), "{folded}");
+    }
+
+    /// 整轮回执：显示墙钟耗时与输入/输出、缓存读写用量。
+    #[test]
+    fn test_turn_finished_reports_duration_and_usage() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        // 起点回拨 2.5s，等价于一轮耗时 2.5s（避免测试真的等待）
+        app.turn_started_at = Some(Instant::now() - Duration::from_millis(2500));
+        apply_event(
+            &mut app,
+            AgentEvent::TurnFinished {
+                turn_id:     "t1".into(),
+                stop_reason: StopReason::EndTurn,
+                usage:       TokenUsage {
+                    input_tokens:       120,
+                    output_tokens:      34,
+                    cache_read_tokens:  100,
+                    cache_write_tokens: 20,
+                },
+            },
+        );
+        let last = app.entries.last().unwrap();
+        assert_eq!(last.kind, EntryKind::Notice);
+        assert!(last.text.contains("耗时 2.5s"), "{}", last.text);
+        assert!(last.text.contains("↑120 ↓34"), "{}", last.text);
+        assert!(last.text.contains("缓存读 100"), "{}", last.text);
+        assert!(last.text.contains("缓存写 20"), "{}", last.text);
     }
 
     #[test]
