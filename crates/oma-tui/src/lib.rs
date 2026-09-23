@@ -190,6 +190,24 @@ struct Picker {
     index: usize,
 }
 
+/// 全屏历史树选择器的一条：已铺好的缩进前缀 + 单行摘要。
+struct TreeItem {
+    id:         String,
+    /// 树形连接线（含祖先缩进），如 `├─ ` / `│  └─ `
+    prefix:     String,
+    label:      String,
+    /// 从根到它是否落在当前激活分支上
+    on_current: bool,
+    /// 是否是分支末端
+    is_leaf:    bool,
+}
+
+/// 全屏历史树选择器：整棵树平铺成可上下移动的列表，Enter 切到该节点。
+struct TreeSelector {
+    items: Vec<TreeItem>,
+    index: usize,
+}
+
 /// 文本输入弹窗：标题 + 一行可编辑文本。
 ///
 /// 列表弹窗（[`Picker`]）只能选不能写，而重命名会话需要输入；做成独立的小弹窗
@@ -233,6 +251,8 @@ struct TuiTheme {
     thinking: Color,
     /// 用户消息背景：比中性底色深一档，用来替代角色标签
     user_bg:  Color,
+    /// 背景基色（base）：选中态「强调色实底 + base 文字」用
+    base:     Color,
 }
 
 impl TuiTheme {
@@ -249,6 +269,7 @@ impl TuiTheme {
             warning:  Color::Reset,
             thinking: Color::Reset,
             user_bg:  Color::Reset,
+            base:     Color::Reset,
         }
     }
 
@@ -269,6 +290,7 @@ impl TuiTheme {
             warning:  token_color(palette, "yellow"),
             thinking: token_color(palette, "mauve"),
             user_bg:  token_color(palette, "mantle"),
+            base:     token_color(palette, "base"),
         }
     }
 }
@@ -390,6 +412,8 @@ struct App {
     active_conn:        Option<String>,
     /// 弹窗选择器；None = 未打开
     picker:             Option<Picker>,
+    /// 全屏历史树选择器；None = 未打开
+    tree_view:          Option<TreeSelector>,
     /// 文本输入弹窗；None = 未打开
     prompt:             Option<TextPrompt>,
     /// 终端是否处于聚焦状态；仅失焦时才发系统通知
@@ -428,6 +452,7 @@ impl App {
             connections: Vec::new(),
             active_conn: None,
             picker: None,
+            tree_view: None,
             prompt: None,
             // 终端未上报焦点事件时按聚焦处理：宁可不打扰，也不在用户正看着时弹通知
             focused: true,
@@ -1160,6 +1185,19 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         let request = handle_prompt_key(app, key);
         return apply_prompt(app, api, request).await;
     }
+    if app.tree_view.is_some() {
+        match handle_tree_key(app, key) {
+            TreeAction::Close => app.tree_view = None,
+            TreeAction::Select(leaf_message_id) => {
+                app.tree_view = None;
+                let session_id = app.session_id.clone();
+                send_setting(app, client, AgentCommand::SwitchBranch { leaf_message_id }, "切换分支").await;
+                return Ok(Some(Outcome::Reload { session_id }));
+            }
+            TreeAction::None => {}
+        }
+        return Ok(None);
+    }
     // 编辑重发中的 Esc 先取消分叉，再按一次才退出：直接退出会让用户丢掉正在编辑的内容
     if key.code == KeyCode::Esc && app.fork_from.is_some() {
         app.fork_from = None;
@@ -1311,6 +1349,10 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
             open_session_picker(app, api).await;
             Ok(None)
         }
+        "tree" => {
+            open_tree(app, api).await;
+            Ok(None)
+        }
         "new" => match api.create_session(&app.workspace, None).await {
             Ok(record) => Ok(Some(Outcome::SwitchSession {
                 session_id: record.session_id,
@@ -1360,7 +1402,8 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
 
 /// `/help` 的命令清单。
 const SLASH_HELP: &str = "/help 帮助 · /model 模型 · /agent 预设 · /reasoning 推理等级\n\
-     /session 切换会话 · /new 新建会话 · /rename [标题] 重命名 · /clear 清空记录显示 · /quit 退出";
+     /session 切换会话 · /new 新建会话 · /rename [标题] 重命名 · /tree 历史树\n\
+     /clear 清空记录显示 · /quit 退出";
 
 /// 打开连接切换弹窗；无已保存连接时仅提示，不进入空列表。
 fn open_picker(app: &mut App) {
@@ -1744,6 +1787,155 @@ fn branch_len(tree: &[ChatMessage], tip: &ChatMessage) -> usize {
             .and_then(|id| by_id.get(id).copied());
     }
     count
+}
+
+/// 打开全屏历史树（`/tree`）：现拉整棵树，平铺成可上下选择、可切换分支的树形列表。
+async fn open_tree(app: &mut App, api: &SessionApi) {
+    let tree = match api.message_tree(&app.session_id).await {
+        Ok(tree) => tree,
+        Err(e) => {
+            app.push_notice(format!("读取历史失败: {e}"), Style::default().fg(app.theme.error));
+            return;
+        }
+    };
+    if tree.is_empty() {
+        app.push_notice("当前会话还没有消息", Style::default().fg(app.theme.muted));
+        return;
+    }
+    // 本地追加过轮次后握手给到的叶子已过时，趁刚拉到整棵树同步一次
+    let leaf = branch_leaf(&tree, app.current_leaf.as_deref());
+    app.current_leaf = leaf.map(|message| message.id.clone());
+    let items = build_tree_items(&tree, app.current_leaf.as_deref());
+    let index = items
+        .iter()
+        .position(|item| Some(item.id.as_str()) == app.current_leaf.as_deref())
+        .unwrap_or(0);
+    app.tree_view = Some(TreeSelector { items, index });
+}
+
+/// 把消息树平铺成带连接线前缀的列表（按创建时间的先序 DFS，根在前）。
+fn build_tree_items(tree: &[ChatMessage], current_leaf: Option<&str>) -> Vec<TreeItem> {
+    let ids: HashSet<&str> = tree.iter().map(|message| message.id.as_str()).collect();
+    let mut children: HashMap<Option<&str>, Vec<&ChatMessage>> = HashMap::new();
+    for message in tree {
+        let parent = message
+            .parent_id
+            .as_deref()
+            .filter(|parent| ids.contains(parent));
+        children.entry(parent).or_default().push(message);
+    }
+    for kids in children.values_mut() {
+        kids.sort_by_key(|message| message.created_at);
+    }
+
+    // 当前激活分支：从叶子沿 parent_id 回溯到根
+    let by_id: HashMap<&str, &ChatMessage> = tree
+        .iter()
+        .map(|message| (message.id.as_str(), message))
+        .collect();
+    let mut on_current: HashSet<String> = HashSet::new();
+    let mut cursor = current_leaf.and_then(|id| by_id.get(id).copied());
+    while let Some(message) = cursor {
+        on_current.insert(message.id.clone());
+        cursor = message
+            .parent_id
+            .as_deref()
+            .and_then(|parent| by_id.get(parent).copied());
+    }
+
+    let mut items = Vec::new();
+    let roots = children.get(&None).cloned().unwrap_or_default();
+    let root_count = roots.len();
+    for (i, root) in roots.iter().enumerate() {
+        walk_tree(root, "", i + 1 == root_count, &children, &on_current, &mut items);
+    }
+    items
+}
+
+/// 先序 DFS 一步：铺好连接线前缀后递归子节点。
+fn walk_tree(
+    message: &ChatMessage,
+    prefix: &str,
+    is_last: bool,
+    children: &HashMap<Option<&str>, Vec<&ChatMessage>>,
+    on_current: &HashSet<String>,
+    out: &mut Vec<TreeItem>,
+) {
+    // 顶层不画连接线（根本就多个/单个都不需要 ├─）；只对子层标 ├─ / └─
+    let connector = if prefix.is_empty() {
+        ""
+    } else if is_last {
+        "└─ "
+    } else {
+        "├─ "
+    };
+    let kids = children
+        .get(&Some(message.id.as_str()))
+        .cloned()
+        .unwrap_or_default();
+    out.push(TreeItem {
+        id:         message.id.clone(),
+        prefix:     format!("{prefix}{connector}"),
+        label:      tree_label(message),
+        on_current: on_current.contains(&message.id),
+        is_leaf:    kids.is_empty(),
+    });
+
+    let child_prefix = format!("{prefix}{}", if is_last { "   " } else { "│  " });
+    let kid_count = kids.len();
+    for (i, kid) in kids.iter().enumerate() {
+        walk_tree(kid, &child_prefix, i + 1 == kid_count, children, on_current, out);
+    }
+}
+
+/// 树里一行的摘要：角色标记 + 单行内容（工具调用回落到工具名）。
+fn tree_label(message: &ChatMessage) -> String {
+    let marker = match message.role {
+        Role::User => "›",
+        Role::Assistant => "◆",
+        Role::System => "·",
+    };
+    format!("{marker} {}", leaf_snippet(message))
+}
+
+/// 历史树按键的结果。
+enum TreeAction {
+    None,
+    Close,
+    Select(String),
+}
+
+/// 历史树按键：上下移动、Enter 选中、Esc 关闭。
+fn handle_tree_key(app: &mut App, key: KeyEvent) -> TreeAction {
+    let Some(tree) = app.tree_view.as_ref() else {
+        return TreeAction::None;
+    };
+    let index = tree.index;
+    let last = tree.items.len().saturating_sub(1);
+    match key.code {
+        KeyCode::Esc => TreeAction::Close,
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(tree) = app.tree_view.as_mut() {
+                tree.index = index.saturating_sub(1);
+            }
+            TreeAction::None
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(tree) = app.tree_view.as_mut() {
+                tree.index = (index + 1).min(last);
+            }
+            TreeAction::None
+        }
+        KeyCode::Enter => match app
+            .tree_view
+            .as_ref()
+            .and_then(|tree| tree.items.get(index))
+        {
+            Some(item) => TreeAction::Select(item.id.clone()),
+            None => TreeAction::None,
+        },
+        _ => TreeAction::None,
+    }
 }
 
 /// 分支代表的单行摘要：优先正文，其次工具调用，最后回落到角色名。
@@ -2133,6 +2325,56 @@ fn draw(frame: &mut Frame, app: &App) {
     if let Some(prompt) = &app.prompt {
         draw_prompt(frame, prompt, area, theme);
     }
+    if let Some(tree) = &app.tree_view {
+        draw_tree(frame, tree, area, theme);
+    }
+}
+
+/// 全屏历史树：整棵树带连接线平铺，选中态用主题强调色实底 + base 文字。
+fn draw_tree(frame: &mut Frame, tree: &TreeSelector, area: Rect, theme: TuiTheme) {
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            " 历史树 · ↑/↓ 选择 · Enter 切换分支 · Esc 关闭 ",
+            Style::default().fg(theme.muted),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if tree.items.is_empty() {
+        return;
+    }
+
+    let visible = inner.height as usize;
+    let window = picker_window(tree.items.len(), tree.index, visible.max(1));
+    let start = window.start;
+    let lines: Vec<Line<'static>> = tree.items[window]
+        .iter()
+        .enumerate()
+        .map(|(offset, item)| {
+            let selected = start + offset == tree.index;
+            // 末端标记并进正文：选中态要把整行铺满底色，标记若落在补白之后会被裁掉
+            let mut text = format!("{}{}", item.prefix, item.label);
+            if item.is_leaf {
+                text.push_str("  · 末端");
+            }
+            // 选中：强调色实底 + base 文字（与 Web 选中态同一口径）；当前分支：强调色文字
+            let (text, style) = if selected {
+                (
+                    pad_to_width(&text, inner.width as usize),
+                    Style::default().fg(theme.base).bg(theme.accent),
+                )
+            } else if item.on_current {
+                (text, Style::default().fg(theme.accent))
+            } else {
+                (text, Style::default().fg(theme.subtext))
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
 /// 文本输入弹窗：标题 + 一行输入（光标落在文本末尾）。
@@ -2633,6 +2875,66 @@ mod tests {
 
         handle_slash(&mut app, &api, "help", "").await.unwrap();
         assert!(app.entries.last().unwrap().text.contains("/model"));
+    }
+
+    /// 历史树平铺：先序 DFS、带连接线，当前分支与叶子标记正确。
+    #[test]
+    fn test_tree_items_order_and_marks() {
+        let tree = vec![
+            user_msg("u1", None, "问题", 1),
+            msg("a1", Some("u1"), vec![body("回答一")], 2),
+            msg("t1", Some("a1"), vec![receipt()], 3),
+            msg("a2", Some("u1"), vec![body("另一条分支")], 4),
+        ];
+        let items = build_tree_items(&tree, Some("a1"));
+        let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, vec!["u1", "a1", "t1", "a2"], "按创建时间的先序 DFS");
+
+        assert!(items[0].on_current && items[1].on_current, "u1 → a1 是当前链");
+        assert!(!items[3].on_current, "兄弟分支不在当前链上");
+        assert!(items[2].is_leaf && items[3].is_leaf, "t1 与 a2 是叶子");
+        assert!(!items[0].is_leaf, "u1 有子节点");
+        assert!(
+            items[1].prefix.contains('├') || items[1].prefix.contains('└'),
+            "子层应带连接线：{:?}",
+            items[1].prefix
+        );
+    }
+
+    /// 历史树按键：上下移动、Enter 选中、Esc 关闭。
+    #[test]
+    fn test_tree_key_navigation_and_select() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        let tree = vec![
+            user_msg("u1", None, "问题", 1),
+            msg("a1", Some("u1"), vec![body("答")], 2),
+        ];
+        app.tree_view = Some(TreeSelector {
+            items: build_tree_items(&tree, Some("a1")),
+            index: 0,
+        });
+
+        assert!(matches!(
+            handle_tree_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            TreeAction::None
+        ));
+        assert_eq!(app.tree_view.as_ref().unwrap().index, 1);
+        assert!(matches!(
+            handle_tree_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            TreeAction::None
+        ));
+        assert_eq!(app.tree_view.as_ref().unwrap().index, 0);
+
+        // Enter 取出该节点 id（用于 SwitchBranch）
+        app.tree_view.as_mut().unwrap().index = 1;
+        match handle_tree_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+            TreeAction::Select(id) => assert_eq!(id, "a1"),
+            _ => panic!("Enter 应取出选中的节点"),
+        }
+        assert!(matches!(
+            handle_tree_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            TreeAction::Close
+        ));
     }
 
     /// 思考段耗时：展开态挂在首行前缀，折叠态挂在折叠标签。
