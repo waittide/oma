@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use oma_client::{ConnectOptions, OmaClient, SessionApi, SessionRecord};
 use oma_contract::{
     AgentCommand, AgentEvent, AgentSummary, ChatMessage, ClientType, ModelInfo, Palette, REASONING_LEVELS,
@@ -502,6 +502,73 @@ fn summarize_tool_input(input: &serde_json::Value) -> String {
     }
 }
 
+/// 从输入里摘出 `@相对路径` 附件标记，返回（正文, 附件相对路径）。
+///
+/// TUI 没有文件选择器，用文本约定代替：以 `@` 开头的词是附件引用，其余是正文。
+/// 输入区本就是单行，空白折叠成单个空格不影响可读性。
+fn extract_attachments(input: &str) -> (String, Vec<String>) {
+    let mut body = Vec::new();
+    let mut paths = Vec::new();
+    for token in input.split_whitespace() {
+        match token.strip_prefix('@') {
+            Some(path) if !path.is_empty() => paths.push(path.to_string()),
+            _ => body.push(token),
+        }
+    }
+    (body.join(" "), paths)
+}
+
+/// 把 `@路径` 上传成会话附件，返回 `session_attachment://` 引用。
+///
+/// 只接受工作区内的相对路径（与 `edit` 工具同一口径）：绝对路径与 `..` 逃逸一律
+/// 拒绝，免得把用户的任意文件都读出来传上服务端。失败时把原因写进记录并返回 Err，
+/// 调用方据此保留输入——静默丢掉附件比报错更糟。
+async fn resolve_attachments(app: &mut App, api: &SessionApi, paths: &[String]) -> Result<Vec<String>> {
+    let mut refs = Vec::new();
+    for raw in paths {
+        let rel = raw.strip_prefix("./").unwrap_or(raw);
+        if !is_workspace_relative(rel) {
+            app.push(
+                "!",
+                format!("附件必须是工作区内的相对路径: {raw}"),
+                Style::default().fg(app.theme.error),
+            );
+            bail!("attachment outside workspace");
+        }
+        let path = std::path::Path::new(rel);
+        let full = std::path::Path::new(&app.workspace).join(path);
+        let bytes = match tokio::fs::read(&full).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                app.push(
+                    "!",
+                    format!("读取附件 {raw} 失败: {e}"),
+                    Style::default().fg(app.theme.error),
+                );
+                bail!("cannot read attachment");
+            }
+        };
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+        match api.upload_attachment(&app.session_id, name, bytes).await {
+            Ok(uploaded) => refs.extend(uploaded),
+            Err(e) => {
+                app.push(
+                    "!",
+                    format!("上传附件 {raw} 失败: {e}"),
+                    Style::default().fg(app.theme.error),
+                );
+                bail!("cannot upload attachment");
+            }
+        }
+    }
+    Ok(refs)
+}
+
+/// 附件路径是否可接受：非空、非绝对、不含 `..` 逃逸。
+fn is_workspace_relative(rel: &str) -> bool {
+    !rel.is_empty() && !std::path::Path::new(rel).is_absolute() && !rel.split(['/', '\\']).any(|seg| seg == "..")
+}
+
 /// 启动 TUI 客户端：复用当前工作区最近的会话，没有则新建。
 ///
 /// 支持在界面内切换到 client.json 里保存的其他连接：切换时重建会话与事件流。
@@ -807,12 +874,31 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
             app.push("·", "已请求中止", Style::default().fg(app.theme.warning));
         }
         KeyCode::Enter => {
-            let text = app.input.trim().to_string();
-            if text.is_empty() {
+            let raw = app.input.trim().to_string();
+            if raw.is_empty() {
+                return Ok(None);
+            }
+            let (text, paths) = extract_attachments(&raw);
+            // 附件先落库：上传失败就整条不发送，并把输入原样留给用户改，静默丢掉附件更糟
+            let attachments = match resolve_attachments(app, api, &paths).await {
+                Ok(attachments) => attachments,
+                Err(_) => return Ok(None),
+            };
+            if text.is_empty() && attachments.is_empty() {
+                return Ok(None);
+            }
+            let fork = app.fork_from.take();
+            if fork.is_some() && !attachments.is_empty() {
+                // ForkAndRun 没有附件位（协议如此），与 Web 一致直接拒绝，别把附件丢掉
+                app.fork_from = fork;
+                app.push(
+                    "!",
+                    "编辑重发不支持附件：先取消分叉或去掉 @路径",
+                    Style::default().fg(app.theme.error),
+                );
                 return Ok(None);
             }
             app.input.clear();
-            let fork = app.fork_from.take();
             let label = std::mem::take(&mut app.fork_label);
             // 分叉处插一条分隔行：TUI 的记录是只追加的日志，旧分支的尾巴还留在上方，
             // 不标出边界就看不出新回答是从哪里长出来的
@@ -823,7 +909,15 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
                     Style::default().fg(app.theme.muted),
                 );
             }
-            app.push("你", text.clone(), Style::default().fg(app.theme.accent));
+            // 记录里仍显示用户原样敲的那行（含 @路径），发出去的内容才是摘掉标记的正文
+            app.push("你", raw, Style::default().fg(app.theme.accent));
+            if !attachments.is_empty() {
+                app.push(
+                    "·",
+                    format!("附件 {} 个：{}", attachments.len(), paths.join("、")),
+                    Style::default().fg(app.theme.muted),
+                );
+            }
             app.stick = true;
             let command = match fork {
                 // 编辑重发：从分叉点长出新分支，而不是追加到当前叶子后面
@@ -832,8 +926,8 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
                     new_content: Some(text),
                 },
                 None => AgentCommand::UserInput {
-                    content:     text,
-                    attachments: Vec::new(),
+                    content: text,
+                    attachments,
                 },
             };
             if let Err(e) = client.send_command(command).await {
@@ -1790,8 +1884,8 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect, theme: TuiTheme) {
     } else if app.fork_from.is_some() {
         " 编辑重发：Enter 从历史处重新发送 · Esc 取消分叉 "
     } else {
-        " Enter 发送 · Ctrl+X 中止 · Ctrl+E 重发 T 改名 · Ctrl+O 连接 N 会话 B 分支 · Ctrl+L 模型 A 预设 R \
-         推理 · Ctrl+U 清空 · Esc 退出 "
+        " Enter 发送（@路径 附件）· Ctrl+X 中止 · Ctrl+O 连接 N 会话 B 分支 · Ctrl+L 模型 A 预设 R 推理 E \
+         重发 T 改名 · Ctrl+U 清空 · Esc 退出 "
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2215,6 +2309,36 @@ mod tests {
         let message = msg("m", None, vec![call("read"), body("正文")], 1);
         assert_eq!(message_text(&message), "正文");
         assert_eq!(message_text(&msg("m2", None, vec![receipt()], 2)), "");
+    }
+
+    /// 附件标记：`@路径` 摘成附件引用并从正文里去掉；普通文本里的 `@` 只是文本。
+    #[test]
+    fn test_extract_attachments() {
+        let (text, paths) = extract_attachments("@img/a.png 看看这张图");
+        assert_eq!(text, "看看这张图");
+        assert_eq!(paths, vec!["img/a.png"]);
+
+        // 多个附件 + 纯附件（没有正文）都允许
+        let (text, paths) = extract_attachments("@a.png @b.jpg");
+        assert!(text.is_empty());
+        assert_eq!(paths, vec!["a.png", "b.jpg"]);
+
+        // 单独的 `@` 与词中的 `@` 不是附件标记
+        let (text, paths) = extract_attachments("价格 @ 5 元 mail@host");
+        assert_eq!(text, "价格 @ 5 元 mail@host");
+        assert!(paths.is_empty());
+    }
+
+    /// 附件路径限制在工作区内：绝对路径与 `..` 逃逸一律拒绝。
+    #[test]
+    fn test_attachment_paths_stay_in_workspace() {
+        assert!(is_workspace_relative("img/a.png"));
+        assert!(is_workspace_relative("a.png"));
+        assert!(!is_workspace_relative(""));
+        assert!(!is_workspace_relative("/etc/passwd"));
+        assert!(!is_workspace_relative("../secrets.txt"));
+        assert!(!is_workspace_relative("img/../../secrets.txt"));
+        assert!(!is_workspace_relative("..\\win.txt"));
     }
 
     /// 推理等级选择器：只列规范等级（服务端拒绝空串），当前档带 ✓，

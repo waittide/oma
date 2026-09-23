@@ -211,6 +211,27 @@ impl SessionApi {
         Self::ensure_ok(resp).await?;
         Ok(())
     }
+
+    /// 上传附件，返回可直接放进 `UserInput.attachments` 的 `session_attachment://` 引用。
+    ///
+    /// `file_name` 是服务端给附件命名的原料（会再清洗并加随机前缀），
+    /// 因此调用方传原始文件名即可，不必自己去重名。
+    pub async fn upload_attachment(&self, session_id: &str, file_name: &str, bytes: Vec<u8>) -> Result<Vec<String>> {
+        let form = reqwest::multipart::Form::new().part(
+            "file",
+            reqwest::multipart::Part::bytes(bytes).file_name(file_name.to_string()),
+        );
+        let resp = self
+            .http
+            .post(format!("{}/api/sessions/{}/attachments", self.base, session_id))
+            .bearer_auth(&self.token)
+            .multipart(form)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        let value = Self::ensure_ok(resp).await?;
+        serde_json::from_value(value["attachments"].clone()).context("Unexpected upload payload")
+    }
 }
 
 /// 最小百分号编码（仅覆盖查询值中必须转义的字符）
