@@ -30,7 +30,7 @@
     "noSessions": "No sessions in this workspace",
     "untitled": "Untitled",
     "titleAutoPlaceholder": "Leave empty to let the model name it",
-    "newWorkspaceHint": "A workspace is only registered in the sidebar; add sessions under it afterwards.",
+    "newWorkspaceHint": "The workspace is registered on the server; add sessions under it afterwards.",
     "newSessionWorkspace": "Workspace",
     "workspaceUnset": "No workspace selected",
     "searchPlaceholder": "Search workspaces or sessions",
@@ -52,7 +52,11 @@
     "loadListFailed": "Failed to load sessions: {message}",
     "renameFailed": "Rename failed: {message}",
     "deleteFailed": "Failed to delete session: {message}",
-    "createFailed": "Failed to create session: {message}"
+    "createFailed": "Failed to create session: {message}",
+    "workspaceAdded": "Workspace added",
+    "workspaceRemoved": "Workspace removed",
+    "workspaceAddFailed": "Failed to add workspace: {message}",
+    "workspaceRemoveFailed": "Failed to remove workspace: {message}"
   },
   "chat": {
     "noSession": "No session selected",

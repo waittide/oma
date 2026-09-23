@@ -96,17 +96,18 @@ const sortOptions = computed(() => [
 const noMatch = computed(() => store.query.value.trim().length > 0);
 
 /**
- * 新建工作区：只在侧栏登记一个工作区分组，不创建任何会话。
- * 路径本身不落服务端（会话创建时才带上），因此这里仅做本地记录。
+ * 新建工作区：把路径登记到服务端（`workspaces` 表），不创建任何会话。
+ * 登记成功后由服务端广播通知所有客户端，本端也立即刷新名单。
  */
-function createWorkspace() {
+async function createWorkspace() {
   const ws = newWorkspacePath.value.trim();
   if (!ws) return;
-  store.rememberWorkspace(ws);
-  store.collapsed.value[ws] = false;
-  localStorage.setItem('oma.lastWorkspace', ws);
-  showNewWorkspace.value = false;
-  newWorkspacePath.value = '';
+  if (await store.addWorkspace(ws)) {
+    store.collapsed.value[ws] = false;
+    localStorage.setItem('oma.lastWorkspace', ws);
+    showNewWorkspace.value = false;
+    newWorkspacePath.value = '';
+  }
 }
 
 /** 打开「新建工作区」弹窗：预填上次使用的路径方便微调 */
@@ -122,6 +123,16 @@ function select(id: string) {
 /** 会话是否有正在执行的轮次：不限当前打开的会话。 */
 function isRunning(s: SessionRecord): boolean {
   return !!s.is_running;
+}
+
+/**
+ * 工作区下是否真有会话。
+ *
+ * 不能用分组里的 `items.length` 判断：搜索会过滤 items，命中工作区名时若没有
+ * 标题命中，分组看起来是空的，但它其实还有会话——据此删登记会被服务端拒绝。
+ */
+function hasSessions(g: WorkspaceGroup): boolean {
+  return store.sessions.value.some((s) => s.workspace === g.workspace);
 }
 
 function startRename(id: string, title: string) {
@@ -177,11 +188,11 @@ async function clearSessions() {
   }
 }
 
-/** 删除空工作区：仅移除本地分组记录（此时已无会话可删）。 */
-function removeWorkspace() {
+/** 删除空工作区：移除服务端登记（仅名单，不删磁盘文件）。 */
+async function removeWorkspace() {
   const target = removeTarget.value;
-  if (target) store.forgetWorkspace(target.workspace);
   removeTarget.value = null;
+  if (target) await store.forgetWorkspace(target.workspace);
 }
 
 const deleteTarget = computed(
@@ -279,14 +290,14 @@ const deleteTarget = computed(
               </UiIconButton>
             </UiTooltip>
             <!-- 有会话时清空会话；已空的工作区则直接删除该工作区分组 -->
-            <UiTooltip :content="g.items.length > 0 ? t('clearWorkspace') : t('deleteWorkspace')" align="end">
+            <UiTooltip :content="hasSessions(g) ? t('clearWorkspace') : t('deleteWorkspace')" align="end">
               <UiIconButton
                 class="gh-add danger"
                 size="sm"
-                :label="g.items.length > 0 ? t('clearWorkspace') : t('deleteWorkspace')"
-                @click="g.items.length > 0 ? (clearTarget = g) : (removeTarget = g)"
+                :label="hasSessions(g) ? t('clearWorkspace') : t('deleteWorkspace')"
+                @click="hasSessions(g) ? (clearTarget = g) : (removeTarget = g)"
               >
-                <LuEraser v-if="g.items.length > 0" :size="14" />
+                <LuEraser v-if="hasSessions(g)" :size="14" />
                 <LuTrash2 v-else :size="14" />
               </UiIconButton>
             </UiTooltip>

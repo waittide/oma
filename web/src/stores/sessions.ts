@@ -2,11 +2,9 @@ import { computed, ref, watch } from 'vue';
 import { toast } from '@waittide/ui';
 import { api } from '../api';
 import { tr } from '../composables/i18n';
-import type { SessionRecord } from '../types';
+import type { SessionRecord, WorkspaceRecord } from '../types';
 
 const COLLAPSED_KEY = 'oma.sidebar.collapsed';
-/** 已发现过的工作区路径：会话全部删除后分组仍保留，供新建/删除整个工作区 */
-const WORKSPACES_KEY = 'oma.workspaces';
 /** 侧栏排序方式（持久化，刷新后保持） */
 const SORT_KEY = 'oma.sidebar.sort';
 
@@ -31,35 +29,53 @@ export const collapsed = ref<Record<string, boolean>>(
   })(),
 );
 
-/** 已知工作区集合（含已无会话者）；只在本地记录，不占服务端 schema。 */
-export const knownWorkspaces = ref<string[]>(
-  (() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(WORKSPACES_KEY) ?? '[]') as unknown;
-      return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : [];
-    } catch {
-      return [];
-    }
-  })(),
-);
+/**
+ * 已登记工作区：服务端权威（全局索引库 `workspaces` 表），每次进来现拉、
+ * 变更时由全局广播推送。
+ *
+ * 此前这份名单存在 localStorage：换浏览器/换机器就看不到「已无会话但仍保留」
+ * 的分组，多端也不一致。现在一律以服务端为准，客户端只读。
+ */
+export const workspaces = ref<WorkspaceRecord[]>([]);
 
-function persistWorkspaces() {
-  localStorage.setItem(WORKSPACES_KEY, JSON.stringify(knownWorkspaces.value));
+/** 已登记工作区的路径列表（分组并入与默认选择用）。 */
+export const knownWorkspaces = computed(() => workspaces.value.map((w) => w.path));
+
+/** 现拉工作区登记；失败静默保留上一份，避免侧栏分组闪空。 */
+async function loadWorkspaces() {
+  try {
+    workspaces.value = await api.workspaces();
+  } catch {
+    // 由下一次 refresh / 广播补齐
+  }
 }
 
-/** 记住某个工作区：新建会话（含服务端返回的已有会话）时调用。 */
-export function rememberWorkspace(workspace: string) {
-  if (!workspace || knownWorkspaces.value.includes(workspace)) return;
-  knownWorkspaces.value.push(workspace);
-  persistWorkspaces();
+/** 登记一个工作区（服务端落库；成功后本地刷新名单）。 */
+export async function addWorkspace(workspace: string): Promise<boolean> {
+  const path = workspace.trim();
+  if (!path) return false;
+  try {
+    await api.createWorkspace(path);
+    await loadWorkspaces();
+    toast.success(tr('sessions.workspaceAdded'));
+    return true;
+  } catch (e) {
+    toast.error(tr('sessions.workspaceAddFailed', { message: (e as Error).message }));
+    return false;
+  }
 }
 
-/** 彻底移除工作区记录：仅在用户显式删除工作区时调用。 */
-export function forgetWorkspace(workspace: string) {
-  knownWorkspaces.value = knownWorkspaces.value.filter((w) => w !== workspace);
-  persistWorkspaces();
-  delete collapsed.value[workspace];
-  persistCollapsed();
+/** 移除工作区登记：只删名单，不触碰会话与磁盘文件。 */
+export async function forgetWorkspace(workspace: string) {
+  try {
+    await api.deleteWorkspace(workspace);
+    await loadWorkspaces();
+    delete collapsed.value[workspace];
+    persistCollapsed();
+    toast.success(tr('sessions.workspaceRemoved'));
+  } catch (e) {
+    toast.error(tr('sessions.workspaceRemoveFailed', { message: (e as Error).message }));
+  }
 }
 
 function persistCollapsed() {
@@ -197,9 +213,10 @@ export const activeSession = computed(
 export async function refresh() {
   loading.value = true;
   try {
-    sessions.value = await api.listSessions();
-    // 服务端存在的会话所属工作区也计入已知集合：换浏览器后仍能看到其分组
-    sessions.value.forEach((s) => rememberWorkspace(s.workspace));
+    const [list, ws] = await Promise.all([api.listSessions(), api.workspaces()]);
+    sessions.value = list;
+    workspaces.value = ws;
+    dropStaleActiveSession();
   } catch (e) {
     toast.error(tr('sessions.loadListFailed', { message: (e as Error).message }));
   } finally {
@@ -207,11 +224,33 @@ export async function refresh() {
   }
 }
 
+/**
+ * 服务端广播驱动的工作区登记更新：对齐名单后重取会话，使分组与其中会话的状态
+ * 一并跟上（其他客户端可能刚建/删过会话，会话集合以服务端为准）。
+ */
+export async function applyWorkspacesChanged(list: WorkspaceRecord[]) {
+  workspaces.value = list;
+  try {
+    sessions.value = await api.listSessions();
+    dropStaleActiveSession();
+  } catch {
+    // 会话列表容后由其他路径刷新；工作区名单已对齐
+  }
+}
+
+/** 当前选中会话已不在列表里（被别处删除）时取消选中，避免悬空连接。 */
+function dropStaleActiveSession() {
+  if (activeSessionId.value && !sessions.value.some((s) => s.session_id === activeSessionId.value)) {
+    activeSessionId.value = null;
+  }
+}
+
 export async function create(workspace: string, title: string): Promise<SessionRecord | null> {
   try {
     const { session } = await api.createSession({ workspace, title });
     sessions.value.unshift(session);
-    rememberWorkspace(workspace);
+    // 服务端建会话时会登记其工作区；刷新名单让新分组立即出现
+    await loadWorkspaces();
     collapsed.value[workspace] = false;
     persistCollapsed();
     toast.success(tr('sessions.created'));

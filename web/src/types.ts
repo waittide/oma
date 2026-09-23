@@ -68,6 +68,13 @@ export interface AgentSummary {
   description: string;
 }
 
+/** 工作区登记项（`GET/POST /api/workspaces`），与服务端 WorkspaceRecord 对应 */
+export interface WorkspaceRecord {
+  /** 工作区绝对路径，主键 */
+  path: string;
+  created_at: number;
+}
+
 /** `GET /api/system-prompt`：真正下发给厂商的那段系统提示词 */
 export interface SystemPromptResp {
   workspace: string;
@@ -147,6 +154,7 @@ export type AgentEvent =
   | { type: 'usage_updated'; data?: { usage: TokenUsage } }
   | { type: 'active_turn_catch_up'; data?: ActiveTurnCatchUp }
   | { type: 'session_renamed'; data?: { session_id: string; title: string } }
+  | { type: 'workspaces_changed'; data?: { workspaces: WorkspaceRecord[] } }
   | { type: 'messages_deleted'; data?: { deleted_ids: string[]; current_leaf_id: string | null } }
   | { type: 'error'; data?: { message: string } };
 

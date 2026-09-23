@@ -30,7 +30,7 @@
     "noSessions": "此工作區尚無會話",
     "untitled": "未命名",
     "titleAutoPlaceholder": "留空則由模型自動命名",
-    "newWorkspaceHint": "工作區僅登記於側邊欄，之後可在其下新增會話。",
+    "newWorkspaceHint": "工作區會登記到服務端，之後可在其下新增會話。",
     "newSessionWorkspace": "所屬工作區",
     "workspaceUnset": "未指定工作區",
     "searchPlaceholder": "搜尋工作區或會話",
@@ -52,7 +52,11 @@
     "loadListFailed": "載入會話失敗：{message}",
     "renameFailed": "重新命名失敗：{message}",
     "deleteFailed": "刪除會話失敗：{message}",
-    "createFailed": "建立會話失敗：{message}"
+    "createFailed": "建立會話失敗：{message}",
+    "workspaceAdded": "工作區已新增",
+    "workspaceRemoved": "工作區已移除",
+    "workspaceAddFailed": "新增工作區失敗：{message}",
+    "workspaceRemoveFailed": "移除工作區失敗：{message}"
   },
   "chat": {
     "noSession": "未選擇會話",

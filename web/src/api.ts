@@ -13,6 +13,7 @@ import type {
   SystemPromptResp,
   ToolInfo,
   UploadAttachmentResp,
+  WorkspaceRecord,
 } from './types';
 
 /**
@@ -96,6 +97,23 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ title }),
     }),
+
+  /** 已登记工作区（服务端权威，不再依赖浏览器 localStorage） */
+  workspaces: () => request<WorkspaceRecord[]>('/api/workspaces'),
+
+  /** 登记一个工作区（幂等）。仅登记，不创建会话。 */
+  createWorkspace: (path: string) =>
+    request<WorkspaceRecord>('/api/workspaces', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+
+  /** 移除工作区登记；仍有会话时服务端返回 409。 */
+  deleteWorkspace: (path: string) =>
+    request<{ success: boolean }>(
+      `/api/workspaces?path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' },
+    ),
 
   messageTree: (id: string) => request<ChatMessage[]>(`/api/sessions/${id}/messages/tree`),
 

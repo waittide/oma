@@ -17,7 +17,13 @@ import type {
 import { tr } from '../composables/i18n';
 import { notifyHumanEvent } from '../lib/notify';
 import { accumulateUsage, hasUsage } from '../lib/sessionUsage';
-import { activeSession, activeSessionId, applyRemoteRename, applyRemoteRunning } from './sessions';
+import {
+  activeSession,
+  activeSessionId,
+  applyRemoteRename,
+  applyRemoteRunning,
+  applyWorkspacesChanged,
+} from './sessions';
 import { applyResolvedTheme } from './theme';
 import { markToolFinished } from './workspaceSync';
 import { releaseAll } from '../lib/attachments';
@@ -382,6 +388,10 @@ function handleEvent(ev: AgentEvent) {
     case 'session_running':
       // 其他会话的运行状态由服务端广播：侧栏不依赖当前打开哪个会话
       if (ev.data) applyRemoteRunning(ev.data.session_id, ev.data.running);
+      break;
+    case 'workspaces_changed':
+      // 全局频道的广播（任何会话连接都会收到）：侧栏工作区与其中会话一起对齐
+      if (ev.data) void applyWorkspacesChanged(ev.data.workspaces);
       break;
     case 'messages_deleted':
       // 本端或他端删除消息（含编辑重发失败自动回滚）后统一回读

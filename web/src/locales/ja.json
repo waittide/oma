@@ -30,7 +30,7 @@
     "noSessions": "このワークスペースにセッションはありません",
     "untitled": "無題",
     "titleAutoPlaceholder": "空欄にするとモデルが自動で命名します",
-    "newWorkspaceHint": "ワークスペースはサイドバーに登録されるだけで、その下にセッションを作成できます。",
+    "newWorkspaceHint": "ワークスペースはサーバーに登録され、その後その下にセッションを作成できます。",
     "newSessionWorkspace": "所属ワークスペース",
     "workspaceUnset": "ワークスペース未指定",
     "searchPlaceholder": "ワークスペースまたはセッションを検索",
@@ -52,7 +52,11 @@
     "loadListFailed": "セッション一覧の取得に失敗しました: {message}",
     "renameFailed": "名前の変更に失敗しました: {message}",
     "deleteFailed": "セッションの削除に失敗しました: {message}",
-    "createFailed": "セッションの作成に失敗しました: {message}"
+    "createFailed": "セッションの作成に失敗しました: {message}",
+    "workspaceAdded": "ワークスペースを追加しました",
+    "workspaceRemoved": "ワークスペースを削除しました",
+    "workspaceAddFailed": "ワークスペースの追加に失敗しました: {message}",
+    "workspaceRemoveFailed": "ワークスペースの削除に失敗しました: {message}"
   },
   "chat": {
     "noSession": "セッションが選択されていません",
