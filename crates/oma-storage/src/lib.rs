@@ -22,7 +22,7 @@ use std::{
     sync::Arc,
 };
 
-use oma_contract::{Block, ChatMessage, Role, TokenUsage};
+use oma_contract::{Block, ChatMessage, Role, TokenUsage, WorkspaceRecord};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -198,6 +198,29 @@ async fn ensure_index_schema(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
+/// 校验全局索引库的 `workspaces` 表结构符合当前版本（与 `sessions_index` 同一口径）。
+async fn ensure_workspaces_schema(pool: &SqlitePool) -> Result<()> {
+    const REQUIRED: [&str; 2] = ["path", "created_at"];
+    let rows = sqlx::query("PRAGMA table_info(workspaces)")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to inspect workspaces: {}", e)))?;
+    let present: Vec<String> = rows.iter().map(|r| r.get::<String, _>("name")).collect();
+    let missing: Vec<&str> = REQUIRED
+        .into_iter()
+        .filter(|c| !present.iter().any(|p| p == c))
+        .collect();
+    if !missing.is_empty() {
+        return Err(StorageError::Internal(anyhow::anyhow!(
+            "workspaces 缺少必要列 {:?}（当前列: {:?}）。\
+             本版本不再自动迁移旧库，请先备份并重建该表，或手动执行 ALTER TABLE 补列。",
+            missing,
+            present
+        )));
+    }
+    Ok(())
+}
+
 /// 校验会话库的 `messages` 表结构符合当前版本。
 ///
 /// 不做迁移：旧版本的表（如缺 `model` / `usage_json`，或只带
@@ -353,6 +376,20 @@ impl StorageManager {
         .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to initialize sessions_index: {}", e)))?;
         ensure_index_schema(&index_pool).await?;
 
+        // 工作区登记表：会话之外的「空工作区」也要能保留在侧栏
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS workspaces (
+                path       TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL
+            );
+            "#,
+        )
+        .execute(&index_pool)
+        .await
+        .map_err(|e| StorageError::Internal(anyhow::anyhow!("failed to initialize workspaces: {}", e)))?;
+        ensure_workspaces_schema(&index_pool).await?;
+
         Ok(Self {
             base_dir,
             index_pool,
@@ -483,6 +520,10 @@ impl StorageManager {
         validate_session_id(session_id)?;
         let now = chrono::Utc::now().timestamp_millis();
 
+        // 会话所属工作区自动登记：任何有会话的工作区都必然出现在登记表里，
+        // 客户端据此即可拿到完整的工作区清单，无需自行补记。
+        self.register_workspace(workspace).await?;
+
         // ON CONFLICT DO NOTHING：并发/重复创建都不会覆盖既有会话
         let inserted = sqlx::query(
             r#"
@@ -603,6 +644,49 @@ impl StorageManager {
         };
 
         Ok(rows.iter().map(Self::record_from_row).collect())
+    }
+
+    /// 登记工作区（幂等）。返回是否**新建**，调用方据此决定是否广播变更。
+    pub async fn register_workspace(&self, path: &str) -> Result<bool> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Err(StorageError::InvalidId("workspace path must not be empty".into()));
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        let inserted = sqlx::query("INSERT OR IGNORE INTO workspaces (path, created_at) VALUES (?, ?)")
+            .bind(path)
+            .bind(now)
+            .execute(&self.index_pool)
+            .await?
+            .rows_affected();
+        Ok(inserted > 0)
+    }
+
+    /// 全部已登记工作区，按登记时间升序（顺序稳定，便于下拉与默认选择）。
+    pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>> {
+        let rows = sqlx::query("SELECT path, created_at FROM workspaces ORDER BY created_at ASC, path ASC")
+            .fetch_all(&self.index_pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| WorkspaceRecord {
+                path:       r.get("path"),
+                created_at: r.get("created_at"),
+            })
+            .collect())
+    }
+
+    /// 移除工作区登记。只删名单，不触碰该工作区下的会话与磁盘文件。
+    pub async fn delete_workspace(&self, path: &str) -> Result<()> {
+        let affected = sqlx::query("DELETE FROM workspaces WHERE path = ?")
+            .bind(path)
+            .execute(&self.index_pool)
+            .await?
+            .rows_affected();
+        if affected == 0 {
+            return Err(StorageError::NotFound(format!("workspace {}", path)));
+        }
+        Ok(())
     }
 
     /// 删除会话及其物理目录
@@ -1367,6 +1451,49 @@ mod tests {
                 evil
             );
         }
+        Ok(())
+    }
+
+    /// 工作区登记是幂等的：重复登记返回未新建；新建会话会自动登记其工作区。
+    #[tokio::test]
+    async fn test_workspace_registration() -> anyhow::Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let storage = StorageManager::new(tmp.path()).await?;
+
+        assert!(storage.list_workspaces().await?.is_empty());
+        assert!(storage.register_workspace("/ws/a").await?);
+        assert!(!storage.register_workspace("/ws/a").await?, "重复登记不应算新建");
+
+        // 新建会话自动登记其工作区（哪怕此前没有显式登记过）
+        storage
+            .create_session("s_ws", "/ws/b", "T", "m", "task", "medium")
+            .await?;
+        let paths: Vec<String> = storage
+            .list_workspaces()
+            .await?
+            .into_iter()
+            .map(|w| w.path)
+            .collect();
+        assert_eq!(paths, vec!["/ws/a".to_string(), "/ws/b".to_string()]);
+
+        // 空路径拒绝：它会让 register_workspace 的幂等键形同虚设
+        assert!(matches!(
+            storage.register_workspace("   ").await,
+            Err(StorageError::InvalidId(_))
+        ));
+
+        // 移除只删登记，不动会话
+        storage.delete_workspace("/ws/a").await?;
+        assert_eq!(storage.list_workspaces().await?.len(), 1);
+        assert!(storage.get_session("s_ws").await?.is_some());
+        assert!(matches!(
+            storage.delete_workspace("/ws/a").await,
+            Err(StorageError::NotFound(_))
+        ));
+
+        // 跨实例可见（重启/多进程共享同一数据目录）
+        let reopened = StorageManager::new(tmp.path()).await?;
+        assert_eq!(reopened.list_workspaces().await?.len(), 1);
         Ok(())
     }
 }

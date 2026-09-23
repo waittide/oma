@@ -536,6 +536,18 @@ pub struct McpServerSummary {
     pub tool_count: usize,
 }
 
+/// 工作区登记项：全局索引库 `workspaces` 表的一行。
+///
+/// 会话自带 `workspace` 字段，但「已无会话、仍要在侧栏保留分组」的工作区只有
+/// 登记项能表达；此前这份名单存在浏览器 localStorage 里，换客户端就看不到。
+/// 现在由服务端权威保存，客户端每次现拉，变更时广播。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRecord {
+    /// 工作区绝对路径（主键）
+    pub path:       String,
+    pub created_at: i64,
+}
+
 /// 握手成功就绪载荷
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ready {
@@ -707,6 +719,14 @@ pub enum AgentEvent {
     SessionRenamed {
         session_id: String,
         title:      String,
+    },
+    /// 工作区登记集合变化（新增 / 移除）。
+    ///
+    /// 随**全局频道**下发而非某个会话房间：工作区是全局概念，任一客户端登记或
+    /// 移除后，其他客户端侧栏里的工作区分组与对应会话列表都要跟着变。
+    /// 载荷直接携带变更后的完整清单，客户端无需再请求即可对齐。
+    WorkspacesChanged {
+        workspaces: Vec<WorkspaceRecord>,
     },
     MessagesDeleted {
         deleted_ids:     Vec<String>,

@@ -1707,6 +1707,8 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         }
         // 本轮累计用量的增量更新：TUI 只在整轮结束时展示一次，不重复刷屏
         AgentEvent::UsageUpdated { .. } => {}
+        // 工作区登记集合变化：TUI 的会话列表按工作区现拉，不维护侧栏分组
+        AgentEvent::WorkspacesChanged { .. } => {}
         AgentEvent::ReasoningLevelChanged { level } => {
             app.reasoning_level = level.clone();
             app.push(
