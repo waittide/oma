@@ -18,13 +18,16 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use oma_config::{AgentLoader, OmaConfig, PaletteLoader, SkillLoader};
-use oma_contract::{AgentEvent, ChatMessage, ClientMessage, McpServerSummary, Palette, Ready, ServerMessage};
+use oma_contract::{
+    AgentEvent, ChatMessage, ClientMessage, McpServerSummary, Palette, Ready, ServerMessage, WorkspaceRecord,
+};
 use oma_mcp::McpManager;
 use oma_runtime::{RoomError, SessionRoom, estimate_tokens};
 use oma_storage::{SessionRecord, StorageError, StorageManager, validate_attachment_name};
 use oma_tool::{ToolRegistry, resolve_path};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use tower_http::{
     compression::CompressionLayer,
     cors::{Any, CorsLayer},
@@ -102,6 +105,11 @@ pub struct DaemonState {
     pub config_path: oma_config::ConfigPaths,
     pub mcp:         Arc<McpManager>,
     pub rooms:       Arc<RwLock<HashMap<String, Arc<SessionRoom>>>>,
+    /// 全局事件频道：跨会话房间的广播（工作区登记变化）。
+    ///
+    /// 房间内的事件（消息流、轮次状态）只发给该会话的客户端；工作区是全局概念，
+    /// 任一客户端改动后所有已连接客户端都要看到，故单开一条频道。
+    pub events:      broadcast::Sender<AgentEvent>,
     pub start_time:  Instant,
 }
 
@@ -120,7 +128,22 @@ impl DaemonState {
             config_path,
             mcp,
             rooms: Arc::new(RwLock::new(HashMap::new())),
+            events: broadcast::channel(256).0,
             start_time: Instant::now(),
+        }
+    }
+
+    /// 广播工作区登记集合的当前全量（跨房间，所有已连接客户端可见）。
+    ///
+    /// 读取失败不下发空清单：那会让客户端把工作区列表清空，比暂时不同步更糟。
+    pub async fn broadcast_workspaces(&self) {
+        match self.storage.list_workspaces().await {
+            Ok(workspaces) => {
+                let _ = self
+                    .events
+                    .send(AgentEvent::WorkspacesChanged { workspaces });
+            }
+            Err(e) => tracing::warn!(error = %e, "failed to list workspaces for broadcast"),
         }
     }
 
@@ -344,12 +367,25 @@ async fn handle_create_session(
     };
     let model = payload.model.unwrap_or(default_model);
     let agent = payload.agent.unwrap_or(default_agent);
+    let workspace = payload.workspace.trim();
+
+    // 提前登记以便知道工作区是否是新增的；真正的广播留到会话落库之后，
+    // 否则其他客户端刷新时只看到工作区、还没有这条会话
+    let (_, workspace_created) = state
+        .storage
+        .register_workspace(workspace)
+        .await
+        .map_err(storage_error)?;
 
     let rec = state
         .storage
-        .create_session(&session_id, &payload.workspace, &title, &model, &agent, &default_level)
+        .create_session(&session_id, workspace, &title, &model, &agent, &default_level)
         .await
         .map_err(storage_error)?;
+
+    if workspace_created {
+        state.broadcast_workspaces().await;
+    }
 
     Ok(Json(CreateSessionResp {
         session_id,
@@ -496,6 +532,104 @@ async fn handle_rename_session(
             title:      payload.title,
         });
     }
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+// 工作区登记 REST API (/api/workspaces)
+
+#[derive(Deserialize)]
+struct CreateWorkspaceReq {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct DeleteWorkspaceQuery {
+    path: String,
+}
+
+/// `GET /api/workspaces`：全部已登记工作区。
+///
+/// 客户端每次进来现拉（不再依赖浏览器 localStorage），登记集合以服务端为准。
+async fn handle_list_workspaces(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<WorkspaceRecord>>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+
+    state
+        .storage
+        .list_workspaces()
+        .await
+        .map(Json)
+        .map_err(storage_error)
+}
+
+/// `POST /api/workspaces`：登记一个工作区（幂等）。仅登记，不创建会话。
+async fn handle_create_workspace(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateWorkspaceReq>,
+) -> Result<Json<WorkspaceRecord>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+
+    let path = payload.path.trim();
+    if path.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "workspace path must not be empty".into()));
+    }
+    // 必须是存在的目录：登记一个不存在的路径只会在侧栏留个永远打不开的空壳
+    if !Path::new(path).is_dir() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("workspace directory not found: {path}"),
+        ));
+    }
+
+    let (record, created) = state
+        .storage
+        .register_workspace(path)
+        .await
+        .map_err(storage_error)?;
+    if created {
+        state.broadcast_workspaces().await;
+    }
+    Ok(Json(record))
+}
+
+/// `DELETE /api/workspaces?path=...`：移除登记（不动会话与磁盘文件）。
+///
+/// 仍有会话时拒绝：删掉登记后这些会话会落到「未登记」状态，侧栏分组看起来像丢失，
+/// 应先清空/删除其会话再来移除工作区。
+async fn handle_delete_workspace(
+    State(state): State<DaemonState>,
+    headers: HeaderMap,
+    Query(query): Query<DeleteWorkspaceQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if check_auth(&headers, None, &state.token, false).is_none() {
+        return Err(unauthorized());
+    }
+
+    let remaining = state
+        .storage
+        .list_sessions(Some(&query.path))
+        .await
+        .map_err(storage_error)?;
+    if !remaining.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("workspace still has {} session(s)", remaining.len()),
+        ));
+    }
+
+    state
+        .storage
+        .delete_workspace(&query.path)
+        .await
+        .map_err(storage_error)?;
+    state.broadcast_workspaces().await;
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -1651,13 +1785,20 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     }
 
     // 5. 双向管道拆分
+    // 房间事件（本会话消息流）与全局事件（工作区登记变化）合并转发：
+    // 任一频道关闭（房间被删 / 进程退出）即结束，客户端断开重连。
     let mut broadcast_rx = room.subscribe();
+    let mut global_rx = state.events.subscribe();
 
     // 任务 A: Room 广播转发给 WebSocket。
     // 广播缓冲溢出（慢客户端）不能直接断连：通知客户端整体回读后继续转发。
     let mut send_task = tokio::spawn(async move {
         loop {
-            let event = match broadcast_rx.recv().await {
+            let received = tokio::select! {
+                r = broadcast_rx.recv() => r,
+                r = global_rx.recv() => r,
+            };
+            let event = match received {
                 Ok(event) => event,
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "websocket client lagged; requesting resync");
@@ -1719,8 +1860,6 @@ async fn handle_ws_client(mut socket: WebSocket, state: DaemonState) {
     }
 }
 
-use tokio::sync::broadcast;
-
 /// 组装 Axum 路由
 pub fn create_router(state: DaemonState) -> Router {
     let router = Router::new()
@@ -1741,6 +1880,12 @@ pub fn create_router(state: DaemonState) -> Router {
             post(handle_upload_attachment).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
         .route("/api/sessions/{id}/attachments/{name}", get(handle_get_attachment))
+        .route(
+            "/api/workspaces",
+            get(handle_list_workspaces)
+                .post(handle_create_workspace)
+                .delete(handle_delete_workspace),
+        )
         .route("/api/workspace/tree", get(handle_workspace_tree))
         .route("/api/workspace/file", get(handle_workspace_file))
         .route("/api/system-prompt", get(handle_system_prompt))

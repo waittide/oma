@@ -4,6 +4,7 @@
 //! 工具未注册、Agent 模板白名单失效、附件未贯通到 Provider 请求。
 
 use std::{
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -18,7 +19,7 @@ use axum::{
     routing::post,
 };
 use oma_client::{ConnectOptions, OmaClient, SessionApi};
-use oma_contract::{AgentCommand, AgentEvent, ClientType, StopReason};
+use oma_contract::{AgentCommand, AgentEvent, ClientType, StopReason, WorkspaceRecord};
 use oma_daemon::{DaemonState, create_router};
 use oma_mcp::McpManager;
 use oma_storage::StorageManager;
@@ -1556,5 +1557,103 @@ async fn test_context_usage_survives_reconnect() -> Result<()> {
         "tokens must come from the recorded request: {usage:?}"
     );
     assert_eq!(usage.context_len, 100_000);
+    Ok(())
+}
+
+/// 工作区登记的完整链路：建会话自动登记、REST 幂等、有会话时拒绝移除、
+/// 变更通过**全局频道**广播到其他会话房间的客户端（不只当前房间）。
+#[tokio::test]
+async fn test_workspace_registry_and_global_broadcast() -> Result<()> {
+    let h = start_harness().await?;
+    let http = reqwest::Client::new();
+
+    // 建会话会顺带登记其工作区
+    let session = h.api.create_session(&h.workspace, Some("ws")).await?;
+    let list: Vec<WorkspaceRecord> = http
+        .get(format!("http://{}/api/workspaces", h.base))
+        .bearer_auth(&h.token)
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(list.iter().any(|w| w.path == h.workspace), "{list:?}");
+
+    // 客户端连在「会话房间」里，而非某个专门的工作区频道
+    let mut client = OmaClient::connect(ConnectOptions {
+        addr:        h.base.clone(),
+        token:       h.token.clone(),
+        workspace:   h.workspace.clone(),
+        session_id:  session.session_id.clone(),
+        client_type: ClientType::Cli,
+        client_name: "watcher".into(),
+    })
+    .await?;
+
+    // 另行登记一个真实存在的工作区目录
+    let extra = PathBuf::from(&h.workspace).join("extra");
+    std::fs::create_dir_all(&extra)?;
+    let extra_path = extra.to_string_lossy().to_string();
+    let resp = http
+        .post(format!("http://{}/api/workspaces", h.base))
+        .bearer_auth(&h.token)
+        .json(&serde_json::json!({ "path": extra_path }))
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 全局频道：本客户端应收到工作区变更（即使它所在的是别的会话房间）
+    let seen = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = client.next_event().await?;
+            if let AgentEvent::WorkspacesChanged { workspaces } = event {
+                return Some(workspaces);
+            }
+        }
+    })
+    .await
+    .expect("workspace broadcast must arrive in time")
+    .expect("connection must stay open");
+    assert!(seen.iter().any(|w| w.path == extra_path), "{seen:?}");
+
+    // 路径含斜杠，走查询参数；Url::parse_with_params 负责百分号编码
+    let delete_url = reqwest::Url::parse_with_params(
+        &format!("http://{}/api/workspaces", h.base),
+        [("path", h.workspace.as_str())],
+    )?;
+
+    // 该工作区下仍有会话：移除登记被拒
+    let resp = http
+        .delete(delete_url.clone())
+        .bearer_auth(&h.token)
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    // 清空会话后即可移除登记；未登记路径返回 404
+    h.api.delete_session(&session.session_id).await?;
+    let resp = http
+        .delete(delete_url.clone())
+        .bearer_auth(&h.token)
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = http.delete(delete_url).bearer_auth(&h.token).send().await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // 空路径与不存在的目录都拒绝
+    let resp = http
+        .post(format!("http://{}/api/workspaces", h.base))
+        .bearer_auth(&h.token)
+        .json(&serde_json::json!({ "path": "  " }))
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let resp = http
+        .post(format!("http://{}/api/workspaces", h.base))
+        .bearer_auth(&h.token)
+        .json(&serde_json::json!({ "path": "/definitely/not/here" }))
+        .send()
+        .await?;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     Ok(())
 }

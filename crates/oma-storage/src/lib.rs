@@ -646,8 +646,8 @@ impl StorageManager {
         Ok(rows.iter().map(Self::record_from_row).collect())
     }
 
-    /// 登记工作区（幂等）。返回是否**新建**，调用方据此决定是否广播变更。
-    pub async fn register_workspace(&self, path: &str) -> Result<bool> {
+    /// 登记工作区（幂等）。返回 `(记录, 是否新建)`，调用方据后者决定是否广播变更。
+    pub async fn register_workspace(&self, path: &str) -> Result<(WorkspaceRecord, bool)> {
         let path = path.trim();
         if path.is_empty() {
             return Err(StorageError::InvalidId("workspace path must not be empty".into()));
@@ -659,7 +659,22 @@ impl StorageManager {
             .execute(&self.index_pool)
             .await?
             .rows_affected();
-        Ok(inserted > 0)
+        let created_at = if inserted > 0 {
+            now
+        } else {
+            sqlx::query("SELECT created_at FROM workspaces WHERE path = ?")
+                .bind(path)
+                .fetch_one(&self.index_pool)
+                .await?
+                .get::<i64, _>("created_at")
+        };
+        Ok((
+            WorkspaceRecord {
+                path: path.to_string(),
+                created_at,
+            },
+            inserted > 0,
+        ))
     }
 
     /// 全部已登记工作区，按登记时间升序（顺序稳定，便于下拉与默认选择）。
@@ -1461,8 +1476,12 @@ mod tests {
         let storage = StorageManager::new(tmp.path()).await?;
 
         assert!(storage.list_workspaces().await?.is_empty());
-        assert!(storage.register_workspace("/ws/a").await?);
-        assert!(!storage.register_workspace("/ws/a").await?, "重复登记不应算新建");
+        let (rec, created) = storage.register_workspace("/ws/a").await?;
+        assert!(created);
+        assert_eq!(rec.path, "/ws/a");
+        let (again, created) = storage.register_workspace("/ws/a").await?;
+        assert!(!created, "重复登记不应算新建");
+        assert_eq!(again.created_at, rec.created_at, "重复登记不改登记时间");
 
         // 新建会话自动登记其工作区（哪怕此前没有显式登记过）
         storage
