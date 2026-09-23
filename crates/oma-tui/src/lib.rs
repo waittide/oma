@@ -1208,6 +1208,11 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
             if raw.is_empty() {
                 return Ok(None);
             }
+            // 斜杠命令：本地分发，不发给模型
+            if let Some((cmd, args)) = parse_slash(&raw) {
+                app.input.clear();
+                return handle_slash(app, api, cmd, args).await;
+            }
             let (text, paths) = extract_attachments(&raw);
             // 附件先落库：上传失败就整条不发送，并把输入原样留给用户改，静默丢掉附件更糟
             let attachments = match resolve_attachments(app, api, &paths).await {
@@ -1268,6 +1273,94 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
     }
     Ok(None)
 }
+
+/// 解析斜杠命令：`/model` → `("model", "")`，`/rename 新名字` → `("rename", "新名字")`。
+///
+/// 非斜杠输入返回 None（当作普通消息发送）。
+fn parse_slash(text: &str) -> Option<(&str, &str)> {
+    let rest = text.trim().strip_prefix('/')?.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    Some(match rest.split_once(char::is_whitespace) {
+        Some((cmd, args)) => (cmd, args.trim()),
+        None => (rest, ""),
+    })
+}
+
+/// 斜杠命令分发表；返回 Some 表示要离开当前会话循环（退出 / 换会话）。
+async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) -> Result<Option<Outcome>> {
+    match cmd {
+        "help" => {
+            app.push_notice(SLASH_HELP, Style::default().fg(app.theme.muted));
+            Ok(None)
+        }
+        "model" => {
+            open_model_picker(app);
+            Ok(None)
+        }
+        "agent" => {
+            open_agent_picker(app);
+            Ok(None)
+        }
+        "reasoning" => {
+            open_reasoning_picker(app);
+            Ok(None)
+        }
+        "session" => {
+            open_session_picker(app, api).await;
+            Ok(None)
+        }
+        "new" => match api.create_session(&app.workspace, None).await {
+            Ok(record) => Ok(Some(Outcome::SwitchSession {
+                session_id: record.session_id,
+            })),
+            Err(e) => {
+                app.push_notice(format!("新建会话失败: {e}"), Style::default().fg(app.theme.error));
+                Ok(None)
+            }
+        },
+        "rename" => {
+            open_rename_prompt(app);
+            // 带参数时直接改名，不进弹窗
+            if !args.is_empty() {
+                app.prompt = None;
+                match api.rename_session(&app.session_id, args).await {
+                    Ok(()) => {
+                        if let Some(record) = app
+                            .sessions
+                            .iter_mut()
+                            .find(|s| s.session_id == app.session_id)
+                        {
+                            record.title = args.to_string();
+                        }
+                        app.push_notice(format!("会话已重命名为 {args}"), Style::default().fg(app.theme.muted));
+                    }
+                    Err(e) => app.push_notice(format!("重命名失败: {e}"), Style::default().fg(app.theme.error)),
+                }
+            }
+            Ok(None)
+        }
+        "clear" => {
+            app.entries.clear();
+            app.scroll = 0;
+            app.stick = true;
+            Ok(None)
+        }
+        "quit" => Ok(Some(Outcome::Quit)),
+        _ => {
+            app.push_notice(
+                format!("未知命令 /{cmd}（/help 查看可用命令）"),
+                Style::default().fg(app.theme.error),
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// `/help` 的命令清单。
+const SLASH_HELP: &str = "/help 帮助 · /model 模型 · /agent 预设 · /reasoning 推理等级\n\
+     /session 切换会话 · /new 新建会话 · /rename [标题] 重命名 · /clear 清空记录显示 · /quit 退出";
 
 /// 打开连接切换弹窗；无已保存连接时仅提示，不进入空列表。
 fn open_picker(app: &mut App) {
@@ -2510,6 +2603,36 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    /// 斜杠命令解析：命令与参数分离，非斜杠输入不当作命令。
+    #[test]
+    fn test_parse_slash_commands() {
+        assert_eq!(parse_slash("/model"), Some(("model", "")));
+        assert_eq!(parse_slash("/rename 新名"), Some(("rename", "新名")));
+        assert_eq!(parse_slash("  /help "), Some(("help", "")));
+        // 以 / 开头一律走命令通道：未知命令由分发表报错（不会静默发出去）
+        assert_eq!(parse_slash("/tmp/a.txt"), Some(("tmp/a.txt", "")));
+        assert_eq!(parse_slash("/"), None);
+        assert_eq!(parse_slash("hello"), None);
+    }
+
+    /// 未知命令给出提示且不离开会话循环。
+    #[tokio::test]
+    async fn test_unknown_slash_command_reports_error() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        // help/未知命令不会发网络请求，地址随意
+        let api = SessionApi::new("127.0.0.1:1", "t");
+        assert!(
+            handle_slash(&mut app, &api, "nope", "")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(app.entries.last().unwrap().text.contains("未知命令"));
+
+        handle_slash(&mut app, &api, "help", "").await.unwrap();
+        assert!(app.entries.last().unwrap().text.contains("/model"));
     }
 
     /// 思考段耗时：展开态挂在首行前缀，折叠态挂在折叠标签。
