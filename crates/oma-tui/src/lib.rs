@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use oma_client::{ConnectOptions, OmaClient, SessionApi, SessionRecord};
 use oma_contract::{
     AgentCommand, AgentEvent, AgentSummary, ChatMessage, ClientType, ModelInfo, Palette, REASONING_LEVELS,
-    ResolvedTheme, Role, StopReason, ThemeMode, ToolCallStartedData,
+    ResolvedTheme, Role, StopReason, ThemeMode, TokenUsage, ToolCallStartedData,
 };
 use ratatui::{
     Frame,
@@ -402,6 +402,8 @@ struct Entry {
     style:       Style,
     /// 思考段耗时（毫秒）；不可测时为 None
     duration_ms: Option<u64>,
+    /// 助手正文对应的那一次请求用量（`UsageUpdated` 回填）；用户/思考/工具为 None
+    usage:       Option<TokenUsage>,
     /// 是否仍在进行：进行中的思考/工具调用不参与折叠
     open:        bool,
 }
@@ -414,6 +416,7 @@ impl Entry {
             tool: None,
             style,
             duration_ms: None,
+            usage: None,
             open: false,
         }
     }
@@ -606,6 +609,18 @@ impl App {
         }
     }
 
+    /// 把本次请求的用量挂到最近一条助手正文上（`UsageUpdated` 到达时该请求已落库）。
+    fn set_last_assistant_usage(&mut self, usage: TokenUsage) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .rev()
+            .find(|entry| entry.kind == EntryKind::Assistant)
+        {
+            entry.usage = Some(usage);
+        }
+    }
+
     /// 工具调用开始：建一条进行中的工具块。
     fn tool_started(&mut self, data: ToolCallStartedData) {
         self.finish_thinking(None);
@@ -677,6 +692,24 @@ impl App {
                         None => "思".to_string(),
                     };
                     push_wrapped(&mut lines, &prefix, &entry.text, self.dim_style(entry), width);
+                }
+                // 助手正文末尾附上该次请求的用量（口径与整轮回执一致，粒度到每次请求）
+                EntryKind::Assistant => {
+                    push_wrapped(&mut lines, "", &entry.text, self.dim_style(entry), width);
+                    if let Some(usage) = entry.usage {
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "  ↑{} ↓{} · 缓存读 {} · 缓存写 {}",
+                                usage.input_tokens,
+                                usage.output_tokens,
+                                usage.cache_read_tokens,
+                                usage.cache_write_tokens
+                            ),
+                            Style::default()
+                                .fg(self.theme.muted)
+                                .add_modifier(Modifier::DIM),
+                        )));
+                    }
                 }
                 _ => push_wrapped(
                     &mut lines,
@@ -2813,8 +2846,8 @@ fn apply_event(app: &mut App, event: AgentEvent) {
         AgentEvent::ContextUsage { tokens, context_len } => {
             app.context = Some((tokens, context_len));
         }
-        // 本轮累计用量的增量更新：TUI 只在整轮结束时展示一次，不重复刷屏
-        AgentEvent::UsageUpdated { .. } => {}
+        // 本次请求用量：挂到刚结束的那条助手正文上（整轮合计另见 TurnFinished）
+        AgentEvent::UsageUpdated { usage } => app.set_last_assistant_usage(usage),
         // 工作区登记集合变化：TUI 的会话列表按工作区现拉，不维护侧栏分组
         AgentEvent::WorkspacesChanged { .. } => {}
         AgentEvent::ReasoningLevelChanged { level } => {
@@ -3339,6 +3372,27 @@ mod tests {
         assert_eq!(app.entries[0].kind, EntryKind::Assistant);
         assert_eq!(app.entries[0].text, "hello world");
         assert_eq!(app.entries[1].kind, EntryKind::Thinking);
+    }
+
+    /// 每条助手正文附上该次请求的用量；用户消息不带。
+    #[test]
+    fn test_assistant_usage_attached_to_block() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        app.append_assistant("回答", Style::default());
+        app.set_last_assistant_usage(TokenUsage {
+            input_tokens:       10,
+            output_tokens:      2,
+            cache_read_tokens:  3,
+            cache_write_tokens: 4,
+        });
+        let text = plain_lines(&app);
+        assert!(text.contains("↑10 ↓2"), "{text}");
+        assert!(text.contains("缓存读 3") && text.contains("缓存写 4"), "{text}");
+
+        // 没有用量时只有正文，不凭空多出一行
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        app.append_assistant("回答", Style::default());
+        assert!(!plain_lines(&app).contains('↑'), "{}", plain_lines(&app));
     }
 
     /// 折叠只作用于已结束的块：进行中的思考/工具即使全局折叠也保持展开。
