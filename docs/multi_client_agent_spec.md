@@ -11,6 +11,8 @@
 > - **全局事件频道**：Daemon 除每会话房间频道外新增一条全局 `broadcast` 频道承载
 >   `AgentEvent::WorkspacesChanged { workspaces }`，所有已连接客户端（不限所在会话）
 >   都会收到；客户端据此对齐工作区名单并重取会话，使分组与其中会话状态一并更新
+> - **不做数据迁移**：新表仅由 `CREATE TABLE IF NOT EXISTS` 建出；老库中只由会话体现的
+>   工作区在 `GET /api/workspaces` 读取时并入（登记表 ∪ 会话所属工作区），不回填、不补列
 
 > **v2.12 变更（思考耗时即时可见，且最小单位到毫秒）**：
 > - **新增 `AgentEvent::ThinkingFinished { duration_ms }`**：一段思维链结束（第一段正文或
@@ -280,6 +282,10 @@ CREATE TABLE workspaces (
 
 任何会话创建时自动登记其工作区；客户端 `GET /api/workspaces` 现拉这份名单，
 不再依赖浏览器 localStorage。登记集合变化时由全局频道广播 `WorkspacesChanged`。
+
+**无需数据迁移**：本表是后加的，升级前已存在的会话只体现在 `sessions_index.workspace`
+上。按「不做数据迁移/兼容」的口径不回填，改在读取时并入 —— 接口返回
+`登记表 ∪ 会话所属工作区` 的全量，登记表已有的路径以其 `created_at` 为准。
 
 会话库：
 

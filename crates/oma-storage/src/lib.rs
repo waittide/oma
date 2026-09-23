@@ -677,11 +677,28 @@ impl StorageManager {
         ))
     }
 
-    /// 全部已登记工作区，按登记时间升序（顺序稳定，便于下拉与默认选择）。
+    /// 全部工作区，按登记时间升序（顺序稳定，便于下拉与默认选择）。
+    ///
+    /// = 登记表 ∪ 会话所属工作区。第二项是为**旧库**准备的：本表是后加的，
+    /// 升级前已存在的会话只体现在 `sessions_index.workspace` 上。按「不做数据迁移」
+    /// 的口径不去回填，改在读取时并入，接口返回的始终是全量，客户端无需再自己拼。
+    /// 登记表里已有的路径以其 `created_at` 为准，避免同一工作区出现两条。
     pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>> {
-        let rows = sqlx::query("SELECT path, created_at FROM workspaces ORDER BY created_at ASC, path ASC")
-            .fetch_all(&self.index_pool)
-            .await?;
+        let rows = sqlx::query(
+            r#"
+            SELECT path, created_at FROM (
+                SELECT path, created_at FROM workspaces
+                UNION ALL
+                SELECT workspace AS path, MIN(created_at) AS created_at
+                FROM sessions_index
+                WHERE workspace NOT IN (SELECT path FROM workspaces)
+                GROUP BY workspace
+            )
+            ORDER BY created_at ASC, path ASC
+            "#,
+        )
+        .fetch_all(&self.index_pool)
+        .await?;
         Ok(rows
             .iter()
             .map(|r| WorkspaceRecord {
@@ -1513,6 +1530,15 @@ mod tests {
         // 跨实例可见（重启/多进程共享同一数据目录）
         let reopened = StorageManager::new(tmp.path()).await?;
         assert_eq!(reopened.list_workspaces().await?.len(), 1);
+
+        // 老库形态：会话存在、但登记表里没有对应行 —— 读取时按会话并回，
+        // 无需任何迁移（本表是后加的，升级前的会话只体现为 sessions_index.workspace）
+        sqlx::query("DELETE FROM workspaces")
+            .execute(&storage.index_pool)
+            .await?;
+        let legacy = storage.list_workspaces().await?;
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].path, "/ws/b");
         Ok(())
     }
 }
