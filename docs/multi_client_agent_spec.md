@@ -1,8 +1,16 @@
 # Oma 多类型多客户端协同 Agent 技术规格书 (Technical Specification)
 
-> 版本：v2.12
+> 版本：v2.13
 > 状态：Implementation Verified（文档与代码同步）
 > 适用形态：CLI / TUI、Vue 3 Web 前端、Tauri 桌面端（前端资产由客户端独立提供，Daemon 保持纯净 Headless）
+
+> **v2.13 变更（工作区登记服务端化，并随广播同步）**：
+> - **工作区登记落库**：全局索引库 `oma.db` 新增 `workspaces` 表；建会话自动登记其工作区，
+>   `GET /api/workspaces` 现拉名单，`POST` / `DELETE` 增删登记（删登记要求该工作区已无会话）。
+>   Web 端不再把已知工作区写在 localStorage，换浏览器/换机器也能看到完整分组
+> - **全局事件频道**：Daemon 除每会话房间频道外新增一条全局 `broadcast` 频道承载
+>   `AgentEvent::WorkspacesChanged { workspaces }`，所有已连接客户端（不限所在会话）
+>   都会收到；客户端据此对齐工作区名单并重取会话，使分组与其中会话状态一并更新
 
 > **v2.12 变更（思考耗时即时可见，且最小单位到毫秒）**：
 > - **新增 `AgentEvent::ThinkingFinished { duration_ms }`**：一段思维链结束（第一段正文或
@@ -127,7 +135,7 @@ Oma 采用 **“单 Daemon 核心 + 统一 WebSocket/HTTP 网关 + 多端协同�
 | Crate / 目录 | 职责与依赖 |
 |---|---|
 | `crates/oma-contract` | 纯类型与协议契约（`Role`, `Block`, `ChatMessage`, `ClientMessage`, `ServerMessage`, `AgentEvent`, `ActiveTurnCatchUp` 等），零重依赖。 |
-| `crates/oma-storage` | SQLite 双层持久化：全局索引库 `oma.db` 的 `sessions_index` 存会话元数据，每会话库 `sessions/<id>/session.db` 存 `messages` 消息树与 `session_meta` 运行时状态；附件仍落 `attachments/` 目录。WAL + 写池串行、读池并行，同数据目录多实例互相可见。 |
+| `crates/oma-storage` | SQLite 双层持久化：全局索引库 `oma.db` 的 `sessions_index` 存会话元数据、`workspaces` 存工作区登记，每会话库 `sessions/<id>/session.db` 存 `messages` 消息树与 `session_meta` 运行时状态；附件仍落 `attachments/` 目录。WAL + 写池串行、读池并行，同数据目录多实例互相可见。 |
 | `crates/oma-provider` | 手写轻量 SSE 状态机，统一归一化 Anthropic、OpenAI / DeepSeek、Responses 与 Google Gemini 的流式协议（含工具调用与多模态），HTTP 客户端进程级共享。 |
 | `crates/oma-tool` | 内置 4 大工具（`read`, `write`, `edit` apply_patch 补丁, `shell` 进程组守卫），含统一的输出截断与工具集定义。 |
 | `crates/oma-mcp` | MCP 客户端：本地 stdio 子进程与远程 HTTP（JSON-RPC over POST），工具按 `mcp__{server}__{tool}` 统一命名空间注册；只暴露已预热的工具缓存。 |
@@ -260,6 +268,18 @@ CREATE TABLE sessions_index (
 CREATE INDEX idx_sessions_workspace ON sessions_index(workspace);
 CREATE INDEX idx_sessions_updated_at ON sessions_index(updated_at DESC);
 ```
+
+工作区登记表（同一索引库；表达「已无会话、仍要保留分组」的工作区）：
+
+```sql
+CREATE TABLE workspaces (
+    path       TEXT PRIMARY KEY,   -- 工作区绝对路径
+    created_at INTEGER NOT NULL
+);
+```
+
+任何会话创建时自动登记其工作区；客户端 `GET /api/workspaces` 现拉这份名单，
+不再依赖浏览器 localStorage。登记集合变化时由全局频道广播 `WorkspacesChanged`。
 
 会话库：
 
@@ -394,6 +414,13 @@ pub struct Ready {
     pub model_catalog:    BTreeMap<String, Vec<ModelInfo>>,
     pub context_usage:    Option<ContextUsage>,
     pub active_theme:     ResolvedTheme,   // 已解析主题（两套完整调色板）
+}
+
+/// 工作区登记项：全局索引库 `workspaces` 表的一行；随 WorkspacesChanged 全量下发
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceRecord {
+    pub path:       String,   // 工作区绝对路径（主键）
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -531,6 +558,9 @@ pub enum AgentEvent {
     // 6. 重连快照与错误提示
     ActiveTurnCatchUp(ActiveTurnCatchUp),
     SessionRenamed { session_id: String, title: String },
+    /// 工作区登记集合变化（新增 / 移除）。随**全局频道**下发而非某个会话房间：
+    /// 工作区是全局概念，任一客户端改动后所有已连接客户端都要看到，载荷即变更后的全量清单
+    WorkspacesChanged { workspaces: Vec<WorkspaceRecord> },
     MessagesDeleted { deleted_ids: Vec<String>, current_leaf_id: Option<String> },
     Error { message: String },
 }
@@ -863,6 +893,7 @@ ToolOutput {
 | `DELETE` | `/api/sessions/{id}/messages/{message_id}` | 删除消息及其整棵子树，返回新的当前叶子 |
 | `POST` | `/api/sessions/{id}/attachments` | 上传多模态附件（Multipart，单请求上限 16 MiB），返回 `session_attachment://` 引用 |
 | `GET` | `/api/sessions/{id}/attachments/{name}` | 下载/预览附件 |
+| `GET`/`POST`/`DELETE` | `/api/workspaces`（`POST` 体 `{path}`；`DELETE` 用 `?path=`） | 列出 / 登记 / 移除工作区登记；登记要求路径是存在的目录，移除仍有会话的工作区返回 409。变化通过全局频道广播 `WorkspacesChanged` |
 | `GET` | `/api/workspace/tree?workspace=...` | 获取工作区目录文件树（深度 4、最多 2000 项） |
 | `GET` | `/api/workspace/file?workspace=...&path=...` | 读取工作区文件内容（供代码查看与编辑器） |
 | `GET` | `/api/tools` | 列出可用工具（内置 4 个 + 已发现的 MCP 工具），供预设编辑器勾选 |
