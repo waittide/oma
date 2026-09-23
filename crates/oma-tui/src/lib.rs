@@ -155,9 +155,6 @@ enum PickerAction {
         token: String,
         name:  String,
     },
-    SwitchSession {
-        session_id: String,
-    },
     /// 下发指令切换模型（选择器形如 `provider/model_id`）
     SetModel(String),
     /// 下发指令切换 Agent 预设
@@ -165,9 +162,7 @@ enum PickerAction {
     /// 下发指令切换推理等级（取值必须在 `REASONING_LEVELS` 内）
     SetReasoningLevel(String),
     /// 下发改换当前分支（`SwitchBranch`）
-    SwitchBranch {
-        leaf_message_id: String,
-    },
+    SwitchBranch { leaf_message_id: String },
     /// 编辑重发：把历史消息的文本放回输入框，并在发送时从它之前分叉
     ForkFrom {
         /// 回填输入框的文本
@@ -178,11 +173,7 @@ enum PickerAction {
         label:     String,
     },
     /// 删除该用户消息及其整棵子树
-    DeleteMessage {
-        message_id: String,
-    },
-    /// 为当前工作区新建一个会话，并切过去
-    NewSession,
+    DeleteMessage { message_id: String },
 }
 
 /// 弹窗选择器：连接、会话、模型、预设、推理等级、分支共用同一套渲染与按键。
@@ -256,6 +247,55 @@ enum SettingsAction {
     },
 }
 
+/// 会话面板的排序键。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionSort {
+    Updated,
+    Name,
+    Created,
+}
+
+impl SessionSort {
+    fn next(self) -> Self {
+        match self {
+            SessionSort::Updated => SessionSort::Name,
+            SessionSort::Name => SessionSort::Created,
+            SessionSort::Created => SessionSort::Updated,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            SessionSort::Updated => "修改时间",
+            SessionSort::Name => "名称",
+            SessionSort::Created => "创建时间",
+        }
+    }
+}
+
+/// 会话面板的一行。
+enum PanelRow {
+    Workspace { path: String, label: String, count: usize },
+    Session(SessionRecord),
+    Empty,
+}
+
+/// 全屏会话面板：工作区分组 + 搜索 + 排序 + 项目过滤 + 会话/工作区增删改与切换。
+struct SessionPanel {
+    sessions:   Vec<SessionRecord>,
+    /// 已登记工作区路径（含无会话者）
+    workspaces: Vec<String>,
+    collapsed:  HashSet<String>,
+    query:      String,
+    /// 是否处于搜索输入态（否则字母键是命令）
+    searching:  bool,
+    sort:       SessionSort,
+    /// 项目过滤：None = 全部
+    filter:     Option<String>,
+    rows:       Vec<PanelRow>,
+    index:      usize,
+}
+
 /// 文本输入弹窗：标题 + 一行可编辑文本。
 ///
 /// 列表弹窗（[`Picker`]）只能选不能写，而重命名会话需要输入；做成独立的小弹窗
@@ -269,10 +309,12 @@ struct TextPrompt {
 }
 
 /// 文本输入弹窗确认后要做的事
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PromptKind {
-    /// 重命名当前会话
-    RenameSession,
+    /// 重命名指定会话（id 随弹窗带入，会话面板里改的不一定是当前会话）
+    RenameSession(String),
+    /// 登记一个工作区
+    AddWorkspace,
 }
 
 /// 由握手下发的调色板导出的语义配色。
@@ -467,6 +509,8 @@ struct App {
     tree_view:               Option<TreeSelector>,
     /// 设置界面；None = 未打开
     settings:                Option<SettingsState>,
+    /// 全屏会话面板；None = 未打开
+    panel:                   Option<SessionPanel>,
     /// 连接清单是否被设置界面改过（决定退出时是否回传写盘）
     connections_dirty:       bool,
     /// 已上传、待随下一条消息发送的剪贴板图片附件（session_attachment:// 引用）
@@ -521,6 +565,7 @@ impl App {
             picker: None,
             tree_view: None,
             settings: None,
+            panel: None,
             connections_dirty: false,
             pending_images: Vec::new(),
             system_prompt: None,
@@ -1426,6 +1471,9 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
         let request = handle_prompt_key(app, key);
         return apply_prompt(app, api, request).await;
     }
+    if app.panel.is_some() {
+        return handle_panel_key(app, api, key).await;
+    }
     if app.tree_view.is_some() {
         match handle_tree_key(app, key) {
             TreeAction::Close => app.tree_view = None,
@@ -1469,7 +1517,7 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
 
     match key.code {
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => open_picker(app),
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => open_session_picker(app, api).await,
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => open_session_panel(app, api).await,
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => open_model_picker(app),
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => open_agent_picker(app),
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => open_reasoning_picker(app),
@@ -1623,7 +1671,7 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
             Ok(None)
         }
         "session" => {
-            open_session_picker(app, api).await;
+            open_session_panel(app, api).await;
             Ok(None)
         }
         "tree" => {
@@ -1945,57 +1993,344 @@ fn open_picker(app: &mut App) {
     });
 }
 
-/// 打开会话切换弹窗。
+/// 打开全屏会话面板（`Ctrl+N` / `/session`）。
 ///
 /// 列表现拉：别处（Web、另一个终端）新建的会话要能马上看到，连接时的快照只作为
-/// 拉取失败时的退路。首项固定是「新建会话」——否则工作区里只有一个会话时，
-/// 弹窗里除了「重连现在这个」无事可做。
-async fn open_session_picker(app: &mut App, api: &SessionApi) {
-    match api.list_sessions(Some(&app.workspace)).await {
-        Ok(list) => app.sessions = list,
-        Err(e) => app.push_notice(
-            format!("刷新会话列表失败，沿用连接时的快照: {e}"),
-            Style::default().fg(app.theme.warning),
-        ),
+/// 拉取失败时的退路。工作区分组对齐 Web 侧栏，含已登记但无会话的工作区。
+async fn open_session_panel(app: &mut App, api: &SessionApi) {
+    let sessions = match api.list_sessions(None).await {
+        Ok(list) => list,
+        Err(e) => {
+            app.push_notice(
+                format!("刷新会话列表失败，沿用连接时的快照: {e}"),
+                Style::default().fg(app.theme.warning),
+            );
+            app.sessions.clone()
+        }
+    };
+    let workspaces = api
+        .list_workspaces()
+        .await
+        .map(|list| list.into_iter().map(|workspace| workspace.path).collect())
+        .unwrap_or_default();
+
+    let mut panel = SessionPanel {
+        sessions,
+        workspaces,
+        collapsed: HashSet::new(),
+        query: String::new(),
+        searching: false,
+        sort: SessionSort::Updated,
+        filter: None,
+        rows: Vec::new(),
+        index: 0,
+    };
+    rebuild_session_rows(&mut panel);
+    // 高亮落在当前会话上：打开第一眼就知道「现在在哪」
+    if let Some(i) = panel
+        .rows
+        .iter()
+        .position(|row| matches!(row, PanelRow::Session(s) if s.session_id == app.session_id))
+    {
+        panel.index = i;
     }
-    let items = session_items(&app.sessions, &app.workspace, &app.session_id);
-    // 高亮落在当前会话上：打开弹窗第一眼就知道「现在在哪」
-    let index = picker_current_index(&items);
-    app.picker = Some(Picker {
-        title: " 切换会话 · ↑/↓ 选择 · Enter 确认 · Esc 取消 ".into(),
-        items,
-        index,
-    });
+    app.panel = Some(panel);
 }
 
-/// 会话弹窗的条目：首项固定是「新建会话」，其余按列表顺序。
-fn session_items(sessions: &[SessionRecord], workspace: &str, current: &str) -> Vec<PickerItem> {
-    let mut items: Vec<PickerItem> = sessions
-        .iter()
-        .map(|s| PickerItem {
-            // 刚建的会话还没有标题，留空会让弹窗里出现一条莫名其妙的空行
-            label:   if s.title.trim().is_empty() {
-                "未命名".to_string()
-            } else {
-                s.title.clone()
-            },
-            detail:  format!("{} · {}", short_id(&s.session_id), s.active_model),
-            current: s.session_id == current,
-            action:  PickerAction::SwitchSession {
-                session_id: s.session_id.clone(),
-            },
-        })
-        .collect();
-    items.insert(
-        0,
-        PickerItem {
-            label:   "＋ 新建会话".into(),
-            detail:  format!("为 {workspace} 开一个空会话"),
-            current: false,
-            action:  PickerAction::NewSession,
+/// 路径尾段（工作区分组标题）。
+fn path_basename(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// 重建会话面板的行：工作区分组 → 组内会话，应用搜索/过滤/排序/折叠。
+fn rebuild_session_rows(panel: &mut SessionPanel) {
+    let query = panel.query.trim().to_lowercase();
+    let mut groups: BTreeMap<String, Vec<SessionRecord>> = BTreeMap::new();
+    for session in &panel.sessions {
+        groups
+            .entry(session.workspace.clone())
+            .or_default()
+            .push(session.clone());
+    }
+    for workspace in &panel.workspaces {
+        groups.entry(workspace.clone()).or_default();
+    }
+
+    let mut rows = Vec::new();
+    for (path, mut items) in groups {
+        if let Some(filter) = &panel.filter {
+            if filter != &path {
+                continue;
+            }
+        }
+        let label = path_basename(&path);
+        let workspace_hit =
+            query.is_empty() || label.to_lowercase().contains(&query) || path.to_lowercase().contains(&query);
+        if !query.is_empty() && !workspace_hit {
+            items.retain(|session| session.title.to_lowercase().contains(&query));
+            if items.is_empty() {
+                continue;
+            }
+        }
+        sort_sessions(&mut items, panel.sort);
+        rows.push(PanelRow::Workspace {
+            path: path.clone(),
+            label,
+            count: items.len(),
+        });
+        if panel.collapsed.contains(&path) {
+            continue;
+        }
+        for session in items {
+            rows.push(PanelRow::Session(session));
+        }
+    }
+    if rows.is_empty() {
+        rows.push(PanelRow::Empty);
+    }
+    panel.rows = rows;
+    panel.index = panel.index.min(panel.rows.len().saturating_sub(1));
+}
+
+/// 组内会话排序。
+fn sort_sessions(items: &mut [SessionRecord], sort: SessionSort) {
+    match sort {
+        SessionSort::Name => items.sort_by_key(|session| session.title.to_lowercase()),
+        SessionSort::Created => items.sort_by_key(|session| std::cmp::Reverse(session.created_at)),
+        SessionSort::Updated => items.sort_by_key(|session| std::cmp::Reverse(session.updated_at)),
+    }
+}
+
+/// 会话面板当前行指向的对象。
+enum PanelSel {
+    None,
+    Workspace(String),
+    Session {
+        id:        String,
+        workspace: String,
+        title:     String,
+    },
+}
+
+/// 取出面板当前行的选中对象。
+fn panel_selection(panel: &SessionPanel) -> PanelSel {
+    match panel.rows.get(panel.index) {
+        Some(PanelRow::Workspace { path, .. }) => PanelSel::Workspace(path.clone()),
+        Some(PanelRow::Session(session)) => PanelSel::Session {
+            id:        session.session_id.clone(),
+            workspace: session.workspace.clone(),
+            title:     session.title.clone(),
         },
-    );
-    items
+        _ => PanelSel::None,
+    }
+}
+
+/// 上下移动面板高亮。
+fn panel_move(app: &mut App, delta: isize) {
+    if let Some(panel) = app.panel.as_mut() {
+        let last = panel.rows.len().saturating_sub(1);
+        panel.index = if delta < 0 {
+            panel.index.saturating_sub(1)
+        } else {
+            (panel.index + 1).min(last)
+        };
+    }
+}
+
+/// 重取面板数据（会话 + 工作区登记）并重建，保持高亮不越界。
+async fn refresh_panel(app: &mut App, api: &SessionApi) {
+    let sessions = match api.list_sessions(None).await {
+        Ok(list) => list,
+        Err(e) => {
+            app.push_notice(format!("刷新会话列表失败: {e}"), Style::default().fg(app.theme.error));
+            return;
+        }
+    };
+    let workspaces = api
+        .list_workspaces()
+        .await
+        .map(|list| list.into_iter().map(|workspace| workspace.path).collect())
+        .unwrap_or_default();
+    app.sessions = sessions.clone();
+    if let Some(panel) = app.panel.as_mut() {
+        panel.sessions = sessions;
+        panel.workspaces = workspaces;
+        rebuild_session_rows(panel);
+    }
+}
+
+/// 清空某工作区下的全部会话；返回（已删, 失败）。
+async fn clear_workspace_sessions(api: &SessionApi, workspace: &str) -> (usize, usize) {
+    let sessions = match api.list_sessions(Some(workspace)).await {
+        Ok(list) => list,
+        Err(_) => return (0, 0),
+    };
+    let (mut done, mut failed) = (0, 0);
+    for session in sessions {
+        match api.delete_session(&session.session_id).await {
+            Ok(()) => done += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    (done, failed)
+}
+
+/// 会话面板按键：搜索态吞字符，普通态按命令字母操作。
+async fn handle_panel_key(app: &mut App, api: &SessionApi, key: KeyEvent) -> Result<Option<Outcome>> {
+    let Some(panel) = app.panel.as_ref() else {
+        return Ok(None);
+    };
+    let searching = panel.searching;
+    let selection = panel_selection(panel);
+    let selected_workspace = match &selection {
+        PanelSel::Workspace(path) => Some(path.clone()),
+        PanelSel::Session { workspace, .. } => Some(workspace.clone()),
+        PanelSel::None => None,
+    };
+
+    if searching {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(panel) = app.panel.as_mut() {
+                    panel.searching = false;
+                    panel.query.clear();
+                    rebuild_session_rows(panel);
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(panel) = app.panel.as_mut() {
+                    panel.searching = false;
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(panel) = app.panel.as_mut() {
+                    panel.query.pop();
+                    rebuild_session_rows(panel);
+                }
+            }
+            KeyCode::Up => panel_move(app, -1),
+            KeyCode::Down => panel_move(app, 1),
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(panel) = app.panel.as_mut() {
+                    panel.query.push(c);
+                    rebuild_session_rows(panel);
+                }
+            }
+            _ => {}
+        }
+        return Ok(None);
+    }
+
+    match key.code {
+        KeyCode::Esc => app.panel = None,
+        KeyCode::Up | KeyCode::Char('k') => panel_move(app, -1),
+        KeyCode::Down | KeyCode::Char('j') => panel_move(app, 1),
+        // 进入搜索输入态（字母键让位给过滤词）
+        KeyCode::Char('/') => {
+            if let Some(panel) = app.panel.as_mut() {
+                panel.searching = true;
+                panel.query.clear();
+                rebuild_session_rows(panel);
+            }
+        }
+        KeyCode::Char('s') => {
+            if let Some(panel) = app.panel.as_mut() {
+                panel.sort = panel.sort.next();
+                rebuild_session_rows(panel);
+            }
+        }
+        // 项目过滤：全部 → 逐个工作区 → 全部
+        KeyCode::Char('f') => {
+            if let Some(panel) = app.panel.as_mut() {
+                let next = match &panel.filter {
+                    None => panel.workspaces.first().cloned(),
+                    Some(current) => {
+                        let idx = panel
+                            .workspaces
+                            .iter()
+                            .position(|w| w == current)
+                            .map(|i| i + 1);
+                        idx.and_then(|i| panel.workspaces.get(i).cloned())
+                    }
+                };
+                panel.filter = next;
+                rebuild_session_rows(panel);
+            }
+        }
+        KeyCode::Enter => match selection {
+            PanelSel::Workspace(path) => {
+                if let Some(panel) = app.panel.as_mut() {
+                    if !panel.collapsed.remove(&path) {
+                        panel.collapsed.insert(path);
+                    }
+                    rebuild_session_rows(panel);
+                }
+            }
+            PanelSel::Session { id, .. } => return Ok(Some(Outcome::SwitchSession { session_id: id })),
+            PanelSel::None => {}
+        },
+        KeyCode::Char('n') => {
+            let workspace = selected_workspace.unwrap_or_else(|| app.workspace.clone());
+            match api.create_session(&workspace, None).await {
+                Ok(record) => {
+                    return Ok(Some(Outcome::SwitchSession {
+                        session_id: record.session_id,
+                    }));
+                }
+                Err(e) => app.push_notice(format!("新建会话失败: {e}"), Style::default().fg(app.theme.error)),
+            }
+        }
+        KeyCode::Char('r') => {
+            if let PanelSel::Session { id, title, .. } = selection {
+                open_rename_prompt_for(app, &id, &title);
+            }
+        }
+        KeyCode::Char('d') => {
+            if let PanelSel::Session { id, .. } = selection {
+                match api.delete_session(&id).await {
+                    Ok(()) => {
+                        app.push_notice("会话已删除", Style::default().fg(app.theme.muted));
+                        refresh_panel(app, api).await;
+                    }
+                    Err(e) => app.push_notice(format!("删除会话失败: {e}"), Style::default().fg(app.theme.error)),
+                }
+            }
+        }
+        KeyCode::Char('c') => {
+            if let Some(workspace) = selected_workspace {
+                let (done, failed) = clear_workspace_sessions(api, &workspace).await;
+                if failed == 0 {
+                    app.push_notice(format!("已清空 {done} 个会话"), Style::default().fg(app.theme.muted));
+                } else {
+                    app.push_notice(
+                        format!("已清空 {done} 个会话，{failed} 个未删除（运行中）"),
+                        Style::default().fg(app.theme.warning),
+                    );
+                }
+                refresh_panel(app, api).await;
+            }
+        }
+        KeyCode::Char('a') => open_add_workspace_prompt(app),
+        KeyCode::Char('D') => {
+            if let Some(workspace) = selected_workspace {
+                match api.delete_workspace(&workspace).await {
+                    Ok(()) => {
+                        app.push_notice("工作区登记已移除", Style::default().fg(app.theme.muted));
+                        refresh_panel(app, api).await;
+                    }
+                    Err(e) => app.push_notice(format!("移除工作区失败: {e}"), Style::default().fg(app.theme.error)),
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(None)
 }
 
 /// 当前生效那一项的下标；没有则从第一项开始。
@@ -2504,16 +2839,31 @@ fn leaf_snippet(message: &ChatMessage) -> String {
 ///
 /// 标题从会话快照里取；快照里没有（列表拉取失败过）就留空，不影响改名本身。
 fn open_rename_prompt(app: &mut App) {
-    let current = app
+    let id = app.session_id.clone();
+    let title = app
         .sessions
         .iter()
-        .find(|s| s.session_id == app.session_id)
+        .find(|s| s.session_id == id)
         .map(|s| s.title.clone())
         .unwrap_or_default();
+    open_rename_prompt_for(app, &id, &title);
+}
+
+/// 打开重命名弹窗（指定会话）：会话面板里改的不一定是当前会话。
+fn open_rename_prompt_for(app: &mut App, session_id: &str, title: &str) {
     app.prompt = Some(TextPrompt {
         title: " 重命名会话 · Enter 确认 · Esc 取消 ".into(),
-        input: current,
-        kind:  PromptKind::RenameSession,
+        input: title.to_string(),
+        kind:  PromptKind::RenameSession(session_id.to_string()),
+    });
+}
+
+/// 打开「新增工作区」弹窗（只填路径，不建会话）。
+fn open_add_workspace_prompt(app: &mut App) {
+    app.prompt = Some(TextPrompt {
+        title: " 新增工作区 · Enter 确认 · Esc 取消 ".into(),
+        input: String::new(),
+        kind:  PromptKind::AddWorkspace,
     });
 }
 
@@ -2555,24 +2905,40 @@ async fn apply_prompt(
         return Ok(None);
     };
     match kind {
-        PromptKind::RenameSession => {
+        PromptKind::RenameSession(session_id) => {
             let title = input.trim().to_string();
             if title.is_empty() {
                 app.push_notice("会话标题不能为空", Style::default().fg(app.theme.error));
                 return Ok(None);
             }
-            match api.rename_session(&app.session_id, &title).await {
+            match api.rename_session(&session_id, &title).await {
                 // 本地快照跟着改，列表弹窗在服务端事件到之前也是对的
                 Ok(()) => {
-                    if let Some(record) = app
-                        .sessions
-                        .iter_mut()
-                        .find(|s| s.session_id == app.session_id)
-                    {
+                    if let Some(record) = app.sessions.iter_mut().find(|s| s.session_id == session_id) {
                         record.title = title;
+                    }
+                    if app.panel.is_some() {
+                        refresh_panel(app, api).await;
                     }
                 }
                 Err(e) => app.push_notice(format!("重命名失败: {e}"), Style::default().fg(app.theme.error)),
+            }
+            Ok(None)
+        }
+        PromptKind::AddWorkspace => {
+            let path = input.trim().to_string();
+            if path.is_empty() {
+                app.push_notice("工作区路径不能为空", Style::default().fg(app.theme.error));
+                return Ok(None);
+            }
+            match api.create_workspace(&path).await {
+                Ok(()) => {
+                    app.push_notice("工作区已登记", Style::default().fg(app.theme.muted));
+                    if app.panel.is_some() {
+                        refresh_panel(app, api).await;
+                    }
+                }
+                Err(e) => app.push_notice(format!("登记工作区失败: {e}"), Style::default().fg(app.theme.error)),
             }
             Ok(None)
         }
@@ -2632,7 +2998,6 @@ async fn apply_picker_action(
             name,
             connections: app.dirty_connections(),
         })),
-        PickerAction::SwitchSession { session_id } => Ok(Some(Outcome::SwitchSession { session_id })),
         PickerAction::SetModel(model) => {
             send_setting(app, client, AgentCommand::SetModel { model }, "切换模型").await;
             Ok(None)
@@ -2678,19 +3043,6 @@ async fn apply_picker_action(
                 }
                 Err(e) => {
                     app.push_notice(format!("删除消息失败: {e}"), Style::default().fg(app.theme.error));
-                    Ok(None)
-                }
-            }
-        }
-        PickerAction::NewSession => {
-            let workspace = app.workspace.clone();
-            match api.create_session(&workspace, None).await {
-                // 新会话没有任何消息，切过去即是空白界面
-                Ok(record) => Ok(Some(Outcome::SwitchSession {
-                    session_id: record.session_id,
-                })),
-                Err(e) => {
-                    app.push_notice(format!("新建会话失败: {e}"), Style::default().fg(app.theme.error));
                     Ok(None)
                 }
             }
@@ -2901,6 +3253,94 @@ fn draw(frame: &mut Frame, app: &App) {
     if let Some(settings) = &app.settings {
         draw_settings(frame, app, settings, area, theme);
     }
+    if let Some(panel) = &app.panel {
+        draw_session_panel(frame, panel, area, theme);
+    }
+}
+
+/// 全屏会话面板：工作区分组标题 + 组内会话；顶部一行搜索/排序/过滤状态。
+fn draw_session_panel(frame: &mut Frame, panel: &SessionPanel, area: Rect, theme: TuiTheme) {
+    frame.render_widget(Clear, area);
+    let filter = panel
+        .filter
+        .as_deref()
+        .map(path_basename)
+        .unwrap_or_else(|| "全部".to_string());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            format!(
+                " 会话 · /搜索 · s 排序({}) · f 项目({filter}) · Enter 切换/折叠 · n 新建 r 改名 d 删除 c 清空 \
+                 D 移除工作区 a 新增 · Esc 关闭 ",
+                panel.sort.label()
+            ),
+            Style::default().fg(theme.muted),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [search_area, list_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    let query_line = if panel.searching {
+        format!(" 搜索: {}▏", panel.query)
+    } else if panel.query.is_empty() {
+        " / 搜索".to_string()
+    } else {
+        format!(" 搜索: {}（按 / 修改）", panel.query)
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(query_line, Style::default().fg(theme.muted))),
+        search_area,
+    );
+
+    let visible = list_area.height as usize;
+    let window = picker_window(panel.rows.len(), panel.index, visible.max(1));
+    let start = window.start;
+    let lines: Vec<Line<'static>> = panel.rows[window]
+        .iter()
+        .enumerate()
+        .map(|(offset, row)| {
+            let selected = start + offset == panel.index;
+            let (text, base_style) = match row {
+                PanelRow::Workspace { label, count, .. } => (
+                    format!("▾ {label}  ({count})"),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                PanelRow::Session(session) => {
+                    let title = if session.title.trim().is_empty() {
+                        "未命名".to_string()
+                    } else {
+                        session.title.clone()
+                    };
+                    let marker = if session.is_running { "● " } else { "  " };
+                    (
+                        format!(
+                            "{marker}{title}   {} · {}",
+                            short_id(&session.session_id),
+                            session.active_model
+                        ),
+                        Style::default().fg(theme.subtext),
+                    )
+                }
+                PanelRow::Empty => ("没有匹配的工作区或会话".to_string(), Style::default().fg(theme.muted)),
+            };
+            let style = if selected {
+                Style::default().fg(theme.base).bg(theme.accent)
+            } else {
+                base_style
+            };
+            let text = if selected {
+                pad_to_width(&text, list_area.width as usize)
+            } else {
+                text
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), list_area);
 }
 
 /// 设置界面：连接列表 + 模型/预设/推理等级/主题；连接可增删改与切换。
@@ -3903,60 +4343,140 @@ mod tests {
         assert!(app.picker.is_none());
     }
 
-    /// 会话弹窗条目：首项固定是「新建会话」，当前会话标 ✓ 且说明里带模型名。
-    #[test]
-    fn test_session_items_marks_current_and_offers_new() {
-        let sessions = vec![record("s1", "第一个会话"), record("s2", "当前会话")];
-        let items = session_items(&sessions, "/w", "s2");
-
-        assert_eq!(items.len(), 3);
-        match &items[0].action {
-            PickerAction::NewSession => {}
-            _ => panic!("首项应是「新建会话」"),
-        }
-        assert!(!items[0].current, "新建会话不是当前项");
-        assert!(items[2].current && !items[1].current, "只有当前会话带 ✓");
-        assert!(items[2].detail.contains('m'), "说明里带模型名，便于区分同名会话");
-        assert_eq!(picker_current_index(&items), 2, "高亮应落在当前会话上");
-
-        // 没有任何会话时也留着「新建会话」，弹窗不会空着
-        let only_new = session_items(&[], "/w", "");
-        assert_eq!(only_new.len(), 1);
-        assert_eq!(picker_current_index(&only_new), 0);
-
-        // 刚建的会话没有标题：用占位文案，避免弹窗里出现空行
-        let mut untitled = record("s3", "");
-        untitled.active_model = String::new();
-        let items = session_items(&[untitled], "/w", "");
-        assert_eq!(items[1].label, "未命名");
+    fn panel_of(sessions: Vec<SessionRecord>, workspaces: Vec<&str>) -> SessionPanel {
+        let mut panel = SessionPanel {
+            sessions,
+            workspaces: workspaces.into_iter().map(str::to_string).collect(),
+            collapsed: HashSet::new(),
+            query: String::new(),
+            searching: false,
+            sort: SessionSort::Updated,
+            filter: None,
+            rows: Vec::new(),
+            index: 0,
+        };
+        rebuild_session_rows(&mut panel);
+        panel
     }
 
-    /// 会话弹窗的按键：Enter 取出切换目标并关窗，Esc 只关窗。
+    /// 会话面板：工作区分组（含无会话的工作区）、折叠、搜索、项目过滤。
     #[test]
-    fn test_session_picker_keys() {
+    fn test_session_panel_groups_search_filter() {
+        let mut a = record("s1", "甲");
+        a.workspace = "/ws/a".into();
+        a.updated_at = 2;
+        let mut b = record("s2", "乙");
+        b.workspace = "/ws/b".into();
+        b.updated_at = 1;
+        let mut panel = panel_of(vec![a, b], vec!["/ws/a", "/ws/b", "/ws/empty"]);
+
+        let labels: Vec<&str> = panel
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                PanelRow::Workspace { label, .. } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, vec!["a", "b", "empty"], "无会话的工作区也要成组");
+        assert_eq!(
+            panel
+                .rows
+                .iter()
+                .filter(|r| matches!(r, PanelRow::Session(_)))
+                .count(),
+            2
+        );
+
+        // 折叠 /ws/a：该组会话不再出现
+        panel.collapsed.insert("/ws/a".into());
+        rebuild_session_rows(&mut panel);
+        assert_eq!(
+            panel
+                .rows
+                .iter()
+                .filter(|r| matches!(r, PanelRow::Session(_)))
+                .count(),
+            1
+        );
+
+        // 搜索命中会话标题：只剩命中那条
+        panel.collapsed.clear();
+        panel.query = "乙".into();
+        rebuild_session_rows(&mut panel);
+        let kept: Vec<&str> = panel
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                PanelRow::Session(s) => Some(s.session_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kept, vec!["s2"]);
+
+        // 项目过滤：只剩该工作区分组
+        panel.query.clear();
+        panel.filter = Some("/ws/b".into());
+        rebuild_session_rows(&mut panel);
+        assert_eq!(
+            panel
+                .rows
+                .iter()
+                .filter(|r| matches!(r, PanelRow::Workspace { .. }))
+                .count(),
+            1
+        );
+    }
+
+    /// 会话面板按键：Enter 在会话行请求切换，Esc 关闭。
+    #[tokio::test]
+    async fn test_session_panel_keys() {
         let mut app = App::new("/w".into(), "m".into(), "a".into(), TuiTheme::test());
         app.session_id = "s2".into();
-        app.sessions = vec![record("s1", "第一个会话"), record("s2", "当前会话")];
-        app.picker = Some(Picker {
-            title: " 切换会话 ".into(),
-            items: session_items(&app.sessions, "/w", &app.session_id),
-            index: 2,
-        });
+        let mut panel = panel_of(vec![record("s1", "一"), record("s2", "二")], vec!["/w"]);
+        panel.index = panel
+            .rows
+            .iter()
+            .position(|row| matches!(row, PanelRow::Session(s) if s.session_id == "s2"))
+            .unwrap();
+        app.panel = Some(panel);
 
-        match handle_picker_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
-            Some(PickerAction::SwitchSession { session_id }) => assert_eq!(session_id, "s2"),
-            _ => panic!("Enter 应返回会话切换目标"),
+        let api = SessionApi::new("127.0.0.1:1", "t");
+        match handle_panel_key(&mut app, &api, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap()
+        {
+            Some(Outcome::SwitchSession { session_id }) => assert_eq!(session_id, "s2"),
+            _ => panic!("Enter 在会话行应请求切换"),
         }
-        assert!(app.picker.is_none(), "确认后弹窗应关闭");
+        handle_panel_key(&mut app, &api, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert!(app.panel.is_none(), "Esc 关闭面板");
+    }
 
-        // Esc 关窗且不返回动作
-        app.picker = Some(Picker {
-            title: " 切换会话 ".into(),
-            items: session_items(&app.sessions, "/w", &app.session_id),
-            index: 0,
-        });
-        assert!(handle_picker_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).is_none());
-        assert!(app.picker.is_none());
+    /// 会话面板的排序/过滤/搜索按键：s 轮换排序、f 轮换项目、/ 进入搜索。
+    #[tokio::test]
+    async fn test_session_panel_sort_filter_search_keys() {
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), TuiTheme::test());
+        app.panel = Some(panel_of(vec![record("s1", "一")], vec!["/w"]));
+        let api = SessionApi::new("127.0.0.1:1", "t");
+        let press = |ch: char| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
+
+        handle_panel_key(&mut app, &api, press('s')).await.unwrap();
+        assert_eq!(app.panel.as_ref().unwrap().sort, SessionSort::Name);
+        handle_panel_key(&mut app, &api, press('s')).await.unwrap();
+        assert_eq!(app.panel.as_ref().unwrap().sort, SessionSort::Created);
+
+        handle_panel_key(&mut app, &api, press('f')).await.unwrap();
+        assert_eq!(app.panel.as_ref().unwrap().filter.as_deref(), Some("/w"));
+        handle_panel_key(&mut app, &api, press('f')).await.unwrap();
+        assert!(app.panel.as_ref().unwrap().filter.is_none(), "再按一次回到全部");
+
+        handle_panel_key(&mut app, &api, press('/')).await.unwrap();
+        assert!(app.panel.as_ref().unwrap().searching);
+        handle_panel_key(&mut app, &api, press('一')).await.unwrap();
+        assert_eq!(app.panel.as_ref().unwrap().query, "一");
     }
 
     /// 文本弹窗：预填当前标题，Backspace 编辑、Enter 取出请求、Esc 取消。
@@ -3969,7 +4489,7 @@ mod tests {
         open_rename_prompt(&mut app);
         let prompt = app.prompt.as_ref().unwrap();
         assert_eq!(prompt.input, "当前会话", "应预填当前标题");
-        assert_eq!(prompt.kind, PromptKind::RenameSession);
+        assert_eq!(prompt.kind, PromptKind::RenameSession("s2".into()));
 
         // 退格删掉末字，再补一个字
         handle_prompt_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
@@ -3982,7 +4502,10 @@ mod tests {
 
         // Enter 取出请求并关窗
         match handle_prompt_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
-            Some((PromptKind::RenameSession, input)) => assert_eq!(input, "当前会新"),
+            Some((PromptKind::RenameSession(id), input)) => {
+                assert_eq!(id, "s2");
+                assert_eq!(input, "当前会新");
+            }
             _ => panic!("Enter 应取出重命名请求"),
         }
         assert!(app.prompt.is_none(), "确认后弹窗应关闭");
@@ -4399,6 +4922,9 @@ mod tests {
             title:        title.into(),
             active_model: "m".into(),
             active_agent: "a".into(),
+            created_at:   0,
+            updated_at:   0,
+            is_running:   false,
         }
     }
 

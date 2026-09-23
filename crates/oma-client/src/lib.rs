@@ -33,6 +33,7 @@ use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use oma_contract::{
     AgentCommand, AgentEvent, ChatMessage, ClientMessage, ClientType, ConnectParams, Ready, ServerMessage,
+    WorkspaceRecord,
 };
 use serde::Deserialize;
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -101,6 +102,14 @@ pub struct SessionRecord {
     pub title:        String,
     pub active_model: String,
     pub active_agent: String,
+    /// 创建 / 最后更新时间（毫秒）：列表排序用
+    #[serde(default)]
+    pub created_at:   i64,
+    #[serde(default)]
+    pub updated_at:   i64,
+    /// 该会话当前是否有正在执行的轮次（服务端按运行时回填）
+    #[serde(default)]
+    pub is_running:   bool,
 }
 
 /// REST 客户端：会话列出与创建（实时交互走 `OmaClient`）
@@ -190,6 +199,46 @@ impl SessionApi {
             .unwrap_or_default();
         let leaf = value["current_leaf_id"].as_str().map(str::to_string);
         Ok((deleted, leaf))
+    }
+
+    /// 已登记工作区（`GET /api/workspaces`）。
+    pub async fn list_workspaces(&self) -> Result<Vec<WorkspaceRecord>> {
+        let resp = self
+            .http
+            .get(format!("{}/api/workspaces", self.base))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        let value = Self::ensure_ok(resp).await?;
+        serde_json::from_value(value).context("Unexpected workspace list payload")
+    }
+
+    /// 登记一个工作区（幂等；路径须存在的目录）。
+    pub async fn create_workspace(&self, path: &str) -> Result<()> {
+        let resp = self
+            .http
+            .post(format!("{}/api/workspaces", self.base))
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({ "path": path }))
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        Self::ensure_ok(resp).await?;
+        Ok(())
+    }
+
+    /// 移除工作区登记（仅名单；仍有会话时服务端拒绝）。
+    pub async fn delete_workspace(&self, path: &str) -> Result<()> {
+        let resp = self
+            .http
+            .delete(format!("{}/api/workspaces?path={}", self.base, urlencode(path)))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        Self::ensure_ok(resp).await?;
+        Ok(())
     }
 
     /// 真正下发的系统提示词（预设正文 + 环境块 + 项目上下文 + 技能目录）。
