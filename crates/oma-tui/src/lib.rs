@@ -17,7 +17,10 @@ use oma_contract::{
 use ratatui::{
     Frame,
     crossterm::{
-        event::{self, DisableFocusChange, EnableFocusChange, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+        event::{
+            self, DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, Event, KeyCode,
+            KeyEvent, KeyEventKind, KeyModifiers,
+        },
         execute,
     },
     layout::{Constraint, Layout, Rect},
@@ -77,6 +80,8 @@ enum InputEvent {
     Key(KeyEvent),
     /// true = 终端重新获得焦点，false = 失焦
     Focus(bool),
+    /// 括号粘贴的整段文本：一次到达，不再是一串按键
+    Paste(String),
 }
 
 /// 一条可切换的已保存连接（来自 client.json）。
@@ -583,6 +588,7 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
                 Event::Key(key) => InputEvent::Key(key),
                 Event::FocusGained => InputEvent::Focus(true),
                 Event::FocusLost => InputEvent::Focus(false),
+                Event::Paste(text) => InputEvent::Paste(text),
                 _ => continue,
             };
             if key_tx.blocking_send(forwarded).is_err() {
@@ -602,7 +608,10 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
     let mut terminal = ratatui::init();
     // 开启焦点变化上报（CSI ?1004h）：仅用于判断终端是否失焦，退出时恢复。
     // 终端不支持该序列时会直接忽略，不会报错。
-    let _ = execute!(std::io::stdout(), EnableFocusChange);
+    //
+    // 括号粘贴（CSI ?2004h）让终端把一次粘贴包成整段文本发来，而不是逐字符敲键：
+    // 否则粘多行文本里的换行会被当成回车，一粘就把消息发出去了。
+    let _ = execute!(std::io::stdout(), EnableFocusChange, EnableBracketedPaste);
     let result = loop {
         let outcome = run_session(
             &mut terminal,
@@ -649,7 +658,7 @@ pub async fn run(options: TuiOptions) -> Result<Option<String>> {
         }
     };
     // 先关上报再恢复终端：否则退出后终端仍会把焦点变化写成转义序列涌向 shell
-    let _ = execute!(std::io::stdout(), DisableFocusChange);
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste, DisableFocusChange);
     ratatui::restore();
     result
 }
@@ -815,7 +824,7 @@ async fn event_loop(
     }
 }
 
-/// 消化输入线程转发的事件：焦点变化更新 [`App::focused`]，按键交回调用方处理。
+/// 消化输入线程转发的事件：焦点变化更新 [`App::focused`]，粘贴直接进输入，按键交回调用方。
 fn classify_input(app: &mut App, input: InputEvent) -> Option<KeyEvent> {
     match input {
         InputEvent::Focus(focused) => {
@@ -823,7 +832,37 @@ fn classify_input(app: &mut App, input: InputEvent) -> Option<KeyEvent> {
             None
         }
         InputEvent::Key(key) => Some(key),
+        InputEvent::Paste(text) => {
+            insert_paste(app, &text);
+            None
+        }
     }
+}
+
+/// 把粘贴的整段文本放进当前获得输入的那个框。
+///
+/// 列表弹窗没有可输入的地方，粘贴对它是噪声，直接丢掉；文本弹窗（重命名）优先于主输入区。
+fn insert_paste(app: &mut App, text: &str) {
+    if app.picker.is_some() {
+        return;
+    }
+    let text = clean_paste(text);
+    match app.prompt.as_mut() {
+        Some(prompt) => prompt.input.push_str(&text),
+        None => app.input.push_str(&text),
+    }
+}
+
+/// 粘贴文本的清理：输入区是单行，换行与制表符换成空格，其余控制字符丢掉。
+///
+/// 开启括号粘贴后整段文本一次到达，逐字符时代「换行=回车」的语义消失了；
+/// 若不清理，多行文本里夹带的控制字符会原样留在输入里，看不见又删不掉。
+fn clean_paste(text: &str) -> String {
+    let unified = text.replace("\r\n", "\n");
+    unified
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 /// 处理按键；返回 Some 表示离开当前会话（退出或切换连接）。
@@ -2414,6 +2453,43 @@ mod tests {
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         assert!(classify_input(&mut app, InputEvent::Key(key)).is_some());
         assert!(app.focused);
+    }
+
+    /// 括号粘贴：整段文本一次进输入框（多行不再被当成多次回车）；文本弹窗
+    /// 打开时落进弹窗，列表弹窗直接忽略。
+    #[test]
+    fn test_paste_goes_into_active_input() {
+        let mut app = App::new("/w".into(), "m".into(), "a".into(), TuiTheme::test());
+        assert!(classify_input(&mut app, InputEvent::Paste("第一行\n第二行".into())).is_none());
+        assert_eq!(app.input, "第一行 第二行", "换行换成空格，不会触发发送");
+
+        // 文本弹窗（重命名）打开时优先落进弹窗，主输入区不受影响
+        app.session_id = "s1".into();
+        open_rename_prompt(&mut app);
+        classify_input(&mut app, InputEvent::Paste("新标题".into()));
+        assert_eq!(app.prompt.as_ref().unwrap().input, "新标题");
+        assert_eq!(app.input, "第一行 第二行");
+
+        // 列表弹窗没有可输入的地方：粘贴丢掉
+        app.prompt = None;
+        app.picker = Some(Picker {
+            title: " 切换会话 ".into(),
+            items: Vec::new(),
+            index: 0,
+        });
+        classify_input(&mut app, InputEvent::Paste("忽略".into()));
+        assert_eq!(app.input, "第一行 第二行");
+        assert!(app.prompt.is_none());
+    }
+
+    /// 粘贴清理：CRLF 归一、控制字符换成空格，正文原样保留。
+    #[test]
+    fn test_clean_paste_normalizes_control_chars() {
+        assert_eq!(clean_paste("a\nb"), "a b");
+        assert_eq!(clean_paste("a\r\nb"), "a b", "CRLF 只留一个空格");
+        assert_eq!(clean_paste("a\tb"), "a b");
+        assert_eq!(clean_paste("a\x07b"), "a b");
+        assert_eq!(clean_paste("中文 @pic.png"), "中文 @pic.png");
     }
 
     #[test]
