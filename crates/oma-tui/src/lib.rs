@@ -217,6 +217,11 @@ enum SettingsRow {
     Agent,
     Reasoning,
     Theme,
+    Defaults,
+    Tools,
+    Presets,
+    Skills,
+    Mcp,
 }
 
 /// 连接编辑表单：名称/地址/凭证三段，Tab 切换字段、Enter 保存、Esc 取消。
@@ -232,8 +237,25 @@ struct ConnForm {
 
 /// 设置界面状态。
 struct SettingsState {
-    index: usize,
-    form:  Option<ConnForm>,
+    index:    usize,
+    form:     Option<ConnForm>,
+    /// 默认模型 / 默认预设 / 默认推理等级（来自 `GET /api/config`）
+    defaults: Option<(String, String, String)>,
+    /// 工具清单：(名称, 描述)
+    tools:    Vec<(String, String)>,
+    /// 预设清单：(id, 名称, 作用域)
+    presets:  Vec<(String, String, String)>,
+    /// 技能清单：(id, 名称, 作用域)
+    skills:   Vec<(String, String, String)>,
+    /// MCP 服务器：(名称, 命令/地址)
+    mcp:      Vec<(String, String)>,
+}
+
+/// 只读信息面板（设置里的默认项 / 工具 / 预设 / 技能 / MCP 清单）。
+struct InfoPanel {
+    title:  String,
+    lines:  Vec<String>,
+    scroll: usize,
 }
 
 /// 设置界面按键的结果。
@@ -511,6 +533,8 @@ struct App {
     settings:                Option<SettingsState>,
     /// 全屏会话面板；None = 未打开
     panel:                   Option<SessionPanel>,
+    /// 只读信息面板；None = 未打开
+    info:                    Option<InfoPanel>,
     /// 连接清单是否被设置界面改过（决定退出时是否回传写盘）
     connections_dirty:       bool,
     /// 已上传、待随下一条消息发送的剪贴板图片附件（session_attachment:// 引用）
@@ -566,6 +590,7 @@ impl App {
             tree_view: None,
             settings: None,
             panel: None,
+            info: None,
             connections_dirty: false,
             pending_images: Vec::new(),
             system_prompt: None,
@@ -1474,6 +1499,10 @@ async fn handle_key(app: &mut App, client: &mut OmaClient, api: &SessionApi, key
     if app.panel.is_some() {
         return handle_panel_key(app, api, key).await;
     }
+    if app.info.is_some() {
+        handle_info_key(app, key);
+        return Ok(None);
+    }
     if app.tree_view.is_some() {
         match handle_tree_key(app, key) {
             TreeAction::Close => app.tree_view = None,
@@ -1683,7 +1712,7 @@ async fn handle_slash(app: &mut App, api: &SessionApi, cmd: &str, args: &str) ->
             Ok(None)
         }
         "settings" => {
-            open_settings(app);
+            open_settings(app, api).await;
             Ok(None)
         }
         "new" => match api.create_session(&app.workspace, None).await {
@@ -1740,17 +1769,89 @@ const SLASH_HELP: &str = "/help 帮助 · /model 模型 · /agent 预设 · /rea
      /session 切换会话 · /new 新建会话 · /rename [标题] 重命名 · /tree 历史树\n\
      /delete 删除消息（含子树）· /settings 设置 · /clear 清空记录显示 · /quit 退出";
 
-/// 打开设置界面；高亮落在当前活动连接那一行。
-fn open_settings(app: &mut App) {
+/// 打开设置界面；高亮落在当前活动连接那一行，并拉取只读清单（默认项/工具/预设/技能/MCP）。
+async fn open_settings(app: &mut App, api: &SessionApi) {
     let index = app
         .connections
         .iter()
         .position(|conn| app.active_conn.as_deref() == Some(conn.name.as_str()))
         .unwrap_or(0);
-    app.settings = Some(SettingsState { index, form: None });
+    let mut settings = SettingsState {
+        index,
+        form: None,
+        defaults: None,
+        tools: Vec::new(),
+        presets: Vec::new(),
+        skills: Vec::new(),
+        mcp: Vec::new(),
+    };
+    // 清单拉取失败不阻塞打开设置：对应行显示 0 项
+    if let Ok(config) = api.config().await {
+        settings.defaults = Some((
+            json_field(&config, "default_model"),
+            json_field(&config, "default_agent"),
+            json_field(&config, "default_reasoning_level"),
+        ));
+        if let Some(servers) = config
+            .get("mcp_servers")
+            .and_then(|value| value.as_object())
+        {
+            settings.mcp = servers
+                .iter()
+                .map(|(name, server)| {
+                    let detail = match server.get("type").and_then(|value| value.as_str()) {
+                        Some("local") => json_field(server, "command"),
+                        Some("remote") => json_field(server, "url"),
+                        _ => String::new(),
+                    };
+                    (name.clone(), detail)
+                })
+                .collect();
+        }
+    }
+    if let Ok(tools) = api.tools().await {
+        settings.tools = tools
+            .iter()
+            .map(|tool| (json_field(tool, "name"), json_field(tool, "description")))
+            .collect();
+    }
+    if let Ok(list) = api.presets(&app.workspace).await {
+        settings.presets = list
+            .iter()
+            .map(|item| {
+                (
+                    json_field(item, "id"),
+                    json_field(item, "name"),
+                    json_field(item, "scope"),
+                )
+            })
+            .collect();
+    }
+    if let Ok(list) = api.skills(&app.workspace).await {
+        settings.skills = list
+            .iter()
+            .map(|item| {
+                (
+                    json_field(item, "id"),
+                    json_field(item, "name"),
+                    json_field(item, "scope"),
+                )
+            })
+            .collect();
+    }
+    app.settings = Some(settings);
 }
 
-/// 设置界面的行：先列连接，再是模型/预设/推理等级/主题。
+/// 取 JSON 对象里的字符串字段（缺失或非字符串回落空串）。
+fn json_field(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 设置界面的行：先列连接，再是模型/预设/推理等级/主题与只读清单。
 fn settings_rows(app: &App) -> Vec<SettingsRow> {
     let mut rows: Vec<SettingsRow> = (0..app.connections.len())
         .map(SettingsRow::Connection)
@@ -1759,6 +1860,11 @@ fn settings_rows(app: &App) -> Vec<SettingsRow> {
     rows.push(SettingsRow::Agent);
     rows.push(SettingsRow::Reasoning);
     rows.push(SettingsRow::Theme);
+    rows.push(SettingsRow::Defaults);
+    rows.push(SettingsRow::Tools);
+    rows.push(SettingsRow::Presets);
+    rows.push(SettingsRow::Skills);
+    rows.push(SettingsRow::Mcp);
     rows
 }
 
@@ -1850,8 +1956,95 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> SettingsAction {
                 );
                 SettingsAction::None
             }
+            SettingsRow::Defaults
+            | SettingsRow::Tools
+            | SettingsRow::Presets
+            | SettingsRow::Skills
+            | SettingsRow::Mcp => {
+                open_settings_info(app, &rows[index]);
+                SettingsAction::None
+            }
         },
         _ => SettingsAction::None,
+    }
+}
+
+/// 打开只读信息面板（默认项 / 工具 / 预设 / 技能 / MCP）。
+fn open_settings_info(app: &mut App, row: &SettingsRow) {
+    let Some(settings) = app.settings.as_ref() else {
+        return;
+    };
+    let (title, lines) = match row {
+        SettingsRow::Defaults => {
+            let (model, agent, level) = settings.defaults.clone().unwrap_or_default();
+            (
+                "默认项".to_string(),
+                vec![
+                    format!("默认模型      {model}"),
+                    format!("默认预设      {agent}"),
+                    format!("默认推理等级  {level}"),
+                ],
+            )
+        }
+        SettingsRow::Tools => (
+            "工具".to_string(),
+            settings
+                .tools
+                .iter()
+                .map(|(name, description)| format!("{name}  {description}"))
+                .collect(),
+        ),
+        SettingsRow::Presets => (
+            "预设".to_string(),
+            settings
+                .presets
+                .iter()
+                .map(|(id, name, scope)| format!("{name}  [{scope}]  {id}"))
+                .collect(),
+        ),
+        SettingsRow::Skills => (
+            "技能".to_string(),
+            settings
+                .skills
+                .iter()
+                .map(|(id, name, scope)| format!("{name}  [{scope}]  {id}"))
+                .collect(),
+        ),
+        SettingsRow::Mcp => (
+            "MCP 服务器".to_string(),
+            settings
+                .mcp
+                .iter()
+                .map(|(name, detail)| format!("{name}  {detail}"))
+                .collect(),
+        ),
+        _ => return,
+    };
+    let lines = if lines.is_empty() {
+        vec!["（空）".to_string()]
+    } else {
+        lines
+    };
+    app.info = Some(InfoPanel {
+        title,
+        lines,
+        scroll: 0,
+    });
+}
+
+/// 信息面板按键：上下滚动，Esc/Enter 关闭。
+fn handle_info_key(app: &mut App, key: KeyEvent) {
+    let Some(info) = app.info.as_mut() else {
+        return;
+    };
+    let last = info.lines.len().saturating_sub(1);
+    match key.code {
+        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => app.info = None,
+        KeyCode::Up | KeyCode::Char('k') => info.scroll = info.scroll.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => info.scroll = (info.scroll + 1).min(last),
+        KeyCode::PageUp => info.scroll = info.scroll.saturating_sub(10),
+        KeyCode::PageDown => info.scroll = (info.scroll + 10).min(last),
+        _ => {}
     }
 }
 
@@ -3256,6 +3449,41 @@ fn draw(frame: &mut Frame, app: &App) {
     if let Some(panel) = &app.panel {
         draw_session_panel(frame, panel, area, theme);
     }
+    if let Some(info) = &app.info {
+        draw_info(frame, info, area, theme);
+    }
+}
+
+/// 只读信息面板：整屏标题 + 可滚动的清单行。
+fn draw_info(frame: &mut Frame, info: &InfoPanel, area: Rect, theme: TuiTheme) {
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.accent))
+        .title(Span::styled(
+            format!(" {} · ↑/↓ 滚动 · Esc 关闭 ", info.title),
+            Style::default().fg(theme.muted),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let visible = inner.height as usize;
+    let max_scroll = info.lines.len().saturating_sub(visible);
+    let scroll = info.scroll.min(max_scroll);
+    let lines: Vec<Line<'static>> = info.lines[scroll.min(info.lines.len())..]
+        .iter()
+        .take(visible)
+        .map(|line| {
+            Line::from(Span::styled(
+                line.clone(),
+                Style::default()
+                    .fg(theme.subtext)
+                    .add_modifier(Modifier::DIM),
+            ))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
 /// 全屏会话面板：工作区分组标题 + 组内会话；顶部一行搜索/排序/过滤状态。
@@ -3414,6 +3642,30 @@ fn settings_row_text(app: &App, row: &SettingsRow) -> String {
             format!("推理等级    {level}")
         }
         SettingsRow::Theme => format!("主题        {} · {}", app.theme_mode, app.theme_accent),
+        SettingsRow::Defaults => {
+            let (model, agent, level) = app
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.defaults.clone())
+                .unwrap_or_default();
+            format!("默认项      {model} · {agent} · {level}")
+        }
+        SettingsRow::Tools => format!(
+            "工具        {} 个",
+            app.settings.as_ref().map(|s| s.tools.len()).unwrap_or(0)
+        ),
+        SettingsRow::Presets => format!(
+            "预设        {} 个",
+            app.settings.as_ref().map(|s| s.presets.len()).unwrap_or(0)
+        ),
+        SettingsRow::Skills => format!(
+            "技能        {} 个",
+            app.settings.as_ref().map(|s| s.skills.len()).unwrap_or(0)
+        ),
+        SettingsRow::Mcp => format!(
+            "MCP         {} 个",
+            app.settings.as_ref().map(|s| s.mcp.len()).unwrap_or(0)
+        ),
     }
 }
 
@@ -4080,17 +4332,18 @@ mod tests {
         }
     }
 
-    /// 设置界面行：连接若干 + 模型/预设/推理等级/主题；Enter 连接行请求切换。
-    #[test]
-    fn test_settings_rows_and_switch() {
+    /// 设置界面行：连接若干 + 模型/预设/推理等级/主题与只读清单；Enter 连接行请求切换。
+    #[tokio::test]
+    async fn test_settings_rows_and_switch() {
         let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
         app.connections = vec![conn("a", "http://a", "ta"), conn("b", "http://b", "tb")];
         app.active_conn = Some("b".into());
 
         // 高亮落在活动连接上
-        open_settings(&mut app);
+        let api = SessionApi::new("127.0.0.1:1", "t");
+        open_settings(&mut app, &api).await;
         assert_eq!(app.settings.as_ref().unwrap().index, 1);
-        assert_eq!(settings_rows(&app).len(), 2 + 4, "两条连接 + 四项设置");
+        assert_eq!(settings_rows(&app).len(), 2 + 9, "两条连接 + 九项设置");
 
         // Enter 在连接行返回切换目标
         match handle_settings_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
@@ -4106,12 +4359,46 @@ mod tests {
         ));
     }
 
+    /// 设置里的只读信息面板：默认项/工具/预设/技能/MCP 各自成清单，Esc 关闭。
+    #[tokio::test]
+    async fn test_settings_info_panels() {
+        let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
+        open_settings(&mut app, &SessionApi::new("127.0.0.1:1", "t")).await;
+        {
+            let settings = app.settings.as_mut().unwrap();
+            settings.defaults = Some(("p/m".into(), "build".into(), "high".into()));
+            settings.tools = vec![("read".into(), "读文件".into())];
+            settings.presets = vec![("build".into(), "构建".into(), "bundled".into())];
+            settings.skills = vec![("demo".into(), "示例技能".into(), "global".into())];
+            settings.mcp = vec![("srv".into(), "npx srv".into())];
+        }
+
+        for (row, expected) in [
+            (SettingsRow::Defaults, "默认模型"),
+            (SettingsRow::Tools, "read"),
+            (SettingsRow::Presets, "构建"),
+            (SettingsRow::Skills, "示例技能"),
+            (SettingsRow::Mcp, "srv"),
+        ] {
+            open_settings_info(&mut app, &row);
+            let info = app.info.as_ref().unwrap();
+            assert!(
+                info.lines.iter().any(|line| line.contains(expected)),
+                "{}: {:?}",
+                info.title,
+                info.lines
+            );
+            handle_info_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert!(app.info.is_none(), "Esc 关闭信息面板");
+        }
+    }
+
     /// 连接表单：新增/编辑写回、重名与空值拒绝、编辑改名时活动连接跟随。
-    #[test]
-    fn test_connection_form_validation_and_edits() {
+    #[tokio::test]
+    async fn test_connection_form_validation_and_edits() {
         let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
         app.connections = vec![conn("a", "http://a", "ta")];
-        open_settings(&mut app);
+        open_settings(&mut app, &SessionApi::new("127.0.0.1:1", "t")).await;
 
         // 新增
         let add = ConnForm {
@@ -4161,10 +4448,10 @@ mod tests {
     }
 
     /// 连接表单按键：Tab 切换字段、输入落到当前字段、Esc 取消。
-    #[test]
-    fn test_connection_form_keys() {
+    #[tokio::test]
+    async fn test_connection_form_keys() {
         let mut app = App::new("/w".into(), "m".into(), "task".into(), TuiTheme::test());
-        open_settings(&mut app);
+        open_settings(&mut app, &SessionApi::new("127.0.0.1:1", "t")).await;
         open_conn_form(&mut app, None);
 
         handle_conn_form(&mut app, KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));

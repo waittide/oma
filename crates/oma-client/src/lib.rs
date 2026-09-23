@@ -261,6 +261,56 @@ impl SessionApi {
         Ok(value["prompt"].as_str().unwrap_or_default().to_string())
     }
 
+    /// 服务端配置（默认脱敏 `api_key`）。
+    pub async fn config(&self) -> Result<serde_json::Value> {
+        let resp = self
+            .http
+            .get(format!("{}/api/config", self.base))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        Self::ensure_ok(resp).await
+    }
+
+    /// 可用工具（内置 + 已发现的 MCP），每项含 `name`/`description`/`kind`。
+    pub async fn tools(&self) -> Result<Vec<serde_json::Value>> {
+        let resp = self
+            .http
+            .get(format!("{}/api/tools", self.base))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        let value = Self::ensure_ok(resp).await?;
+        Ok(value.as_array().cloned().unwrap_or_default())
+    }
+
+    /// Agent 预设清单（bundled / global / project）。
+    pub async fn presets(&self, workspace: &str) -> Result<Vec<serde_json::Value>> {
+        self.list_json(&format!("/api/presets?workspace={}", urlencode(workspace)))
+            .await
+    }
+
+    /// 技能清单（global / agent / project）。
+    pub async fn skills(&self, workspace: &str) -> Result<Vec<serde_json::Value>> {
+        self.list_json(&format!("/api/skills?workspace={}", urlencode(workspace)))
+            .await
+    }
+
+    /// `GET` 一个返回 JSON 数组的接口。
+    async fn list_json(&self, path: &str) -> Result<Vec<serde_json::Value>> {
+        let resp = self
+            .http
+            .get(format!("{}{}", self.base, path))
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .context("Failed to reach oma daemon")?;
+        let value = Self::ensure_ok(resp).await?;
+        Ok(value.as_array().cloned().unwrap_or_default())
+    }
+
     /// 创建工作区会话
     pub async fn create_session(&self, workspace: &str, title: Option<&str>) -> Result<SessionRecord> {
         let mut payload = serde_json::json!({ "workspace": workspace });
